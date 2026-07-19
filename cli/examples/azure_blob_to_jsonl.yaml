@@ -1,0 +1,30 @@
+# Azure Blob / ADLS Gen2 -> JSONL.
+#
+# Reads JSON Lines objects under a prefix in an Azure Blob container (via
+# object_store) and writes them to a local JSON Lines file.
+#
+# Run:
+#   faucet run cli/examples/azure_blob_to_jsonl.yaml
+#
+# Prereqs:
+#   - An Azure storage account `mystorageacct` with a `raw` container holding
+#     `.jsonl` objects under the `events/2026/` prefix.
+version: 1
+name: azure_blob_to_jsonl
+
+pipeline:
+  source:
+    type: azure-blob
+    config:
+      container: raw
+      account: mystorageacct
+      # Prefer ${env:...} / a SAS token / managed identity in real configs.
+      auth: { type: account_key, config: { account_key: "dGVzdC1hY2NvdW50LWtleQ==" } }
+      prefix: events/2026/
+      file_format: json_lines
+      batch_size: 1000
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/events.jsonl

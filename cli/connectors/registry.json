@@ -10,6 +10,11 @@
     { "name": "postgres-cdc", "kind": "source", "verified": true, "tier": "stable", "description": "PostgreSQL CDC source (logical replication)" },
     { "name": "mysql", "kind": "source", "verified": true, "tier": "stable", "description": "MySQL query source" },
     { "name": "mysql-cdc", "kind": "source", "verified": true, "tier": "stable", "description": "MySQL CDC source (binlog replication)" },
+    { "name": "mssql-cdc", "kind": "source", "verified": true, "tier": "stable", "description": "Microsoft SQL Server CDC source (change data capture, exactly-once capable)" },
+    { "name": "redshift", "kind": "source", "verified": true, "tier": "stable", "description": "Amazon Redshift query source (PostgreSQL wire; streaming rows, incremental replication)" },
+    { "name": "pubsub", "kind": "source", "verified": true, "tier": "stable", "description": "Google Cloud Pub/Sub consumer with ack at durable page boundaries" },
+    { "name": "clickhouse", "kind": "source", "verified": true, "tier": "stable", "description": "ClickHouse query source (HTTP interface, JSONEachRow streaming)" },
+    { "name": "azure-blob", "kind": "source", "verified": true, "tier": "stable", "description": "Azure Blob Storage / ADLS Gen2 source — JSONL, JSON array, or raw text" },
     { "name": "mssql", "kind": "source", "verified": true, "tier": "stable", "description": "Microsoft SQL Server query source" },
     { "name": "sqlite", "kind": "source", "verified": true, "tier": "stable", "description": "SQLite query source" },
     { "name": "mongodb", "kind": "source", "verified": true, "tier": "stable", "description": "MongoDB query source" },
@@ -51,6 +56,10 @@
     { "name": "http", "kind": "sink", "verified": true, "tier": "stable", "description": "HTTP POST sink (individual or array batch)" },
     { "name": "stdout", "kind": "sink", "verified": true, "tier": "stable", "description": "Stdout / stderr sink (JSON Lines, pretty, TSV)" },
     { "name": "parquet", "kind": "sink", "verified": true, "tier": "stable", "description": "Apache Parquet file sink (local path or S3)" },
-    { "name": "delta", "kind": "sink", "verified": true, "tier": "stable", "description": "Apache Delta Lake sink (append-only; local FS or S3/Azure/GCS)" }
+    { "name": "delta", "kind": "sink", "verified": true, "tier": "stable", "description": "Apache Delta Lake sink (append-only; local FS or S3/Azure/GCS)" },
+    { "name": "redshift", "kind": "sink", "verified": true, "tier": "stable", "description": "Amazon Redshift sink (COPY-from-S3 or multi-row INSERT)" },
+    { "name": "pubsub", "kind": "sink", "verified": true, "tier": "stable", "description": "Google Cloud Pub/Sub producer with ordering keys and partial-failure retry" },
+    { "name": "clickhouse", "kind": "sink", "verified": true, "tier": "stable", "description": "ClickHouse sink (HTTP INSERT … FORMAT JSONEachRow; optional async inserts)" },
+    { "name": "azure-blob", "kind": "sink", "verified": true, "tier": "stable", "description": "Azure Blob Storage / ADLS Gen2 sink — JSONL files" }
   ]
 }

@@ -1,0 +1,31 @@
+# Local CSV -> ClickHouse.
+#
+# Loads a CSV file into a ClickHouse table via INSERT ... FORMAT JSONEachRow.
+# Set `async_insert: true` to let the server buffer small batches server-side.
+#
+# Run:
+#   faucet run cli/examples/csv_to_clickhouse.yaml
+#
+# Prereqs:
+#   - ClickHouse reachable at http://clickhouse:8123 with a `default.events`
+#     table whose columns match the CSV headers.
+version: 1
+name: csv_to_clickhouse
+
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./data/input.csv
+
+  sink:
+    type: clickhouse
+    config:
+      url: http://clickhouse:8123
+      database: default
+      user: default
+      table: events
+      batch_size: 1000
+      # Server-side async buffering; keep wait_for_async_insert for durability.
+      async_insert: false
+      wait_for_async_insert: true

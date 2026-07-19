@@ -31,6 +31,11 @@ source = [
     "source-mongodb",
     "source-mongodb-cdc",
     "source-mysql-cdc",
+    "source-mssql-cdc",
+    "source-redshift",
+    "source-pubsub",
+    "source-clickhouse",
+    "source-azure-blob",
     "source-redis",
     "source-webhook",
     "source-websocket",
@@ -68,6 +73,10 @@ sink = [
     "sink-gcs",
     "sink-iceberg",
     "sink-spanner",
+    "sink-redshift",
+    "sink-pubsub",
+    "sink-clickhouse",
+    "sink-azure-blob",
 ]
 ## All state-store backends (file backend is exposed via `faucet-core` directly).
 state = [
@@ -86,6 +95,8 @@ compression = [
     "faucet-sink-csv?/compression",
     "faucet-sink-s3?/compression",
     "faucet-sink-gcs?/compression",
+    "faucet-source-azure-blob?/compression",
+    "faucet-sink-azure-blob?/compression",
 ]
 ## Shared, single-flight auth providers (OAuth2 client-credentials / refresh,
 ## token-endpoint) usable across connectors via `auth: { ref }`.
@@ -131,6 +142,11 @@ source-s3 = ["dep:faucet-source-s3"]
 source-mongodb = ["dep:faucet-source-mongodb"]
 source-mongodb-cdc = ["dep:faucet-source-mongodb-cdc"]
 source-mysql-cdc = ["dep:faucet-source-mysql-cdc"]
+source-mssql-cdc = ["dep:faucet-source-mssql-cdc"]
+source-redshift = ["dep:faucet-source-redshift", "dep:faucet-common-redshift"]
+source-pubsub = ["dep:faucet-source-pubsub", "dep:faucet-common-pubsub"]
+source-clickhouse = ["dep:faucet-source-clickhouse", "dep:faucet-common-clickhouse"]
+source-azure-blob = ["dep:faucet-source-azure-blob", "dep:faucet-common-azure"]
 source-redis = ["dep:faucet-source-redis"]
 source-webhook = ["dep:faucet-source-webhook"]
 source-websocket = ["dep:faucet-source-websocket"]
@@ -180,6 +196,10 @@ delta-s3 = ["faucet-source-delta?/s3", "faucet-sink-delta?/s3"]
 delta-azure = ["faucet-source-delta?/azure", "faucet-sink-delta?/azure"]
 delta-gcs = ["faucet-source-delta?/gcs", "faucet-sink-delta?/gcs"]
 sink-gcs = ["dep:faucet-sink-gcs", "dep:faucet-common-gcs"]
+sink-redshift = ["dep:faucet-sink-redshift", "dep:faucet-common-redshift"]
+sink-pubsub = ["dep:faucet-sink-pubsub", "dep:faucet-common-pubsub"]
+sink-clickhouse = ["dep:faucet-sink-clickhouse", "dep:faucet-common-clickhouse"]
+sink-azure-blob = ["dep:faucet-sink-azure-blob", "dep:faucet-common-azure"]
 
 ## Kafka Schema Registry support (forwarded to kafka crates).
 kafka-schema-registry = [
@@ -218,6 +238,10 @@ faucet-common-kafka = { workspace = true, optional = true }
 faucet-common-kinesis = { workspace = true, optional = true }
 faucet-common-snowflake = { workspace = true, optional = true }
 faucet-common-spanner = { workspace = true, optional = true }
+faucet-common-redshift = { workspace = true, optional = true }
+faucet-common-pubsub = { workspace = true, optional = true }
+faucet-common-clickhouse = { workspace = true, optional = true }
+faucet-common-azure = { workspace = true, optional = true }
 faucet-source-rest = { workspace = true, optional = true }
 faucet-source-singer = { workspace = true, optional = true }
 faucet-source-graphql = { workspace = true, optional = true }
@@ -234,6 +258,11 @@ faucet-source-s3 = { workspace = true, optional = true }
 faucet-source-mongodb = { workspace = true, optional = true }
 faucet-source-mongodb-cdc = { workspace = true, optional = true }
 faucet-source-mysql-cdc = { workspace = true, optional = true }
+faucet-source-mssql-cdc = { workspace = true, optional = true }
+faucet-source-redshift = { workspace = true, optional = true }
+faucet-source-pubsub = { workspace = true, optional = true }
+faucet-source-clickhouse = { workspace = true, optional = true }
+faucet-source-azure-blob = { workspace = true, optional = true }
 faucet-source-redis = { workspace = true, optional = true }
 faucet-source-webhook = { workspace = true, optional = true }
 faucet-source-websocket = { workspace = true, optional = true }
@@ -268,6 +297,10 @@ faucet-sink-stdout = { workspace = true, optional = true }
 faucet-sink-parquet = { workspace = true, optional = true }
 faucet-sink-delta = { workspace = true, optional = true }
 faucet-sink-gcs = { workspace = true, optional = true }
+faucet-sink-redshift = { workspace = true, optional = true }
+faucet-sink-pubsub = { workspace = true, optional = true }
+faucet-sink-clickhouse = { workspace = true, optional = true }
+faucet-sink-azure-blob = { workspace = true, optional = true }
 
 faucet-state-redis = { workspace = true, optional = true }
 faucet-state-postgres = { workspace = true, optional = true }

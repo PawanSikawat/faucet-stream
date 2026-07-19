@@ -217,6 +217,31 @@ pub mod source {
         pub use faucet_source_gcs::*;
     }
 
+    #[cfg(feature = "source-mssql-cdc")]
+    pub mod mssql_cdc {
+        pub use faucet_source_mssql_cdc::*;
+    }
+
+    #[cfg(feature = "source-redshift")]
+    pub mod redshift {
+        pub use faucet_source_redshift::*;
+    }
+
+    #[cfg(feature = "source-pubsub")]
+    pub mod pubsub {
+        pub use faucet_source_pubsub::*;
+    }
+
+    #[cfg(feature = "source-clickhouse")]
+    pub mod clickhouse {
+        pub use faucet_source_clickhouse::*;
+    }
+
+    #[cfg(feature = "source-azure-blob")]
+    pub mod azure_blob {
+        pub use faucet_source_azure_blob::*;
+    }
+
     #[cfg(feature = "source-singer")]
     pub mod singer {
         pub use faucet_source_singer::*;
@@ -356,6 +381,31 @@ pub mod source {
         pub use faucet_source_gcs::*;
     }
 
+    #[cfg(feature = "source-mssql-cdc")]
+    pub mod mssql_cdc {
+        pub use faucet_source_mssql_cdc::*;
+    }
+
+    #[cfg(feature = "source-redshift")]
+    pub mod redshift {
+        pub use faucet_source_redshift::*;
+    }
+
+    #[cfg(feature = "source-pubsub")]
+    pub mod pubsub {
+        pub use faucet_source_pubsub::*;
+    }
+
+    #[cfg(feature = "source-clickhouse")]
+    pub mod clickhouse {
+        pub use faucet_source_clickhouse::*;
+    }
+
+    #[cfg(feature = "source-azure-blob")]
+    pub mod azure_blob {
+        pub use faucet_source_azure_blob::*;
+    }
+
     #[cfg(feature = "source-singer")]
     pub mod singer {
         pub use faucet_source_singer::*;
@@ -477,6 +527,26 @@ pub mod sink {
     pub mod gcs {
         pub use faucet_sink_gcs::*;
     }
+
+    #[cfg(feature = "sink-redshift")]
+    pub mod redshift {
+        pub use faucet_sink_redshift::*;
+    }
+
+    #[cfg(feature = "sink-pubsub")]
+    pub mod pubsub {
+        pub use faucet_sink_pubsub::*;
+    }
+
+    #[cfg(feature = "sink-clickhouse")]
+    pub mod clickhouse {
+        pub use faucet_sink_clickhouse::*;
+    }
+
+    #[cfg(feature = "sink-azure-blob")]
+    pub mod azure_blob {
+        pub use faucet_sink_azure_blob::*;
+    }
 }
 
 // ── GCS common types ─────────────────────────────────────────────────────────
@@ -506,6 +576,34 @@ pub mod common_kinesis {
 #[cfg(any(feature = "source-spanner", feature = "sink-spanner"))]
 pub mod common_spanner {
     pub use faucet_common_spanner::*;
+}
+
+/// Shared Amazon Redshift types (credentials enum, connection block, pool
+/// builder), re-exported when either Redshift connector is enabled.
+#[cfg(any(feature = "source-redshift", feature = "sink-redshift"))]
+pub mod common_redshift {
+    pub use faucet_common_redshift::*;
+}
+
+/// Shared Google Cloud Pub/Sub types (credentials enum, connection block,
+/// client builder), re-exported when either Pub/Sub connector is enabled.
+#[cfg(any(feature = "source-pubsub", feature = "sink-pubsub"))]
+pub mod common_pubsub {
+    pub use faucet_common_pubsub::*;
+}
+
+/// Shared ClickHouse types (connection block, HTTP client builder), re-exported
+/// when either ClickHouse connector is enabled.
+#[cfg(any(feature = "source-clickhouse", feature = "sink-clickhouse"))]
+pub mod common_clickhouse {
+    pub use faucet_common_clickhouse::*;
+}
+
+/// Shared Azure Blob / ADLS Gen2 types (credentials enum, object-store builder),
+/// re-exported when either Azure Blob connector is enabled.
+#[cfg(any(feature = "source-azure-blob", feature = "sink-azure-blob"))]
+pub mod common_azure {
+    pub use faucet_common_azure::*;
 }
 
 // ── State-store backends ─────────────────────────────────────────────────────

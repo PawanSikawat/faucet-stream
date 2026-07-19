@@ -1,0 +1,156 @@
+//! Configuration for the ClickHouse sink.
+
+use faucet_common_clickhouse::ClickHouseConnection;
+use faucet_core::{DEFAULT_BATCH_SIZE, FaucetError, validate_batch_size};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+fn default_batch_size() -> usize {
+    DEFAULT_BATCH_SIZE
+}
+
+fn default_wait_for_async_insert() -> bool {
+    true
+}
+
+/// Configuration for [`ClickHouseSink`](crate::ClickHouseSink).
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ClickHouseSinkConfig {
+    /// Connection settings (`url` or `host`, `database`, credentials).
+    #[serde(flatten)]
+    pub connection: ClickHouseConnection,
+    /// Target table. May be schema-qualified (`db.table`); each identifier
+    /// segment is quoted before use.
+    pub table: String,
+    /// Records per `INSERT` request. When the upstream `StreamPage` carries more
+    /// records than `batch_size`, the sink splits it into `batch_size`-row
+    /// chunks and issues one `INSERT … FORMAT JSONEachRow` per chunk. `0`
+    /// forwards the whole page as a single request. Defaults to
+    /// [`DEFAULT_BATCH_SIZE`].
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+    /// Enable ClickHouse [asynchronous inserts](https://clickhouse.com/docs/en/optimize/asynchronous-inserts)
+    /// (`async_insert=1`): the server buffers rows and flushes them in the
+    /// background, which greatly improves throughput for many small inserts.
+    /// Defaults to `false`.
+    #[serde(default)]
+    pub async_insert: bool,
+    /// When [`async_insert`](Self::async_insert) is enabled, whether the server
+    /// waits for the buffered rows to be flushed before acknowledging the
+    /// request (`wait_for_async_insert=1`). Keeping this `true` (the default)
+    /// preserves faucet's at-least-once durability contract — the bookmark only
+    /// advances after ClickHouse has durably accepted the batch. Ignored when
+    /// `async_insert` is `false`.
+    #[serde(default = "default_wait_for_async_insert")]
+    pub wait_for_async_insert: bool,
+}
+
+impl std::fmt::Debug for ClickHouseSinkConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClickHouseSinkConfig")
+            .field("connection", &self.connection)
+            .field("table", &self.table)
+            .field("batch_size", &self.batch_size)
+            .field("async_insert", &self.async_insert)
+            .field("wait_for_async_insert", &self.wait_for_async_insert)
+            .finish()
+    }
+}
+
+impl ClickHouseSinkConfig {
+    /// Build a config from a base URL and table, with defaults elsewhere.
+    pub fn new(url: impl Into<String>, table: impl Into<String>) -> Self {
+        Self {
+            connection: ClickHouseConnection::from_url(url),
+            table: table.into(),
+            batch_size: default_batch_size(),
+            async_insert: false,
+            wait_for_async_insert: default_wait_for_async_insert(),
+        }
+    }
+
+    /// Set the per-request record count.
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
+
+    /// Enable ClickHouse asynchronous inserts.
+    pub fn with_async_insert(mut self, async_insert: bool) -> Self {
+        self.async_insert = async_insert;
+        self
+    }
+
+    /// Validate connection, table, and batch size.
+    pub fn validate(&self) -> Result<(), FaucetError> {
+        self.connection.validate()?;
+        validate_batch_size(self.batch_size)?;
+        if self.table.trim().is_empty() {
+            return Err(FaucetError::Config(
+                "ClickHouse sink requires a non-empty `table`".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn config_flattens_connection_and_defaults() {
+        let cfg: ClickHouseSinkConfig = serde_json::from_value(json!({
+            "url": "http://localhost:8123",
+            "table": "events",
+        }))
+        .unwrap();
+        assert_eq!(cfg.table, "events");
+        assert_eq!(cfg.batch_size, DEFAULT_BATCH_SIZE);
+        assert!(!cfg.async_insert);
+        assert!(cfg.wait_for_async_insert, "wait defaults to true");
+    }
+
+    #[test]
+    fn async_insert_parses() {
+        let cfg: ClickHouseSinkConfig = serde_json::from_value(json!({
+            "url": "http://h:8123",
+            "table": "t",
+            "async_insert": true,
+            "wait_for_async_insert": false,
+        }))
+        .unwrap();
+        assert!(cfg.async_insert);
+        assert!(!cfg.wait_for_async_insert);
+    }
+
+    #[test]
+    fn validate_rejects_empty_table() {
+        let cfg = ClickHouseSinkConfig::new("http://h:8123", "   ");
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_bad_batch_size() {
+        let cfg = ClickHouseSinkConfig::new("http://h:8123", "t")
+            .with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_missing_endpoint() {
+        let mut cfg = ClickHouseSinkConfig::new("http://h:8123", "t");
+        cfg.connection.url = None;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn debug_masks_password() {
+        let mut cfg = ClickHouseSinkConfig::new("http://h:8123", "t");
+        cfg.connection.password = Some("s3cret".into());
+        let dbg = format!("{cfg:?}");
+        assert!(dbg.contains("***"));
+        assert!(!dbg.contains("s3cret"));
+    }
+}

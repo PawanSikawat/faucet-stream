@@ -1,0 +1,34 @@
+[package]
+name = "faucet-sink-pubsub"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Google Cloud Pub/Sub sink connector for faucet-stream (batched publish, ordering keys, bounded concurrency, partial-failure DLQ)"
+readme = "README.md"
+keywords = ["pubsub", "gcp", "messaging", "etl", "connector"]
+categories.workspace = true
+
+[dependencies]
+faucet-core.workspace = true
+faucet-common-pubsub.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+schemars.workspace = true
+gcloud-pubsub.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "sync"] }
+tracing.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync"] }
+serde_yaml = "0.9"
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["google_cloud_sdk_emulators"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

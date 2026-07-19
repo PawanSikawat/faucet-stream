@@ -4080,6 +4080,490 @@
         }
       ]
     },
+    "source_mssql-cdc__MssqlTls": {
+      "description": "TLS configuration for an MSSQL connection.\n\nMatches the YAML shape `tls: { type: <mode>, ca_cert_path: <path> }`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Encryption mode. Defaults to [`MssqlTlsMode::Prefer`].",
+          "$ref": "#/$defs/source_mssql-cdc__MssqlTlsMode",
+          "default": "prefer"
+        },
+        "ca_cert_path": {
+          "description": "Optional path to a CA certificate (PEM/DER) to trust for server\nvalidation. Ignored when `mode` is [`MssqlTlsMode::Disable`].",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "source_mssql-cdc__MssqlTlsMode": {
+      "description": "MSSQL encryption mode.",
+      "oneOf": [
+        {
+          "description": "Encrypt the connection if the server supports it (the safe modern\ndefault). Maps to `tiberius` `EncryptionLevel::On`.",
+          "type": "string",
+          "const": "prefer"
+        },
+        {
+          "description": "Require encryption; fail if the server does not offer it. Maps to\n`EncryptionLevel::Required`.",
+          "type": "string",
+          "const": "require"
+        },
+        {
+          "description": "Encrypt and accept the server certificate without validating its chain\n(self-signed dev servers). Maps to `EncryptionLevel::On` + `trust_cert()`.\n**Insecure against MITM — never use in production.**",
+          "type": "string",
+          "const": "trust_server_certificate"
+        },
+        {
+          "description": "No transport encryption. Maps to `EncryptionLevel::NotSupported`.",
+          "type": "string",
+          "const": "disable"
+        }
+      ]
+    },
+    "source_mssql-cdc__StartPosition": {
+      "description": "Where to start reading changes on a fresh run (no persisted bookmark).",
+      "oneOf": [
+        {
+          "description": "Start at the database's current maximum LSN — skip all pre-existing\nchange history and only capture changes committed after the source\nstarts. Default.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "current"
+            }
+          }
+        },
+        {
+          "description": "Start at the earliest LSN still retained by the CDC capture instance\n(`sys.fn_cdc_get_min_lsn`), replaying whatever history the cleanup job\nhas not yet purged.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "earliest"
+            }
+          }
+        }
+      ]
+    },
+    "source_redshift__RedshiftCredentials": {
+      "description": "How to authenticate with Amazon Redshift.\n\nSerializes as `{ type: <method>, config: { … } }` (adjacent tagging,\nsnake_case discriminators) — the consistent auth wire shape shared by every\nfaucet connector.\n\nv1 implements only [`RedshiftCredentials::Password`]. The [`Iam`] and\n[`RedshiftDataApi`] variants are accepted by the config parser (so a future\nversion can add them without a breaking change) but currently return a typed\n[`FaucetError::Config`](faucet_core::FaucetError::Config) at client-build\ntime.\n\n[`Iam`]: RedshiftCredentials::Iam\n[`RedshiftDataApi`]: RedshiftCredentials::RedshiftDataApi",
+      "oneOf": [
+        {
+          "description": "Username/password authentication (the user comes from\n[`RedshiftConnection::user`]). The only mechanism supported in v1.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "password"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "password": {
+                  "description": "The password (use `${env:…}` / `${vault:…}` to inject it, never a\nliteral).",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "IAM authentication via temporary cluster credentials\n(`GetClusterCredentials`). **Not yet supported** — reserved for a future\nversion; building a client with this variant returns a typed error.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iam"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "region": {
+                  "description": "AWS region of the cluster.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "cluster_identifier": {
+                  "description": "Provisioned cluster identifier used to request temporary credentials.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "db_user": {
+                  "description": "Database user to authenticate as.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Authentication through the Redshift Data API (HTTP, not the PG wire).\n**Not yet supported** — reserved for a future version; building a client\nwith this variant returns a typed error.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "redshift_data_api"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "region": {
+                  "description": "AWS region.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "cluster_identifier": {
+                  "description": "Provisioned cluster identifier.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "workgroup_name": {
+                  "description": "Serverless workgroup name (alternative to `cluster_identifier`).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "secret_arn": {
+                  "description": "Secrets Manager ARN holding the database credentials.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "db_user": {
+                  "description": "Database user to authenticate as.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "source_redshift__RedshiftReplication": {
+      "description": "How the Redshift source replicates rows across runs.\n\nSerializes as `{ type: full }` or\n`{ type: incremental, column: \"...\", initial_value: ... }`.",
+      "oneOf": [
+        {
+          "description": "Every run re-fetches the full result set (default).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "full"
+            }
+          }
+        },
+        {
+          "description": "Only rows whose `column` is strictly greater than the stored bookmark\n(or `initial_value` on the first run) are emitted. If the SQL contains\nthe literal token `${bookmark}`, it is replaced with a positional bind\nparameter so Redshift filters server-side (efficient); the source also\nfilters client-side as a correctness backstop. The new maximum of\n`column` is persisted on the final page.",
+          "type": "object",
+          "properties": {
+            "column": {
+              "description": "Column whose value is the replication cursor (e.g. `updated_at`).",
+              "type": "string"
+            },
+            "initial_value": {
+              "description": "Lower bound used on the first run, before any bookmark is stored."
+            },
+            "type": {
+              "type": "string",
+              "const": "incremental"
+            }
+          }
+        }
+      ]
+    },
+    "source_pubsub__PubsubCredentials": {
+      "description": "How to authenticate with Google Cloud Pub/Sub.\n\nSerializes as `{ type: <method>, config: { … } }` (adjacent tagging,\nsnake_case discriminators) — the consistent auth wire shape shared by\nevery faucet connector:\n`{ type: service_account_json_file, config: { path: \"/run/secrets/sa.json\" } }`.",
+      "oneOf": [
+        {
+          "description": "Application Default Credentials — honours\n`GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_APPLICATION_CREDENTIALS_JSON`,\ngcloud user creds, and the GCE/GKE metadata server, in that order.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "application_default"
+            }
+          }
+        },
+        {
+          "description": "Path to a service-account JSON key file on disk.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "service_account_json_file"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "description": "Filesystem path to the service-account key JSON.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Service-account JSON key as an inline string. Pair with\n`${env:GCP_SA_JSON}` / `${secret:…}` interpolation in CLI configs so\nthe key never sits in the config file verbatim.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "service_account_json_inline"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "json": {
+                  "description": "The service-account key JSON document.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "No credentials. Use with the Pub/Sub emulator, which does not validate\nbearer tokens — the SDK otherwise tries to fetch ADC tokens at startup\nand fails in environments without GCP credentials.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "anonymous"
+            }
+          }
+        }
+      ]
+    },
+    "source_pubsub__ValueFormat": {
+      "description": "How each message's `data` payload is decoded into the emitted `data` field.",
+      "oneOf": [
+        {
+          "description": "Parse the payload as JSON. A message that is not valid JSON fails the\nstream with a typed error naming its `message_id`.",
+          "type": "string",
+          "const": "json"
+        },
+        {
+          "description": "Decode the payload as UTF-8 (invalid UTF-8 fails the message).",
+          "type": "string",
+          "const": "string"
+        },
+        {
+          "description": "Base64-encode the raw payload bytes into a JSON string.",
+          "type": "string",
+          "const": "bytes"
+        }
+      ]
+    },
+    "source_clickhouse__ClickHouseReplication": {
+      "description": "How the source replicates rows across runs.\n\nSerializes as `{ type: full }` or\n`{ type: incremental, column: \"...\", initial_value: ... }`.",
+      "oneOf": [
+        {
+          "description": "Every run fetches the full result set (default).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "full"
+            }
+          }
+        },
+        {
+          "description": "Only rows whose `column` is strictly greater than the stored bookmark\n(or `initial_value` on the first run) are emitted.\n\nThe bookmark is applied two ways: if the query contains the literal\ntoken `@bookmark`, it is substituted as an injection-safe SQL literal so\nthe server filters (efficient pushdown); the source *also* filters\nclient-side as a correctness backstop. The new maximum of `column` is\npersisted on the final page.",
+          "type": "object",
+          "properties": {
+            "column": {
+              "description": "Column whose value is the replication cursor (e.g. `updated_at`).",
+              "type": "string"
+            },
+            "initial_value": {
+              "description": "Lower bound used on the first run, before any bookmark is stored."
+            },
+            "type": {
+              "type": "string",
+              "const": "incremental"
+            }
+          }
+        }
+      ]
+    },
+    "source_azure-blob__AzureCredentials": {
+      "description": "Credential source for an Azure storage client.\n\nSerializes as `{ type: <method>, config: { … } }` (adjacent tagging,\nsnake_case discriminators) — the consistent auth wire shape shared by every\nfaucet connector, e.g.\n`{ type: account_key, config: { account_key: \"…\" } }`.",
+      "oneOf": [
+        {
+          "description": "Shared storage-account access key (the primary/secondary key).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "account_key"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "account_key": {
+                  "description": "Base64 account key.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Shared-access-signature token (with or without a leading `?`).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "sas_token"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "sas_token": {
+                  "description": "SAS token string.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Full storage connection string\n(`DefaultEndpointsProtocol=…;AccountName=…;AccountKey=…;…`).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "connection_string"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "connection_string": {
+                  "description": "Connection string.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Azure Managed Identity (IMDS). For a user-assigned identity, set\n`client_id`; leave it unset for the system-assigned identity.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "managed_identity"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "client_id": {
+                  "description": "Optional user-assigned managed-identity client id.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Azure AD service principal (client credentials).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "service_principal"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "client_id": {
+                  "description": "Application (client) id.",
+                  "type": "string"
+                },
+                "client_secret": {
+                  "description": "Client secret.",
+                  "type": "string"
+                },
+                "tenant_id": {
+                  "description": "Directory (tenant) id.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "`DefaultAzureCredential`-style resolution: the object-store builder's\ndefault chain (environment variables, workload identity, managed\nidentity, Azure CLI), honouring `AZURE_*` env vars. This is the default.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "default"
+            }
+          }
+        }
+      ]
+    },
+    "source_azure-blob__AzureFileFormat": {
+      "description": "Format of objects stored in the container.",
+      "oneOf": [
+        {
+          "description": "Each line in the object is a separate JSON record.",
+          "type": "string",
+          "const": "json_lines"
+        },
+        {
+          "description": "The entire object is a JSON array of records.",
+          "type": "string",
+          "const": "json_array"
+        },
+        {
+          "description": "Each object becomes a single record with `\"key\"` and `\"content\"` fields.",
+          "type": "string",
+          "const": "raw_text"
+        }
+      ]
+    },
+    "source_azure-blob__CompressionConfig": {
+      "description": "User-facing compression config. Defaults to [`Auto`](Self::Auto).",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "none",
+            "gzip",
+            "zstd"
+          ]
+        },
+        {
+          "description": "Detect from filename suffix: `.gz` → Gzip, `.zst` → Zstd, anything else → None.",
+          "type": "string",
+          "const": "auto"
+        }
+      ]
+    },
     "source_redis__RedisSourceType": {
       "description": "The type of Redis data structure to read from.",
       "oneOf": [
@@ -7656,6 +8140,411 @@
         }
       ]
     },
+    "sink_redshift__RedshiftCredentials": {
+      "description": "How to authenticate with Amazon Redshift.\n\nSerializes as `{ type: <method>, config: { … } }` (adjacent tagging,\nsnake_case discriminators) — the consistent auth wire shape shared by every\nfaucet connector.\n\nv1 implements only [`RedshiftCredentials::Password`]. The [`Iam`] and\n[`RedshiftDataApi`] variants are accepted by the config parser (so a future\nversion can add them without a breaking change) but currently return a typed\n[`FaucetError::Config`](faucet_core::FaucetError::Config) at client-build\ntime.\n\n[`Iam`]: RedshiftCredentials::Iam\n[`RedshiftDataApi`]: RedshiftCredentials::RedshiftDataApi",
+      "oneOf": [
+        {
+          "description": "Username/password authentication (the user comes from\n[`RedshiftConnection::user`]). The only mechanism supported in v1.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "password"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "password": {
+                  "description": "The password (use `${env:…}` / `${vault:…}` to inject it, never a\nliteral).",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "IAM authentication via temporary cluster credentials\n(`GetClusterCredentials`). **Not yet supported** — reserved for a future\nversion; building a client with this variant returns a typed error.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "iam"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "region": {
+                  "description": "AWS region of the cluster.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "cluster_identifier": {
+                  "description": "Provisioned cluster identifier used to request temporary credentials.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "db_user": {
+                  "description": "Database user to authenticate as.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Authentication through the Redshift Data API (HTTP, not the PG wire).\n**Not yet supported** — reserved for a future version; building a client\nwith this variant returns a typed error.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "redshift_data_api"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "region": {
+                  "description": "AWS region.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "cluster_identifier": {
+                  "description": "Provisioned cluster identifier.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "workgroup_name": {
+                  "description": "Serverless workgroup name (alternative to `cluster_identifier`).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "secret_arn": {
+                  "description": "Secrets Manager ARN holding the database credentials.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "db_user": {
+                  "description": "Database user to authenticate as.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "sink_redshift__RedshiftWriteStrategy": {
+      "description": "How the sink loads rows into Redshift.",
+      "oneOf": [
+        {
+          "description": "Stage each page to S3 and bulk-load it with `COPY … FROM 's3://…'` — the\ndefault and by far the fastest path for Redshift (the recommended way to\nload data). Requires `staging_bucket` and `iam_role`.",
+          "type": "string",
+          "const": "copy"
+        },
+        {
+          "description": "Multi-row `INSERT INTO … VALUES (…), (…)`. Portable and needs no S3, but\nmuch slower than `COPY` for anything beyond small batches. Redshift does\nnot recommend row-by-row inserts for bulk data.",
+          "type": "string",
+          "const": "insert"
+        }
+      ]
+    },
+    "sink_redshift__RedshiftCopyFormat": {
+      "description": "Format of the staged file that `COPY` reads.",
+      "oneOf": [
+        {
+          "description": "Newline-delimited JSON objects, loaded with `FORMAT AS JSON 'auto'`.\nMaps by column **name** (order-independent) and handles NULLs and typed\ncolumns cleanly — the default.",
+          "type": "string",
+          "const": "jsonl"
+        },
+        {
+          "description": "RFC-4180 CSV, loaded with `FORMAT AS CSV`. Column order is taken from the\ndestination table's schema and passed explicitly in the `COPY` column\nlist.",
+          "type": "string",
+          "const": "csv"
+        }
+      ]
+    },
+    "sink_pubsub__PubsubCredentials": {
+      "description": "How to authenticate with Google Cloud Pub/Sub.\n\nSerializes as `{ type: <method>, config: { … } }` (adjacent tagging,\nsnake_case discriminators) — the consistent auth wire shape shared by\nevery faucet connector:\n`{ type: service_account_json_file, config: { path: \"/run/secrets/sa.json\" } }`.",
+      "oneOf": [
+        {
+          "description": "Application Default Credentials — honours\n`GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_APPLICATION_CREDENTIALS_JSON`,\ngcloud user creds, and the GCE/GKE metadata server, in that order.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "application_default"
+            }
+          }
+        },
+        {
+          "description": "Path to a service-account JSON key file on disk.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "service_account_json_file"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "description": "Filesystem path to the service-account key JSON.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Service-account JSON key as an inline string. Pair with\n`${env:GCP_SA_JSON}` / `${secret:…}` interpolation in CLI configs so\nthe key never sits in the config file verbatim.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "service_account_json_inline"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "json": {
+                  "description": "The service-account key JSON document.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "No credentials. Use with the Pub/Sub emulator, which does not validate\nbearer tokens — the SDK otherwise tries to fetch ADC tokens at startup\nand fails in environments without GCP credentials.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "anonymous"
+            }
+          }
+        }
+      ]
+    },
+    "sink_pubsub__ValueFormat": {
+      "description": "How each record is encoded into the Pub/Sub message `data` blob.",
+      "oneOf": [
+        {
+          "description": "Serialize the whole record as JSON bytes.",
+          "type": "string",
+          "const": "json"
+        },
+        {
+          "description": "The record must be a JSON string → raw UTF-8 bytes.",
+          "type": "string",
+          "const": "string"
+        },
+        {
+          "description": "The record must be a base64 JSON string → decoded bytes.",
+          "type": "string",
+          "const": "bytes"
+        }
+      ]
+    },
+    "sink_pubsub__OrderingKey": {
+      "description": "How each message's ordering key is derived. When any non-empty ordering key\nis produced, message ordering is enabled on the publisher.\n\nSerializes as `{ type: <strategy>, … }` (snake_case discriminators).",
+      "oneOf": [
+        {
+          "description": "No ordering key — messages may be delivered in any order (default).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "none"
+            }
+          }
+        },
+        {
+          "description": "A top-level field's value, stringified. A record missing the field (or\nwith a null / container value) fails per-record (DLQ-routable).",
+          "type": "object",
+          "properties": {
+            "name": {
+              "description": "Top-level field name.",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "field"
+            }
+          }
+        },
+        {
+          "description": "A dot-path into the record (`a.b.c`, object keys only), stringified.",
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "Dot path, e.g. `order.id`.",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "jsonpath"
+            }
+          }
+        }
+      ]
+    },
+    "sink_azure-blob__AzureCredentials": {
+      "description": "Credential source for an Azure storage client.\n\nSerializes as `{ type: <method>, config: { … } }` (adjacent tagging,\nsnake_case discriminators) — the consistent auth wire shape shared by every\nfaucet connector, e.g.\n`{ type: account_key, config: { account_key: \"…\" } }`.",
+      "oneOf": [
+        {
+          "description": "Shared storage-account access key (the primary/secondary key).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "account_key"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "account_key": {
+                  "description": "Base64 account key.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Shared-access-signature token (with or without a leading `?`).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "sas_token"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "sas_token": {
+                  "description": "SAS token string.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Full storage connection string\n(`DefaultEndpointsProtocol=…;AccountName=…;AccountKey=…;…`).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "connection_string"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "connection_string": {
+                  "description": "Connection string.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Azure Managed Identity (IMDS). For a user-assigned identity, set\n`client_id`; leave it unset for the system-assigned identity.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "managed_identity"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "client_id": {
+                  "description": "Optional user-assigned managed-identity client id.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Azure AD service principal (client credentials).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "service_principal"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "client_id": {
+                  "description": "Application (client) id.",
+                  "type": "string"
+                },
+                "client_secret": {
+                  "description": "Client secret.",
+                  "type": "string"
+                },
+                "tenant_id": {
+                  "description": "Directory (tenant) id.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "`DefaultAzureCredential`-style resolution: the object-store builder's\ndefault chain (environment variables, workload identity, managed\nidentity, Azure CLI), honouring `AZURE_*` env vars. This is the default.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "default"
+            }
+          }
+        }
+      ]
+    },
+    "sink_azure-blob__CompressionConfig": {
+      "description": "User-facing compression config. Defaults to [`Auto`](Self::Auto).",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "none",
+            "gzip",
+            "zstd"
+          ]
+        },
+        {
+          "description": "Detect from filename suffix: `.gz` → Gzip, `.zst` → Zstd, anything else → None.",
+          "type": "string",
+          "const": "auto"
+        }
+      ]
+    },
     "SourceConnector": {
       "oneOf": [
         {
@@ -9121,6 +10010,618 @@
                   },
                   "title": "MysqlCdcSourceConfig",
                   "description": "Configuration for the MySQL CDC (binlog) source.",
+                  "type": "object"
+                },
+                true
+              ]
+            },
+            "transforms": {
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "mssql-cdc",
+          "properties": {
+            "type": {
+              "const": "mssql-cdc"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "connection_url": {
+                      "description": "`mssql://user:pass@host:1433/database` URL form. Mutually exclusive with\n[`connection_string`](Self::connection_string).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "connection_string": {
+                      "description": "ADO.NET-style connection string handed straight to `tiberius`, e.g.\n`Server=tcp:host,1433;Database=db;User Id=sa;Password=...;`. Mutually\nexclusive with [`connection_url`](Self::connection_url).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "tls": {
+                      "description": "TLS / encryption settings. Defaults to [`MssqlTlsMode::Prefer`].",
+                      "$ref": "#/$defs/source_mssql-cdc__MssqlTls",
+                      "default": {
+                        "type": "prefer"
+                      }
+                    },
+                    "capture_instances": {
+                      "description": "Capture instances to poll (e.g. `dbo_Orders`). **Required and non-empty.**\n\nA capture instance is created by `sys.sp_cdc_enable_table` and defaults to\n`<schema>_<table>`. Names are used verbatim to build the\n`cdc.fn_cdc_get_all_changes_<name>` table-valued function call, so v1 only\naccepts the SQL Server identifier characters `[A-Za-z0-9_]` (validated at\nload time) to prevent injection into the function name.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "start_position": {
+                      "description": "Start position on a fresh run (ignored once a bookmark exists). Default\n`current` (skip existing history).",
+                      "$ref": "#/$defs/source_mssql-cdc__StartPosition",
+                      "default": {
+                        "type": "current"
+                      }
+                    },
+                    "poll_interval": {
+                      "description": "Seconds to wait between empty polls (no new changes). Default 1s.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint64",
+                      "minimum": 0,
+                      "default": 1
+                    },
+                    "idle_timeout": {
+                      "description": "Terminator: end the fetch cycle after this much continuous quiet (no\nchange rows across any capture instance). Default 30s. A long-running\nruntime (`faucet schedule` / `faucet serve`) re-invokes the source to\nkeep tailing.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint64",
+                      "minimum": 0,
+                      "default": 30
+                    },
+                    "max_staged_records": {
+                      "description": "Max records buffered for a single in-progress transaction before the run\naborts with a typed error (rather than risking unbounded memory growth).\n`None` = unbounded.",
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": null
+                    },
+                    "batch_size": {
+                      "description": "Advisory per-page record count. `0` accumulates every change into a\nsingle trailing page (snapshot/test convenience). Default\n[`DEFAULT_BATCH_SIZE`].",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    },
+                    "max_connections": {
+                      "description": "Maximum pooled connections. Defaults to 5.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint32",
+                      "minimum": 0,
+                      "default": 5
+                    },
+                    "statement_timeout_secs": {
+                      "description": "Per-query timeout in seconds (`0` disables). Defaults to 300.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint64",
+                      "minimum": 0,
+                      "default": 300
+                    },
+                    "state_key": {
+                      "description": "Explicit state-store key for the LSN bookmark. When unset, a key is\nderived from the database (or host) and the sorted capture-instance list.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "title": "MssqlCdcSourceConfig",
+                  "description": "Configuration for the Microsoft SQL Server CDC source.\n\nThe source polls native SQL Server change data capture: `sys.fn_cdc_get_max_lsn()`\nfor the high-water LSN, then `cdc.fn_cdc_get_all_changes_<capture_instance>()`\nper configured capture instance, advancing a durable per-instance LSN bookmark.",
+                  "type": "object"
+                },
+                true
+              ]
+            },
+            "transforms": {
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "redshift",
+          "properties": {
+            "type": {
+              "const": "redshift"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "host": {
+                      "description": "Cluster / endpoint host (e.g. `my-cluster.abc123.us-east-1.redshift.amazonaws.com`).",
+                      "type": "string"
+                    },
+                    "port": {
+                      "description": "Port. Defaults to [`DEFAULT_PORT`] (5439).",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint16",
+                      "minimum": 0,
+                      "maximum": 65535,
+                      "default": 5439
+                    },
+                    "database": {
+                      "description": "Database name.",
+                      "type": "string"
+                    },
+                    "user": {
+                      "description": "Database user.",
+                      "type": "string"
+                    },
+                    "credentials": {
+                      "description": "Authentication credentials.",
+                      "$ref": "#/$defs/source_redshift__RedshiftCredentials"
+                    },
+                    "tls": {
+                      "description": "Whether to require TLS. Defaults to `true` (Redshift clusters require SSL\nby default). `true` maps to `sslmode=require`; `false` maps to\n`sslmode=prefer` (opportunistic TLS with plaintext fallback) — it never\nforbids encryption outright.",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": true
+                    },
+                    "query": {
+                      "description": "SQL query to execute. May contain `${field.path}` parent-context tokens\n(resolved to positional binds at runtime) and, for incremental\nreplication, a `${bookmark}` token.",
+                      "type": "string"
+                    },
+                    "params": {
+                      "description": "Positional bind parameters for the query, applied in `$1, $2, …` order\nbefore any context- or bookmark-derived values. Defaults to empty.",
+                      "type": "array",
+                      "items": true,
+                      "default": []
+                    },
+                    "max_connections": {
+                      "description": "Maximum number of connections in the pool. Defaults to 10.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint32",
+                      "minimum": 0,
+                      "default": 10
+                    },
+                    "batch_size": {
+                      "description": "Records per emitted [`StreamPage`](faucet_core::StreamPage). Rows are\ndrained from the `sqlx` cursor and yielded whenever the buffer reaches\nthis size. Defaults to [`DEFAULT_BATCH_SIZE`].\n\n`batch_size = 0` is the \"no batching\" sentinel: the cursor is fully\ndrained and the entire result set is emitted in a single page.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    },
+                    "replication": {
+                      "description": "Replication mode. Defaults to [`RedshiftReplication::Full`].",
+                      "$ref": "#/$defs/source_redshift__RedshiftReplication",
+                      "default": {
+                        "type": "full"
+                      }
+                    },
+                    "state_key": {
+                      "description": "Explicit state-store key for the incremental bookmark. When unset, a key\nis derived from the host / database and a query fingerprint.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "title": "RedshiftSourceConfig",
+                  "description": "Configuration for the Amazon Redshift query source.",
+                  "type": "object"
+                },
+                true
+              ]
+            },
+            "transforms": {
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "pubsub",
+          "properties": {
+            "type": {
+              "const": "pubsub"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "subscription": {
+                      "description": "Subscription id (short name, not the fully-qualified path). The client\nforms `projects/<project>/subscriptions/<id>` from the connection's\nproject.",
+                      "type": "string"
+                    },
+                    "project_id": {
+                      "description": "GCP project id that owns the topic / subscription. Required for real\nPub/Sub; the emulator infers it from `PUBSUB_PROJECT_ID` when unset.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "endpoint": {
+                      "description": "Override the Pub/Sub API endpoint (host:port or URL). Rarely needed —\nprefer `emulator_host` for the emulator.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "emulator_host": {
+                      "description": "Point the client at a Pub/Sub emulator (`host:port`). When set, auth is\nskipped and the endpoint is taken from this value — mirrors the\n`PUBSUB_EMULATOR_HOST` environment variable the SDK honours.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "credentials": {
+                      "description": "How to authenticate. Defaults to Application Default Credentials.",
+                      "$ref": "#/$defs/source_pubsub__PubsubCredentials",
+                      "default": {
+                        "type": "application_default"
+                      }
+                    },
+                    "value_format": {
+                      "description": "Payload decoding for the message `data` field.",
+                      "$ref": "#/$defs/source_pubsub__ValueFormat",
+                      "default": "json"
+                    },
+                    "attributes_key": {
+                      "description": "JSON key the message attribute map is surfaced under. Default\n`__attributes`.",
+                      "type": "string",
+                      "default": "__attributes"
+                    },
+                    "max_messages_per_pull": {
+                      "description": "Messages requested per `pull` RPC (1–1000). Default 100.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 100
+                    },
+                    "idle_termination_secs": {
+                      "description": "Stop after this many seconds without a new message. At least one of\n`idle_termination_secs` and `max_messages` must be set (mirrors the\nKafka / Kinesis sources) — a batch run must terminate.",
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint64",
+                      "minimum": 0
+                    },
+                    "max_messages": {
+                      "description": "Stop after this many messages in total.",
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0
+                    },
+                    "batch_size": {
+                      "description": "Records per emitted [`StreamPage`](faucet_core::StreamPage). `0` is the\n\"no batching\" sentinel: one page per drain. Default 1000. A page's\nmessages are acked once the pipeline has durably written the page.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    }
+                  },
+                  "title": "PubsubSourceConfig",
+                  "description": "Configuration for [`PubsubSource`](crate::PubsubSource).",
+                  "type": "object"
+                },
+                true
+              ]
+            },
+            "transforms": {
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "clickhouse",
+          "properties": {
+            "type": {
+              "const": "clickhouse"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "url": {
+                      "description": "Full base URL of the ClickHouse HTTP interface, e.g.\n`\"http://localhost:8123\"`. Mutually exclusive with\n[`host`](Self::host). A trailing slash is trimmed.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "host": {
+                      "description": "Hostname of the ClickHouse server. Mutually exclusive with\n[`url`](Self::url); combined with [`http_port`](Self::http_port) and\n[`tls`](Self::tls) to build the base URL.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "http_port": {
+                      "description": "HTTP-interface port used with [`host`](Self::host). Defaults to\n[`DEFAULT_HTTP_PORT`] (`8123`).",
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint16",
+                      "minimum": 0,
+                      "maximum": 65535
+                    },
+                    "tls": {
+                      "description": "Use `https://` instead of `http://` when building the base URL from\n[`host`](Self::host). Ignored when [`url`](Self::url) is set. Defaults to\n`false`.",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": false
+                    },
+                    "database": {
+                      "description": "Target database. Defaults to [`DEFAULT_DATABASE`] (`\"default\"`).",
+                      "type": "string",
+                      "default": "default"
+                    },
+                    "user": {
+                      "description": "ClickHouse user. When set, sent as the `X-ClickHouse-User` header.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "password": {
+                      "description": "ClickHouse password. When set, sent as the `X-ClickHouse-Key` header.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "query": {
+                      "description": "SQL `SELECT` query to run. The output format is set to `JSONEachRow`\nvia the request settings, so **do not** append a `FORMAT` clause. Use\nthe literal `@bookmark` token to push the incremental cursor down into\nthe `WHERE` clause; use `{key}` tokens to inject parent-context values in\na matrix child.",
+                      "type": "string"
+                    },
+                    "batch_size": {
+                      "description": "Records per emitted [`StreamPage`](faucet_core::StreamPage). `0` emits\nthe whole result set as a single page. Defaults to\n[`DEFAULT_BATCH_SIZE`].",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    },
+                    "replication": {
+                      "description": "Replication mode. Defaults to [`ClickHouseReplication::Full`].",
+                      "$ref": "#/$defs/source_clickhouse__ClickHouseReplication",
+                      "default": {
+                        "type": "full"
+                      }
+                    },
+                    "state_key": {
+                      "description": "Explicit state-store key for the bookmark. When unset, a key is derived\nfrom the connection host and a query fingerprint.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "title": "ClickHouseSourceConfig",
+                  "description": "Configuration for [`ClickHouseSource`](crate::ClickHouseSource).",
+                  "type": "object"
+                },
+                true
+              ]
+            },
+            "transforms": {
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "azure-blob",
+          "properties": {
+            "type": {
+              "const": "azure-blob"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "container": {
+                      "description": "Blob container / ADLS Gen2 filesystem name. Required.",
+                      "type": "string"
+                    },
+                    "account": {
+                      "description": "Storage-account name. Optional when a connection string or the\nemulator supplies it, otherwise required.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "auth": {
+                      "description": "Credential source. Defaults to the environment / managed-identity\ncredential chain.",
+                      "$ref": "#/$defs/source_azure-blob__AzureCredentials",
+                      "default": {
+                        "type": "default"
+                      }
+                    },
+                    "endpoint": {
+                      "description": "Custom blob endpoint (e.g. an Azurite emulator or a sovereign cloud).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "allow_http": {
+                      "description": "Permit plaintext HTTP (required for a local Azurite emulator).",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": false
+                    },
+                    "use_emulator": {
+                      "description": "Target the Azurite storage emulator with its well-known\n`devstoreaccount1` credentials.",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": false
+                    },
+                    "prefix": {
+                      "description": "Object name prefix filter. Ignored when `object_keys` is set.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "object_keys": {
+                      "description": "Explicit object names. When set, listing is skipped and `prefix`\nis ignored.",
+                      "type": [
+                        "array",
+                        "null"
+                      ],
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "file_format": {
+                      "description": "File format.",
+                      "$ref": "#/$defs/source_azure-blob__AzureFileFormat",
+                      "default": "json_lines"
+                    },
+                    "max_objects": {
+                      "description": "Hard cap on the number of objects read (after listing).",
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0
+                    },
+                    "concurrency": {
+                      "description": "Maximum concurrent object reads (default: 10).",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 10
+                    },
+                    "batch_size": {
+                      "description": "Records per emitted `StreamPage`. `batch_size = 0` is the \"no batching\"\nsentinel and emits one page per object.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    },
+                    "compression": {
+                      "description": "Compression codec applied to each downloaded object. Defaults to\n[`CompressionConfig::Auto`](faucet_core::CompressionConfig::Auto) — the\ncodec is resolved per-object-key, so a single source can read a mix of\ncompressed and uncompressed objects. Requires the crate-local\n`compression` feature.",
+                      "$ref": "#/$defs/source_azure-blob__CompressionConfig",
+                      "default": "auto"
+                    }
+                  },
+                  "title": "AzureBlobSourceConfig",
+                  "description": "Configuration for the Azure Blob source connector.",
                   "type": "object"
                 },
                 true
@@ -12634,6 +14135,454 @@
                   },
                   "title": "GcsSinkConfig",
                   "description": "Configuration for the GCS sink connector.",
+                  "type": "object"
+                },
+                true
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "redshift",
+          "properties": {
+            "type": {
+              "const": "redshift"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "host": {
+                      "description": "Cluster / endpoint host (e.g. `my-cluster.abc123.us-east-1.redshift.amazonaws.com`).",
+                      "type": "string"
+                    },
+                    "port": {
+                      "description": "Port. Defaults to [`DEFAULT_PORT`] (5439).",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint16",
+                      "minimum": 0,
+                      "maximum": 65535,
+                      "default": 5439
+                    },
+                    "database": {
+                      "description": "Database name.",
+                      "type": "string"
+                    },
+                    "user": {
+                      "description": "Database user.",
+                      "type": "string"
+                    },
+                    "credentials": {
+                      "description": "Authentication credentials.",
+                      "$ref": "#/$defs/sink_redshift__RedshiftCredentials"
+                    },
+                    "tls": {
+                      "description": "Whether to require TLS. Defaults to `true` (Redshift clusters require SSL\nby default). `true` maps to `sslmode=require`; `false` maps to\n`sslmode=prefer` (opportunistic TLS with plaintext fallback) — it never\nforbids encryption outright.",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": true
+                    },
+                    "table_name": {
+                      "description": "Target table name.",
+                      "type": "string"
+                    },
+                    "schema": {
+                      "description": "Optional schema (namespace) qualifying [`table_name`](Self::table_name).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "write_strategy": {
+                      "description": "How rows are loaded. Defaults to [`RedshiftWriteStrategy::Copy`].",
+                      "$ref": "#/$defs/sink_redshift__RedshiftWriteStrategy",
+                      "default": "copy"
+                    },
+                    "copy_format": {
+                      "description": "Staged-file format for the `COPY` path. Defaults to\n[`RedshiftCopyFormat::Jsonl`]. Ignored by the `insert` strategy.",
+                      "$ref": "#/$defs/sink_redshift__RedshiftCopyFormat",
+                      "default": "jsonl"
+                    },
+                    "staging_bucket": {
+                      "description": "S3 bucket used to stage `COPY` files. **Required** when\n`write_strategy: copy`.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "staging_prefix": {
+                      "description": "Key prefix for staged objects (e.g. `redshift-staging/`). Defaults to\nempty.",
+                      "type": "string",
+                      "default": ""
+                    },
+                    "iam_role": {
+                      "description": "IAM role ARN Redshift assumes to read the staged file\n(`COPY … IAM_ROLE '<arn>'`). **Required** when `write_strategy: copy`.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "region": {
+                      "description": "AWS region of the staging bucket (used for both the S3 client and the\n`COPY … REGION '<region>'` clause). `None` uses the SDK default.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "endpoint_url": {
+                      "description": "Custom endpoint URL for S3-compatible services (e.g. MinIO) — testing\naid; production loads use real S3.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "batch_size": {
+                      "description": "Rows per load unit. For `insert`, the per-statement multi-row chunk size;\nfor `copy`, the number of rows per staged S3 object. Defaults to\n[`DEFAULT_BATCH_SIZE`]. `0` = one unit for the whole page.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    },
+                    "max_connections": {
+                      "description": "Maximum number of connections in the pool. Defaults to 5.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint32",
+                      "minimum": 0,
+                      "default": 5
+                    }
+                  },
+                  "title": "RedshiftSinkConfig",
+                  "description": "Configuration for the Amazon Redshift sink.",
+                  "type": "object"
+                },
+                true
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "pubsub",
+          "properties": {
+            "type": {
+              "const": "pubsub"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "topic": {
+                      "description": "Topic id (short name, not the fully-qualified path). The client forms\n`projects/<project>/topics/<id>` from the connection's project.",
+                      "type": "string"
+                    },
+                    "project_id": {
+                      "description": "GCP project id that owns the topic / subscription. Required for real\nPub/Sub; the emulator infers it from `PUBSUB_PROJECT_ID` when unset.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "endpoint": {
+                      "description": "Override the Pub/Sub API endpoint (host:port or URL). Rarely needed —\nprefer `emulator_host` for the emulator.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "emulator_host": {
+                      "description": "Point the client at a Pub/Sub emulator (`host:port`). When set, auth is\nskipped and the endpoint is taken from this value — mirrors the\n`PUBSUB_EMULATOR_HOST` environment variable the SDK honours.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "credentials": {
+                      "description": "How to authenticate. Defaults to Application Default Credentials.",
+                      "$ref": "#/$defs/sink_pubsub__PubsubCredentials",
+                      "default": {
+                        "type": "application_default"
+                      }
+                    },
+                    "value_format": {
+                      "description": "Record payload encoding. Default: `json`.",
+                      "$ref": "#/$defs/sink_pubsub__ValueFormat",
+                      "default": "json"
+                    },
+                    "ordering_key": {
+                      "description": "Ordering-key derivation. Default: `none`.",
+                      "$ref": "#/$defs/sink_pubsub__OrderingKey",
+                      "default": {
+                        "type": "none"
+                      }
+                    },
+                    "attributes_field": {
+                      "description": "Optional record field holding a JSON object of message attributes.\nValues are stringified; the field is stripped from the payload before\nencoding. Absent field → no attributes (not an error).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "batch_size": {
+                      "description": "Records per publish batch (1–1000). Default 100.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 100
+                    },
+                    "concurrency": {
+                      "description": "Bounded concurrent in-flight publishes. Default 4.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 4
+                    }
+                  },
+                  "title": "PubsubSinkConfig",
+                  "description": "Configuration for [`PubsubSink`](crate::PubsubSink).",
+                  "type": "object"
+                },
+                true
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "clickhouse",
+          "properties": {
+            "type": {
+              "const": "clickhouse"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "url": {
+                      "description": "Full base URL of the ClickHouse HTTP interface, e.g.\n`\"http://localhost:8123\"`. Mutually exclusive with\n[`host`](Self::host). A trailing slash is trimmed.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "host": {
+                      "description": "Hostname of the ClickHouse server. Mutually exclusive with\n[`url`](Self::url); combined with [`http_port`](Self::http_port) and\n[`tls`](Self::tls) to build the base URL.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "http_port": {
+                      "description": "HTTP-interface port used with [`host`](Self::host). Defaults to\n[`DEFAULT_HTTP_PORT`] (`8123`).",
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint16",
+                      "minimum": 0,
+                      "maximum": 65535
+                    },
+                    "tls": {
+                      "description": "Use `https://` instead of `http://` when building the base URL from\n[`host`](Self::host). Ignored when [`url`](Self::url) is set. Defaults to\n`false`.",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": false
+                    },
+                    "database": {
+                      "description": "Target database. Defaults to [`DEFAULT_DATABASE`] (`\"default\"`).",
+                      "type": "string",
+                      "default": "default"
+                    },
+                    "user": {
+                      "description": "ClickHouse user. When set, sent as the `X-ClickHouse-User` header.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "password": {
+                      "description": "ClickHouse password. When set, sent as the `X-ClickHouse-Key` header.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "table": {
+                      "description": "Target table. May be schema-qualified (`db.table`); each identifier\nsegment is quoted before use.",
+                      "type": "string"
+                    },
+                    "batch_size": {
+                      "description": "Records per `INSERT` request. When the upstream `StreamPage` carries more\nrecords than `batch_size`, the sink splits it into `batch_size`-row\nchunks and issues one `INSERT … FORMAT JSONEachRow` per chunk. `0`\nforwards the whole page as a single request. Defaults to\n[`DEFAULT_BATCH_SIZE`].",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    },
+                    "async_insert": {
+                      "description": "Enable ClickHouse [asynchronous inserts](https://clickhouse.com/docs/en/optimize/asynchronous-inserts)\n(`async_insert=1`): the server buffers rows and flushes them in the\nbackground, which greatly improves throughput for many small inserts.\nDefaults to `false`.",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": false
+                    },
+                    "wait_for_async_insert": {
+                      "description": "When [`async_insert`](Self::async_insert) is enabled, whether the server\nwaits for the buffered rows to be flushed before acknowledging the\nrequest (`wait_for_async_insert=1`). Keeping this `true` (the default)\npreserves faucet's at-least-once durability contract — the bookmark only\nadvances after ClickHouse has durably accepted the batch. Ignored when\n`async_insert` is `false`.",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": true
+                    }
+                  },
+                  "title": "ClickHouseSinkConfig",
+                  "description": "Configuration for [`ClickHouseSink`](crate::ClickHouseSink).",
+                  "type": "object"
+                },
+                true
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "azure-blob",
+          "properties": {
+            "type": {
+              "const": "azure-blob"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "container": {
+                      "description": "Blob container / ADLS Gen2 filesystem name. Required.",
+                      "type": "string"
+                    },
+                    "account": {
+                      "description": "Storage-account name. Optional when a connection string or the\nemulator supplies it, otherwise required.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "auth": {
+                      "description": "Credential source. Defaults to the environment / managed-identity\ncredential chain.",
+                      "$ref": "#/$defs/sink_azure-blob__AzureCredentials",
+                      "default": {
+                        "type": "default"
+                      }
+                    },
+                    "endpoint": {
+                      "description": "Custom blob endpoint (e.g. an Azurite emulator or a sovereign cloud).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "allow_http": {
+                      "description": "Permit plaintext HTTP (required for a local Azurite emulator).",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": false
+                    },
+                    "use_emulator": {
+                      "description": "Target the Azurite storage emulator with its well-known\n`devstoreaccount1` credentials.",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": false
+                    },
+                    "prefix": {
+                      "description": "Object-name prefix for written objects.",
+                      "type": "string",
+                      "default": ""
+                    },
+                    "file_extension": {
+                      "description": "File extension for written objects (default `.jsonl`).",
+                      "type": "string",
+                      "default": ".jsonl"
+                    },
+                    "max_records_per_file": {
+                      "description": "Hard cap on records per uploaded object. `None` means a single object\nper `write_batch` call (still subject to `batch_size`).",
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0
+                    },
+                    "concurrency": {
+                      "description": "Maximum number of concurrent uploads (default 10).",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 10
+                    },
+                    "batch_size": {
+                      "description": "Records per uploaded object from a single `write_batch` call.\n`batch_size = 0` writes whatever upstream hands the sink as one object.\nRecommended value for object stores is `0` — many tiny objects is a\nwell-known anti-pattern.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    },
+                    "compression": {
+                      "description": "Compression codec applied to each uploaded object body. Defaults to\n[`CompressionConfig::Auto`](faucet_core::CompressionConfig::Auto) —\nresolves against `file_extension` (so `.jsonl.gz` triggers gzip).\nRequires the crate-local `compression` feature. Note: this sink does\n**not** set any `Content-Encoding` metadata, so consumers must\ndecompress explicitly.",
+                      "$ref": "#/$defs/sink_azure-blob__CompressionConfig",
+                      "default": "auto"
+                    }
+                  },
+                  "title": "AzureBlobSinkConfig",
+                  "description": "Configuration for the Azure Blob sink connector.",
                   "type": "object"
                 },
                 true
