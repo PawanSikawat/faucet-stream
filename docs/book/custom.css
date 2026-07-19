@@ -157,43 +157,22 @@ mark {
 }
 
 /* ── Typography ───────────────────────────────────────────────────────────────
-   Grounded in long-form readability research (Bringhurst, "The Elements of
-   Typographic Style" + WCAG 1.4.8), applied site-wide so every chapter reads
-   like the Learn page:
-     · measure  — ~66–72 characters/line is the ideal for sustained reading
-                  (readable range 45–75); prose AND code share one --fs-measure
-                  (in rem, so both fonts land at the same width and line up).
-     · leading  — 1.6–1.8 line-height for body copy (WCAG asks for ≥1.5).
-     · size     — 17px body; 16px is the floor, 17–18px is the long-form optimum.
-     · gutters  — wider page padding so text/tables/code never hug the right
-                  edge, plus a roomier reading column so tables have space.
+   Comfortable body text at the full content width — no per-element width cap,
+   so prose, code, and tables all share the same column and line up:
+     · size    — 17px body (16px floor; 17–18px is the long-form optimum).
+     · leading — 1.72 line-height (WCAG 1.4.8 asks for ≥1.5).
+     · gutters — wider page padding so nothing hugs the edges.
    mdBook uses the 62.5% trick, so 1rem = 10px here.
    ──────────────────────────────────────────────────────────────────────────── */
 :root {
   --page-padding: 24px; /* was 15px — symmetric breathing room on both edges */
-  --content-max-width: 860px; /* was 750px — roomier column for wide tables */
-  --fs-measure: 67rem; /* ~670px — one reading width shared by prose AND code
-                          (rem, not ch, so sans prose & mono code match exactly) */
+  --content-max-width: 860px; /* the shared column width for all content */
 }
 .content {
   font-family: "Open Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
   font-size: 1.7rem; /* 17px */
   line-height: 1.72; /* the vertical rhythm / "font gap" */
-}
-.content p,
-.content ul,
-.content ol,
-.content blockquote {
-  max-width: var(--fs-measure); /* ~66–72 characters/line — readable measure */
-}
-/* Code blocks share the prose measure so they line up with the text column
-   instead of running wider. Tables stay full-width — they're data grids that
-   genuinely need the room; the landing hero/cards are full-bleed by design. */
-.content table,
-.content .fs-hero,
-.content .fs-cards {
-  max-width: none;
 }
 .content h1,
 .content h2,
@@ -206,7 +185,6 @@ mark {
   border-bottom: 1px solid var(--table-border-color, rgba(0, 0, 0, 0.1));
 }
 .content pre {
-  max-width: var(--fs-measure); /* match the prose column width */
   border-radius: 8px;
 }
 .content .mermaid {
