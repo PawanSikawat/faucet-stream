@@ -4,6 +4,7 @@
 //! marking which are compiled into this binary.
 
 use crate::cli::ListArgs;
+use crate::conformance::tier_for;
 use crate::error::CliResult;
 use crate::registry::{sink_descriptions, sink_exists, source_descriptions, source_exists};
 use crate::registry_index::RegistryIndex;
@@ -18,10 +19,10 @@ pub async fn run(args: ListArgs) -> CliResult<()> {
         return list_available(args);
     }
     println!("Sources:");
-    print_two_column(&source_descriptions());
+    print_connectors(&source_descriptions(), true);
     println!();
     println!("Sinks:");
-    print_two_column(&sink_descriptions());
+    print_connectors(&sink_descriptions(), false);
     println!();
     println!("Transforms:");
     print_two_column(&transform_descriptions());
@@ -58,8 +59,9 @@ fn list_available(args: ListArgs) -> CliResult<()> {
         };
         let mark = if compiled { '●' } else { '○' };
         let badge = if c.verified { "verified" } else { "community" };
+        let tier = c.tier.as_deref().unwrap_or("-");
         println!(
-            "  {mark} {kind:<6} {name:<14} {desc}  [{badge}]",
+            "  {mark} {kind:<6} {name:<14} {tier:<12} {desc}  [{badge}]",
             kind = c.kind,
             name = c.name,
             desc = c.description
@@ -76,5 +78,24 @@ fn print_two_column(entries: &[(&'static str, &'static str)]) {
     let width = entries.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
     for (name, desc) in entries {
         println!("  {name:<width$}  {desc}", width = width);
+    }
+}
+
+/// Like [`print_two_column`] but prefixes each connector with its conformance
+/// maturity tier badge (`faucet conformance` for the full scorecards).
+fn print_connectors(entries: &[(&'static str, &'static str)], is_source: bool) {
+    if entries.is_empty() {
+        println!("  (none — rebuild faucet-cli with the relevant features enabled)");
+        return;
+    }
+    let width = entries.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+    for (name, desc) in entries {
+        let tier = tier_for(name, is_source);
+        println!(
+            "  {badge} {name:<width$}  {tier:<12} {desc}",
+            badge = tier.badge(),
+            tier = tier.label(),
+            width = width,
+        );
     }
 }

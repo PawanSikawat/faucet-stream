@@ -18,6 +18,16 @@ pub async fn run(args: ConformanceArgs) -> CliResult<()> {
         }
     };
 
+    // Parse the optional `--min-tier` gate up front so a typo fails fast.
+    let min_tier = match args.min_tier.as_deref() {
+        None => None,
+        Some(s) => Some(Tier::parse(s).ok_or_else(|| {
+            CliError::Config(format!(
+                "--min-tier must be one of stable/experimental/beta/draft (got '{s}')"
+            ))
+        })?),
+    };
+
     let mut reports: Vec<Report> = build_reports()
         .into_iter()
         .filter(|r| kind_filter.is_none_or(|k| r.kind == k))
@@ -40,11 +50,8 @@ pub async fn run(args: ConformanceArgs) -> CliResult<()> {
         let json = serde_json::to_string_pretty(&reports)
             .map_err(|e| CliError::Config(format!("serialize conformance report: {e}")))?;
         println!("{json}");
-        return Ok(());
-    }
-
-    // A single named connector → detailed scorecard.
-    if args.name.is_some() {
+    } else if args.name.is_some() {
+        // A single named connector → detailed scorecard.
         for r in &reports {
             println!(
                 "{} {} ({}) — {} · {}/100",
@@ -66,36 +73,57 @@ pub async fn run(args: ConformanceArgs) -> CliResult<()> {
             if !r.badges.is_empty() {
                 println!("  capabilities: {}", r.badges.join(", "));
             }
+            println!("  badge: {}", r.tier.badge_url());
         }
-        return Ok(());
+    } else {
+        // All connectors → one line each, highest score first.
+        println!(
+            "faucet connector conformance  ({} connectors)\n",
+            reports.len()
+        );
+        for r in &reports {
+            let caps = if r.badges.is_empty() {
+                String::new()
+            } else {
+                format!("  · {}", r.badges.join(", "))
+            };
+            println!(
+                "{} {:<15} {:<7} {:>3}/100  {}{}",
+                r.tier.badge(),
+                r.name,
+                r.kind,
+                r.score,
+                r.tier.label(),
+                caps
+            );
+        }
+        let stable = reports
+            .iter()
+            .filter(|r| matches!(r.tier, Tier::Stable))
+            .count();
+        println!("\n{}/{} connectors at Stable.", stable, reports.len());
     }
 
-    // All connectors → one line each, highest score first.
-    println!(
-        "faucet connector conformance  ({} connectors)\n",
-        reports.len()
-    );
-    for r in &reports {
-        let caps = if r.badges.is_empty() {
-            String::new()
-        } else {
-            format!("  · {}", r.badges.join(", "))
-        };
-        println!(
-            "{} {:<15} {:<7} {:>3}/100  {}{}",
-            r.tier.badge(),
-            r.name,
-            r.kind,
-            r.score,
-            r.tier.label(),
-            caps
-        );
+    // `--min-tier` gate: fail if any scored connector is below the bar.
+    if let Some(min) = min_tier {
+        let below: Vec<&Report> = reports
+            .iter()
+            .filter(|r| r.tier.rank() < min.rank())
+            .collect();
+        if !below.is_empty() {
+            let names: Vec<String> = below
+                .iter()
+                .map(|r| format!("{} {} ({})", r.name, r.kind, r.tier.label()))
+                .collect();
+            return Err(CliError::Config(format!(
+                "{} connector(s) below the required `{}` tier: {}",
+                below.len(),
+                min.label(),
+                names.join(", ")
+            )));
+        }
     }
-    let stable = reports
-        .iter()
-        .filter(|r| matches!(r.tier, Tier::Stable))
-        .count();
-    println!("\n{}/{} connectors at Stable.", stable, reports.len());
+
     Ok(())
 }
 
@@ -107,7 +135,9 @@ mod tests {
         ConformanceArgs {
             name: name.map(str::to_string),
             kind: kind.map(str::to_string),
+            all: false,
             json,
+            min_tier: None,
         }
     }
 
@@ -139,5 +169,20 @@ mod tests {
     #[tokio::test]
     async fn bad_kind_is_an_error() {
         assert!(run(args(None, Some("neither"), false)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn min_tier_stable_passes_for_builtins() {
+        // Every built-in scores Stable, so the strictest gate must pass.
+        let mut a = args(None, None, false);
+        a.min_tier = Some("stable".into());
+        assert!(run(a).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn bad_min_tier_is_an_error() {
+        let mut a = args(None, None, true);
+        a.min_tier = Some("platinum".into());
+        assert!(run(a).await.is_err());
     }
 }

@@ -11,6 +11,14 @@ exact config fields. Not sure which to pick? See
 
 Legend: ✓ supported · ✗ not applicable. Tier: T1 = passes the faucet-conformance battery in CI; T2 = not yet wired into the battery.
 
+> **Two "tier" signals, distinct on purpose.** The `Tier` column below (T1/T2/T3)
+> tracks whether a connector is wired into the reusable **faucet-conformance test
+> battery** in CI. Separately, [`faucet conformance`](./conformance.md) computes a
+> **maturity tier** — 🟢 Stable / 🟡 Experimental / 🟠 Beta / ⚪ Draft — from each
+> connector's config schema and advertised capabilities; that tier shows in
+> `faucet list` and `cli/connectors/registry.json`. See
+> [Connector conformance & tiers](./conformance.md).
+
 ## Sources
 
 | Connector | Tier¹¹ | Feature | Streams¹ | Resumable² | Effectively-once³ | Compression | Discover¹⁰ | Underlying primitive |
