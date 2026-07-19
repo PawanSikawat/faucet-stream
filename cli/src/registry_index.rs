@@ -45,6 +45,13 @@ pub struct ConnectorEntry {
     /// faucet-core version compatibility (semver requirement), informational.
     #[serde(default)]
     pub core_compat: Option<String>,
+    /// Maturity tier from the connector conformance score (#330):
+    /// `stable` / `experimental` / `beta` / `draft`. For verified built-ins this
+    /// is validated against the score computed by [`crate::conformance`] (see the
+    /// `builtin_tiers_match_conformance` test), so it can never drift from the
+    /// code. Community connectors may declare it or leave it null.
+    #[serde(default)]
+    pub tier: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -224,6 +231,7 @@ mod tests {
             feature: None,
             keywords: vec![],
             core_compat: None,
+            tier: None,
         };
         assert_eq!(
             install_recipe(&entry, false),
@@ -266,6 +274,42 @@ mod tests {
             assert!(
                 idx.find(k, Some("sink")).iter().any(|c| c.verified),
                 "built-in sink `{k}` is missing a verified entry in cli/connectors/registry.json"
+            );
+        }
+    }
+
+    // Every verified built-in must declare a `tier` in the index, and it must
+    // equal the tier the conformance scorer computes from the connector's real
+    // capabilities — so the published catalog can never drift from the code.
+    #[test]
+    fn builtin_tiers_match_conformance() {
+        let idx = RegistryIndex::embedded();
+        for k in crate::registry::source_kinds() {
+            let entry = idx
+                .find(k, Some("source"))
+                .into_iter()
+                .find(|c| c.verified)
+                .unwrap_or_else(|| panic!("built-in source `{k}` missing a verified entry"));
+            let want = crate::conformance::tier_for(k, true).as_str();
+            assert_eq!(
+                entry.tier.as_deref(),
+                Some(want),
+                "source `{k}` registry tier {:?} != computed `{want}`",
+                entry.tier
+            );
+        }
+        for k in crate::registry::sink_kinds() {
+            let entry = idx
+                .find(k, Some("sink"))
+                .into_iter()
+                .find(|c| c.verified)
+                .unwrap_or_else(|| panic!("built-in sink `{k}` missing a verified entry"));
+            let want = crate::conformance::tier_for(k, false).as_str();
+            assert_eq!(
+                entry.tier.as_deref(),
+                Some(want),
+                "sink `{k}` registry tier {:?} != computed `{want}`",
+                entry.tier
             );
         }
     }

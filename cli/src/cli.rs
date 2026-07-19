@@ -996,9 +996,17 @@ pub struct ConformanceArgs {
     /// Restrict to `source` or `sink`.
     #[arg(long)]
     pub kind: Option<String>,
+    /// Score every compiled-in connector (the default when no NAME is given;
+    /// accepted explicitly for clarity in CI).
+    #[arg(long)]
+    pub all: bool,
     /// Emit the full scorecards as JSON.
     #[arg(long)]
     pub json: bool,
+    /// Fail (exit non-zero) if any scored connector is below this maturity tier
+    /// — an opt-in CI gate. One of `stable` / `experimental` / `beta` / `draft`.
+    #[arg(long, value_name = "TIER")]
+    pub min_tier: Option<String>,
 }
 
 /// `faucet search` arguments.

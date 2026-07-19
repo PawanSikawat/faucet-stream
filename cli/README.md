@@ -30,7 +30,8 @@ cargo install faucet-cli --no-default-features \
 | `faucet validate <config>` | Parse + validate without running. Exits non-zero on error. |
 | `faucet schema source|sink|transform <name>` | Print the JSON Schema for a connector's or transform's config. |
 | `faucet schema dlq` | Print the JSON Schema for the dead-letter-queue spec. |
-| `faucet list` | List every compiled-in source, sink, transform, and state-store backend. |
+| `faucet list` | List every compiled-in source, sink, transform, and state-store backend, each with its conformance maturity tier. |
+| `faucet conformance [name] [--kind K] [--json] [--min-tier T]` | Score connectors against the SDK contract, print a scorecard + maturity tier (Stable/Experimental/Beta/Draft) and capability badges. `--min-tier` exits non-zero as an opt-in CI gate. |
 | `faucet preview <config> --limit N` | Run only the source side and emit the first N records to stdout as JSONL. |
 | `faucet init [name] [--source X] [--sink Y]` | Scaffold a pipeline.yaml from each connector's JSON Schema. |
 | `faucet doctor <config> [--timeout-secs N] [--json]` | Probe every connector (auth/network/permissions/reachability) and print a checklist. Exits with the failed-probe count. |

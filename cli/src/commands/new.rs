@@ -53,6 +53,22 @@ async fn run_connector(args: NewConnectorArgs) -> CliResult<()> {
             ConnectorKind::Sink => "sink.rs",
         }
     );
+    // Conformance tier: a fresh scaffold has a real config schema but is not yet
+    // registered/documented, so it starts at ⚪ Draft. Show the path to Stable.
+    let cap = match kind {
+        ConnectorKind::Source => "native streaming (override stream_pages) + resumable bookmarks",
+        ConnectorKind::Sink => "idempotent writes + upsert / schema evolution",
+    };
+    println!(
+        "\nConformance tier: ⚪ Draft → reach 🟢 Stable by\n  \
+         [ ] adding a verified entry to cli/connectors/registry.json\n  \
+         [ ] a complete config_schema() (already scaffolded)\n  \
+         [ ] a one-line description in the connector catalog\n  \
+         [ ] {cap}\n  \
+         [ ] unit + integration tests (run the faucet-conformance battery)\n\
+         Check your score any time with `faucet conformance {}`.",
+        scaffold.crate_name(),
+    );
     Ok(())
 }
 

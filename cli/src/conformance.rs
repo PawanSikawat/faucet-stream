@@ -43,6 +43,17 @@ impl Tier {
         }
     }
 
+    /// The snake_case identifier used in JSON / `registry.json` (matches the
+    /// `#[serde(rename_all = "snake_case")]` wire form).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tier::Stable => "stable",
+            Tier::Experimental => "experimental",
+            Tier::Beta => "beta",
+            Tier::Draft => "draft",
+        }
+    }
+
     /// A colored dot for the terminal / catalog.
     pub fn badge(self) -> &'static str {
         match self {
@@ -51,6 +62,39 @@ impl Tier {
             Tier::Beta => "🟠",
             Tier::Draft => "⚪",
         }
+    }
+
+    /// Ordinal for `--min-tier` comparisons: `Stable` is highest.
+    pub fn rank(self) -> u8 {
+        match self {
+            Tier::Stable => 3,
+            Tier::Experimental => 2,
+            Tier::Beta => 1,
+            Tier::Draft => 0,
+        }
+    }
+
+    /// Parse a tier from its snake_case identifier (case-insensitive).
+    pub fn parse(s: &str) -> Option<Tier> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "stable" => Some(Tier::Stable),
+            "experimental" => Some(Tier::Experimental),
+            "beta" => Some(Tier::Beta),
+            "draft" => Some(Tier::Draft),
+            _ => None,
+        }
+    }
+
+    /// A shields.io-style badge URL third-party connector authors can drop into
+    /// their crate README (`![faucet](URL)`), color-matched to the tier.
+    pub fn badge_url(self) -> String {
+        let color = match self {
+            Tier::Stable => "brightgreen",
+            Tier::Experimental => "yellow",
+            Tier::Beta => "orange",
+            Tier::Draft => "lightgrey",
+        };
+        format!("https://img.shields.io/badge/faucet-{}-{}", self.as_str(), color)
     }
 
     /// Derive the tier from a 0–100 conformance score.
@@ -256,6 +300,13 @@ pub fn build_reports() -> Vec<Report> {
     out
 }
 
+/// The maturity tier of a single compiled-in connector kind — the lookup behind
+/// the Tier column in `faucet list`.
+pub fn tier_for(kind: &str, is_source: bool) -> Tier {
+    let index = RegistryIndex::embedded();
+    score(&facts_for(kind, is_source, &index)).tier
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,6 +342,28 @@ mod tests {
         for t in [Tier::Stable, Tier::Experimental, Tier::Beta, Tier::Draft] {
             assert!(!t.label().is_empty());
             assert!(!t.badge().is_empty());
+            assert!(!t.as_str().is_empty());
+            assert!(t.badge_url().contains(t.as_str()));
+        }
+    }
+
+    #[test]
+    fn tier_parse_roundtrips_and_orders() {
+        for t in [Tier::Stable, Tier::Experimental, Tier::Beta, Tier::Draft] {
+            assert_eq!(Tier::parse(t.as_str()), Some(t));
+        }
+        assert_eq!(Tier::parse("STABLE"), Some(Tier::Stable));
+        assert_eq!(Tier::parse("  beta "), Some(Tier::Beta));
+        assert_eq!(Tier::parse("nonsense"), None);
+        assert!(Tier::Stable.rank() > Tier::Experimental.rank());
+        assert!(Tier::Experimental.rank() > Tier::Beta.rank());
+        assert!(Tier::Beta.rank() > Tier::Draft.rank());
+    }
+
+    #[test]
+    fn tier_for_matches_reports() {
+        for r in build_reports() {
+            assert_eq!(tier_for(&r.name, r.kind == "source"), r.tier);
         }
     }
 

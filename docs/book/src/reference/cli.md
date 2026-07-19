@@ -305,10 +305,12 @@ Score every compiled-in connector against the faucet SDK contract and print its
 capability badges (exactly-once, discover, upsert, schema-evolution).
 
 ```bash
-faucet conformance                 # score every connector, highest first
-faucet conformance --kind sink     # sinks only
-faucet conformance postgres        # a detailed scorecard for one connector
-faucet conformance --json          # machine-readable scorecards
+faucet conformance                     # score every connector, highest first
+faucet conformance --all               # same; explicit form for CI
+faucet conformance --kind sink         # sinks only
+faucet conformance postgres            # a detailed scorecard (+ badge URL) for one connector
+faucet conformance --json              # machine-readable scorecards
+faucet conformance --min-tier stable   # CI gate: non-zero exit if any connector is below Stable
 ```
 
 The score (0–100) is computed from authoritative, instantiation-free signals: a
@@ -318,6 +320,14 @@ kind-specific capability (source discovery / sink upsert + schema evolution) are
 bonuses on top. Every conforming built-in is `Stable` with capability badges; an
 incomplete third-party connector (missing a verified entry or a schema) lands at
 `Experimental` / `Beta`.
+
+`--min-tier <tier>` turns the report into an **opt-in CI gate**: the command
+exits non-zero if any scored connector is below the named tier — combine it with
+`--kind` / a `NAME` to scope the gate. A single-connector scorecard also prints a
+shields.io **badge URL** third-party authors can drop into their crate README.
+The per-connector tier is mirrored in `cli/connectors/registry.json` (validated
+against this score in CI) and shown in `faucet list` and the
+[connector conformance & tiers](./conformance.md) page.
 
 ## `doctor`
 
