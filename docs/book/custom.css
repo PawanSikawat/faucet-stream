@@ -187,9 +187,6 @@ mark {
 .content blockquote {
   max-width: var(--fs-measure); /* ~66–72 characters/line — readable measure */
 }
-.content p {
-  margin: 0 0 1.05em; /* clear separation between paragraphs */
-}
 /* Code blocks share the prose measure so they line up with the text column
    instead of running wider. Tables stay full-width — they're data grids that
    genuinely need the room; the landing hero/cards are full-bleed by design. */
