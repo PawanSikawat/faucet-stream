@@ -306,6 +306,38 @@ mod shard_tests {
     }
 
     #[tokio::test]
+    async fn config_snapshot_roundtrips_and_upserts_latest() {
+        use crate::serve::history::catalog::ConfigSnapshot;
+        use std::collections::BTreeMap;
+        let dir = tempfile::tempdir().unwrap();
+        let h = backend(&url_in(dir.path()), "a", Duration::from_secs(60)).await;
+        assert!(
+            h.catalog_last_config_snapshot("p").await.unwrap().is_none(),
+            "no snapshot before any record"
+        );
+        let mk = |ver: &str| ConfigSnapshot {
+            pipeline: "p".into(),
+            recorded_at: chrono::Utc::now(),
+            faucet_version: ver.into(),
+            rows: BTreeMap::new(),
+        };
+        h.catalog_record_config_snapshot(&mk("1")).await.unwrap();
+        h.catalog_record_config_snapshot(&mk("2")).await.unwrap();
+        let got = h.catalog_last_config_snapshot("p").await.unwrap().unwrap();
+        assert_eq!(
+            got.faucet_version, "2",
+            "latest-wins upsert on one pipeline"
+        );
+        assert!(
+            h.catalog_last_config_snapshot("nope")
+                .await
+                .unwrap()
+                .is_none(),
+            "keyed per pipeline"
+        );
+    }
+
+    #[tokio::test]
     async fn catalog_record_roundtrips_datasets_timeline_stats_and_edges() {
         use crate::serve::history::catalog::{
             self, CatalogListFilter, CatalogUpdate, DatasetObservation, DatasetRole,

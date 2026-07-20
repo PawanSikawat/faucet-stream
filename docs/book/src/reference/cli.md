@@ -150,6 +150,8 @@ to any sink**.
 faucet plan pipeline.yaml
 faucet plan pipeline.yaml --sample fixtures.jsonl        # preview output schema/volume offline
 faucet plan pipeline.yaml --live --limit 20 --json       # capped read-only source pull, JSON out
+faucet plan pipeline.yaml --diff                         # config-change diff vs the last run
+faucet plan pipeline.yaml --diff --json                  # machine-readable diff (CI gate)
 ```
 
 Reports, for the selected row (`--row`, default the first root): the resolved
@@ -162,6 +164,38 @@ output schema, the sink schema delta (adds / widenings / incompatible via
 otherwise), and a volume estimate. The data pass runs through the offline
 harness, so no sink is ever written. Offline by default; `--resolve-secrets`
 opts into the real secrets path.
+
+### `plan --diff` — config-change preview (#374)
+
+A `terraform plan`-style diff of the current config against **what last ran**.
+On every successful `faucet run` / `replicate` / `schedule --once`, a redacted
+snapshot of the *resolved + expanded* config is recorded into the catalog store
+(best-effort — recording never fails a run). `faucet plan --diff` re-expands the
+current config, loads the last snapshot, and renders a per-row semantic diff:
+
+```text
+Pipeline: hibob   (last run 2026-07-18 09:12 UTC)
+
+  + people             NEW ROW — will be created
+  ~ payroll            CHANGED
+      source.config.page_size      100  ->  500
+      source.config.path           /v1/pay  ->  /v1/payroll
+  ~ timeoff            CHANGED
+      source.config.token          (secret rotated)
+  - benefits           REMOVED — no longer in the run set
+  = employees          unchanged
+
+Summary: 1 to create, 2 to change, 1 removed, 1 unchanged.
+```
+
+Because the diff operates on the **resolved + expanded** model, a one-line
+`${vars.x}` edit that fans out across many rows shows up as the real per-row
+effect, and two textually-different files that resolve to the same movement show
+no diff. Requires a `catalog:` block (`faucet schema catalog`) and the `catalog`
+build feature. `--diff` resolves secrets so the diff matches what `run` recorded;
+every secret-sourced value is stored only as a stable `<secret:sha256:…>` token,
+so a rotated credential surfaces as "secret rotated" and no secret is ever
+persisted. On a first run (nothing recorded yet) every row is reported as new.
 
 ## `dev`
 

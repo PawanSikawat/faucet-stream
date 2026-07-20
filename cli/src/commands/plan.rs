@@ -217,6 +217,20 @@ fn render_delta(dest: &Value, inferred: &Value) -> SchemaDeltaReport {
 
 /// Execute the `plan` subcommand.
 pub async fn run(args: PlanArgs) -> CliResult<()> {
+    if args.diff {
+        #[cfg(feature = "catalog")]
+        {
+            return run_diff(args).await;
+        }
+        #[cfg(not(feature = "catalog"))]
+        {
+            return Err(CliError::Config(
+                "`faucet plan --diff` requires a binary built with the `catalog` feature \
+                 (e.g. `cargo install faucet-cli --features catalog`)"
+                    .into(),
+            ));
+        }
+    }
     let cwd = std::env::current_dir()?;
     let path = match &args.config {
         Some(p) => p.clone(),
@@ -394,6 +408,51 @@ fn render_human(r: &PlanReport) {
     println!("\n  (read-only — no sink was written)");
 }
 
+/// `faucet plan --diff` (#374): compare the current resolved+expanded config
+/// against the last snapshot recorded by a successful run. Secrets are resolved
+/// (so redaction matches the record side) and never printed.
+#[cfg(feature = "catalog")]
+async fn run_diff(args: PlanArgs) -> CliResult<()> {
+    use crate::catalog::snapshot;
+    let cwd = std::env::current_dir()?;
+    let path = match &args.config {
+        Some(p) => p.clone(),
+        None => crate::env_loader::discover_config_path(&cwd).ok_or(CliError::NoConfigOrFromEnv)?,
+    };
+    // Resolve secrets so the redacted current config matches what `run` stored.
+    let cfg =
+        crate::config::PipelineConfig::from_path_async(&path, args.profile.as_deref()).await?;
+    let spec = cfg.catalog.as_ref().ok_or_else(|| {
+        CliError::Config(
+            "`faucet plan --diff` needs a `catalog:` block to read the last recorded run \
+             (see `faucet schema catalog`)"
+                .into(),
+        )
+    })?;
+    let nodes = expand::expand(&cfg)?;
+    let pipeline = snapshot::resolve_name(&cfg, Some(&path));
+    let current = snapshot::build_snapshot(
+        pipeline.clone(),
+        snapshot::on_error_str(&cfg.execution),
+        &nodes,
+        chrono::Utc::now(),
+    );
+    let handle = crate::catalog::connect_from_spec(spec).await?;
+    let previous = handle
+        .store
+        .catalog_last_config_snapshot(&pipeline)
+        .await
+        .map_err(|e| CliError::Config(format!("catalog read failed: {e}")))?;
+    let d = snapshot::diff(previous.as_ref(), &current);
+    if args.json {
+        let out = serde_json::to_string_pretty(&d).map_err(|e| CliError::Config(e.to_string()))?;
+        println!("{out}");
+    } else {
+        print!("{}", snapshot::render_human(&d));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,6 +482,7 @@ mod tests {
             live: false,
             limit: 10,
             json: false,
+            diff: false,
             resolve_secrets: false,
             profile: None,
         };

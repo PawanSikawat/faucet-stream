@@ -937,8 +937,13 @@ pub struct PlanArgs {
     /// Emit the plan as JSON.
     #[arg(long)]
     pub json: bool,
+    /// Show a `terraform plan`-style diff of the current config against the last
+    /// recorded run, instead of the resolved-pipeline preview (#374). Requires a
+    /// `catalog:` block. Resolves secrets so the diff matches what `run` records.
+    #[arg(long)]
+    pub diff: bool,
     /// Resolve secrets-manager directives (needs network/credentials). Off by
-    /// default so `plan` works offline like `faucet test`.
+    /// default so `plan` works offline like `faucet test`. Implied by `--diff`.
     #[arg(long)]
     pub resolve_secrets: bool,
     /// Select a `profiles:` overlay.

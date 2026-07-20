@@ -31,6 +31,16 @@ pub fn register(secret: &str) {
 
 /// Replace every registered secret value in `input` with `***`.
 pub fn redact(input: &str) -> Cow<'_, str> {
+    redact_with(input, |_| "***".to_owned())
+}
+
+/// Replace every registered secret value in `input` with a caller-supplied
+/// token. `token(secret)` receives the raw secret and returns its replacement;
+/// it is called only for secrets actually present in `input`. Used by the
+/// config-snapshot writer (#374) to swap secrets for stable `<secret:sha256:…>`
+/// tokens instead of `***`, so a rotation surfaces as a changed hash without
+/// ever persisting the secret. Same longest-first ordering as [`redact`].
+pub fn redact_with(input: &str, token: impl Fn(&str) -> String) -> Cow<'_, str> {
     let reg = registry().read().expect("secret registry lock poisoned");
     if reg.is_empty() {
         return Cow::Borrowed(input);
@@ -46,7 +56,7 @@ pub fn redact(input: &str) -> Cow<'_, str> {
     for secret in secrets {
         let current = out.as_deref().unwrap_or(input);
         if current.contains(secret) {
-            out = Some(current.replace(secret, "***"));
+            out = Some(current.replace(secret, &token(secret)));
         }
     }
     match out {

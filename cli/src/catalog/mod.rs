@@ -18,12 +18,14 @@
 //! backends and `lineage` for record sampling + column-lineage derivation).
 
 pub mod model;
+pub mod snapshot;
 pub mod spec;
 
 pub use spec::CatalogSpec;
 
 use crate::error::{CliError, CliResult};
 use crate::serve::config::HistoryBackendSpec;
+use crate::serve::history::catalog::ConfigSnapshot;
 use crate::serve::history::{self, RunHistory, catalog::CatalogUpdate};
 use std::sync::Arc;
 use std::time::Duration;
@@ -99,6 +101,18 @@ pub async fn record(handle: &CatalogHandle, update: &CatalogUpdate) {
             row = %update.row,
             error = %e,
             "catalog write failed — run unaffected"
+        );
+    }
+}
+
+/// Persist the latest resolved+expanded config snapshot for `faucet plan --diff`
+/// (#374). Best-effort, same never-fails-the-run contract as [`record`].
+pub async fn record_config_snapshot(handle: &CatalogHandle, snapshot: &ConfigSnapshot) {
+    if let Err(e) = handle.store.catalog_record_config_snapshot(snapshot).await {
+        tracing::warn!(
+            pipeline = %snapshot.pipeline,
+            error = %e,
+            "config-snapshot write failed — run unaffected"
         );
     }
 }

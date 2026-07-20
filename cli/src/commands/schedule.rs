@@ -435,6 +435,18 @@ async fn run_once(
             count: summary.failure_count(),
         });
     }
+    // Record the config snapshot for `faucet plan --diff` after a clean tick
+    // (best-effort; #374). Repeated identical ticks upsert harmlessly.
+    #[cfg(feature = "catalog")]
+    if let Some(handle) = catalog {
+        let snap = crate::catalog::snapshot::build_snapshot(
+            pipeline_name.to_owned(),
+            crate::catalog::snapshot::on_error_str(execution),
+            nodes,
+            chrono::Utc::now(),
+        );
+        crate::catalog::record_config_snapshot(handle, &snap).await;
+    }
     Ok(())
 }
 
