@@ -16,6 +16,8 @@
 pub mod adaptive;
 pub mod auth;
 pub mod check;
+#[cfg(feature = "arrow")]
+pub mod columnar;
 pub mod config;
 #[cfg(feature = "contract")]
 pub mod contract;
@@ -54,6 +56,11 @@ pub use adaptive::{
 };
 pub use auth::{AuthProvider, AuthReference, AuthSpec, Credential, SharedAuthProvider};
 pub use check::{CheckContext, CheckReport, Probe, ProbeStatus};
+#[cfg(feature = "arrow")]
+pub use columnar::{
+    ColumnarPage, infer_arrow_schema, record_batch_to_values, values_to_record_batch,
+    values_to_record_batch_inferred,
+};
 pub use discover::{DatasetDescriptor, columns_to_schema, nullable_type, sql_type_to_json_schema};
 pub use dlq::{
     DlqConfig, DlqReason, DlqStats, EnvelopeError, OnBatchError, UnwrappedEnvelope, build_envelope,

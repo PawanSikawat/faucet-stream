@@ -4107,6 +4107,8 @@ name = "faucet-core"
 version = "1.5.0"
 dependencies = [
  "aes-gcm",
+ "arrow 58.3.0",
+ "arrow-json 58.3.0",
  "async-compression",
  "async-stream",
  "async-trait",
