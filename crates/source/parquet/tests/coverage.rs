@@ -37,6 +37,56 @@ async fn collect_pages(source: &ParquetSource) -> Vec<StreamPage> {
     pages
 }
 
+/// Columnar fast path (feature `arrow`, RFC 0002 / #375): the source advertises
+/// `supports_columnar` and `stream_batches` yields the file's Arrow
+/// `RecordBatch`es directly (no JSON conversion), each as a bookmark-less
+/// `ColumnarPage`.
+#[cfg(feature = "arrow")]
+#[tokio::test]
+async fn stream_batches_yields_columnar_pages() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("data.parquet");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+            Arc::new(StringArray::from(vec![Some("a"), Some("b"), None])),
+        ],
+    )
+    .unwrap();
+    write_parquet(&path, &batch);
+
+    let source = ParquetSource::new(ParquetSourceConfig::local(path.to_str().unwrap()))
+        .await
+        .unwrap();
+    assert!(
+        source.supports_columnar(),
+        "parquet source is columnar-capable"
+    );
+
+    let ctx = std::collections::HashMap::new();
+    let mut stream = source.stream_batches(&ctx, 0);
+    let mut pages = Vec::new();
+    while let Some(p) = stream.next().await {
+        pages.push(p.expect("stream_batches must not error"));
+    }
+
+    let total_rows: usize = pages.iter().map(|p| p.num_rows()).sum();
+    assert_eq!(total_rows, 3, "all rows streamed via the columnar path");
+    assert!(
+        pages.iter().all(|p| p.bookmark.is_none()),
+        "parquet has no incremental mode, so every columnar page is bookmark-less"
+    );
+    // Schema/columns preserved end-to-end — no Value round-trip.
+    let first = &pages[0].batch;
+    assert_eq!(first.num_columns(), 2);
+    assert_eq!(first.schema().field(0).name(), "id");
+}
+
 #[tokio::test]
 async fn non_parquet_file_surfaces_metadata_read_error() {
     // A file that exists but is not valid Parquet must fail at metadata-read

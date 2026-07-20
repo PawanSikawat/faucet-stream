@@ -425,10 +425,10 @@ impl faucet_core::Source for ParquetSource {
         true
     }
 
-    /// Stream Arrow `RecordBatch`es directly, one [`ColumnarPage`](
-    /// faucet_core::columnar::ColumnarPage) per batch. Mirrors
-    /// [`stream_pages`](Self::stream_pages) exactly — same file resolution,
-    /// same up-front cross-file schema validation, same file-by-file
+    /// Stream Arrow `RecordBatch`es directly, one
+    /// [`ColumnarPage`](faucet_core::columnar::ColumnarPage) per batch. Mirrors
+    /// [`stream_pages`](faucet_core::Source::stream_pages) exactly — same file
+    /// resolution, same up-front cross-file schema validation, same file-by-file
     /// iteration — but skips the `RecordBatch` → JSON conversion entirely.
     ///
     /// Every page carries `bookmark: None` (the Parquet source has no

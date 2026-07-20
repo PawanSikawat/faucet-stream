@@ -144,10 +144,9 @@ pub trait Source: Send + Sync {
     {
         let _ = (context, batch_size);
         let name = self.connector_name();
-        let err: Result<crate::columnar::ColumnarPage, FaucetError> =
-            Err(FaucetError::Source(format!(
-                "source '{name}' does not support columnar streaming (stream_batches)"
-            )));
+        let err: Result<crate::columnar::ColumnarPage, FaucetError> = Err(FaucetError::Source(
+            format!("source '{name}' does not support columnar streaming (stream_batches)"),
+        ));
         Box::pin(futures::stream::once(async move { err }))
     }
 

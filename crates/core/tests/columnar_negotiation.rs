@@ -48,6 +48,10 @@ impl Source for ColumnarOnlySource {
         "columnar-only-source"
     }
 
+    fn state_key(&self) -> Option<String> {
+        Some("columnar-test".to_string())
+    }
+
     fn supports_columnar(&self) -> bool {
         true
     }
@@ -119,7 +123,10 @@ async fn pipeline_negotiates_columnar_path_when_both_sides_support_it() {
         .await
         .expect("columnar path should succeed");
 
-    assert_eq!(result.records_written, 3, "all rows written via columnar path");
+    assert_eq!(
+        result.records_written, 3,
+        "all rows written via columnar path"
+    );
     assert_eq!(rows.load(Ordering::SeqCst), 3);
     assert_eq!(
         columnar_calls.load(Ordering::SeqCst),
@@ -162,4 +169,74 @@ async fn pipeline_falls_back_when_sink_lacks_columnar() {
         result.is_err(),
         "with a non-columnar sink the pipeline must use the Value path (which this source rejects)"
     );
+}
+
+/// The columnar loop honors the checkpoint contract: a page carrying a bookmark
+/// flushes and persists it to the state store (same write→flush→persist ordering
+/// as the `Value` path).
+#[tokio::test]
+async fn columnar_path_persists_bookmark_to_state_store() {
+    use faucet_core::{MemoryStateStore, StateStore};
+
+    let source = ColumnarOnlySource {
+        rows: vec![json!({"id": 1}), json!({"id": 2})],
+    };
+    let sink = ColumnarOnlySink {
+        rows: Arc::new(AtomicUsize::new(0)),
+        columnar_calls: Arc::new(AtomicUsize::new(0)),
+    };
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+
+    let result = Pipeline::new(&source, &sink)
+        .with_state_store(Arc::clone(&store))
+        .run()
+        .await
+        .expect("columnar path with a state store should succeed");
+
+    assert_eq!(result.records_written, 2);
+    let persisted = store.get("columnar-test").await.unwrap();
+    assert_eq!(
+        persisted,
+        Some(json!({"done": true})),
+        "the columnar page's bookmark is persisted under the source's state key"
+    );
+}
+
+/// A source that advertises `supports_columnar` but never overrides
+/// `stream_batches` hits the defaulted error stream — proving the default fails
+/// loudly rather than silently emitting nothing.
+#[tokio::test]
+async fn columnar_source_without_stream_batches_override_errors() {
+    struct BadColumnarSource;
+    #[async_trait]
+    impl Source for BadColumnarSource {
+        async fn fetch_with_context(
+            &self,
+            _context: &HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            Ok(Vec::new())
+        }
+        fn connector_name(&self) -> &'static str {
+            "bad-columnar-source"
+        }
+        fn supports_columnar(&self) -> bool {
+            true
+        }
+        // stream_batches intentionally NOT overridden → defaulted error stream.
+    }
+
+    let sink = ColumnarOnlySink {
+        rows: Arc::new(AtomicUsize::new(0)),
+        columnar_calls: Arc::new(AtomicUsize::new(0)),
+    };
+    let result = Pipeline::new(&BadColumnarSource, &sink).run().await;
+    match result {
+        Err(FaucetError::Source(msg)) => {
+            assert!(
+                msg.contains("does not support columnar streaming"),
+                "expected the defaulted unsupported-error, got: {msg}"
+            );
+        }
+        other => panic!("expected a Source error from the default stream_batches, got: {other:?}"),
+    }
 }

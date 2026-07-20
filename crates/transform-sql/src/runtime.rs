@@ -238,7 +238,10 @@ mod tests {
     #[test]
     fn large_page_aggregate_is_global_over_the_whole_page() {
         let rows: Vec<Value> = (0..5_000).map(|i| json!({"k": i % 4, "v": 1})).collect();
-        let out = run("SELECT k, COUNT(*) AS n FROM batch GROUP BY k ORDER BY k", rows);
+        let out = run(
+            "SELECT k, COUNT(*) AS n FROM batch GROUP BY k ORDER BY k",
+            rows,
+        );
         assert_eq!(out.len(), 4, "one group per key");
         let total: i64 = out.iter().map(|r| r["n"].as_i64().unwrap()).sum();
         assert_eq!(total, 5_000, "every row counted exactly once across chunks");
