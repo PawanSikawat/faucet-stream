@@ -507,7 +507,7 @@ impl faucet_core::Sink for ParquetSink {
 
     /// Write an Arrow `RecordBatch` directly, bypassing the
     /// `Value` → `RecordBatch` conversion `write_batch` performs. Routes
-    /// through the same [`write_record_batch`](Self::write_record_batch) tail
+    /// through the same `write_record_batch` tail (the private writer path)
     /// so schema inference (from the batch's own schema on first use), lazy
     /// writer open, and row/byte rollover all behave identically to the JSON
     /// path. Returns the number of rows written.
