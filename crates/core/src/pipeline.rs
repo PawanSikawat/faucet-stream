@@ -415,6 +415,46 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
                 start_seq = sink_seq;
             }
 
+            // Columnar (Arrow) fast path — feature `arrow`, RFC 0002 / #375.
+            // When both the source and sink speak Arrow *and* no `Value`-shaped
+            // stage needs to observe the records, drive the columnar loop and
+            // skip `Value` materialization entirely. Any complicating feature
+            // (DLQ, exactly-once, masking/quality/contract/drift, adaptive,
+            // resilience) falls through to the `Value` path below. Bookmark
+            // resume above already ran, so a columnar source resumes correctly.
+            #[cfg(feature = "arrow")]
+            {
+                let columnar_ok = wrapped_source.supports_columnar()
+                    && wrapped_sink.supports_columnar()
+                    && self.dlq.is_none()
+                    && self.delivery == crate::idempotency::DeliveryMode::AtLeastOnce
+                    && self.schema_drift.is_none()
+                    && self.adaptive.is_none()
+                    && self.resilience.is_none();
+                #[cfg(feature = "quality")]
+                let columnar_ok = columnar_ok && self.quality.is_none();
+                #[cfg(feature = "contract")]
+                let columnar_ok = columnar_ok && self.contract.is_none();
+                #[cfg(feature = "masking")]
+                let columnar_ok = columnar_ok && self.masking.is_none();
+                if columnar_ok {
+                    let state = match (wrapped_state_store.clone(), state_key.clone()) {
+                        (Some(store), Some(key)) => Some((store, key)),
+                        _ => None,
+                    };
+                    return run_stream_columnar(
+                        &wrapped_source,
+                        &wrapped_sink,
+                        state,
+                        self.cancel.clone(),
+                        &name,
+                        &row,
+                        &run_id,
+                    )
+                    .await;
+                }
+            }
+
             let ctx = std::collections::HashMap::new();
             let pages = wrapped_source.stream_pages(&ctx, DEFAULT_BATCH_SIZE);
 
@@ -478,6 +518,94 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
 
         result
     }
+}
+
+/// Columnar (Arrow) fast path, driven by [`Pipeline::run`] when both the source
+/// and sink advertise `supports_columnar()` and no `Value`-shaped stage is
+/// configured (feature `arrow`, RFC 0002 / #375).
+///
+/// Mirrors the checkpoint ordering of the `Value` path exactly —
+/// `write_batch_columnar` → `flush` → persist bookmark ([ADR 0002](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/adr/0002-checkpoint-ordering.md)) —
+/// with cooperative, flush-completing cancellation at the page boundary
+/// ([ADR 0011](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/adr/0011-cooperative-cancellation.md)).
+/// Emits the source/sink record counters; the richer per-page histograms of the
+/// `Value` path are not layered on this loop yet.
+#[cfg(feature = "arrow")]
+async fn run_stream_columnar<S, Si>(
+    source: &S,
+    sink: &Si,
+    state: Option<(Arc<dyn StateStore>, String)>,
+    cancel: Option<tokio_util::sync::CancellationToken>,
+    pipeline: &str,
+    row: &str,
+    run_id: &str,
+) -> Result<PipelineResult, FaucetError>
+where
+    S: crate::Source + ?Sized,
+    Si: Sink + ?Sized,
+{
+    use futures::StreamExt;
+    use metrics::{Label, SharedString, counter};
+
+    let labels = |connector: &str| -> Vec<Label> {
+        vec![
+            Label::new("pipeline", SharedString::from(pipeline.to_string())),
+            Label::new("row", SharedString::from(row.to_string())),
+            Label::new("connector", SharedString::from(connector.to_string())),
+        ]
+    };
+    let src_labels = labels(source.connector_name());
+    let sink_labels = labels(sink.connector_name());
+    let _ = run_id; // reserved for span attribution parity with the Value path
+
+    let ctx = std::collections::HashMap::new();
+    let mut batches = source.stream_batches(&ctx, DEFAULT_BATCH_SIZE);
+    let mut records_written = 0usize;
+    let mut last_bookmark: Option<Value> = None;
+
+    loop {
+        // Cooperative cancellation: race the next batch against the token so a
+        // cancel stops at the boundary and still flushes (ADR 0011).
+        let page = match &cancel {
+            Some(token) => {
+                tokio::select! {
+                    biased;
+                    _ = token.cancelled() => break,
+                    p = batches.next() => p,
+                }
+            }
+            None => batches.next().await,
+        };
+        let Some(page) = page else { break };
+        let page = page?;
+        let rows = page.num_rows();
+        counter!("faucet_source_records_total", src_labels.clone()).increment(rows as u64);
+
+        if rows > 0 {
+            let n = sink.write_batch_columnar(&page.batch).await?;
+            records_written += n;
+            counter!("faucet_sink_records_total", sink_labels.clone()).increment(n as u64);
+            counter!("faucet_sink_writes_total", sink_labels.clone()).increment(1);
+        }
+
+        // Checkpoint: flush then persist the bookmark, never the other way
+        // round (ADR 0002) — the state store is always at or behind the sink.
+        if let Some(bm) = page.bookmark {
+            sink.flush().await?;
+            if let Some((store, key)) = state.as_ref() {
+                store.put(key, &bm).await?;
+            }
+            last_bookmark = Some(bm);
+        }
+    }
+
+    // Final flush (mirrors the Value path's end-of-stream / on-cancel flush).
+    sink.flush().await?;
+    Ok(PipelineResult {
+        records_written,
+        bookmark: last_bookmark,
+        dlq: None,
+    })
 }
 
 /// Run a streaming pipeline, writing each [`StreamPage`] to the sink as it

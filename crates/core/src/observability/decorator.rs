@@ -126,6 +126,24 @@ impl<'a, S: Source + ?Sized> Source for InstrumentedSource<'a, S> {
         self.inner.fetch_with_context_incremental(context).await
     }
 
+    // Columnar fast path (feature `arrow`): forward transparently to the inner
+    // source. The columnar streaming loop in `pipeline.rs` emits the source
+    // metrics itself, so no instrumentation is layered here (RFC 0002 / #375).
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        self.inner.supports_columnar()
+    }
+
+    #[cfg(feature = "arrow")]
+    fn stream_batches<'b>(
+        &'b self,
+        context: &'b HashMap<String, Value>,
+        batch_size: usize,
+    ) -> Pin<Box<dyn Stream<Item = Result<crate::columnar::ColumnarPage, FaucetError>> + Send + 'b>>
+    {
+        self.inner.stream_batches(context, batch_size)
+    }
+
     fn stream_pages<'b>(
         &'b self,
         context: &'b HashMap<String, Value>,
@@ -286,6 +304,21 @@ impl<'a, S: Sink + ?Sized> Sink for InstrumentedSink<'a, S> {
         // the "unknown" fallback — keeping this passthrough consistent with the
         // `connector` metric label rather than leaking an empty string.
         guarded_connector_name(self.inner.connector_name())
+    }
+
+    // Columnar fast path (feature `arrow`): forward transparently to the inner
+    // sink; the columnar loop in `pipeline.rs` emits the sink metrics (RFC 0002).
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        self.inner.supports_columnar()
+    }
+
+    #[cfg(feature = "arrow")]
+    async fn write_batch_columnar(
+        &self,
+        batch: &arrow::array::RecordBatch,
+    ) -> Result<usize, FaucetError> {
+        self.inner.write_batch_columnar(batch).await
     }
 
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
