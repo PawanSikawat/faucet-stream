@@ -89,10 +89,10 @@ path below (never a `Value` replacement; the default path is unchanged). The
 conversion cost on IO-bound row connectors (REST/Mongo/webhook) remains
 negligible against the wire round-trip, so they stay on `Value`.
 
-> Scope note for the benchmark: the DuckDB reference is capped at ≤1 000 rows
-> because feeding a single page larger than DuckDB's standard vector size through
-> the `vtab-arrow` bridge **aborts the process** — a separate large-page defect in
-> the `sql` transform, tracked in its own issue, not part of this RFC.
+> The benchmark also surfaced a separate large-page defect — feeding a single
+> page larger than DuckDB's standard vector size through the `vtab-arrow` bridge
+> **aborted the process** (#372). Fixed by chunked arrow-vtab registration in the
+> `sql` transform, so the DuckDB reference now runs at every page size.
 
 ## Implementation status
 

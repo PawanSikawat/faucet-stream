@@ -83,13 +83,17 @@ fn execute_page(st: &mut State, records: Vec<Value>) -> Result<Vec<Value>, Fauce
         }
     };
     let batch = json_to_record_batch(&records, schema)?;
-    let params = arrow_recordbatch_to_query_params(batch);
-    st.conn
-        .execute(
-            "CREATE OR REPLACE TEMP TABLE batch AS SELECT * FROM arrow(?, ?)",
-            params,
-        )
-        .map_err(|e| FaucetError::Transform(format!("sql transform: register batch: {e}")))?;
+    // DuckDB's arrow vtab copies each arrow array into a `DataChunk` whose
+    // capacity is `STANDARD_VECTOR_SIZE` (2048); handing it a single batch with
+    // more rows than that trips `assert(array.len() <= out.capacity())` in
+    // duckdb-rs and **aborts the process** (#372) — reachable whenever a page
+    // larger than 2048 rows reaches the transform (`batch_size` > 2048 or
+    // `batch_size: 0`). Register the batch in <=2048-row slices instead: CREATE
+    // from the first slice, INSERT the rest into the same temp table. All slices
+    // land in one `batch` relation, so query semantics (incl. GROUP BY / window
+    // aggregation over the whole page) are unchanged; a <=2048-row page still
+    // takes exactly one CREATE, identical to before.
+    register_batch_chunked(st, batch)?;
 
     // First-page aggregation detection (now that `batch` exists).
     if st.aggregates.is_none() {
@@ -117,6 +121,42 @@ fn execute_page(st: &mut State, records: Vec<Value>) -> Result<Vec<Value>, Fauce
         record_batches_to_json(&batches)?
     };
     Ok(out)
+}
+
+/// DuckDB's fixed vector size — the maximum rows a single arrow array may carry
+/// into the arrow vtab without tripping the capacity assertion (#372).
+const DUCKDB_VECTOR_SIZE: usize = 2048;
+
+/// Register `batch` as the temp table `batch`, splitting it into <=2048-row
+/// slices so an oversized page never aborts the process (#372). The first slice
+/// CREATEs the table, the rest INSERT into it — all landing in one relation, so
+/// the downstream query is unaffected. `RecordBatch::slice` is zero-copy.
+fn register_batch_chunked(st: &mut State, batch: RecordBatch) -> Result<(), FaucetError> {
+    let total = batch.num_rows();
+    let mut offset = 0;
+    let mut first = true;
+    // `execute_page` already returned early on empty input, but guard anyway so
+    // a zero-row batch still CREATEs an empty `batch` table (matching the prior
+    // single-CREATE behaviour) rather than leaving a stale one.
+    loop {
+        let len = (total - offset).min(DUCKDB_VECTOR_SIZE);
+        let slice = batch.slice(offset, len);
+        let params = arrow_recordbatch_to_query_params(slice);
+        let sql = if first {
+            "CREATE OR REPLACE TEMP TABLE batch AS SELECT * FROM arrow(?, ?)"
+        } else {
+            "INSERT INTO batch SELECT * FROM arrow(?, ?)"
+        };
+        st.conn
+            .execute(sql, params)
+            .map_err(|e| FaucetError::Transform(format!("sql transform: register batch: {e}")))?;
+        first = false;
+        offset += len;
+        if offset >= total {
+            break;
+        }
+    }
+    Ok(())
 }
 
 fn reload_relations(st: &mut State) -> Result<(), FaucetError> {
@@ -161,4 +201,60 @@ fn plan_has_aggregate(conn: &Connection, query: &str) -> bool {
         }
     }
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::SqlTransformConfig;
+    use faucet_core::stage::{apply_stages_to_page, compile_stage};
+    use serde_json::json;
+
+    fn run(query: &str, rows: Vec<Value>) -> Vec<Value> {
+        let cfg = SqlTransformConfig {
+            query: query.into(),
+            relations: vec![],
+            memory_limit: None,
+            threads: Some(1),
+        };
+        let stage = compile_stage(&SqlTransform::compile(&cfg).unwrap().into_page_stage()).unwrap();
+        apply_stages_to_page(rows, std::slice::from_ref(&stage)).unwrap()
+    }
+
+    // #372: a page larger than DuckDB's 2048-row vector size used to abort the
+    // whole process inside the arrow vtab. After chunked registration it must
+    // pass through cleanly.
+    #[test]
+    fn large_page_passthrough_does_not_abort() {
+        let rows: Vec<Value> = (0..10_000).map(|i| json!({"id": i, "v": i * 2})).collect();
+        let out = run("SELECT * FROM batch", rows);
+        assert_eq!(out.len(), 10_000, "every row of a >2048-row page survives");
+        // Spot-check a row past the first vector boundary.
+        assert_eq!(out[5_000]["id"], json!(5_000));
+    }
+
+    // Chunked registration lands every slice in one `batch` relation, so a
+    // GROUP BY still aggregates over the whole page, not per-2048-chunk.
+    #[test]
+    fn large_page_aggregate_is_global_over_the_whole_page() {
+        let rows: Vec<Value> = (0..5_000).map(|i| json!({"k": i % 4, "v": 1})).collect();
+        let out = run("SELECT k, COUNT(*) AS n FROM batch GROUP BY k ORDER BY k", rows);
+        assert_eq!(out.len(), 4, "one group per key");
+        let total: i64 = out.iter().map(|r| r["n"].as_i64().unwrap()).sum();
+        assert_eq!(total, 5_000, "every row counted exactly once across chunks");
+        for r in &out {
+            assert_eq!(r["n"], json!(1_250), "5000 rows / 4 keys = 1250 each");
+        }
+    }
+
+    // The <=2048 fast path (single CREATE) is unchanged.
+    #[test]
+    fn small_page_still_works() {
+        let out = run(
+            "SELECT id FROM batch WHERE id >= 1 ORDER BY id",
+            vec![json!({"id": 0}), json!({"id": 1}), json!({"id": 2})],
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["id"], json!(1));
+    }
 }

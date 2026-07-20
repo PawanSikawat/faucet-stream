@@ -207,21 +207,14 @@ fn bench(c: &mut Criterion) {
         });
         // DuckDB SQL over the page — the transform's real work. `apply_stages_to_page`
         // includes the crate's own internal Value↔Arrow conversions, so this is the
-        // full transform-boundary cost as shipped today.
-        //
-        // NOTE: capped at ≤1000 rows. Feeding a single page larger than DuckDB's
-        // standard vector size through the `vtab-arrow` bridge aborts the process
-        // (`assertion failed: array.len() <= out.capacity()` in duckdb-rs) — a real
-        // large-page defect tracked separately, not something this benchmark should
-        // exercise. The tax/parquet primitives above run at every size.
-        if n <= 1_000 {
-            let agg = sql_stage(
-                "SELECT region, SUM(amount) AS total, COUNT(*) AS n FROM batch GROUP BY region",
-            );
-            c.bench_function(&format!("work/duckdb_groupby/{n}"), |b| {
-                b.iter(|| apply_stages_to_page(recs.clone(), std::slice::from_ref(&agg)).unwrap())
-            });
-        }
+        // full transform-boundary cost as shipped today. Runs at every size: the
+        // >2048-row abort (#372) is fixed by chunked arrow-vtab registration.
+        let agg = sql_stage(
+            "SELECT region, SUM(amount) AS total, COUNT(*) AS n FROM batch GROUP BY region",
+        );
+        c.bench_function(&format!("work/duckdb_groupby/{n}"), |b| {
+            b.iter(|| apply_stages_to_page(recs.clone(), std::slice::from_ref(&agg)).unwrap())
+        });
     }
 }
 
