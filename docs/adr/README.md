@@ -32,6 +32,7 @@ Alternatives considered · Trade-offs · Consequences · Future work · Related.
 | [0008](./0008-observability.md) | Automatic instrumentation via pipeline decorators | [observability](../architecture/observability.md) |
 | [0009](./0009-schema-validation.md) | Fixed-order per-page passes: mask → quality → contract → drift | [schema](../architecture/schema.md) |
 | [0010](./0010-pipeline-runtime.md) | Lean core library; all orchestration in the CLI layer | [execution](../architecture/execution.md) |
+| [0011](./0011-cooperative-cancellation.md) | Cooperative, flush-completing cancellation — stop at the next page boundary, never mid-write | [invariants (I7, I8)](../architecture/invariants.md), [execution](../architecture/execution.md) |
 
 ## Proposing a new ADR
 

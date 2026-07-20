@@ -34,6 +34,14 @@ Nothing is re-written, and nothing depends on reproducing page boundaries. This 
 what qualifies the Kafka source for exactly-once. Legacy bare tokens (no embedded
 bookmark) fall back to the count-based skip path.
 
+**The dual expand-time gate.** Sink-anchored resume is only *sound* for a topology that
+satisfies one of two expand-time predicates, checked before any run starts (invariant
+[I9](../architecture/invariants.md)): either **(a)** a deterministic-replay source **+**
+an idempotent (watermark-bearing) sink **+** a durable state store **+** no DLQ, or
+**(b)** a keyed-upsert sink that neutralises duplicates regardless of source replay. A
+config that requests `DeliveryMode::ExactlyOnce` without matching either predicate is
+rejected at `expand`/`run` time rather than silently degrading to at-least-once.
+
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 sequenceDiagram

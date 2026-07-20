@@ -6,9 +6,9 @@
 |---|---|
 | **RFC** | 0002 |
 | **Title** | Optional Apache Arrow record path |
-| **Status** | Draft (proposal) |
+| **Status** | Draft (proposal) — **benchmark-justified**, see [Benchmark evidence](#benchmark-evidence-324) |
 | **Authors** | faucet-stream maintainers |
-| **Related issues** | epic #38 |
+| **Related issues** | epic #38 · #324 (benchmark + go/no-go) |
 | **Related ADRs** | [0004 JSON record model](../docs/adr/0004-json-record-model.md), [0001 stream-pages](../docs/adr/0001-stream-pages.md) |
 
 ## Summary
@@ -43,6 +43,40 @@ in the current codebase point to a columnar fast path being worth its weight:
 Doing nothing is a legitimate option — the `Value` path is correct and simple —
 but leaves throughput on the table for exactly the analytical connectors most
 likely to move large volumes.
+
+## Benchmark evidence (#324)
+
+Issue #324 (D) asked for this to be **measured before committed**, not assumed.
+The benchmark `crates/transform-sql/benches/columnar_roundtrip.rs` times the
+Arrow↔`Value` conversions a `parquet → transform-sql → parquet` chain performs
+today (byte-identical to `src/shovel.rs`) against the irreducible columnar work
+(Parquet encode/decode, DuckDB SQL) on a representative 6-column analytical page.
+Medians (Apple silicon, criterion, one page = one row group):
+
+| rows | Arrow→`Value` | `Value`→Arrow | **round-trip (tax / boundary)** | Parquet decode + encode |
+|-----:|------:|------:|------:|------:|
+| 1 000 | 514 µs | 151 µs | **698 µs** | 101 µs |
+| 10 000 | 5.14 ms | 1.56 ms | **7.01 ms** | 0.93 ms |
+| 50 000 | 28.3 ms | 8.65 ms | **41.7 ms** | 4.78 ms |
+
+**Finding — the `Value` tax is material and dominant on columnar chains.** A
+single Arrow→`Value`→Arrow round-trip costs **~7–9× the entire Parquet
+encode+decode** for the same page, and a full `parquet → sql → parquet` run pays
+that conversion at *every* pipeline boundary (source emit, transform in, transform
+out, sink write) — work a fully Arrow-native path skips end to end. The
+Arrow→`Value` direction dominates (serde parse of the JSON buffer), scaling
+super-linearly with page size. This is exactly the avoidable cost this RFC
+targets, on exactly the analytical workloads where throughput matters most.
+
+**Go/no-go: GO** — the number justifies building the *opt-in, additive* Arrow
+path below (never a `Value` replacement; the default path is unchanged). The
+conversion cost on IO-bound row connectors (REST/Mongo/webhook) remains
+negligible against the wire round-trip, so they stay on `Value`.
+
+> Scope note for the benchmark: the DuckDB reference is capped at ≤1 000 rows
+> because feeding a single page larger than DuckDB's standard vector size through
+> the `vtab-arrow` bridge **aborts the process** — a separate large-page defect in
+> the `sql` transform, tracked in its own issue, not part of this RFC.
 
 ## Guide-level explanation
 

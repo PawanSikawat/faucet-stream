@@ -123,7 +123,7 @@ in `run_stream`; the executor's `STOP_FLUSH_GRACE` backstop
 
 **If violated.** A cancel that dropped the future immediately would flush
 nothing — the difference between a clean stop and a corrupted Parquet file.
-See [execution](./execution.md).
+See [execution](./execution.md) and [ADR 0011](../adr/0011-cooperative-cancellation.md).
 
 ## I9 — Config gates are enforced before any run starts
 
