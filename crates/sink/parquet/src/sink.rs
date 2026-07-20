@@ -263,18 +263,41 @@ impl ParquetSink {
             state.schema = Some(schema);
         }
         let schema = state.schema.clone().expect("schema set above");
+        let batch = self.encode_batch(&mut state.warned_fields, schema, records)?;
+        self.write_record_batch(state, &batch).await
+    }
+
+    /// Write an already-built Arrow `RecordBatch` to the current file, opening
+    /// the writer lazily on first use and applying row/byte rollover after the
+    /// write.
+    ///
+    /// This is the shared writer tail behind both the JSON path
+    /// ([`write_chunk`](Self::write_chunk), which builds the batch from
+    /// `serde_json::Value` records via [`encode_batch`](Self::encode_batch))
+    /// and the columnar fast path (`write_batch_columnar`, which feeds an
+    /// Arrow batch straight in). When `state.schema` is not yet locked in it
+    /// is taken from the batch's own schema — the JSON path always sets it
+    /// first (from `infer_schema`), so this only fires for the columnar path.
+    async fn write_record_batch(
+        &self,
+        state: &mut WriterState,
+        batch: &RecordBatch,
+    ) -> Result<usize, FaucetError> {
+        if state.schema.is_none() {
+            state.schema = Some(batch.schema());
+        }
+        let schema = state.schema.clone().expect("schema set above");
 
         if state.writer.is_none() {
-            state.writer = Some(self.open_writer(schema.clone()).await?);
+            state.writer = Some(self.open_writer(schema).await?);
         }
 
-        let batch = self.encode_batch(&mut state.warned_fields, schema.clone(), records)?;
         let batch_rows = batch.num_rows();
 
         let estimated_size = {
             let writer = state.writer.as_mut().expect("writer set above");
             writer
-                .write(&batch)
+                .write(batch)
                 .await
                 .map_err(|e| FaucetError::Sink(format!("parquet write failed: {e}")))?;
             // `bytes_written` only counts data already flushed to the
@@ -471,6 +494,33 @@ impl faucet_core::Sink for ParquetSink {
         }
 
         Ok(total_rows)
+    }
+
+    /// The Parquet sink writes Arrow `RecordBatch`es natively, so it opts into
+    /// the columnar fast path (RFC 0002 / #375): a `parquet -> parquet` chain
+    /// can hand batches straight through without materializing
+    /// `serde_json::Value` rows.
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        true
+    }
+
+    /// Write an Arrow `RecordBatch` directly, bypassing the
+    /// `Value` → `RecordBatch` conversion `write_batch` performs. Routes
+    /// through the same [`write_record_batch`](Self::write_record_batch) tail
+    /// so schema inference (from the batch's own schema on first use), lazy
+    /// writer open, and row/byte rollover all behave identically to the JSON
+    /// path. Returns the number of rows written.
+    #[cfg(feature = "arrow")]
+    async fn write_batch_columnar(
+        &self,
+        batch: &arrow::record_batch::RecordBatch,
+    ) -> Result<usize, FaucetError> {
+        if batch.num_rows() == 0 {
+            return Ok(0);
+        }
+        let mut state = self.state.lock().await;
+        self.write_record_batch(&mut state, batch).await
     }
 
     /// Make buffered output durable.
