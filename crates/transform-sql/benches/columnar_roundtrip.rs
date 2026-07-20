@@ -18,6 +18,12 @@
 //! primitive so the tax can be expressed as a fraction of a real chain — the
 //! number the opt-in-Arrow-fast-path go/no-go hinges on.
 //!
+//! It also carries an **S3-bulk variant** (`s3_bulk/*`). S3's bulk interchange
+//! is JSONL, not Arrow, so its tax is `Value` ↔ JSON *text* (mirroring the real
+//! `faucet-sink-s3` / `faucet-source-s3` encoders). Comparing its round-trip to
+//! the Parquet primitives quantifies the saving an Arrow-native Parquet-on-S3
+//! path would capture for bulk analytical objects.
+//!
 //! The Arrow↔Value conversions below are byte-identical to `src/shovel.rs`
 //! (same `arrow_json` builders, `with_explicit_nulls(true)` on the writer) so
 //! the measurement reflects the real code path, not an approximation.
@@ -91,6 +97,33 @@ fn parquet_decode(bytes: Vec<u8>) -> RecordBatch {
     arrow::compute::concat_batches(&schema, &batches).unwrap()
 }
 
+// ── S3-bulk JSONL encode / decode (identical to the S3 sink/source) ──────────
+//
+// S3's bulk interchange is JSONL, not Arrow — so the tax here is `Value` ↔ JSON
+// *text*, and the Arrow-native proposition for S3 is "store Parquet objects
+// instead" (measured by the `work/parquet_*` primitives above). These two fns
+// mirror `faucet-sink-s3::serialize_jsonl` (per-record `to_vec` + `\n`) and
+// `faucet-source-s3`'s line reader (`lines()` → `from_str` per line).
+
+fn s3_jsonl_encode(records: &[Value]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    for record in records {
+        let line = serde_json::to_vec(record).unwrap();
+        buf.extend_from_slice(&line);
+        buf.push(b'\n');
+    }
+    buf
+}
+
+fn s3_jsonl_decode(bytes: &[u8]) -> Vec<Value> {
+    let text = std::str::from_utf8(bytes).unwrap();
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .collect()
+}
+
 // ── Representative analytical page: mixed typed columns ──────────────────────
 
 fn page(n: usize) -> Vec<Value> {
@@ -156,6 +189,21 @@ fn bench(c: &mut Criterion) {
         // Parquet encode (what the sink pays regardless of interchange type).
         c.bench_function(&format!("work/parquet_encode/{n}"), |b| {
             b.iter(|| parquet_encode(std::hint::black_box(&batch)))
+        });
+
+        // ── S3-bulk variant: JSONL text (de)serialization ──
+        // The tax an S3 bulk object pays today. Compare its round-trip against
+        // `work/parquet_*` above: that difference is the saving an Arrow-native
+        // Parquet-on-S3 path would capture for bulk analytical objects.
+        let jsonl = s3_jsonl_encode(&recs);
+        c.bench_function(&format!("s3_bulk/jsonl_encode/{n}"), |b| {
+            b.iter(|| s3_jsonl_encode(std::hint::black_box(&recs)))
+        });
+        c.bench_function(&format!("s3_bulk/jsonl_decode/{n}"), |b| {
+            b.iter(|| s3_jsonl_decode(std::hint::black_box(&jsonl)))
+        });
+        c.bench_function(&format!("s3_bulk/jsonl_round_trip/{n}"), |b| {
+            b.iter(|| s3_jsonl_decode(&s3_jsonl_encode(std::hint::black_box(&recs))))
         });
         // DuckDB SQL over the page — the transform's real work. `apply_stages_to_page`
         // includes the crate's own internal Value↔Arrow conversions, so this is the

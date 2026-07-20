@@ -68,7 +68,23 @@ Arrow→`Value` direction dominates (serde parse of the JSON buffer), scaling
 super-linearly with page size. This is exactly the avoidable cost this RFC
 targets, on exactly the analytical workloads where throughput matters most.
 
-**Go/no-go: GO** — the number justifies building the *opt-in, additive* Arrow
+**S3-bulk variant.** S3's bulk interchange is JSONL, not Arrow, so its tax is
+`Value` ↔ JSON *text* (the bench mirrors the real `faucet-sink-s3` /
+`faucet-source-s3` encoders). Its round-trip vs the Parquet (Arrow) round-trip
+for the same page:
+
+| rows | JSONL round-trip (S3 today) | Parquet round-trip (Arrow-on-S3) |
+|-----:|------:|------:|
+| 1 000 | 505 µs | 101 µs |
+| 10 000 | 4.92 ms | 0.92 ms |
+| 50 000 | 25.3 ms | 4.78 ms |
+
+The JSONL bulk round-trip is **~5× the Parquet round-trip** (JSON parse dominates,
+same shape as Arrow→`Value`). So the columnar fast path also motivates a
+**Parquet-on-S3 object mode** — bulk analytical objects skip per-record JSON text
+(de)serialization and gain columnar compression.
+
+**Go/no-go: GO** — the numbers justify building the *opt-in, additive* Arrow
 path below (never a `Value` replacement; the default path is unchanged). The
 conversion cost on IO-bound row connectors (REST/Mongo/webhook) remains
 negligible against the wire round-trip, so they stay on `Value`.
