@@ -416,6 +416,106 @@ impl faucet_core::Source for ParquetSource {
         })
     }
 
+    /// The Parquet source natively produces Arrow `RecordBatch`es, so it opts
+    /// into the columnar fast path (RFC 0002 / #375). A `parquet -> parquet`
+    /// chain can then move batches end-to-end without materializing
+    /// `serde_json::Value` rows.
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        true
+    }
+
+    /// Stream Arrow `RecordBatch`es directly, one
+    /// [`ColumnarPage`](faucet_core::columnar::ColumnarPage) per batch. Mirrors
+    /// [`stream_pages`](faucet_core::Source::stream_pages) exactly — same file
+    /// resolution, same up-front cross-file schema validation, same file-by-file
+    /// iteration — but skips the `RecordBatch` → JSON conversion entirely.
+    ///
+    /// Every page carries `bookmark: None` (the Parquet source has no
+    /// incremental-replication mode). Empty batches are skipped.
+    #[cfg(feature = "arrow")]
+    fn stream_batches<'a>(
+        &'a self,
+        context: &'a HashMap<String, Value>,
+        _batch_size: usize,
+    ) -> Pin<
+        Box<
+            dyn Stream<Item = Result<faucet_core::columnar::ColumnarPage, FaucetError>> + Send + 'a,
+        >,
+    > {
+        Box::pin(async_stream::try_stream! {
+            // Resolve the FULL file set first: schema validation must cover
+            // every file even under Mode B sharding, then only this shard's
+            // subset is streamed. Validating just the shard's files would let
+            // a cross-shard schema mismatch slip through (each worker would
+            // see an internally-consistent subset) and silently mix shapes
+            // downstream — the exact failure the unsharded path rejects.
+            let all_targets = self.resolve_all_files(context).await?;
+            let targets = self.shard_filter(all_targets.clone());
+            tracing::info!(
+                files = targets.len(),
+                resolved = all_targets.len(),
+                "Parquet source resolved files",
+            );
+
+            if all_targets.is_empty() {
+                return;
+            }
+
+            // Validate every file's schema UP FRONT, before yielding any rows.
+            // A divergent schema on a *later* file must fail before earlier
+            // files' rows are committed downstream — otherwise the streaming
+            // path performs a partial, non-atomic write and only then aborts
+            // (#146 M11). Opening a target reads just the Parquet footer
+            // metadata (not row data), so this is a cheap probe; we drop each
+            // probe stream immediately. The cost is one extra footer read per
+            // file, paid once before streaming begins.
+            let mut reference: Option<(String, arrow::datatypes::SchemaRef)> = None;
+            for target in &all_targets {
+                let (_, arrow_schema, display) = self.open_target_stream(target).await?;
+                if let Some((first_path, first_schema)) = &reference {
+                    if first_schema != &arrow_schema {
+                        Err(FaucetError::Source(schema_mismatch_message_pair(
+                            first_path,
+                            first_schema,
+                            &display,
+                            &arrow_schema,
+                        )))?;
+                    }
+                } else {
+                    reference = Some((display, arrow_schema));
+                }
+            }
+
+            // Schemas are consistent across all files; stream batches file by file.
+            let mut total_records = 0usize;
+            let mut total_pages = 0usize;
+            for target in &targets {
+                let (mut batches, _schema, display) = self.open_target_stream(target).await?;
+                while let Some(batch) = batches.next().await {
+                    let batch = batch.map_err(|e| {
+                        FaucetError::Source(format!(
+                            "parquet decode error in '{display}': {e}"
+                        ))
+                    })?;
+                    if batch.num_rows() == 0 {
+                        continue;
+                    }
+                    total_records += batch.num_rows();
+                    total_pages += 1;
+                    yield faucet_core::columnar::ColumnarPage { batch, bookmark: None };
+                }
+            }
+
+            tracing::info!(
+                pages = total_pages,
+                total_records,
+                batch_size = self.config.batch_size,
+                "Parquet source columnar stream complete",
+            );
+        })
+    }
+
     fn config_schema(&self) -> Value {
         serde_json::to_value(faucet_core::schema_for!(ParquetSourceConfig))
             .expect("schema serialization")

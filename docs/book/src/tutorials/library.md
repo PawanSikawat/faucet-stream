@@ -107,6 +107,25 @@ let result = Pipeline::new(&source, &sink)
 The pipeline reads the bookmark before fetching and persists a new one only after
 the sink confirms each page — so a crash never loses unwritten data.
 
+## Buffered fetch vs. native streaming
+
+`Pipeline::run` (and `run_stream`) always drives the source through
+`Source::stream_pages` and writes each `StreamPage` as it arrives, so the **sink**
+side is bounded at `O(batch_size)` regardless of which source you use. What differs is
+the **source** side:
+
+- Sources that **override `stream_pages`** (databases, CDC, object stores in
+  JSONL/raw-text mode, Parquet, Kafka, …) read incrementally from their primitive —
+  peak memory stays at `O(batch_size)` end to end.
+- Sources that use the **default `stream_pages`** implement only `fetch_with_context`;
+  the default buffers the whole result via `fetch_all` and then chunks it — correct, but
+  peak memory is the full result set on the source side.
+
+When you implement a custom `Source`, override `stream_pages` if your backend can page
+natively; otherwise implement just `fetch_with_context` and inherit the buffered
+default. The per-connector breakdown is in the
+[connector catalog](../reference/connectors.md#streaming-native-vs-buffered).
+
 ## Why embed instead of shelling out to the CLI?
 
 - **Typed configs** — config structs implement `serde` + `JsonSchema`, so you get

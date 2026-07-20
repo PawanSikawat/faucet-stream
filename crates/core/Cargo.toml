@@ -72,6 +72,13 @@ masking = ["dep:regex", "dep:sha2", "dep:hmac"]
 # files and per-line JSONL/DLQ output. `sha2` derives the 32-byte key from the
 # configured key string.
 encryption = ["dep:aes-gcm", "dep:sha2"]
+# Opt-in Apache Arrow columnar record path (RFC 0002 / #375). Adds the
+# escape-hatch trait methods (`Source::stream_batches` /
+# `Sink::write_batch_columnar`), the `ColumnarPage` type, and the
+# `RecordBatch` <-> `Value` shim. Inert by default — default builds are
+# byte-identical to the `Value`-only pipeline; the `arrow` deps are pulled only
+# when a connector opts a chain into the columnar fast path.
+arrow = ["dep:arrow", "dep:arrow-json"]
 
 [dependencies]
 serde.workspace = true
@@ -115,6 +122,9 @@ jsonschema = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 aes-gcm = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
+# Opt-in columnar record path (feature `arrow`). Heavy, so strictly optional.
+arrow = { workspace = true, optional = true }
+arrow-json = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true

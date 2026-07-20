@@ -10,6 +10,13 @@ readme = "README.md"
 keywords = ["parquet", "arrow", "sink", "pipeline", "connector"]
 categories.workspace = true
 
+[features]
+# Opt into the Arrow columnar fast path (RFC 0002 / #375). When enabled the
+# sink implements `supports_columnar`/`write_batch_columnar`, accepting Arrow
+# `RecordBatch`es directly so a parquet -> parquet chain never materializes
+# `serde_json::Value`. Off by default.
+arrow = ["faucet-core/arrow"]
+
 [dependencies]
 faucet-core.workspace = true
 schemars.workspace = true

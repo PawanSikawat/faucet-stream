@@ -115,6 +115,41 @@ pub trait Source: Send + Sync {
         })
     }
 
+    /// Whether this source can emit **columnar** ([`ColumnarPage`](crate::columnar::ColumnarPage))
+    /// pages via [`stream_batches`](Self::stream_batches). Default: `false`.
+    ///
+    /// The pipeline uses the columnar fast path only when *both* the source and
+    /// sink return `true` here (and no `Value`-shaped stage needs to observe the
+    /// records), so an Arrow-native `parquet → parquet` chain never materializes
+    /// `Value`. Opt-in and additive — see [`crate::columnar`] (RFC 0002 / #375).
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        false
+    }
+
+    /// Stream the source natively as Arrow
+    /// [`ColumnarPage`](crate::columnar::ColumnarPage)s.
+    ///
+    /// Only invoked when [`supports_columnar`](Self::supports_columnar) returns
+    /// `true`; the default yields a single typed "unsupported" error so a source
+    /// that advertises support but forgets to override this fails loudly rather
+    /// than silently. Each page's `bookmark` carries the same checkpoint
+    /// semantics as [`StreamPage`].
+    #[cfg(feature = "arrow")]
+    fn stream_batches<'a>(
+        &'a self,
+        context: &'a std::collections::HashMap<String, Value>,
+        batch_size: usize,
+    ) -> Pin<Box<dyn Stream<Item = Result<crate::columnar::ColumnarPage, FaucetError>> + Send + 'a>>
+    {
+        let _ = (context, batch_size);
+        let name = self.connector_name();
+        let err: Result<crate::columnar::ColumnarPage, FaucetError> = Err(FaucetError::Source(
+            format!("source '{name}' does not support columnar streaming (stream_batches)"),
+        ));
+        Box::pin(futures::stream::once(async move { err }))
+    }
+
     /// Return a JSON Schema describing the configuration this source accepts.
     fn config_schema(&self) -> Value {
         serde_json::json!({"type": "object", "properties": {}})
@@ -346,6 +381,35 @@ pub trait Sink: Send + Sync {
     async fn write_batch_partial(&self, records: &[Value]) -> Result<Vec<RowOutcome>, FaucetError> {
         self.write_batch(records).await?;
         Ok(records.iter().map(|_| Ok(())).collect())
+    }
+
+    /// Whether this sink can consume **columnar** (`arrow::RecordBatch`) writes
+    /// via [`write_batch_columnar`](Self::write_batch_columnar) without first
+    /// converting to `Value`. Default: `false`.
+    ///
+    /// The pipeline takes the columnar fast path only when *both* the source and
+    /// sink return `true` (RFC 0002 / #375).
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        false
+    }
+
+    /// Write a columnar `RecordBatch` to the destination, returning the number of
+    /// rows written.
+    ///
+    /// The default converts the batch to `Value` rows via the
+    /// [`columnar`](crate::columnar) shim and delegates to
+    /// [`write_batch`](Self::write_batch), so every sink participates correctly
+    /// even without a native columnar path. Sinks that write Arrow/Parquet
+    /// directly override this — and return `true` from
+    /// [`supports_columnar`](Self::supports_columnar) — to skip the conversion.
+    #[cfg(feature = "arrow")]
+    async fn write_batch_columnar(
+        &self,
+        batch: &arrow::array::RecordBatch,
+    ) -> Result<usize, FaucetError> {
+        let rows = crate::columnar::record_batch_to_values(batch)?;
+        self.write_batch(&rows).await
     }
 
     /// Whether this sink can durably commit a page's rows **and** a commit token

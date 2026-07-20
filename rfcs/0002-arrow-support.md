@@ -6,9 +6,9 @@
 |---|---|
 | **RFC** | 0002 |
 | **Title** | Optional Apache Arrow record path |
-| **Status** | Draft (proposal) |
+| **Status** | Accepted — **partially implemented** (foundation + parquet fast path landed; see [Implementation status](#implementation-status)) |
 | **Authors** | faucet-stream maintainers |
-| **Related issues** | epic #38 |
+| **Related issues** | epic #38 · #324 (benchmark + go/no-go) · #375 (implementation) |
 | **Related ADRs** | [0004 JSON record model](../docs/adr/0004-json-record-model.md), [0001 stream-pages](../docs/adr/0001-stream-pages.md) |
 
 ## Summary
@@ -43,6 +43,80 @@ in the current codebase point to a columnar fast path being worth its weight:
 Doing nothing is a legitimate option — the `Value` path is correct and simple —
 but leaves throughput on the table for exactly the analytical connectors most
 likely to move large volumes.
+
+## Benchmark evidence (#324)
+
+Issue #324 (D) asked for this to be **measured before committed**, not assumed.
+The benchmark `crates/transform-sql/benches/columnar_roundtrip.rs` times the
+Arrow↔`Value` conversions a `parquet → transform-sql → parquet` chain performs
+today (byte-identical to `src/shovel.rs`) against the irreducible columnar work
+(Parquet encode/decode, DuckDB SQL) on a representative 6-column analytical page.
+Medians (Apple silicon, criterion, one page = one row group):
+
+| rows | Arrow→`Value` | `Value`→Arrow | **round-trip (tax / boundary)** | Parquet decode + encode |
+|-----:|------:|------:|------:|------:|
+| 1 000 | 514 µs | 151 µs | **698 µs** | 101 µs |
+| 10 000 | 5.14 ms | 1.56 ms | **7.01 ms** | 0.93 ms |
+| 50 000 | 28.3 ms | 8.65 ms | **41.7 ms** | 4.78 ms |
+
+**Finding — the `Value` tax is material and dominant on columnar chains.** A
+single Arrow→`Value`→Arrow round-trip costs **~7–9× the entire Parquet
+encode+decode** for the same page, and a full `parquet → sql → parquet` run pays
+that conversion at *every* pipeline boundary (source emit, transform in, transform
+out, sink write) — work a fully Arrow-native path skips end to end. The
+Arrow→`Value` direction dominates (serde parse of the JSON buffer), scaling
+super-linearly with page size. This is exactly the avoidable cost this RFC
+targets, on exactly the analytical workloads where throughput matters most.
+
+**S3-bulk variant.** S3's bulk interchange is JSONL, not Arrow, so its tax is
+`Value` ↔ JSON *text* (the bench mirrors the real `faucet-sink-s3` /
+`faucet-source-s3` encoders). Its round-trip vs the Parquet (Arrow) round-trip
+for the same page:
+
+| rows | JSONL round-trip (S3 today) | Parquet round-trip (Arrow-on-S3) |
+|-----:|------:|------:|
+| 1 000 | 505 µs | 101 µs |
+| 10 000 | 4.92 ms | 0.92 ms |
+| 50 000 | 25.3 ms | 4.78 ms |
+
+The JSONL bulk round-trip is **~5× the Parquet round-trip** (JSON parse dominates,
+same shape as Arrow→`Value`). So the columnar fast path also motivates a
+**Parquet-on-S3 object mode** — bulk analytical objects skip per-record JSON text
+(de)serialization and gain columnar compression.
+
+**Go/no-go: GO** — the numbers justify building the *opt-in, additive* Arrow
+path below (never a `Value` replacement; the default path is unchanged). The
+conversion cost on IO-bound row connectors (REST/Mongo/webhook) remains
+negligible against the wire round-trip, so they stay on `Value`.
+
+> The benchmark also surfaced a separate large-page defect — feeding a single
+> page larger than DuckDB's standard vector size through the `vtab-arrow` bridge
+> **aborted the process** (#372). Fixed by chunked arrow-vtab registration in the
+> `sql` transform, so the DuckDB reference now runs at every page size.
+
+## Implementation status
+
+Implemented via the **escape-hatch** shape (from #324) rather than the
+`StreamPage` enum sketched below — a separate columnar method pair with runtime
+negotiation, so `StreamPage` and all ~189 connector construction sites are
+untouched and default (`arrow`-off) builds are byte-identical.
+
+- **Landed (#375):**
+  - `faucet-core` `arrow` feature: `columnar::ColumnarPage` + the canonical
+    `RecordBatch ↔ Value` shim; defaulted, object-safe `Source::stream_batches`
+    / `supports_columnar` and `Sink::write_batch_columnar` / `supports_columnar`.
+  - Pipeline negotiation: `Pipeline::run` drives a columnar loop
+    (`run_stream_columnar`) — same checkpoint ordering + cooperative cancellation
+    — when both sides are columnar and no `Value`-shaped stage (DLQ, exactly-once,
+    masking/quality/contract/drift, adaptive, resilience) is configured; else it
+    falls back to the `Value` path.
+  - `faucet-source-parquet` / `faucet-sink-parquet` opt in: a
+    `parquet → parquet` chain runs Arrow end-to-end. Umbrella + CLI `arrow`
+    aggregate feature.
+- **Not yet (tracked on #375):** columnar S3 (Parquet-object mode), DuckDB
+  transform-sql columnar in/out, warehouse bulk loaders; native-columnar
+  validation passes (today a `Value`-shaped stage forces the `Value` path);
+  richer per-page columnar metrics.
 
 ## Guide-level explanation
 

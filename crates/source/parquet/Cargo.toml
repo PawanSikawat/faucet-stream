@@ -10,6 +10,13 @@ readme = "README.md"
 keywords = ["parquet", "arrow", "etl", "pipeline", "connector"]
 categories.workspace = true
 
+[features]
+# Opt into the Arrow columnar fast path (RFC 0002 / #375). When enabled the
+# source implements `supports_columnar`/`stream_batches`, yielding Arrow
+# `RecordBatch`es directly so a parquet -> parquet chain never materializes
+# `serde_json::Value`. Off by default.
+arrow = ["faucet-core/arrow"]
+
 [dependencies]
 faucet-core.workspace = true
 schemars.workspace = true

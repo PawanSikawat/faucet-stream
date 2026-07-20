@@ -73,7 +73,14 @@ let result = Pipeline::new(&source, &sink)
 
 ## Future work
 
-- Typed capability traits ([RFC 0001](../../rfcs/0001-capability-traits.md)).
+- Typed capability traits ([RFC 0001](../../rfcs/0001-capability-traits.md)). **Note —
+  the capabilities themselves already ship** as defaulted methods on `Source`/`Sink`:
+  discovery (`supports_discover`/`discover`), health (`check`), exactly-once
+  (`supports_exactly_once`/`replay_guarantee`/`capture_resume_position`), and sharding
+  (`is_shardable`/`enumerate_shards`). Only the *typed refactor* (splitting them into
+  separate marker traits) is deferred, and only worth revisiting if a genuinely new
+  capability arrives that does not fit the defaulted-method pattern — do not re-chase it
+  as missing functionality.
 
 ## Related
 

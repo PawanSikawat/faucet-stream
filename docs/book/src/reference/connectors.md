@@ -111,6 +111,36 @@ individual tap — pair it with a keyed/upsert sink for clean, effectively-once
 > **Singer bridge ⚠️** passes the battery but is additionally **experimental
 > (v0, single-stream)**.
 
+### Streaming: native vs. buffered
+
+The **Streams¹** column above is not all-or-nothing — every source participates in the
+bounded-memory streaming loop, but there are two ways it gets there:
+
+- **Native streaming (override).** The source reads from its underlying primitive
+  incrementally — a database cursor, a WAL/binlog/change stream, an object read line by
+  line, a scroll cursor, a Kafka partition — and emits each `StreamPage` as it goes.
+  Memory stays at `O(batch_size)` no matter how large the result set. These sources
+  **override** `Source::stream_pages`.
+- **Buffered fallback (default).** The source implements only the one required method,
+  `fetch_with_context`; the default `stream_pages` calls it, buffers the whole result,
+  then chunks the buffer into pages. Correct and still streamed *to the sink*, but peak
+  memory is the full result set because the fetch buffered it first.
+
+A connector author gets the buffered path for free and opts into native streaming only
+where the primitive supports it — see [ADR 0001](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/adr/0001-stream-pages.md)
+and the [stream-pages architecture note](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/stream-pages.md).
+
+**Sources that override `stream_pages` for native streaming:** `rest`, `graphql`,
+`xml`, `postgres`, `postgres-cdc`, `mysql`, `mysql-cdc`, `mssql`, `mssql-cdc`, `sqlite`,
+`mongodb`, `mongodb-cdc`, `s3`/`gcs`/`azure-blob` (JSONL & raw-text modes), `parquet`,
+`csv`, `elasticsearch` (scroll), `kafka`, `kinesis`, `spanner`, `websocket`, `redis`,
+and `grpc` (server-streaming mode).
+
+**Sources that intentionally keep the buffered default:** `grpc` unary mode (a single
+response — no paging primitive) and `webhook` (buffer-shaped by nature — it collects
+POSTs over a window). S3/GCS/Azure fall back to buffered for the JSON-array format only
+(one array object must be parsed whole).
+
 ## Sinks
 
 Every sink exposes a `batch_size` knob for write-side re-chunking. For the

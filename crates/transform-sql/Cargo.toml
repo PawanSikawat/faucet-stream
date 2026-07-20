@@ -23,9 +23,17 @@ tracing.workspace = true
 [dev-dependencies]
 criterion.workspace = true
 tempfile.workspace = true
+# Columnar-chain benchmark (#324 D) — Parquet IO to model the parquet→sql→parquet
+# round-trip the Value-tax measurement attributes against. Bench-only.
+parquet.workspace = true
+bytes.workspace = true
 
 [[bench]]
 name = "sql_transform"
+harness = false
+
+[[bench]]
+name = "columnar_roundtrip"
 harness = false
 
 [package.metadata.docs.rs]

@@ -758,6 +758,112 @@ fn build_projections(
 }
 
 /// Run one pipeline invocation. Returns (captured records, records_written).
+/// Assemble the runtime [`Pipeline`] for one invocation from a node's specs.
+///
+/// This is the `with_*` builder chain — state store, DLQ, cancellation, quality,
+/// contract, masking, schema-drift, adaptive batching, resilience, and delivery
+/// mode — lifted out of [`run_one_invocation`] so the wiring is testable in
+/// isolation and a preview-mode / feature-gate mistake (cf. #321 H1) is harder
+/// to make (#324 C). Behaviour is identical to the previous inline chain; the
+/// only I/O it performs is building the DLQ sink. `source`/`sink` are borrowed
+/// for the returned pipeline's lifetime; `state` is moved in.
+#[allow(clippy::too_many_arguments)]
+async fn build_pipeline<'a>(
+    source: &'a dyn Source,
+    sink: &'a dyn Sink,
+    node: &ExpandedNode,
+    opts: &ExecuteOptions,
+    state: Option<Arc<dyn StateStore>>,
+    cancel: &CancellationToken,
+    pipeline_name: &str,
+    row_id: &str,
+    run_id: &str,
+) -> CliResult<Pipeline<'a, dyn Source + 'a, dyn Sink + 'a>> {
+    let mut pipeline = Pipeline::new(source, sink)
+        .with_name(pipeline_name.to_owned())
+        .with_row(row_id.to_owned())
+        .with_run_id(run_id.to_owned());
+    if let Some(store) = state {
+        pipeline = pipeline.with_state_store(store);
+    }
+    if let Some(ref dlq_spec) = node.dlq {
+        let dlq_cfg = build_dlq_config(dlq_spec).await?;
+        pipeline = pipeline.with_dlq(dlq_cfg);
+    }
+    // Cooperative cancellation: a cancelled token makes the streaming loop stop
+    // at the next page boundary and flush the sink (#146 H16). The pipeline takes
+    // a clone so the caller's lineage terminal-event classification and SLA pass
+    // can still read `cancel.is_cancelled()` (cheap — the token is an `Arc`).
+    pipeline = pipeline.with_cancel(cancel.clone());
+    // Pipeline-level quality checks (v1: no matrix-row override). `expand` already
+    // validated this spec, but compile again here to obtain the runtime
+    // `CompiledQuality`; map any error to a config-level failure.
+    #[cfg(feature = "quality")]
+    if let Some(ref quality_spec) = node.quality {
+        let compiled = Arc::new(
+            faucet_core::CompiledQuality::compile(quality_spec)
+                .map_err(|e| CliError::Config(format!("quality: {e}")))?,
+        );
+        pipeline = pipeline.with_quality(compiled);
+    }
+    // Pipeline-level data contract (v1: no matrix-row override). `expand` already
+    // validated the spec; compile again here to obtain the runtime
+    // `CompiledContract`.
+    #[cfg(feature = "contract")]
+    if let Some(ref contract_spec) = node.contract {
+        let compiled = Arc::new(
+            faucet_core::CompiledContract::compile(contract_spec)
+                .map_err(|e| CliError::Config(format!("contract: {e}")))?,
+        );
+        pipeline = pipeline.with_contract(compiled);
+    }
+    // Pipeline-level PII masking (v1: no matrix-row override). Compile scoped to
+    // this node's destination sink — by template name (`sink_ref`) and by
+    // connector kind — so `applies_to` per-destination rules resolve. When no
+    // rule applies to this sink the compiled policy is empty and the pass is
+    // skipped entirely.
+    #[cfg(feature = "masking")]
+    if let Some(ref masking_spec) = node.masking {
+        let sink_ids = [node.sink_ref.as_str(), node.sink.kind.as_str()];
+        let compiled = faucet_core::CompiledMasking::compile_for_sink(masking_spec, &sink_ids)
+            .map_err(|e| CliError::Config(format!("masking: {e}")))?;
+        if !compiled.is_empty() {
+            pipeline = pipeline.with_masking(Arc::new(compiled));
+        }
+    }
+    // Schema-drift policy (pipeline-level in v1; same for every invocation).
+    if let Some(ref sd) = node.schema {
+        pipeline = pipeline.with_schema_drift(faucet_core::SchemaDriftPolicy::compile(sd));
+    }
+    // Execution-level adaptive batch-size controller (shared by all rows).
+    if let Some(ab) = opts
+        .execution
+        .as_ref()
+        .and_then(|e| e.adaptive_batch_size.clone())
+    {
+        ab.validate()
+            .map_err(|e| CliError::Config(format!("adaptive_batch_size: {e}")))?;
+        pipeline = pipeline.with_adaptive(ab);
+    }
+    // Resilience policy (retry/backoff/circuit-breaker/poison). Top-level in v1,
+    // so the same policy is attached to every invocation.
+    if let Some(policy) = opts.resilience.clone() {
+        pipeline = pipeline.with_resilience(policy);
+    }
+    // Delivery guarantee (exactly-once resume/skip when the node opted in; the
+    // expand gate already verified source/sink/state support). Preview modes
+    // (`--dry-run`, `--limit`) swap in counting/truncating sinks that cannot
+    // uphold an atomic watermark — and a token committed for a truncated page
+    // would corrupt it — so they always run at-least-once.
+    let effective_delivery = if opts.dry_run || opts.limit.is_some() {
+        faucet_core::idempotency::DeliveryMode::AtLeastOnce
+    } else {
+        node.delivery
+    };
+    pipeline = pipeline.with_delivery(effective_delivery);
+    Ok(pipeline)
+}
+
 async fn run_one_invocation(
     node: &ExpandedNode,
     parent_record: Option<&Value>,
@@ -976,116 +1082,25 @@ async fn run_one_invocation(
         None => sink,
     };
 
-    // 5) Run.
-    // When lineage is enabled the START/terminal lifecycle below still needs
-    // `pipeline_name` / `row_id` / `run_id`, so hand the builder clones; the
-    // non-lineage build moves them straight in (byte-identical to before).
-    #[cfg(feature = "lineage")]
-    let pipeline = Pipeline::new(source.as_ref(), sink.as_ref())
-        .with_name(pipeline_name.clone())
-        .with_row(row_id.clone())
-        .with_run_id(run_id.clone());
-    #[cfg(not(feature = "lineage"))]
-    let pipeline = Pipeline::new(source.as_ref(), sink.as_ref())
-        .with_name(pipeline_name)
-        .with_row(row_id)
-        .with_run_id(run_id);
-    let pipeline = match state {
-        Some(store) => pipeline.with_state_store(store),
-        None => pipeline,
-    };
-    let pipeline = if let Some(ref dlq_spec) = node.dlq {
-        let dlq_cfg = build_dlq_config(dlq_spec).await?;
-        pipeline.with_dlq(dlq_cfg)
-    } else {
-        pipeline
-    };
-    // Cooperative cancellation: a cancelled token makes the streaming loop stop
-    // at the next page boundary and flush the sink (#146 H16). The pipeline
-    // takes a clone so the lineage terminal-event classification and the SLA
-    // pass below can still read `cancel.is_cancelled()` (cheap — the token is
-    // an `Arc`).
-    let pipeline = pipeline.with_cancel(cancel.clone());
-    // Pipeline-level quality checks (v1: no matrix-row override). `expand`
-    // already validated this spec, but compile again here to obtain the
-    // runtime `CompiledQuality`; map any error to a config-level failure.
-    #[cfg(feature = "quality")]
-    let pipeline = if let Some(ref quality_spec) = node.quality {
-        let compiled = Arc::new(
-            faucet_core::CompiledQuality::compile(quality_spec)
-                .map_err(|e| CliError::Config(format!("quality: {e}")))?,
-        );
-        pipeline.with_quality(compiled)
-    } else {
-        pipeline
-    };
-    // Pipeline-level data contract (v1: no matrix-row override). `expand`
-    // already validated the spec; compile again here to obtain the runtime
-    // `CompiledContract`.
-    #[cfg(feature = "contract")]
-    let pipeline = if let Some(ref contract_spec) = node.contract {
-        let compiled = Arc::new(
-            faucet_core::CompiledContract::compile(contract_spec)
-                .map_err(|e| CliError::Config(format!("contract: {e}")))?,
-        );
-        pipeline.with_contract(compiled)
-    } else {
-        pipeline
-    };
-    // Pipeline-level PII masking (v1: no matrix-row override). Compile scoped
-    // to this node's destination sink — by template name (`sink_ref`) and by
-    // connector kind — so `applies_to` per-destination rules resolve. When no
-    // rule applies to this sink the compiled policy is empty and the pass is
-    // skipped entirely.
-    #[cfg(feature = "masking")]
-    let pipeline = if let Some(ref masking_spec) = node.masking {
-        let sink_ids = [node.sink_ref.as_str(), node.sink.kind.as_str()];
-        let compiled = faucet_core::CompiledMasking::compile_for_sink(masking_spec, &sink_ids)
-            .map_err(|e| CliError::Config(format!("masking: {e}")))?;
-        if compiled.is_empty() {
-            pipeline
-        } else {
-            pipeline.with_masking(Arc::new(compiled))
-        }
-    } else {
-        pipeline
-    };
-    // Schema-drift policy (pipeline-level in v1; same for every invocation).
-    let pipeline = if let Some(ref sd) = node.schema {
-        pipeline.with_schema_drift(faucet_core::SchemaDriftPolicy::compile(sd))
-    } else {
-        pipeline
-    };
-    // Execution-level adaptive batch-size controller (shared by all rows).
-    let pipeline = if let Some(ab) = opts
-        .execution
-        .as_ref()
-        .and_then(|e| e.adaptive_batch_size.clone())
-    {
-        ab.validate()
-            .map_err(|e| CliError::Config(format!("adaptive_batch_size: {e}")))?;
-        pipeline.with_adaptive(ab)
-    } else {
-        pipeline
-    };
-    // Resilience policy (retry/backoff/circuit-breaker/poison). Top-level in v1,
-    // so the same policy is attached to every invocation.
-    let pipeline = if let Some(policy) = opts.resilience.clone() {
-        pipeline.with_resilience(policy)
-    } else {
-        pipeline
-    };
-    // Delivery guarantee (exactly-once resume/skip when the node opted in; the
-    // expand gate already verified source/sink/state support). Preview modes
-    // (`--dry-run`, `--limit`) swap in counting/truncating sinks that cannot
-    // uphold an atomic watermark — and a token committed for a truncated page
-    // would corrupt it — so they always run at-least-once.
-    let effective_delivery = if opts.dry_run || opts.limit.is_some() {
-        faucet_core::idempotency::DeliveryMode::AtLeastOnce
-    } else {
-        node.delivery
-    };
-    let pipeline = pipeline.with_delivery(effective_delivery);
+    // 5) Assemble the runtime pipeline. The whole `with_*` builder chain (state,
+    //    DLQ, cancellation, quality, contract, masking, schema-drift, adaptive
+    //    batching, resilience, delivery) lives in `build_pipeline` so the wiring
+    //    is testable in isolation and a preview-mode / feature-gate mistake
+    //    (cf. #321 H1) is harder to make (#324 C). The identity strings are
+    //    borrowed — the lineage START/terminal lifecycle below still needs
+    //    `pipeline_name` / `row_id` / `run_id`.
+    let pipeline = build_pipeline(
+        source.as_ref(),
+        sink.as_ref(),
+        node,
+        opts,
+        state,
+        &cancel,
+        &pipeline_name,
+        &row_id,
+        &run_id,
+    )
+    .await?;
     // ── Lineage: START + heartbeat + terminal ────────────────────────────────
     #[cfg(feature = "lineage")]
     let lineage_ctx = match (&lineage, &lineage_cfg) {

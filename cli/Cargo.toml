@@ -213,6 +213,17 @@ compression = [
     "faucet-sink-azure-blob?/compression",
 ]
 
+# Opt-in Arrow columnar record path (RFC 0002 / #375). Activates the columnar
+# fast path on the Arrow-capable connectors the user has enabled (optional-dep
+# syntax, never pulls a connector itself) and forwards the core capability, so
+# `cargo install faucet-cli --features "source-parquet,sink-parquet,arrow"`
+# runs a parquet -> parquet pipeline Arrow end-to-end.
+arrow = [
+    "faucet-core/arrow",
+    "faucet-source-parquet?/arrow",
+    "faucet-sink-parquet?/arrow",
+]
+
 # Secrets-manager interpolation resolvers for the config layer. None in
 # defaults — opt in per backend, or `secrets` for all four.
 secrets = ["secrets-vault", "secrets-aws-sm", "secrets-gcp-sm", "secrets-azure-kv"]

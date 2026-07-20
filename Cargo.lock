@@ -4107,6 +4107,8 @@ name = "faucet-core"
 version = "1.5.0"
 dependencies = [
  "aes-gcm",
+ "arrow 58.3.0",
+ "arrow-json 58.3.0",
  "async-compression",
  "async-stream",
  "async-trait",
@@ -5480,9 +5482,11 @@ version = "1.0.4"
 dependencies = [
  "arrow 58.3.0",
  "arrow-json 58.3.0",
+ "bytes",
  "criterion",
  "duckdb",
  "faucet-core",
+ "parquet 58.3.0",
  "schemars 1.2.1",
  "serde",
  "serde_json",

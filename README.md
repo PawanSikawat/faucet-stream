@@ -845,8 +845,12 @@ docs/book/                    — mdBook documentation site (source under docs/b
 
 ## Star history
 
-<a href="https://star-history.com/#PawanSikawat/faucet-stream&Date">
-  <img alt="Star history chart for faucet-stream" src="https://api.star-history.com/svg?repos=PawanSikawat/faucet-stream&type=Date" width="600">
+<a href="https://www.star-history.com/?repos=PawanSikawat%2Ffaucet-stream&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=PawanSikawat/faucet-stream&type=date&theme=dark&legend=top-left&sealed_token=9G0SLiIBTDIhFTaBki1bRfURPsuWihZWbMamJ6mn6RIc_wQxXlvqeoPe6MLo5Zx2jx5i4s8VgB-Yu-MSjq8bMIzXcDn7hf0oe5BOU7H6RRz2w3Qnia4vog1vgULXzVCY0zPe10ztVjfTTzu2va4KvyZxVZR-8ZfNK3ku3XuVeoFCrIQgo3dtkQXJCmR8" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=PawanSikawat/faucet-stream&type=date&legend=top-left&sealed_token=9G0SLiIBTDIhFTaBki1bRfURPsuWihZWbMamJ6mn6RIc_wQxXlvqeoPe6MLo5Zx2jx5i4s8VgB-Yu-MSjq8bMIzXcDn7hf0oe5BOU7H6RRz2w3Qnia4vog1vgULXzVCY0zPe10ztVjfTTzu2va4KvyZxVZR-8ZfNK3ku3XuVeoFCrIQgo3dtkQXJCmR8" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=PawanSikawat/faucet-stream&type=date&legend=top-left&sealed_token=9G0SLiIBTDIhFTaBki1bRfURPsuWihZWbMamJ6mn6RIc_wQxXlvqeoPe6MLo5Zx2jx5i4s8VgB-Yu-MSjq8bMIzXcDn7hf0oe5BOU7H6RRz2w3Qnia4vog1vgULXzVCY0zPe10ztVjfTTzu2va4KvyZxVZR-8ZfNK3ku3XuVeoFCrIQgo3dtkQXJCmR8" />
+ </picture>
 </a>
 
 **Using faucet-stream in production?** Open a PR to add your team here — real adopters are the
