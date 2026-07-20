@@ -1075,6 +1075,32 @@ mod tests {
         assert_eq!(ids, vec![10, 11]);
     }
 
+    /// Columnar fast path (feature `arrow`): a `RecordBatch` written via
+    /// `write_batch_columnar` produces the same readable single-file Parquet as
+    /// the `Value` path — it goes through the shared `write_record_batch` tail,
+    /// so schema inference (from the batch), lazy writer open, and Drop-finalize
+    /// all behave identically. Proves the parquet sink's half of the
+    /// `parquet -> parquet` columnar chain (RFC 0002 / #375).
+    #[cfg(feature = "arrow")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn write_batch_columnar_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("out.parquet");
+        let rows = vec![json!({"id": 1}), json!({"id": 2}), json!({"id": 3})];
+        let batch = faucet_core::columnar::values_to_record_batch_inferred(&rows).unwrap();
+        {
+            let sink = ParquetSink::new(cfg(&path)).await.unwrap();
+            assert!(sink.supports_columnar(), "parquet sink is columnar-capable");
+            let n = sink.write_batch_columnar(&batch).await.unwrap();
+            assert_eq!(n, 3, "all rows written via the columnar path");
+            sink.flush().await.unwrap();
+            // Drop writes the footer.
+        }
+        let mut ids = read_ids(&path);
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 2, 3], "columnar-written rows read back intact");
+    }
+
     /// Rollover (directory) mode must keep its per-page file-rolling behavior:
     /// each `flush()` closes a file and the next page opens a new one. Assert
     /// the expected file count and total rows.

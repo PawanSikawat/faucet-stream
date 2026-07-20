@@ -6,9 +6,9 @@
 |---|---|
 | **RFC** | 0002 |
 | **Title** | Optional Apache Arrow record path |
-| **Status** | Draft (proposal) — **benchmark-justified**, see [Benchmark evidence](#benchmark-evidence-324) |
+| **Status** | Accepted — **partially implemented** (foundation + parquet fast path landed; see [Implementation status](#implementation-status)) |
 | **Authors** | faucet-stream maintainers |
-| **Related issues** | epic #38 · #324 (benchmark + go/no-go) |
+| **Related issues** | epic #38 · #324 (benchmark + go/no-go) · #375 (implementation) |
 | **Related ADRs** | [0004 JSON record model](../docs/adr/0004-json-record-model.md), [0001 stream-pages](../docs/adr/0001-stream-pages.md) |
 
 ## Summary
@@ -93,6 +93,30 @@ negligible against the wire round-trip, so they stay on `Value`.
 > because feeding a single page larger than DuckDB's standard vector size through
 > the `vtab-arrow` bridge **aborts the process** — a separate large-page defect in
 > the `sql` transform, tracked in its own issue, not part of this RFC.
+
+## Implementation status
+
+Implemented via the **escape-hatch** shape (from #324) rather than the
+`StreamPage` enum sketched below — a separate columnar method pair with runtime
+negotiation, so `StreamPage` and all ~189 connector construction sites are
+untouched and default (`arrow`-off) builds are byte-identical.
+
+- **Landed (#375):**
+  - `faucet-core` `arrow` feature: `columnar::ColumnarPage` + the canonical
+    `RecordBatch ↔ Value` shim; defaulted, object-safe `Source::stream_batches`
+    / `supports_columnar` and `Sink::write_batch_columnar` / `supports_columnar`.
+  - Pipeline negotiation: `Pipeline::run` drives a columnar loop
+    (`run_stream_columnar`) — same checkpoint ordering + cooperative cancellation
+    — when both sides are columnar and no `Value`-shaped stage (DLQ, exactly-once,
+    masking/quality/contract/drift, adaptive, resilience) is configured; else it
+    falls back to the `Value` path.
+  - `faucet-source-parquet` / `faucet-sink-parquet` opt in: a
+    `parquet → parquet` chain runs Arrow end-to-end. Umbrella + CLI `arrow`
+    aggregate feature.
+- **Not yet (tracked on #375):** columnar S3 (Parquet-object mode), DuckDB
+  transform-sql columnar in/out, warehouse bulk loaders; native-columnar
+  validation passes (today a `Value`-shaped stage forces the `Value` path);
+  richer per-page columnar metrics.
 
 ## Guide-level explanation
 

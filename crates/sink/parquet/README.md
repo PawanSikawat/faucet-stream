@@ -18,6 +18,7 @@ Built on the `parquet` + `arrow` crates wired through `object_store`, so local a
 - **Streaming writer** — one reused `object_store` client, bounded buffering, configurable `row_group_size` for read-back performance.
 - **Drops unknown fields (within a file)** — a field absent from the *current file's* locked schema (one that appeared after the file's first batch) is dropped, with a `tracing::warn!` once per field per file. A Parquet file cannot change its schema mid-stream, so this loss is unavoidable within a file — but the schema is re-inferred per file, so the field is captured in the next file on rollover.
 - **Flush-safe** — files become valid only when the footer is written. In **rollover / directory / S3 mode** each `flush()` (called automatically by the pipeline on success, error-unwind, and cooperative cancellation) closes the current file and writes its footer. In **single-file mode** one writer stays open for the whole run — per-page `flush()` only flushes buffered row groups (no footer) so the file is never truncated mid-stream — and the footer is written once when the sink is dropped at end of run.
+- **Arrow columnar fast path** (`arrow` feature, RFC 0002) — accepts Arrow `RecordBatch`es natively (`write_batch_columnar`), so a `parquet → parquet` pipeline writes them straight through the same writer/rollover path with no `serde_json::Value` round-trip. Opt-in; off by default and used only when the source is also columnar.
 
 ## Installation
 
