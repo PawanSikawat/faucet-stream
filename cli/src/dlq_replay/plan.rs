@@ -64,6 +64,8 @@ pub fn failed_dlq_spec(path: &Path, original: Option<&DlqSpec>) -> DlqSpec {
         config: json!({ "path": path.to_string_lossy() }),
         transforms: None,
         inherit_transforms: true,
+        status: None,
+        tags: Vec::new(),
     };
     match original {
         Some(o) => DlqSpec {
@@ -267,6 +269,8 @@ mod tests {
                 config: json!({"path": "orig.jsonl"}),
                 transforms: None,
                 inherit_transforms: true,
+                status: None,
+                tags: Vec::new(),
             },
             on_batch_error: OnBatchErrorSpec::DlqAll,
             max_failures_per_page: Some(5),

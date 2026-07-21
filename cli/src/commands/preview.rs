@@ -31,6 +31,11 @@ pub async fn run(args: PreviewArgs) -> CliResult<()> {
     let cfg = PipelineConfig::from_path_async(&path, args.profile.as_deref()).await?;
     let auth = crate::auth_catalog::build_auth_catalog(cfg.auth.as_ref())?;
     let nodes = expand(&cfg)?;
+    // Apply runtime row selection so `preview` previews the first root of the
+    // selected run set (#370/#371/#376/#377).
+    let selection =
+        crate::select::RunSelection::from_args(&args.selection, cfg.selection.as_ref())?;
+    let nodes = crate::select::select_nodes(nodes, &selection, !cfg.matrix.is_empty())?;
     let first_root = nodes
         .iter()
         .find(|n| matches!(n.role, NodeRole::Root))

@@ -284,6 +284,66 @@ pub enum CliError {
     #[error("failed to build auth provider '{name}': {message}")]
     AuthProviderBuild { name: String, message: String },
 
+    /// A `--select`/`--only`/`--skip` token matched no matrix row id (#370).
+    /// Guards against typos silently producing a partial or empty run.
+    #[error(
+        "{flag} '{token}' matched no matrix row. Available rows: {}",
+        if available.is_empty() { String::from("(none)") } else { available.join(", ") }
+    )]
+    NoMatchForSelector {
+        flag: &'static str,
+        token: String,
+        available: Vec<String>,
+    },
+
+    /// A `--status <tier>` value is not one of the readiness-ladder tiers (#371).
+    #[error("unknown status '{value}'. Valid tiers: {}", available.join(", "))]
+    UnknownStatus {
+        value: String,
+        available: Vec<String>,
+    },
+
+    /// A `--tag <t>` value matches no row's tags (#376). Typo protection.
+    #[error(
+        "unknown tag '{tag}'. Tags present in this config: {}",
+        if available.is_empty() { String::from("(none — no row declares tags)") } else { available.join(", ") }
+    )]
+    UnknownTag { tag: String, available: Vec<String> },
+
+    /// A `--include-parents <policy>` value is not `off`/`eligible`/`all` (#377).
+    #[error("unknown include_parents policy '{value}' (expected off, eligible, or all)")]
+    UnknownIncludeParents { value: String },
+
+    /// Matrix-only selectors were passed for a config with no `matrix:`
+    /// (single anonymous invocation) — nothing to select among (#370/#376).
+    #[error(
+        "selector(s) {flags} require a `matrix:` — this config has a single anonymous invocation (nothing to select)"
+    )]
+    SelectorsWithoutMatrix { flags: String },
+
+    /// The resolved run set is empty after status gating / tag narrowing / skip
+    /// (#371). Not a silent no-op — names each row's status and how to include.
+    #[error(
+        "no matrix rows selected to run. Rows and their status: {}. \
+         Widen the run set with --status <tier>, --select <id>, or --tag <t>",
+        rows.join(", ")
+    )]
+    EmptyRunSet { rows: Vec<String> },
+
+    /// A run-set row structurally depends on an ancestor that is not in the run
+    /// set, under the active `include_parents` policy (#377). Lists every
+    /// offending `dependent → ancestor (edge)` pair.
+    #[error(
+        "run-set dependency violation (include_parents={policy}): {}. \
+         Select the ancestor by id (--select <id>), or loosen the policy \
+         (--include-parents eligible|all)",
+        pairs.join("; ")
+    )]
+    RunSetMissingAncestors {
+        pairs: Vec<String>,
+        policy: &'static str,
+    },
+
     /// A config-level validation failure that isn't covered by a more specific
     /// variant (e.g. an invalid `quality:` block, or a quality check that
     /// requires a DLQ when none is configured).

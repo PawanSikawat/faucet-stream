@@ -72,6 +72,13 @@ pub struct PipelineConfig {
     #[serde(default)]
     pub execution: Option<ExecutionSpec>,
 
+    /// Optional matrix-row selection policy (#377). Currently carries only
+    /// `include_parents` — how a selected row's `parent:` / `depends_on:`
+    /// ancestors are resolved when they are not independently in the run set.
+    /// Absent = the built-in default (`include_parents: off`, strict).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<SelectionSpec>,
+
     /// Optional observability configuration (Prometheus + tracing).
     #[serde(default)]
     pub observability: Option<ObservabilitySpec>,
@@ -232,6 +239,20 @@ pub struct ConnectorSpec {
     /// at expand time on sinks.
     #[serde(default = "default_true")]
     pub inherit_transforms: bool,
+
+    /// Readiness ladder for the *source* side of a row (#371). Governs whether
+    /// a row runs by default. Deep-merges from template → row `source` override
+    /// like any scalar. `None` resolves to the built-in default (`active`).
+    /// Meaningful only on source templates; ignored on sinks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<SourceStatus>,
+
+    /// Free-form classification tags for the *source* template (#376).
+    /// Union-merged (not replaced) with a matrix row's own `tags:` to form the
+    /// row's effective tag set. Meaningful only on source templates; ignored on
+    /// sinks. Validated at expand time (charset `^[a-z0-9][a-z0-9_-]*$`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 /// A partial connector override carried by a matrix row. Both `type` and
@@ -253,6 +274,11 @@ pub struct PartialConnector {
     /// Partial config object — deep-merged into the resolved template's config.
     #[serde(default)]
     pub config: Option<Value>,
+    /// Per-row readiness override for the source (#371). When `Some`, replaces
+    /// the template's `status` (scalar deep-merge). Only meaningful on a row's
+    /// `source:` override; a `sink:` override's `status` is ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<SourceStatus>,
 }
 
 /// A single transform declaration.
@@ -343,6 +369,119 @@ pub struct MatrixRow {
     /// Per-row delivery override. `None` inherits the top-level `delivery`.
     #[serde(default)]
     pub delivery: Option<faucet_core::DeliveryMode>,
+
+    /// Free-form classification tags for this row (#376). Orthogonal to the
+    /// source's `status:` readiness ladder — `status` gates whether a row is
+    /// eligible; `tags` narrow *within* the eligible set at runtime via
+    /// `--tag`. Union-merged with the source template's `tags:` to form the
+    /// effective tag set. Validated at expand time (charset
+    /// `^[a-z0-9][a-z0-9_-]*$`, deduped).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+/// Readiness ladder for a matrix row's source (#371). A single ordered axis
+/// answering "when does this row run?". Default (when absent) is [`Active`].
+///
+/// [`Active`]: SourceStatus::Active
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceStatus {
+    /// Always runs; cannot be narrowed out except by an explicit `--skip <id>`.
+    Mandatory,
+    /// Runs by default (bare `faucet run`). The absent-default.
+    #[default]
+    Active,
+    /// Ready, but opt-in: runs only when requested via `--status available`.
+    Available,
+    /// Work-in-progress: runs only under `--status draft`.
+    Draft,
+    /// Retired, kept for history: runs only under `--status archived`.
+    Archived,
+}
+
+impl SourceStatus {
+    /// Every variant, in ladder order — used to render error listings.
+    pub const ALL: [SourceStatus; 5] = [
+        SourceStatus::Mandatory,
+        SourceStatus::Active,
+        SourceStatus::Available,
+        SourceStatus::Draft,
+        SourceStatus::Archived,
+    ];
+
+    /// The snake_case wire name (matches the serde discriminator).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SourceStatus::Mandatory => "mandatory",
+            SourceStatus::Active => "active",
+            SourceStatus::Available => "available",
+            SourceStatus::Draft => "draft",
+            SourceStatus::Archived => "archived",
+        }
+    }
+
+    /// Parse a `--status` token (or a `status:` value). `None` on an unknown
+    /// value; callers surface a typed error listing [`SourceStatus::ALL`].
+    pub fn parse(s: &str) -> Option<Self> {
+        SourceStatus::ALL.into_iter().find(|v| v.as_str() == s)
+    }
+
+    /// Whether this tier is in the default (bare-`run`) eligible set.
+    pub fn default_eligible(self) -> bool {
+        matches!(self, SourceStatus::Mandatory | SourceStatus::Active)
+    }
+}
+
+/// Policy for pulling a selected row's `parent:` / `depends_on:` ancestors into
+/// the run set when they are not independently selected (#377). The **only**
+/// mechanism that decides ancestor inclusion. Default [`Off`] (strict).
+///
+/// [`Off`]: IncludeParents::Off
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum IncludeParents {
+    /// Include nothing automatically; a required ancestor missing from the run
+    /// set is a hard, fail-fast error.
+    #[default]
+    Off,
+    /// Include required ancestors whose resolved status is eligible; error if a
+    /// required ancestor is parked (`available`/`draft`/`archived`).
+    Eligible,
+    /// Include every required ancestor regardless of status (parked ancestors
+    /// pulled in too, with a warning); never errors on ancestors.
+    All,
+}
+
+impl IncludeParents {
+    /// The snake_case wire name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IncludeParents::Off => "off",
+            IncludeParents::Eligible => "eligible",
+            IncludeParents::All => "all",
+        }
+    }
+
+    /// Parse a `--include-parents` token. `None` on an unknown value.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(IncludeParents::Off),
+            "eligible" => Some(IncludeParents::Eligible),
+            "all" => Some(IncludeParents::All),
+            _ => None,
+        }
+    }
+}
+
+/// Matrix-row selection policy (#377). Currently a single knob:
+/// `include_parents`. Extensible for future selection-model settings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SelectionSpec {
+    /// How parent/dependency ancestors are resolved for a narrowed run set.
+    #[serde(default)]
+    pub include_parents: IncludeParents,
 }
 
 /// Execution-time controls.

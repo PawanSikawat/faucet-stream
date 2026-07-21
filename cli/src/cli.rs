@@ -1,7 +1,48 @@
 //! Argument parser shared by `main.rs` and the integration tests.
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
+
+/// Runtime matrix-row selection flags, shared by `run`/`validate`/`preview`/
+/// `plan` via `#[command(flatten)]`. Implements the selection model of
+/// #370 (identity), #371 (status), #376 (tags), and #377 (include_parents).
+#[derive(Debug, Args, Default, Clone)]
+pub struct SelectionArgs {
+    /// Run only matrix rows whose id exactly matches. Repeatable and/or
+    /// comma-joined (`--select people --select time_off` or `--select a,b`).
+    /// Force-includes by name, bypassing the `status` gate. (#370)
+    #[arg(long = "select", value_delimiter = ',', env = "FAUCET_SELECT")]
+    pub select: Vec<String>,
+
+    /// Like `--select` but glob-matched against row ids (`--only 'timeoff_*'`).
+    /// Also bypasses the `status` gate. Repeatable / comma-joined. (#370)
+    #[arg(long = "only", value_delimiter = ',')]
+    pub only: Vec<String>,
+
+    /// Remove matching rows (exact id or glob) from the run set, applied last.
+    /// A `mandatory` row is removable only by an exact `--skip <id>`. (#370)
+    #[arg(long = "skip", value_delimiter = ',', env = "FAUCET_SKIP")]
+    pub skip: Vec<String>,
+
+    /// Additively include a readiness tier beyond the default
+    /// `{mandatory, active}` set: `available` / `draft` / `archived`.
+    /// Repeatable / comma-joined. (#371)
+    #[arg(long = "status", value_delimiter = ',', env = "FAUCET_STATUS")]
+    pub status: Vec<String>,
+
+    /// Narrow the eligible set to rows carrying any listed tag (union).
+    /// Cannot resurrect a non-eligible row — raise `--status` for that.
+    /// Repeatable / comma-joined. (#376)
+    #[arg(long = "tag", value_delimiter = ',', env = "FAUCET_TAGS")]
+    pub tags: Vec<String>,
+
+    /// How a selected row's `parent:` / `depends_on:` ancestors are resolved
+    /// when not independently selected: `off` (default, strict — error on a
+    /// missing ancestor), `eligible`, or `all`. Overrides
+    /// `selection.include_parents` in the config. (#377)
+    #[arg(long = "include-parents", env = "FAUCET_INCLUDE_PARENTS")]
+    pub include_parents: Option<String>,
+}
 
 /// `faucet` — config-driven runner for faucet-stream pipelines.
 #[derive(Debug, Parser)]
@@ -608,6 +649,11 @@ pub struct RunArgs {
     /// page boundary).
     #[arg(long)]
     pub tui: bool,
+
+    /// Runtime matrix-row selection (`--select`/`--only`/`--skip`/`--status`/
+    /// `--tag`/`--include-parents`).
+    #[command(flatten)]
+    pub selection: SelectionArgs,
 }
 
 /// `faucet backfill` arguments.
@@ -770,6 +816,11 @@ pub struct ValidateArgs {
     /// `--no-secrets` is redundant here (no interpolation or secret fetch occurs).
     #[arg(long)]
     pub show_composed: bool,
+
+    /// Runtime matrix-row selection — `validate` reports each row's resolved
+    /// status/tags and whether the selection would run or skip it.
+    #[command(flatten)]
+    pub selection: SelectionArgs,
 }
 
 /// `faucet schema` arguments.
@@ -864,6 +915,11 @@ pub struct PreviewArgs {
     /// it over the composed base. Overrides the `FAUCET_PROFILE` env var.
     #[arg(long, env = "FAUCET_PROFILE")]
     pub profile: Option<String>,
+
+    /// Runtime matrix-row selection — `preview` previews the first root row of
+    /// the selected run set.
+    #[command(flatten)]
+    pub selection: SelectionArgs,
 }
 
 /// `faucet init` arguments.

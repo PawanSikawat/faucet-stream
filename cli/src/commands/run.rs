@@ -115,11 +115,19 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
     };
     let nodes = expand(&cfg)?;
     // Capture the config-snapshot inputs (#374) before `nodes` / `catalog` are
-    // moved into the executor; recorded after a fully-successful run below.
+    // moved into the executor; recorded after a fully-successful run below. The
+    // snapshot represents the fully-resolved config (all rows) — runtime row
+    // selection is a per-invocation concern, so it is captured pre-selection.
     #[cfg(feature = "catalog")]
     let snapshot_inputs = catalog
         .as_ref()
         .map(|handle| (handle.clone(), nodes.clone(), pipeline_name.clone()));
+    // Runtime matrix-row selection (#370/#371/#376/#377): status gate → tag
+    // narrowing → parent policy → skip. A plain config (no `status`/`tags`, no
+    // selection flags) returns every row unchanged.
+    let selection =
+        crate::select::RunSelection::from_args(&args.selection, cfg.selection.as_ref())?;
+    let nodes = crate::select::select_nodes(nodes, &selection, !cfg.matrix.is_empty())?;
     // The TUI wires `q` / Ctrl-C to this token: in-flight invocations stop at
     // their next page boundary and flush (#146 H16). Plain runs keep `None`.
     #[cfg(feature = "cli-tui")]
