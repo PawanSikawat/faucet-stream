@@ -242,7 +242,7 @@ impl faucet_core::Source for DeltaSource {
     }
 
     /// Stream the table as Arrow [`ColumnarPage`](faucet_core::ColumnarPage)s.
-    /// Mirrors [`stream_pages`](Self::stream_pages) but yields each parquet
+    /// Mirrors `stream_pages` but yields each parquet
     /// `RecordBatch` directly; Hive partition-column values (which live in the
     /// file path, not the parquet data) are appended as constant Arrow columns
     /// so the columnar output matches the row-wise output field-for-field.

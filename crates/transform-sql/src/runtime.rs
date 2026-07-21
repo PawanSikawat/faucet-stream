@@ -56,24 +56,32 @@ impl SqlTransform {
         })
     }
 
-    /// Consume into a page-level transform stage. The stage carries **both** a
-    /// `Value` page fn and an Arrow `RecordBatch` fn (they share one DuckDB
-    /// connection), so a `parquet → sql → parquet` chain runs on the columnar
-    /// fast path (#375) while any other chain uses the `Value` path — see
-    /// [`faucet_core::stage::TransformStage::PageFnColumnar`].
+    /// Consume into a page-level `Value` transform stage.
     pub fn into_page_stage(self) -> TransformStage {
+        let state = self.state;
+        TransformStage::PageFn(Arc::new(move |records: Vec<Value>| {
+            let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+            execute_page(&mut st, records)
+        }))
+    }
+
+    /// Consume into a `Value` page stage **plus** an Arrow `RecordBatch → Record
+    /// Batch` form that shares the same DuckDB connection (#375). The CLI passes
+    /// the batch fn to `TransformingSource::new_with_batches`, so a `parquet →
+    /// sql → parquet` chain runs Arrow end-to-end (no `Value` materialization)
+    /// while any other chain keeps using the `Value` page stage.
+    pub fn into_columnar_stage(self) -> (TransformStage, faucet_core::stage::PageFnBatchBox) {
         let rows_state = self.state.clone();
         let batch_state = self.state;
-        TransformStage::PageFnColumnar {
-            rows: Arc::new(move |records: Vec<Value>| {
-                let mut st = rows_state.lock().unwrap_or_else(|e| e.into_inner());
-                execute_page(&mut st, records)
-            }),
-            batch: Arc::new(move |batch: RecordBatch| {
-                let mut st = batch_state.lock().unwrap_or_else(|e| e.into_inner());
-                execute_batch(&mut st, batch)
-            }),
-        }
+        let stage = TransformStage::PageFn(Arc::new(move |records: Vec<Value>| {
+            let mut st = rows_state.lock().unwrap_or_else(|e| e.into_inner());
+            execute_page(&mut st, records)
+        }));
+        let batch: faucet_core::stage::PageFnBatchBox = Arc::new(move |batch: RecordBatch| {
+            let mut st = batch_state.lock().unwrap_or_else(|e| e.into_inner());
+            execute_batch(&mut st, batch)
+        });
+        (stage, batch)
     }
 }
 
@@ -291,30 +299,24 @@ mod tests {
         assert_eq!(out[0]["id"], json!(1));
     }
 
-    /// The columnar (#375) form: feed an Arrow `RecordBatch` straight in and get
-    /// one back, with no `Value` on either side. The batch fn shares the DuckDB
-    /// connection with the row fn (same `into_page_stage`).
-    fn compiled(query: &str) -> TransformStage {
+    /// The columnar (#375) form: `into_columnar_stage` yields a `RecordBatch →
+    /// RecordBatch` fn; feed a batch straight in and get one back, no `Value`.
+    fn batch_fn(query: &str) -> faucet_core::stage::PageFnBatchBox {
         let cfg = SqlTransformConfig {
             query: query.into(),
             relations: vec![],
             memory_limit: None,
             threads: Some(1),
         };
-        SqlTransform::compile(&cfg).unwrap().into_page_stage()
-    }
-
-    fn batch_fn(stage: &TransformStage) -> faucet_core::stage::PageFnBatchBox {
-        match stage {
-            TransformStage::PageFnColumnar { batch, .. } => batch.clone(),
-            other => panic!("sql transform must compile to PageFnColumnar, got {other:?}"),
-        }
+        let (stage, batch) = SqlTransform::compile(&cfg).unwrap().into_columnar_stage();
+        // The row form is a plain page stage; the batch form is what we test.
+        assert!(matches!(stage, TransformStage::PageFn(_)));
+        batch
     }
 
     #[test]
     fn columnar_batch_fn_transforms_record_batch() {
-        let stage = compiled("SELECT id, v * 2 AS doubled FROM batch WHERE id >= 1 ORDER BY id");
-        let bf = batch_fn(&stage);
+        let bf = batch_fn("SELECT id, v * 2 AS doubled FROM batch WHERE id >= 1 ORDER BY id");
         let input = faucet_core::columnar::values_to_record_batch_inferred(&[
             json!({"id": 0, "v": 5}),
             json!({"id": 1, "v": 10}),
@@ -332,8 +334,7 @@ mod tests {
     // #372 on the columnar path: a >2048-row inbound batch must not abort.
     #[test]
     fn columnar_batch_fn_handles_large_batch() {
-        let stage = compiled("SELECT * FROM batch");
-        let bf = batch_fn(&stage);
+        let bf = batch_fn("SELECT * FROM batch");
         let recs: Vec<Value> = (0..5_000).map(|i| json!({"id": i})).collect();
         let input = faucet_core::columnar::values_to_record_batch_inferred(&recs).unwrap();
         let out = bf(input).unwrap();

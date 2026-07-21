@@ -89,9 +89,11 @@ async fn sql_transform_runs_on_the_columnar_path_end_to_end() {
         threads: Some(1),
     })
     .unwrap();
-    let wrapped = TransformingSource::new(
+    let (stage, batch) = sql.into_columnar_stage();
+    let wrapped = TransformingSource::new_with_batches(
         Box::new(source),
-        vec![sql.into_page_stage()],
+        vec![stage],
+        vec![Some(batch)],
         Labels::for_named("sql"),
     )
     .unwrap();

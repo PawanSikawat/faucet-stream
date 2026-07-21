@@ -39,12 +39,20 @@ pub struct TransformingSource {
     inner: Box<dyn Source>,
     stages: Vec<CompiledStage>,
     labels: Labels,
+    /// Optional Arrow `RecordBatch → RecordBatch` form for each stage, parallel
+    /// to `stages` (#375). `Some` only for columnar-capable stages (today the
+    /// SQL transform, supplied via [`new_with_batches`](Self::new_with_batches));
+    /// `None` for `Value`-only stages. When every entry is `Some` and the inner
+    /// source is columnar, the whole chain runs on the columnar fast path.
+    #[cfg(feature = "arrow")]
+    batch_fns: Vec<Option<crate::stage::PageFnBatchBox>>,
 }
 
 impl TransformingSource {
     /// Compile `stages` and wrap `inner`. Returns
     /// [`FaucetError::Transform`] if any stage's compilation fails (e.g.
-    /// invalid regex in `RenameKeys`).
+    /// invalid regex in `RenameKeys`). The chain stays on the `Value` path
+    /// (no columnar batch forms).
     pub fn new(
         inner: Box<dyn Source>,
         stages: Vec<TransformStage>,
@@ -54,10 +62,44 @@ impl TransformingSource {
             .iter()
             .map(compile_stage)
             .collect::<Result<Vec<_>, _>>()?;
+        #[cfg(feature = "arrow")]
+        let n = compiled.len();
         Ok(Self {
             inner,
             stages: compiled,
             labels,
+            #[cfg(feature = "arrow")]
+            batch_fns: vec![None; n],
+        })
+    }
+
+    /// Like [`new`](Self::new), but each stage may carry an Arrow `RecordBatch`
+    /// form (`batch_fns[i]` parallels `stages[i]`), so the chain can run on the
+    /// columnar fast path (#375) when the inner source and sink are Arrow-native
+    /// and **every** stage supplies one. Used by the CLI for `sql` transforms.
+    #[cfg(feature = "arrow")]
+    pub fn new_with_batches(
+        inner: Box<dyn Source>,
+        stages: Vec<TransformStage>,
+        batch_fns: Vec<Option<crate::stage::PageFnBatchBox>>,
+        labels: Labels,
+    ) -> Result<Self, FaucetError> {
+        if batch_fns.len() != stages.len() {
+            return Err(FaucetError::Transform(format!(
+                "TransformingSource::new_with_batches: {} batch fns for {} stages",
+                batch_fns.len(),
+                stages.len()
+            )));
+        }
+        let compiled = stages
+            .iter()
+            .map(compile_stage)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            inner,
+            stages: compiled,
+            labels,
+            batch_fns,
         })
     }
 }
@@ -123,7 +165,9 @@ impl Source for TransformingSource {
     /// keeps the whole chain on the `Value` path (#375).
     #[cfg(feature = "arrow")]
     fn supports_columnar(&self) -> bool {
-        self.inner.supports_columnar() && self.stages.iter().all(|s| s.batch_fn().is_some())
+        self.inner.supports_columnar()
+            && !self.batch_fns.is_empty()
+            && self.batch_fns.iter().all(Option::is_some)
     }
 
     /// Stream the inner source's Arrow batches with every stage's batch form
@@ -141,10 +185,8 @@ impl Source for TransformingSource {
             let mut pages = self.inner.stream_batches(ctx, batch_size);
             while let Some(page) = pages.next().await {
                 let crate::columnar::ColumnarPage { mut batch, bookmark } = page?;
-                for stage in &self.stages {
-                    if let Some(bf) = stage.batch_fn() {
-                        batch = bf(batch)?;
-                    }
+                for bf in self.batch_fns.iter().flatten() {
+                    batch = bf(batch)?;
                 }
                 yield crate::columnar::ColumnarPage { batch, bookmark };
             }
@@ -665,22 +707,23 @@ mod columnar_tests {
         }
     }
 
-    /// A columnar stage that appends `{"seen": true}`-style marker by identity
-    /// on rows and identity on batch — enough to exercise the wiring.
-    fn identity_columnar_stage() -> TransformStage {
-        TransformStage::PageFnColumnar {
-            rows: Arc::new(Ok),
-            batch: Arc::new(Ok),
-        }
+    /// An identity page stage + its identity batch form — enough to exercise
+    /// the columnar wiring.
+    fn identity_stage() -> (TransformStage, Option<crate::stage::PageFnBatchBox>) {
+        let rows: crate::stage::PageFnBox = Arc::new(Ok);
+        let batch: crate::stage::PageFnBatchBox = Arc::new(Ok);
+        (TransformStage::PageFn(rows), Some(batch))
     }
 
     #[tokio::test]
     async fn columnar_inner_plus_columnar_stage_is_supported_and_streams() {
         let inner: Box<dyn Source> =
             Box::new(ColumnarMock(vec![json!({"id": 1}), json!({"id": 2})]));
-        let wrapped = TransformingSource::new(
+        let (stage, batch) = identity_stage();
+        let wrapped = TransformingSource::new_with_batches(
             inner,
-            vec![identity_columnar_stage()],
+            vec![stage],
+            vec![batch],
             Labels::for_named("t"),
         )
         .unwrap();
@@ -695,8 +738,8 @@ mod columnar_tests {
 
     #[tokio::test]
     async fn value_only_stage_disables_columnar() {
-        // A `Map` stage has no Arrow batch form → the whole chain drops off the
-        // columnar path even though the inner source is columnar.
+        // A `Map` stage has no Arrow batch form (batch_fn None) → the whole
+        // chain drops off the columnar path even though the inner is columnar.
         let inner: Box<dyn Source> = Box::new(ColumnarMock(vec![json!({"FooBar": 1})]));
         let wrapped = TransformingSource::new(
             inner,
@@ -714,9 +757,11 @@ mod columnar_tests {
     #[tokio::test]
     async fn columnar_stage_over_row_only_inner_is_disabled() {
         let inner: Box<dyn Source> = Box::new(RowOnlyMock(vec![json!({"id": 1})]));
-        let wrapped = TransformingSource::new(
+        let (stage, batch) = identity_stage();
+        let wrapped = TransformingSource::new_with_batches(
             inner,
-            vec![identity_columnar_stage()],
+            vec![stage],
+            vec![batch],
             Labels::for_named("t"),
         )
         .unwrap();

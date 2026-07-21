@@ -28,7 +28,6 @@ use crate::expand::{ExpandedNode, NodeRole};
 use crate::interpolate::interpolate_record;
 use crate::registry::{build_sink, build_source};
 use crate::state::build_state_store;
-use crate::transforms::compile_transforms;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use faucet_core::observability::Labels;
@@ -1020,23 +1019,40 @@ async fn run_one_invocation(
     //    transform's config first — exactly as for source/sink above — so e.g. a
     //    `set` transform stamping `${now.date}` writes the real date instead of
     //    the literal token string. Without this the token leaks into every record.
-    let stages = if node.transforms.is_empty() {
-        compile_transforms(&node.transforms)?
-    } else {
-        let mut transforms = node.transforms.clone();
-        for t in &mut transforms {
-            resolve_now_inplace(&mut t.config, opts.clock)?;
+    let mut transforms = node.transforms.clone();
+    for t in &mut transforms {
+        resolve_now_inplace(&mut t.config, opts.clock)?;
+    }
+    // With `arrow`, compile the columnar batch forms too so an all-columnar
+    // chain (e.g. `parquet → sql → parquet`) runs on the Arrow fast path; a
+    // `Value`-only stage in the chain leaves `batch_fns` with a `None` entry,
+    // which keeps the whole pipeline on the `Value` path (#375).
+    #[cfg(feature = "arrow")]
+    let source: Box<dyn Source> = {
+        let (stages, batch_fns) = crate::transforms::compile_transforms_columnar(&transforms)?;
+        if stages.is_empty() {
+            source
+        } else {
+            Box::new(faucet_core::TransformingSource::new_with_batches(
+                source,
+                stages,
+                batch_fns,
+                obs_labels.clone(),
+            )?)
         }
-        compile_transforms(&transforms)?
     };
-    let source: Box<dyn Source> = if stages.is_empty() {
-        source
-    } else {
-        Box::new(faucet_core::TransformingSource::new(
-            source,
-            stages,
-            obs_labels.clone(),
-        )?)
+    #[cfg(not(feature = "arrow"))]
+    let source: Box<dyn Source> = {
+        let stages = crate::transforms::compile_transforms(&transforms)?;
+        if stages.is_empty() {
+            source
+        } else {
+            Box::new(faucet_core::TransformingSource::new(
+                source,
+                stages,
+                obs_labels.clone(),
+            )?)
+        }
     };
 
     // 4) Build state store. If the source opts into state, wrap it so the
