@@ -12,7 +12,7 @@ description = "SQL-as-transform for faucet-stream — run DuckDB SQL over each p
 
 [dependencies]
 # `arrow` so the SQL stage can expose its Arrow `RecordBatch` form
-# (`TransformStage::PageFnColumnar`) — transform-sql is Arrow-native anyway.
+# (via `into_columnar_stage`) — transform-sql is Arrow-native anyway.
 faucet-core = { workspace = true, features = ["arrow"] }
 duckdb = { workspace = true, features = ["bundled", "vtab-arrow"] }
 arrow.workspace = true
