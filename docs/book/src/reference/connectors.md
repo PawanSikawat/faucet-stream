@@ -198,6 +198,29 @@ schemaless sinks (MongoDB, Elasticsearch) map `key` to a match filter / `_id`.
 Iceberg upsert is not yet supported (a follow-up, blocked on `iceberg-rust`). See
 [Upsert / mirror tables](../cookbook/upsert.md).
 
+## Arrow columnar (Parquet) fast path
+
+An opt-in, additive Arrow columnar path (RFC 0002 / #375, behind a crate-local
+`arrow` feature) lets a run move records end-to-end as Arrow `RecordBatch`es
+with no `serde_json::Value` materialization. It engages automatically when
+**both** ends of the pipeline are Arrow-native **and** no `Value`-shaped
+transform is configured; otherwise the pipeline transparently falls back to the
+row path.
+
+Arrow-native connectors:
+
+- **Parquet** source/sink and **Delta Lake** source/sink — Arrow-native by
+  nature.
+- **AWS S3** and **Google Cloud Storage** source — with `file_format: parquet`.
+- **AWS S3** and **Google Cloud Storage** sink — with `format: parquet` (each
+  object is a self-contained ZSTD-compressed Parquet file).
+- **Databricks SQL** source — with `arrow_native: true` (fetches
+  `EXTERNAL_LINKS` + `ARROW_STREAM`; requires `replication: full`).
+
+So chains like `s3(parquet) → parquet`, `gcs(parquet) → delta`, or
+`databricks(arrow) → parquet` run Arrow end-to-end. See each connector's README
+for the exact config field and feature flag.
+
 ## Data-integrity notes
 
 A few connectors enforce defaults that prevent silent data loss or corruption.

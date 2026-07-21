@@ -16,6 +16,7 @@ Reach for it when you want to land data from any faucet-stream source — a data
 - **Explicit NDJSON content type** — uploads are tagged `application/x-ndjson` so consumers and tooling recognize the format.
 - **Flexible object sizing** — combine `batch_size` (pipeline-level chunking) and `max_records_per_file` (a hard per-object cap); the sink uploads at whichever limit is smaller.
 - **Optional compression** — gzip or zstd per object behind the `compression` feature, with auto-detection from the file extension.
+- **Apache Parquet (Arrow columnar)** — behind the `arrow` feature, `format: parquet` writes each object as a complete, self-contained ZSTD-compressed Parquet file and enables the columnar fast path, so a Parquet/Delta source can stream Arrow `RecordBatch`es straight through with no `serde_json::Value` in between. See [Arrow columnar (Parquet) mode](#arrow-columnar-parquet-mode).
 - **Four credential modes** — Application Default Credentials, a service-account key file, inline service-account JSON, or anonymous (emulators). The shared `GcsCredentials` enum is re-exported from [`faucet-common-gcs`](https://crates.io/crates/faucet-common-gcs), so it matches the GCS **source** byte-for-byte.
 - **Client built once** — the authenticated `Storage` client is constructed in `new()` and reused for every upload.
 
@@ -68,6 +69,7 @@ This uploads each batch of records as one or more `events/{uuidv7}.jsonl` object
 | `bucket` | string | — *(required)* | GCS bucket name (without the `gs://` scheme). |
 | `prefix` | string | — *(required)* | Object-name prefix; concatenated with the UUIDv7 key and `file_extension` to form each object name. Use a trailing `/` for a folder-like layout (e.g. `events/2026/`). |
 | `auth` | `GcsCredentials` | `application_default` | Authentication — see [Authentication](#authentication). |
+| `format` | `json_lines` \| `parquet` | `json_lines` | Object format. `parquet` (requires the `arrow` feature) writes self-contained ZSTD-compressed Parquet files and enables the columnar fast path — see [Arrow columnar (Parquet) mode](#arrow-columnar-parquet-mode). |
 | `file_extension` | string | `.jsonl` | Suffix appended to every object name. Also drives compression auto-detection (`.jsonl.gz` → gzip). |
 
 ### Batching & throughput
@@ -184,6 +186,26 @@ Within a `write_batch` call the records are chunked by the **effective chunk siz
 
 **Partial-failure caveat:** because uploads abort on the first error, a batch that fails mid-flight may leave already-uploaded chunks in the bucket. The pipeline bookmark only advances after the whole batch confirms, so a resumed run re-uploads the batch (yielding new UUIDv7 keys for the chunks that already landed). This sink does not use resumable uploads.
 
+## Arrow columnar (Parquet) mode
+
+Behind the crate-local `arrow` Cargo feature, `format: parquet` writes each object as a complete, self-contained Apache Parquet file (ZSTD-compressed) instead of JSON Lines. The sink implements the columnar `write_batch_columnar` fast path (RFC 0002 / #375): when the **source** is also Arrow-native — the [Parquet](https://crates.io/crates/faucet-source-parquet) or [Delta Lake](https://crates.io/crates/faucet-source-delta) source, or the [S3](https://crates.io/crates/faucet-source-s3) / [GCS](https://crates.io/crates/faucet-source-gcs) source in `file_format: parquet` mode — and no `Value`-shaped transform is configured, records move end-to-end as Arrow `RecordBatch`es with no `serde_json::Value` materialization.
+
+If either end of the pipeline isn't Arrow-native — or a `Value`-shaped transform sits in between — the run transparently falls back to the JSON row path.
+
+```yaml
+# gcs(parquet) → gcs(parquet) — runs Arrow end-to-end
+pipeline:
+  sink:
+    type: gcs
+    config:
+      bucket: my-bucket
+      prefix: events/parquet/
+      auth: { type: application_default }
+      format: parquet   # requires the `arrow` feature
+```
+
+Enable it with `cargo add faucet-sink-gcs --features arrow` (library) or `cargo install faucet-cli --features "sink-gcs,arrow"` (CLI).
+
 ## Compression
 
 Gated behind the crate-local `compression` Cargo feature. It adds the `compression` config field (`none` / `gzip` / `zstd` / `auto`, default `auto`). With `auto`, the codec is resolved from `file_extension` per upload, so `.jsonl.gz` triggers gzip and `.jsonl.zst` triggers zstd; an explicit codec that disagrees with the suffix logs a one-time warning.
@@ -255,6 +277,7 @@ The `faucet doctor` preflight probe (`Sink::check`) builds a control-plane `Stor
 | Feature | Default | Enables |
 |---------|---------|---------|
 | `compression` | off | The `compression` config field (gzip / zstd / auto); pulls in `faucet-core/compression`. |
+| `arrow` | off | The `format: parquet` value and the columnar fast path (`Sink::write_batch_columnar`); pulls in `faucet-core/arrow`. See [Arrow columnar (Parquet) mode](#arrow-columnar-parquet-mode). |
 
 Enable the connector itself in the CLI/umbrella via the `sink-gcs` feature.
 

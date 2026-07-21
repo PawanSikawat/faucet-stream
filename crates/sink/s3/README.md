@@ -17,6 +17,7 @@ Reach for it to land any faucet-stream source — a REST API, a database, a Kafk
 - **S3-compatible endpoints** — point `endpoint_url` at MinIO, LocalStack, Cloudflare R2, Backblaze B2, or any S3 API.
 - **AWS credential chain** — credentials resolve through the standard AWS SDK chain (env vars, shared credentials file, IAM instance/task roles, SSO) — no secrets in the config.
 - **Optional compression** — gzip / zstd / auto behind the crate-local `compression` feature; the codec auto-resolves from the file extension.
+- **Apache Parquet (Arrow columnar)** — behind the `arrow` feature, `format: parquet` writes each object as a complete, self-contained ZSTD-compressed Parquet file and enables the columnar fast path, so a Parquet/Delta source can stream Arrow `RecordBatch`es straight through with no `serde_json::Value` in between. See [Arrow columnar (Parquet) mode](#arrow-columnar-parquet-mode).
 - **Client built once** — the S3 client is constructed eagerly in `new()` and reused for every upload.
 - **Preflight `check()`** — `faucet doctor` issues a non-mutating `HeadBucket` to confirm the bucket is reachable and credentials work, uploading nothing.
 
@@ -74,6 +75,7 @@ This writes `s3://my-data-lake/events/raw/<uuid>.jsonl` objects, each holding up
 | `prefix` | string | `""` | Key prefix for written objects (e.g. `"data/events/"`). Combined as `{prefix}{uuid}{file_extension}`. |
 | `region` | string | *(SDK default)* | AWS region. When unset, the AWS SDK resolves it from the environment / config. |
 | `endpoint_url` | string | *(unset)* | Custom endpoint for S3-compatible services (MinIO, LocalStack, R2, …). |
+| `format` | `json_lines` \| `parquet` | `json_lines` | Object format. `parquet` (requires the `arrow` feature) writes self-contained ZSTD-compressed Parquet files and enables the columnar fast path — see [Arrow columnar (Parquet) mode](#arrow-columnar-parquet-mode). |
 | `file_extension` | string | `".jsonl"` | Extension appended to each object key. Append `.gz` / `.zst` here when using compression so consumers can detect the codec. |
 
 ### Batching & file splitting
@@ -172,6 +174,26 @@ The pipeline calls `Sink::write_batch` once per upstream page. Inside a call, `b
 **Recommended: `batch_size: 0`.** S3 is the canonical case where one large object beats many small ones — per-request overhead, slower downstream scans, and LIST/PUT cost all compound with tiny objects. Most sources already size each page via their own `batch_size` (REST page, sqlx cursor chunk, Kafka poll, …), so let that drive object sizing.
 
 > **Memory ceiling.** Each object's body is buffered fully in memory before a single-shot `PutObject` (and, with compression on, briefly held as both raw and compressed). Up to `concurrency` objects upload at once, so peak memory is roughly **`concurrency` × object-size × ~2**. Pair `batch_size: 0` with a *streaming* source that sizes its own pages, or cap memory via `max_records_per_file` / lower `concurrency`. Streaming multipart upload for very large objects is a future enhancement.
+
+## Arrow columnar (Parquet) mode
+
+Behind the crate-local `arrow` Cargo feature, `format: parquet` writes each object as a complete, self-contained Apache Parquet file (ZSTD-compressed) instead of JSON Lines. The sink implements the columnar `write_batch_columnar` fast path (RFC 0002 / #375): when the **source** is also Arrow-native — the [Parquet](https://crates.io/crates/faucet-source-parquet) or [Delta Lake](https://crates.io/crates/faucet-source-delta) source, or the [S3](https://crates.io/crates/faucet-source-s3) / [GCS](https://crates.io/crates/faucet-source-gcs) source in `file_format: parquet` mode — and no `Value`-shaped transform is configured, records move end-to-end as Arrow `RecordBatch`es with no `serde_json::Value` materialization.
+
+If either end of the pipeline isn't Arrow-native — or a `Value`-shaped transform sits in between — the run transparently falls back to the JSON row path.
+
+```yaml
+# s3(parquet) → s3(parquet) — runs Arrow end-to-end
+pipeline:
+  sink:
+    type: s3
+    config:
+      bucket: my-data-lake
+      prefix: events/parquet/
+      region: us-east-1
+      format: parquet   # requires the `arrow` feature
+```
+
+Enable it with `cargo add faucet-sink-s3 --features arrow` (library) or `cargo install faucet-cli --features "sink-s3,arrow"` (CLI).
 
 ## Compression
 
@@ -299,6 +321,7 @@ UUID keys make writes idempotent-safe against collisions but mean re-runs append
 | Feature | Default | Effect |
 |---------|---------|--------|
 | `compression` | off | Adds the `compression` config field (gzip / zstd / auto) and compresses each object body before upload. Pulls in `faucet-core/compression`. |
+| `arrow` | off | Adds the `format: parquet` value and the columnar fast path (`Sink::write_batch_columnar`); pulls in `faucet-core/arrow`. See [Arrow columnar (Parquet) mode](#arrow-columnar-parquet-mode). |
 
 This is a write-only file sink: it does **not** support effectively-once delivery, upsert/delete write modes, or resumable bookmarks (UUID keys make every run append new objects).
 

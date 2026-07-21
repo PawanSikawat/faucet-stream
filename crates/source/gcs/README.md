@@ -12,6 +12,7 @@ Reach for it when your data already lives in GCS — event exports, log dumps, a
 ## Feature highlights
 
 - **Three file formats** — `json_lines` (one record per line), `json_array` (one array per object), and `raw_text` (each object becomes a `{key, content}` record).
+- **Apache Parquet (Arrow columnar)** — behind the `arrow` feature, a fourth format `file_format: parquet` decodes each object via the Arrow Parquet reader and, when the sink is also Arrow-native (Parquet / Delta), moves records end-to-end as Arrow `RecordBatch`es with no `serde_json::Value` in between. See [Arrow columnar (Parquet) mode](#arrow-columnar-parquet-mode).
 - **List or explicit keys** — scan a bucket by `prefix`, or skip listing entirely by passing an exact `object_keys` list.
 - **Concurrent reads** — objects are fetched in parallel via `buffer_unordered(concurrency)` (default 10), so wall-clock time is bounded by your slowest objects, not their sum.
 - **Bounded-memory streaming** — `json_lines` and `raw_text` decode straight off the GCS body reader, so peak memory is `O(batch_size)` regardless of total file size.
@@ -131,6 +132,7 @@ HMAC-key auth, signed-URL generation, and KMS/CMEK encryption configuration are 
 | `json_lines` *(default)* | One JSON record per line; blank lines are skipped. | Streams line-by-line — `O(batch_size)` memory. |
 | `json_array` | The entire object is a single JSON array of records. | Buffered fully per object (the closing `]` is required to parse), then chunked. |
 | `raw_text` | The whole object becomes one record `{"key": <name>, "content": <utf-8>}`. | Streamed into one `String` per object. |
+| `parquet` | One record per Parquet row (Arrow-decoded). *(Requires the `arrow` feature — see [Arrow columnar (Parquet) mode](#arrow-columnar-parquet-mode).)* | Batches decoded via the Arrow Parquet reader. |
 
 Parse errors are precise: a JSONL failure carries the object key **and** the 1-based line number; a JSON-array failure carries the key. A `json_array` object whose top-level value isn't an array fails with an `"expected JSON array"` message. Non-UTF-8 bodies surface as `FaucetError::Source` with a `"not valid UTF-8"` hint.
 
@@ -209,6 +211,33 @@ For a non-zero `batch_size`, records from multiple objects can share a page (cro
 > **Memory ceiling — `raw_text` / `json_array`.** Both hold one whole decoded object in memory at a time (inherent: a raw-text record *is* the whole file, and a JSON array isn't valid until its closing `]`). Because objects are fetched concurrently, peak memory is bounded by roughly **`concurrency` × (largest object's decoded size)**, not by `batch_size`. For large `raw_text` / `json_array` objects, lower `concurrency` to cap peak memory, or re-emit the data as `json_lines` upstream so it streams at `O(batch_size)`.
 
 This is a one-shot scan source — it has no incremental bookmark / resume support, so each run re-lists and re-reads the matching objects. For incremental loads, advance the `prefix` between runs (e.g. a dated `events/dt=${now.date}/` prefix) so each run reads only fresh objects.
+
+## Arrow columnar (Parquet) mode
+
+Behind the crate-local `arrow` Cargo feature, `file_format: parquet` reads each object as an Apache Parquet file through the Arrow Parquet reader. The same decode serves two paths:
+
+- the ordinary **row path** — each Parquet `RecordBatch` is converted to JSON records, exactly like the other formats; and
+- the opt-in **columnar fast path** (RFC 0002 / #375) — when the sink is also Arrow-native (the [Parquet](https://crates.io/crates/faucet-sink-parquet) or [Delta Lake](https://crates.io/crates/faucet-sink-delta) sink) and no `Value`-shaped transform is configured, records move end-to-end as Arrow `RecordBatch`es with no `serde_json::Value` materialization.
+
+`supports_columnar()` is `true` only when `file_format: parquet`. If either end of the pipeline isn't Arrow-native — or a `Value`-shaped transform sits in between — the run transparently falls back to the row path.
+
+```yaml
+# gcs(parquet) → delta — runs Arrow end-to-end
+pipeline:
+  source:
+    type: gcs
+    config:
+      bucket: analytics-exports
+      prefix: events/2026/
+      auth: { type: application_default }
+      file_format: parquet   # requires the `arrow` feature
+  sink:
+    type: delta
+    config:
+      table_uri: ./out/events
+```
+
+Enable it with `cargo add faucet-source-gcs --features arrow` (library) or `cargo install faucet-cli --features "source-gcs,arrow"` (CLI).
 
 ## Compression
 
@@ -310,6 +339,7 @@ When the listing returns no common prefixes but does return objects directly und
 | Feature | Default | Effect |
 |---------|---------|--------|
 | `compression` | off | Adds the `compression` config field and transparent gzip/zstd decompression (pulls in `faucet-core/compression`). |
+| `arrow` | off | Adds the `file_format: parquet` value and the Arrow columnar fast path (`Source::stream_batches`); pulls in `faucet-core/arrow`. See [Arrow columnar (Parquet) mode](#arrow-columnar-parquet-mode). |
 
 Enable the connector itself in the CLI/umbrella via the `source-gcs` feature.
 

@@ -12,6 +12,7 @@ Built on the official `aws-sdk-s3` client (built once, reused across every read)
 ## Feature highlights
 
 - **Three file formats** — `json_lines` (one record per line), `json_array` (one record per array element), and `raw_text` (one `{key, content}` record per object).
+- **Apache Parquet (Arrow columnar)** — behind the `arrow` feature, a fourth format `file_format: parquet` decodes each object via the Arrow Parquet reader and, when the sink is also Arrow-native (Parquet / Delta), moves records end-to-end as Arrow `RecordBatch`es with no `serde_json::Value` in between. See [Arrow columnar (Parquet) mode](#arrow-columnar-parquet-mode).
 - **Parallel object reads** — up to `concurrency` objects fetched at once via `futures::buffer_unordered` (default 10).
 - **True line-level streaming** — for `json_lines` / `raw_text`, object bodies are decoded line-by-line via `tokio::io::AsyncBufReadExt`, so client memory is bounded at `O(batch_size)` regardless of file or scan size.
 - **Prefix listing with pagination** — handles truncated `ListObjectsV2` responses transparently and honours an optional `max_objects` cap.
@@ -98,6 +99,7 @@ faucet run pipeline.yaml
 | JSON Lines (default) | `json_lines` | One record per non-empty line. Blank lines are skipped. |
 | JSON array | `json_array` | One record per array element. The object must be a top-level JSON array. |
 | Raw text | `raw_text` | One record per object: `{"key": "<object-key>", "content": "<file-text>"}`. |
+| Apache Parquet | `parquet` | One record per Parquet row (Arrow-decoded). *(Requires the `arrow` feature — see [Arrow columnar (Parquet) mode](#arrow-columnar-parquet-mode).)* |
 
 ## Read-integrity verification
 
@@ -242,6 +244,33 @@ Behaviour by format:
 
 The S3 source has **no incremental-replication mode** today, so every emitted page carries `bookmark: None`. It does not implement resume/state, effectively-once, write modes, or a dead-letter queue (those are sink- or CDC-source-specific capabilities).
 
+## Arrow columnar (Parquet) mode
+
+Behind the crate-local `arrow` Cargo feature, `file_format: parquet` reads each object as an Apache Parquet file through the in-memory Arrow Parquet reader. The same decode serves two paths:
+
+- the ordinary **row path** — each Parquet `RecordBatch` is converted to JSON records, exactly like the other formats; and
+- the opt-in **columnar fast path** (RFC 0002 / #375) — when the sink is also Arrow-native (the [Parquet](https://crates.io/crates/faucet-sink-parquet) or [Delta Lake](https://crates.io/crates/faucet-sink-delta) sink) and no `Value`-shaped transform is configured, records move end-to-end as Arrow `RecordBatch`es with no `serde_json::Value` materialization.
+
+`supports_columnar()` is `true` only when `file_format: parquet`. If either end of the pipeline isn't Arrow-native — or a `Value`-shaped transform sits in between — the run transparently falls back to the row path.
+
+```yaml
+# s3(parquet) → parquet — runs Arrow end-to-end
+pipeline:
+  source:
+    type: s3
+    config:
+      bucket: my-data-lake
+      prefix: events/2026/
+      region: us-east-1
+      file_format: parquet   # requires the `arrow` feature
+  sink:
+    type: parquet
+    config:
+      path: ./out/
+```
+
+Enable it with `cargo add faucet-source-s3 --features arrow` (library) or `cargo install faucet-cli --features "source-s3,arrow"` (CLI).
+
 ## Compression
 
 Behind the crate-local `compression` Cargo feature. Adds the `compression` config field with values `none`, `gzip`, `zstd`, or `auto` (the default — detects `.gz` / `.zst` from the object key).
@@ -344,6 +373,7 @@ When the listing returns no common prefixes but does return objects directly und
 | Feature | Default | Effect |
 |---------|---------|--------|
 | `compression` | off | Adds the `compression` config field (`none`/`gzip`/`zstd`/`auto`); pulls in `faucet-core/compression`. |
+| `arrow` | off | Adds the `file_format: parquet` value and the Arrow columnar fast path (`Source::stream_batches`); pulls in `faucet-core/arrow`. See [Arrow columnar (Parquet) mode](#arrow-columnar-parquet-mode). |
 
 Enable the connector itself in the CLI/umbrella via the `source-s3` feature.
 
