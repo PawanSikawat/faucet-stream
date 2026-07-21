@@ -211,4 +211,12 @@ mod tests {
         let cfg: GcsSinkConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.compression, faucet_core::CompressionConfig::Gzip);
     }
+
+    #[cfg(feature = "arrow")]
+    #[test]
+    fn format_defaults_json_lines_and_builder_sets_parquet() {
+        assert_eq!(GcsSinkConfig::new("b").format, GcsSinkFormat::JsonLines);
+        let cfg = GcsSinkConfig::new("b").format(GcsSinkFormat::Parquet);
+        assert_eq!(cfg.format, GcsSinkFormat::Parquet);
+    }
 }

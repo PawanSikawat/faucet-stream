@@ -43,6 +43,12 @@ testcontainers-modules = { version = "0.15", features = ["minio"] }
 # For the arrow-gated round-trip test (`bytes::Bytes` implements parquet's
 # `ChunkReader`); harmless when the `arrow` feature is off.
 bytes = { workspace = true }
+# The MinIO Parquet round-trip integration test writes via this sink and reads
+# back via the S3 source, and builds a RecordBatch via the core columnar shim.
+faucet-source-s3 = { workspace = true, features = ["arrow"] }
+faucet-core = { workspace = true, features = ["arrow"] }
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true

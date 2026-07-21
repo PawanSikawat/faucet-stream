@@ -544,8 +544,11 @@ jobs:
           [ "$ok" = 1 ] || { echo "::error::instrumented tests failed after 3 attempts"; exit 1; }
       - name: Generate lcov report
         run: |
+          # The two GCS data-plane I/O files are untestable in CI (no
+          # gRPC-compatible GCS emulator; integration tests are #[ignore]d, #220)
+          # so they are excluded here and in codecov.yml (kept in sync).
           cargo llvm-cov report --lcov --output-path lcov.info \
-            --ignore-filename-regex '(/tests?/|/examples?/|/benches?/|build\.rs$)'
+            --ignore-filename-regex '(/tests?/|/examples?/|/benches?/|build\.rs$|crates/source/gcs/src/stream\.rs$|crates/sink/gcs/src/sink\.rs$)'
       - name: Upload to Codecov
         continue-on-error: true
         uses: codecov/codecov-action@v4

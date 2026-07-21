@@ -4587,6 +4587,7 @@ dependencies = [
  "bytes",
  "faucet-conformance",
  "faucet-core",
+ "faucet-source-s3",
  "futures",
  "parquet 58.3.0",
  "schemars 1.2.1",
