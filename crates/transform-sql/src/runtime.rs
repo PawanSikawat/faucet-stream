@@ -56,43 +56,38 @@ impl SqlTransform {
         })
     }
 
-    /// Consume into a page-level transform stage.
+    /// Consume into a page-level transform stage. The stage carries **both** a
+    /// `Value` page fn and an Arrow `RecordBatch` fn (they share one DuckDB
+    /// connection), so a `parquet → sql → parquet` chain runs on the columnar
+    /// fast path (#375) while any other chain uses the `Value` path — see
+    /// [`faucet_core::stage::TransformStage::PageFnColumnar`].
     pub fn into_page_stage(self) -> TransformStage {
-        let state = self.state;
-        TransformStage::PageFn(Arc::new(move |records: Vec<Value>| {
-            let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
-            execute_page(&mut st, records)
-        }))
+        let rows_state = self.state.clone();
+        let batch_state = self.state;
+        TransformStage::PageFnColumnar {
+            rows: Arc::new(move |records: Vec<Value>| {
+                let mut st = rows_state.lock().unwrap_or_else(|e| e.into_inner());
+                execute_page(&mut st, records)
+            }),
+            batch: Arc::new(move |batch: RecordBatch| {
+                let mut st = batch_state.lock().unwrap_or_else(|e| e.into_inner());
+                execute_batch(&mut st, batch)
+            }),
+        }
     }
 }
 
-fn execute_page(st: &mut State, records: Vec<Value>) -> Result<Vec<Value>, FaucetError> {
-    if records.is_empty() {
-        return Ok(Vec::new());
-    }
+/// Register `batch` into DuckDB and run the query, returning the raw Arrow
+/// result batches. Shared by the `Value` path ([`execute_page`]) and the
+/// columnar path ([`execute_batch`]) so both use the same #372 chunked
+/// registration and the same per-page aggregation-warning state.
+fn run_query_batches(st: &mut State, batch: RecordBatch) -> Result<Vec<RecordBatch>, FaucetError> {
     reload_relations(st)?;
-
-    // Schema cache: infer once per page, reuse the cached schema on a match,
-    // otherwise adopt the freshly inferred one (first page or drift).
-    let fresh = infer_schema(&records)?;
-    let schema = match &st.cached_schema {
-        Some(s) if schema_eq(s, &fresh) => s.clone(),
-        _ => {
-            st.cached_schema = Some(fresh.clone());
-            fresh
-        }
-    };
-    let batch = json_to_record_batch(&records, schema)?;
     // DuckDB's arrow vtab copies each arrow array into a `DataChunk` whose
     // capacity is `STANDARD_VECTOR_SIZE` (2048); handing it a single batch with
-    // more rows than that trips `assert(array.len() <= out.capacity())` in
-    // duckdb-rs and **aborts the process** (#372) — reachable whenever a page
-    // larger than 2048 rows reaches the transform (`batch_size` > 2048 or
-    // `batch_size: 0`). Register the batch in <=2048-row slices instead: CREATE
-    // from the first slice, INSERT the rest into the same temp table. All slices
-    // land in one `batch` relation, so query semantics (incl. GROUP BY / window
-    // aggregation over the whole page) are unchanged; a <=2048-row page still
-    // takes exactly one CREATE, identical to before.
+    // more rows than that aborts the process (#372). `register_batch_chunked`
+    // slices to <=2048 rows into one `batch` relation, so query semantics are
+    // unchanged.
     register_batch_chunked(st, batch)?;
 
     // First-page aggregation detection (now that `batch` exists).
@@ -109,18 +104,53 @@ fn execute_page(st: &mut State, records: Vec<Value>) -> Result<Vec<Value>, Fauce
         );
     }
 
-    let out = {
-        let mut stmt = st
-            .conn
-            .prepare(&st.query)
-            .map_err(|e| FaucetError::Transform(format!("sql transform: prepare: {e}")))?;
-        let batches: Vec<RecordBatch> = stmt
-            .query_arrow([])
-            .map_err(|e| FaucetError::Transform(format!("sql transform: execute: {e}")))?
-            .collect();
-        record_batches_to_json(&batches)?
+    let mut stmt = st
+        .conn
+        .prepare(&st.query)
+        .map_err(|e| FaucetError::Transform(format!("sql transform: prepare: {e}")))?;
+    let batches: Vec<RecordBatch> = stmt
+        .query_arrow([])
+        .map_err(|e| FaucetError::Transform(format!("sql transform: execute: {e}")))?
+        .collect();
+    Ok(batches)
+}
+
+fn execute_page(st: &mut State, records: Vec<Value>) -> Result<Vec<Value>, FaucetError> {
+    if records.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Schema cache: infer once per page, reuse the cached schema on a match,
+    // otherwise adopt the freshly inferred one (first page or drift).
+    let fresh = infer_schema(&records)?;
+    let schema = match &st.cached_schema {
+        Some(s) if schema_eq(s, &fresh) => s.clone(),
+        _ => {
+            st.cached_schema = Some(fresh.clone());
+            fresh
+        }
     };
-    Ok(out)
+    let batch = json_to_record_batch(&records, schema)?;
+    let batches = run_query_batches(st, batch)?;
+    record_batches_to_json(&batches)
+}
+
+/// The columnar analogue of [`execute_page`]: feed an Arrow `RecordBatch`
+/// straight to DuckDB and return the result as one `RecordBatch`, with no
+/// `Value` materialization on either side.
+fn execute_batch(st: &mut State, batch: RecordBatch) -> Result<RecordBatch, FaucetError> {
+    if batch.num_rows() == 0 {
+        // Empty page: pass through unchanged (the sink skips 0-row batches).
+        return Ok(batch);
+    }
+    let batches = run_query_batches(st, batch)?;
+    if batches.is_empty() {
+        return Ok(RecordBatch::new_empty(std::sync::Arc::new(
+            arrow::datatypes::Schema::empty(),
+        )));
+    }
+    let schema = batches[0].schema();
+    arrow::compute::concat_batches(&schema, &batches)
+        .map_err(|e| FaucetError::Transform(format!("sql transform: concat result batches: {e}")))
 }
 
 /// DuckDB's fixed vector size — the maximum rows a single arrow array may carry
@@ -259,5 +289,54 @@ mod tests {
         );
         assert_eq!(out.len(), 2);
         assert_eq!(out[0]["id"], json!(1));
+    }
+
+    /// The columnar (#375) form: feed an Arrow `RecordBatch` straight in and get
+    /// one back, with no `Value` on either side. The batch fn shares the DuckDB
+    /// connection with the row fn (same `into_page_stage`).
+    fn compiled(query: &str) -> TransformStage {
+        let cfg = SqlTransformConfig {
+            query: query.into(),
+            relations: vec![],
+            memory_limit: None,
+            threads: Some(1),
+        };
+        SqlTransform::compile(&cfg).unwrap().into_page_stage()
+    }
+
+    fn batch_fn(stage: &TransformStage) -> faucet_core::stage::PageFnBatchBox {
+        match stage {
+            TransformStage::PageFnColumnar { batch, .. } => batch.clone(),
+            other => panic!("sql transform must compile to PageFnColumnar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn columnar_batch_fn_transforms_record_batch() {
+        let stage = compiled("SELECT id, v * 2 AS doubled FROM batch WHERE id >= 1 ORDER BY id");
+        let bf = batch_fn(&stage);
+        let input = faucet_core::columnar::values_to_record_batch_inferred(&[
+            json!({"id": 0, "v": 5}),
+            json!({"id": 1, "v": 10}),
+            json!({"id": 2, "v": 20}),
+        ])
+        .unwrap();
+        let out = bf(input).unwrap();
+        let rows = faucet_core::columnar::record_batch_to_values(&out).unwrap();
+        assert_eq!(rows.len(), 2, "WHERE id >= 1 keeps two rows");
+        assert_eq!(rows[0]["id"], json!(1));
+        assert_eq!(rows[0]["doubled"], json!(20));
+        assert_eq!(rows[1]["doubled"], json!(40));
+    }
+
+    // #372 on the columnar path: a >2048-row inbound batch must not abort.
+    #[test]
+    fn columnar_batch_fn_handles_large_batch() {
+        let stage = compiled("SELECT * FROM batch");
+        let bf = batch_fn(&stage);
+        let recs: Vec<Value> = (0..5_000).map(|i| json!({"id": i})).collect();
+        let input = faucet_core::columnar::values_to_record_batch_inferred(&recs).unwrap();
+        let out = bf(input).unwrap();
+        assert_eq!(out.num_rows(), 5_000);
     }
 }

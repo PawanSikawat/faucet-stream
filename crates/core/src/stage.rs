@@ -30,6 +30,16 @@ use std::sync::Arc;
 /// [`TransformStage::PageFn`] and [`CompiledStage::PageFn`].
 pub type PageFnBox = Arc<dyn Fn(Vec<Value>) -> Result<Vec<Value>, FaucetError> + Send + Sync>;
 
+/// Type alias for the columnar (Arrow) page transform stored in
+/// [`TransformStage::PageFnColumnar`]. A `RecordBatch → RecordBatch` closure
+/// used on the opt-in columnar fast path (#375). Only present with `arrow`.
+#[cfg(feature = "arrow")]
+pub type PageFnBatchBox = Arc<
+    dyn Fn(arrow::array::RecordBatch) -> Result<arrow::array::RecordBatch, FaucetError>
+        + Send
+        + Sync,
+>;
+
 /// One stage in a transform pipeline.
 pub enum TransformStage {
     /// Existing 1→1 record transform. Wraps unchanged.
@@ -56,6 +66,16 @@ pub enum TransformStage {
     /// sort, dedup, top-N). Dependency-free; built by connectors/CLI, not
     /// addressable as a per-record stage.
     PageFn(PageFnBox),
+    /// A [`PageFn`](Self::PageFn) that also carries an Arrow `RecordBatch →
+    /// RecordBatch` form, so the stage runs on the columnar fast path (#375)
+    /// when the source and sink are Arrow-native (e.g. `parquet → sql →
+    /// parquet`). `rows` drives the `Value` path; `batch` the columnar path —
+    /// they must be semantically identical.
+    #[cfg(feature = "arrow")]
+    PageFnColumnar {
+        rows: PageFnBox,
+        batch: PageFnBatchBox,
+    },
 }
 
 impl std::fmt::Debug for TransformStage {
@@ -70,6 +90,8 @@ impl std::fmt::Debug for TransformStage {
             Self::CdcUnwrap(s) => f.debug_tuple("CdcUnwrap").field(s).finish(),
             Self::Custom(_) => write!(f, "Custom(<fn>)"),
             Self::PageFn(_) => write!(f, "PageFn(<fn>)"),
+            #[cfg(feature = "arrow")]
+            Self::PageFnColumnar { .. } => write!(f, "PageFnColumnar(<fn>)"),
         }
     }
 }
@@ -86,6 +108,11 @@ impl Clone for TransformStage {
             Self::CdcUnwrap(s) => Self::CdcUnwrap(s.clone()),
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
             Self::PageFn(f) => Self::PageFn(Arc::clone(f)),
+            #[cfg(feature = "arrow")]
+            Self::PageFnColumnar { rows, batch } => Self::PageFnColumnar {
+                rows: Arc::clone(rows),
+                batch: Arc::clone(batch),
+            },
         }
     }
 }
@@ -101,6 +128,11 @@ pub enum CompiledStage {
     CdcUnwrap(CompiledCdcUnwrap),
     Custom(Arc<dyn Fn(Value) -> Vec<Value> + Send + Sync>),
     PageFn(PageFnBox),
+    #[cfg(feature = "arrow")]
+    PageFnColumnar {
+        rows: PageFnBox,
+        batch: PageFnBatchBox,
+    },
 }
 
 impl std::fmt::Debug for CompiledStage {
@@ -115,6 +147,8 @@ impl std::fmt::Debug for CompiledStage {
             Self::CdcUnwrap(c) => f.debug_tuple("CdcUnwrap").field(c).finish(),
             Self::Custom(_) => write!(f, "Custom(<fn>)"),
             Self::PageFn(_) => write!(f, "PageFn(<fn>)"),
+            #[cfg(feature = "arrow")]
+            Self::PageFnColumnar { .. } => write!(f, "PageFnColumnar(<fn>)"),
         }
     }
 }
@@ -140,6 +174,25 @@ impl Clone for CompiledStage {
             Self::CdcUnwrap(c) => Self::CdcUnwrap(c.clone()),
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
             Self::PageFn(f) => Self::PageFn(Arc::clone(f)),
+            #[cfg(feature = "arrow")]
+            Self::PageFnColumnar { rows, batch } => Self::PageFnColumnar {
+                rows: Arc::clone(rows),
+                batch: Arc::clone(batch),
+            },
+        }
+    }
+}
+
+impl CompiledStage {
+    /// The Arrow `RecordBatch → RecordBatch` form of this stage, if it has one
+    /// (only [`CompiledStage::PageFnColumnar`]). `TransformingSource` uses this
+    /// to run a stage on the columnar fast path; a stage without one keeps the
+    /// whole chain off the columnar path.
+    #[cfg(feature = "arrow")]
+    pub fn batch_fn(&self) -> Option<&PageFnBatchBox> {
+        match self {
+            Self::PageFnColumnar { batch, .. } => Some(batch),
+            _ => None,
         }
     }
 }
@@ -790,6 +843,11 @@ pub fn compile_stage(s: &TransformStage) -> Result<CompiledStage, FaucetError> {
         }
         TransformStage::Custom(f) => Ok(CompiledStage::Custom(Arc::clone(f))),
         TransformStage::PageFn(f) => Ok(CompiledStage::PageFn(Arc::clone(f))),
+        #[cfg(feature = "arrow")]
+        TransformStage::PageFnColumnar { rows, batch } => Ok(CompiledStage::PageFnColumnar {
+            rows: Arc::clone(rows),
+            batch: Arc::clone(batch),
+        }),
     }
 }
 
@@ -817,6 +875,11 @@ pub fn apply_stages_to_page(
         match stage {
             CompiledStage::PageFn(f) => {
                 records = f(records)?;
+            }
+            // On the `Value` path a columnar stage runs its `rows` form.
+            #[cfg(feature = "arrow")]
+            CompiledStage::PageFnColumnar { rows, .. } => {
+                records = rows(records)?;
             }
             per_record => {
                 let mut next = Vec::with_capacity(records.len());
@@ -851,6 +914,12 @@ fn apply_one_stage(rec: Value, stage: &CompiledStage) -> Result<Vec<Value>, Fauc
         CompiledStage::Custom(f) => Ok(f(rec)),
         CompiledStage::PageFn(_) => Err(FaucetError::Transform(
             "PageFn is a page-level stage and cannot run in a per-record context; \
+             use apply_stages_to_page"
+                .to_owned(),
+        )),
+        #[cfg(feature = "arrow")]
+        CompiledStage::PageFnColumnar { .. } => Err(FaucetError::Transform(
+            "PageFnColumnar is a page-level stage and cannot run in a per-record context; \
              use apply_stages_to_page"
                 .to_owned(),
         )),

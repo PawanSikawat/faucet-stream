@@ -978,7 +978,14 @@ mod tests {
         }];
         let out = compile_transforms(&specs).unwrap();
         assert_eq!(out.len(), 1);
-        assert!(matches!(out[0], faucet_core::TransformStage::PageFn(_)));
+        // The sql transform is Arrow-capable: it compiles to `PageFnColumnar`
+        // (a `PageFn` that also carries a `RecordBatch` form) so it can run on
+        // the columnar fast path (#375). `faucet-core/arrow` is always on when
+        // `transform-sql` is compiled.
+        assert!(matches!(
+            out[0],
+            faucet_core::TransformStage::PageFnColumnar { .. }
+        ));
     }
 
     #[cfg(feature = "transform-sql")]

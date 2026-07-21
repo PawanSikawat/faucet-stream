@@ -117,6 +117,40 @@ impl Source for TransformingSource {
         })
     }
 
+    /// Columnar only when the inner source is columnar **and** every stage has
+    /// an Arrow batch form (today: the SQL transform). Any `Value`-only stage
+    /// (`Map` / `Filter` / `Explode` / `CdcUnwrap` / `Custom` / plain `PageFn`)
+    /// keeps the whole chain on the `Value` path (#375).
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        self.inner.supports_columnar() && self.stages.iter().all(|s| s.batch_fn().is_some())
+    }
+
+    /// Stream the inner source's Arrow batches with every stage's batch form
+    /// applied in declared order — so `parquet → sql → parquet` runs Arrow
+    /// end-to-end. Only reached when [`supports_columnar`](Self::supports_columnar)
+    /// is `true`, i.e. every stage has a batch form.
+    #[cfg(feature = "arrow")]
+    fn stream_batches<'a>(
+        &'a self,
+        ctx: &'a HashMap<String, Value>,
+        batch_size: usize,
+    ) -> Pin<Box<dyn Stream<Item = Result<crate::columnar::ColumnarPage, FaucetError>> + Send + 'a>>
+    {
+        Box::pin(async_stream::try_stream! {
+            let mut pages = self.inner.stream_batches(ctx, batch_size);
+            while let Some(page) = pages.next().await {
+                let crate::columnar::ColumnarPage { mut batch, bookmark } = page?;
+                for stage in &self.stages {
+                    if let Some(bf) = stage.batch_fn() {
+                        batch = bf(batch)?;
+                    }
+                }
+                yield crate::columnar::ColumnarPage { batch, bookmark };
+            }
+        })
+    }
+
     fn state_key(&self) -> Option<String> {
         self.inner.state_key()
     }
@@ -583,5 +617,109 @@ mod tests {
         assert_eq!(sub_pages.len(), 1);
         assert!(sub_pages[0].records.is_empty());
         assert_eq!(sub_pages[0].bookmark, Some(json!("bm")));
+    }
+}
+
+#[cfg(all(test, feature = "arrow"))]
+mod columnar_tests {
+    use super::*;
+    use crate::columnar::{ColumnarPage, record_batch_to_values, values_to_record_batch_inferred};
+    use crate::stage::TransformStage;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    /// A source that emits one Arrow batch (columnar-capable).
+    struct ColumnarMock(Vec<Value>);
+    #[async_trait]
+    impl Source for ColumnarMock {
+        async fn fetch_with_context(
+            &self,
+            _ctx: &HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            Ok(self.0.clone())
+        }
+        fn supports_columnar(&self) -> bool {
+            true
+        }
+        fn stream_batches<'a>(
+            &'a self,
+            _ctx: &'a HashMap<String, Value>,
+            _bs: usize,
+        ) -> Pin<Box<dyn Stream<Item = Result<ColumnarPage, FaucetError>> + Send + 'a>> {
+            let batch = values_to_record_batch_inferred(&self.0).unwrap();
+            Box::pin(async_stream::stream! {
+                yield Ok(ColumnarPage { batch, bookmark: Some(json!("bm")) });
+            })
+        }
+    }
+
+    /// A source with no columnar support (default `supports_columnar` = false).
+    struct RowOnlyMock(Vec<Value>);
+    #[async_trait]
+    impl Source for RowOnlyMock {
+        async fn fetch_with_context(
+            &self,
+            _ctx: &HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// A columnar stage that appends `{"seen": true}`-style marker by identity
+    /// on rows and identity on batch — enough to exercise the wiring.
+    fn identity_columnar_stage() -> TransformStage {
+        TransformStage::PageFnColumnar {
+            rows: Arc::new(Ok),
+            batch: Arc::new(Ok),
+        }
+    }
+
+    #[tokio::test]
+    async fn columnar_inner_plus_columnar_stage_is_supported_and_streams() {
+        let inner: Box<dyn Source> =
+            Box::new(ColumnarMock(vec![json!({"id": 1}), json!({"id": 2})]));
+        let wrapped = TransformingSource::new(
+            inner,
+            vec![identity_columnar_stage()],
+            Labels::for_named("t"),
+        )
+        .unwrap();
+        assert!(wrapped.supports_columnar());
+        let ctx = HashMap::new();
+        let mut s = wrapped.stream_batches(&ctx, 0);
+        let page = s.next().await.unwrap().unwrap();
+        let rows = record_batch_to_values(&page.batch).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(page.bookmark, Some(json!("bm")));
+    }
+
+    #[tokio::test]
+    async fn value_only_stage_disables_columnar() {
+        // A `Map` stage has no Arrow batch form → the whole chain drops off the
+        // columnar path even though the inner source is columnar.
+        let inner: Box<dyn Source> = Box::new(ColumnarMock(vec![json!({"FooBar": 1})]));
+        let wrapped = TransformingSource::new(
+            inner,
+            vec![TransformStage::Map(
+                crate::transform::RecordTransform::KeysCase {
+                    mode: crate::transform::KeyCaseMode::Snake,
+                },
+            )],
+            Labels::for_named("t"),
+        )
+        .unwrap();
+        assert!(!wrapped.supports_columnar());
+    }
+
+    #[tokio::test]
+    async fn columnar_stage_over_row_only_inner_is_disabled() {
+        let inner: Box<dyn Source> = Box::new(RowOnlyMock(vec![json!({"id": 1})]));
+        let wrapped = TransformingSource::new(
+            inner,
+            vec![identity_columnar_stage()],
+            Labels::for_named("t"),
+        )
+        .unwrap();
+        assert!(!wrapped.supports_columnar(), "inner is not columnar");
     }
 }
