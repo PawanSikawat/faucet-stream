@@ -104,6 +104,29 @@ fn connector_snapshot(kind: &str, config: &Value) -> ConnectorSnapshot {
     }
 }
 
+/// Build + record the config snapshot for a run that finished cleanly, when a
+/// catalog is configured. Best-effort — never fails the run (mirrors
+/// [`super::record`]). This is the single place `run` / `replicate` /
+/// `schedule` funnel through, so the record logic is exercised by one test
+/// rather than three untested call sites.
+pub async fn record_if_ok(
+    catalog: Option<&super::CatalogHandle>,
+    pipeline: &str,
+    on_error: &str,
+    nodes: &[ExpandedNode],
+    succeeded: bool,
+    clock: DateTime<Utc>,
+) {
+    if !succeeded {
+        return;
+    }
+    let Some(handle) = catalog else {
+        return;
+    };
+    let snapshot = build_snapshot(pipeline.to_owned(), on_error, nodes, clock);
+    super::record_config_snapshot(handle, &snapshot).await;
+}
+
 /// Recursively replace every secret-sourced string in `value` with a stable
 /// `<secret:sha256:…>` token. Non-secret strings pass through verbatim, so real
 /// config changes (paths, table names, page sizes) stay visible in the diff.
@@ -493,5 +516,107 @@ mod tests {
         // Stable: same value → same token.
         let again = redact_value(&json!("supersecrettoken"));
         assert_eq!(again.as_str().unwrap(), token);
+    }
+
+    /// Write a config to a temp file and return (config, expanded nodes, path).
+    fn expand_config(
+        yaml: &str,
+    ) -> (
+        crate::config::PipelineConfig,
+        Vec<ExpandedNode>,
+        std::path::PathBuf,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.yaml");
+        std::fs::write(&path, yaml).unwrap();
+        let cfg = crate::config::PipelineConfig::from_path_tolerating_secrets(&path, None).unwrap();
+        let nodes = crate::expand::expand(&cfg).unwrap();
+        std::mem::forget(dir); // keep the temp file alive for the returned path
+        (cfg, nodes, path)
+    }
+
+    const REST_TO_JSONL: &str = r#"
+version: 1
+name: mypipe
+pipeline:
+  source:
+    type: rest
+    config:
+      url: https://api.example.com/v1
+      auth: { type: bearer, config: { token: topsecretvalue12345 } }
+  sink:
+    type: jsonl
+    config:
+      path: out.jsonl
+  transforms:
+    - type: flatten
+      config: {}
+"#;
+
+    #[test]
+    fn build_snapshot_shapes_rows_and_redacts_secrets() {
+        crate::secrets::registry::register("topsecretvalue12345");
+        let (cfg, nodes, path) = expand_config(REST_TO_JSONL);
+        assert_eq!(resolve_name(&cfg, Some(&path)), "mypipe");
+        assert_eq!(on_error_str(&cfg.execution), "continue"); // default
+
+        let snap = build_snapshot(
+            resolve_name(&cfg, Some(&path)),
+            on_error_str(&cfg.execution),
+            &nodes,
+            Utc::now(),
+        );
+        assert_eq!(snap.pipeline, "mypipe");
+        let r = snap.rows.values().next().unwrap();
+        assert_eq!(r.source.kind, "rest");
+        assert_eq!(r.sink.kind, "jsonl");
+        assert_eq!(r.transforms.len(), 1);
+        let src = serde_json::to_string(&r.source.config).unwrap();
+        assert!(!src.contains("topsecretvalue12345"), "secret leaked: {src}");
+        assert!(src.contains("api.example.com"), "non-secret url must show");
+    }
+
+    #[test]
+    fn resolve_name_falls_back_to_file_stem_then_default() {
+        // No `name:` → file stem.
+        let (cfg, _n, path) = expand_config(
+            "version: 1\npipeline:\n  source: { type: rest, config: { url: https://x/y } }\n  sink: { type: jsonl, config: { path: o.jsonl } }\n",
+        );
+        assert_eq!(resolve_name(&cfg, Some(&path)), "p"); // p.yaml
+        assert_eq!(resolve_name(&cfg, None), "pipeline"); // nothing → default
+    }
+
+    #[tokio::test]
+    async fn record_if_ok_records_only_on_success_with_a_catalog() {
+        let (_cfg, nodes, _p) = expand_config(REST_TO_JSONL);
+        let handle = crate::catalog::connect_from_spec(&crate::catalog::CatalogSpec {
+            url: "memory".into(),
+            sample_records: 10,
+        })
+        .await
+        .unwrap();
+
+        // Failure → nothing recorded.
+        record_if_ok(Some(&handle), "mypipe", "stop", &nodes, false, Utc::now()).await;
+        assert!(
+            handle
+                .store
+                .catalog_last_config_snapshot("mypipe")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // No catalog → no-op (must not panic).
+        record_if_ok(None, "mypipe", "stop", &nodes, true, Utc::now()).await;
+        // Success + catalog → recorded.
+        record_if_ok(Some(&handle), "mypipe", "stop", &nodes, true, Utc::now()).await;
+        let got = handle
+            .store
+            .catalog_last_config_snapshot("mypipe")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.pipeline, "mypipe");
+        assert!(!got.rows.is_empty());
     }
 }

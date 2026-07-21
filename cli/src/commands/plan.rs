@@ -510,4 +510,86 @@ mod tests {
         assert_eq!(report.sink, "jsonl");
         assert_eq!(report.write_mode, "append");
     }
+
+    /// `plan --diff` end-to-end over a real sqlite catalog: first run reports
+    /// first-run (nothing recorded), then after a snapshot is recorded the diff
+    /// compares against it. Exercises `run_diff` both branches.
+    #[cfg(all(feature = "catalog", feature = "serve-history-sqlite"))]
+    #[tokio::test]
+    async fn plan_diff_first_run_then_against_recorded_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("cat.db");
+        let cfg_path = dir.path().join("pipe.yaml");
+        std::fs::write(
+            &cfg_path,
+            format!(
+                "version: 1\nname: diffpipe\npipeline:\n  source:\n    type: csv\n    config:\n      path: in.csv\n  sink:\n    type: jsonl\n    config:\n      path: out.jsonl\ncatalog:\n  url: \"sqlite:{}\"\n",
+                db.display()
+            ),
+        )
+        .unwrap();
+
+        let mk_args = || PlanArgs {
+            config: Some(cfg_path.clone()),
+            row: None,
+            sample: None,
+            live: false,
+            limit: 10,
+            json: false,
+            diff: true,
+            resolve_secrets: false,
+            profile: None,
+        };
+
+        // 1. Nothing recorded yet → first-run path.
+        super::run(mk_args()).await.expect("first plan --diff");
+
+        // 2. Record a snapshot exactly as a successful run would.
+        let cfg = crate::config::PipelineConfig::from_path_async(&cfg_path, None)
+            .await
+            .unwrap();
+        let nodes = crate::expand::expand(&cfg).unwrap();
+        let handle = crate::catalog::connect_from_spec(cfg.catalog.as_ref().unwrap())
+            .await
+            .unwrap();
+        crate::catalog::snapshot::record_if_ok(
+            Some(&handle),
+            "diffpipe",
+            "continue",
+            &nodes,
+            true,
+            chrono::Utc::now(),
+        )
+        .await;
+
+        // 3. Now the diff compares against the recorded snapshot (unchanged).
+        super::run(mk_args()).await.expect("second plan --diff");
+    }
+
+    /// `plan --diff` on a config with no `catalog:` block is a clear error
+    /// (there is nothing to diff against).
+    #[cfg(feature = "catalog")]
+    #[tokio::test]
+    async fn plan_diff_without_catalog_block_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("p.yaml");
+        std::fs::write(
+            &cfg_path,
+            "version: 1\nname: nocat\npipeline:\n  source: { type: csv, config: { path: in.csv } }\n  sink: { type: jsonl, config: { path: out.jsonl } }\n",
+        )
+        .unwrap();
+        let args = PlanArgs {
+            config: Some(cfg_path),
+            row: None,
+            sample: None,
+            live: false,
+            limit: 10,
+            json: false,
+            diff: true,
+            resolve_secrets: false,
+            profile: None,
+        };
+        let err = super::run(args).await.unwrap_err();
+        assert!(err.to_string().contains("catalog:"), "{err}");
+    }
 }

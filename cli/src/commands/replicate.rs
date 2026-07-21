@@ -55,19 +55,11 @@ pub async fn run(args: ReplicateArgs) -> CliResult<()> {
     // config does not expand cleanly (some replication shapes are orchestration
     // -only). Recorded after the replication run succeeds below.
     #[cfg(feature = "catalog")]
-    let config_snapshot = catalog
-        .as_ref()
-        .and_then(|_| crate::expand::expand(&cfg).ok())
-        .map(|nodes| {
-            crate::catalog::snapshot::build_snapshot(
-                pipeline_name.clone(),
-                crate::catalog::snapshot::on_error_str(&cfg.execution),
-                &nodes,
-                chrono::Utc::now(),
-            )
-        });
-    #[cfg(feature = "catalog")]
-    let catalog_for_snapshot = catalog.clone();
+    let snapshot_inputs = catalog.as_ref().and_then(|handle| {
+        crate::expand::expand(&cfg)
+            .ok()
+            .map(|nodes| (handle.clone(), nodes, pipeline_name.clone()))
+    });
 
     run_replication(
         &cfg,
@@ -89,8 +81,16 @@ pub async fn run(args: ReplicateArgs) -> CliResult<()> {
 
     // Reached only on success (errors returned via `?` above).
     #[cfg(feature = "catalog")]
-    if let (Some(handle), Some(snap)) = (catalog_for_snapshot, config_snapshot) {
-        crate::catalog::record_config_snapshot(&handle, &snap).await;
+    if let Some((handle, nodes, name)) = snapshot_inputs {
+        crate::catalog::snapshot::record_if_ok(
+            Some(&handle),
+            &name,
+            crate::catalog::snapshot::on_error_str(&cfg.execution),
+            &nodes,
+            true,
+            chrono::Utc::now(),
+        )
+        .await;
     }
 
     // Flush any buffered OTLP telemetry before exiting (no-op without `otel`).

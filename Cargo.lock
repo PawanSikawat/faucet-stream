@@ -4257,6 +4257,7 @@ dependencies = [
  "faucet-conformance",
  "faucet-core",
  "faucet-source-delta",
+ "futures",
  "schemars 1.2.1",
  "serde",
  "serde_json",

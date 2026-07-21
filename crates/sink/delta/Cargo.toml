@@ -15,6 +15,9 @@ default = []
 s3 = ["faucet-common-delta/s3"]
 azure = ["faucet-common-delta/azure"]
 gcs = ["faucet-common-delta/gcs"]
+# Opt-in Arrow columnar fast path (#375): consume `RecordBatch`es so a
+# `parquet → delta` / `delta → delta` chain skips `Value` materialization.
+arrow = ["faucet-core/arrow"]
 
 [dependencies]
 faucet-core.workspace = true
@@ -33,7 +36,10 @@ arrow-json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tempfile = "3"
 faucet-conformance.workspace = true
-faucet-source-delta.workspace = true
+# `arrow` on the source dev-dep so the columnar round-trip test can read the
+# table back via `stream_batches` (gated on the source's own `arrow` feature).
+faucet-source-delta = { workspace = true, features = ["arrow"] }
+futures.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
 

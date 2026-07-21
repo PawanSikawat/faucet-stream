@@ -107,6 +107,8 @@ arrow = [
     "faucet-core/arrow",
     "faucet-source-parquet?/arrow",
     "faucet-sink-parquet?/arrow",
+    "faucet-source-delta?/arrow",
+    "faucet-sink-delta?/arrow",
 ]
 ## Shared, single-flight auth providers (OAuth2 client-credentials / refresh,
 ## token-endpoint) usable across connectors via `auth: { ref }`.
