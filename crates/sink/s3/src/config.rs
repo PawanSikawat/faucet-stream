@@ -4,6 +4,23 @@ use faucet_core::DEFAULT_BATCH_SIZE;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// On-the-wire format of objects written by the S3 sink.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum S3SinkFormat {
+    /// Newline-delimited JSON — one JSON record per line (the default).
+    #[default]
+    JsonLines,
+    /// Apache Parquet. Each written object is a complete, self-contained
+    /// Parquet file. Enables the **columnar** fast path
+    /// ([`Sink::write_batch_columnar`](faucet_core::Sink::write_batch_columnar))
+    /// so a `parquet`/`delta` → `s3(parquet)` chain never materializes
+    /// `serde_json::Value`. Requires the crate-local `arrow` feature
+    /// (RFC 0002 / #375).
+    #[cfg(feature = "arrow")]
+    Parquet,
+}
+
 /// Configuration for the S3 sink connector.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct S3SinkConfig {
@@ -11,6 +28,11 @@ pub struct S3SinkConfig {
     pub bucket: String,
     /// Key prefix for written objects.
     pub prefix: String,
+    /// Object format (default: `json_lines`). Set to `parquet` (with the
+    /// `arrow` feature) to write Parquet objects and enable the columnar
+    /// fast path.
+    #[serde(default)]
+    pub format: S3SinkFormat,
     /// AWS region. `None` uses the SDK default.
     pub region: Option<String>,
     /// Custom endpoint URL for S3-compatible services (e.g. MinIO).
@@ -63,6 +85,7 @@ impl S3SinkConfig {
         Self {
             bucket: bucket.into(),
             prefix: String::new(),
+            format: S3SinkFormat::default(),
             region: None,
             endpoint_url: None,
             file_extension: ".jsonl".to_string(),
@@ -77,6 +100,13 @@ impl S3SinkConfig {
     /// Set the key prefix for written objects.
     pub fn prefix(mut self, prefix: impl Into<String>) -> Self {
         self.prefix = prefix.into();
+        self
+    }
+
+    /// Set the object format (`json_lines` or, with the `arrow` feature,
+    /// `parquet`).
+    pub fn format(mut self, format: S3SinkFormat) -> Self {
+        self.format = format;
         self
     }
 

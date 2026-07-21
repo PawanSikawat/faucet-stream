@@ -29,9 +29,17 @@ crc.workspace = true
 sha2.workspace = true
 md-5.workspace = true
 base64.workspace = true
+# Arrow columnar path (opt-in `arrow` feature, RFC 0002 / #375): decode Parquet
+# objects into Arrow `RecordBatch`es for the row + columnar lanes. Optional so
+# default builds pull neither `parquet` nor `arrow`.
+arrow = { workspace = true, optional = true }
+parquet = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
 
 [features]
 compression = ["faucet-core/compression"]
+# Enables the `Parquet` file format + the columnar `stream_batches` fast path.
+arrow = ["faucet-core/arrow", "dep:arrow", "dep:parquet", "dep:bytes"]
 
 [dev-dependencies]
 faucet-conformance.workspace = true

@@ -22,9 +22,16 @@ aws-sdk-s3 = { workspace = true }
 aws-config = { workspace = true }
 uuid.workspace = true
 futures.workspace = true
+# Arrow columnar path (opt-in `arrow` feature, RFC 0002 / #375): encode Arrow
+# `RecordBatch`es to Parquet objects for the row + columnar lanes. Optional so
+# default builds pull neither `parquet` nor `arrow`.
+arrow = { workspace = true, optional = true }
+parquet = { workspace = true, optional = true }
 
 [features]
 compression = ["faucet-core/compression"]
+# Enables the `Parquet` object format + the columnar `write_batch_columnar` fast path.
+arrow = ["faucet-core/arrow", "dep:arrow", "dep:parquet"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
@@ -33,6 +40,9 @@ faucet-conformance.workspace = true
 schemars.workspace = true
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["minio"] }
+# For the arrow-gated round-trip test (`bytes::Bytes` implements parquet's
+# `ChunkReader`); harmless when the `arrow` feature is off.
+bytes = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true
