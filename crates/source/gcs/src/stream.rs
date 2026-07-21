@@ -192,6 +192,41 @@ impl GcsSource {
     fn parse_content(&self, key: &str, text: &str) -> Result<Vec<Value>, FaucetError> {
         parse_file_content(&self.config.file_format, key, text)
     }
+
+    /// Download a single GCS object's full body into an in-memory
+    /// [`bytes::Bytes`], reusing [`open_object_reader`](Self::open_object_reader)
+    /// so length/checksum verification (and any configured decompression)
+    /// still apply. Used only by the Parquet path (Parquet is binary, so it
+    /// cannot go through [`read_object_text`](Self::read_object_text)).
+    #[cfg(feature = "arrow")]
+    async fn read_object_bytes(&self, key: &str) -> Result<bytes::Bytes, FaucetError> {
+        use tokio::io::AsyncReadExt as _;
+        let mut reader = self.open_object_reader(key).await?;
+        let mut buf = Vec::new();
+        reader
+            .read_to_end(&mut buf)
+            .await
+            .map_err(|e| FaucetError::Source(format!("GCS read error for key '{key}': {e}")))?;
+        Ok(bytes::Bytes::from(buf))
+    }
+
+    /// Decode a single Parquet object into its Arrow schema and batches. The
+    /// whole object is buffered (matching the `JsonArray` model) and decoded on
+    /// a blocking thread so the CPU-bound Parquet decode does not stall the
+    /// async runtime.
+    #[cfg(feature = "arrow")]
+    async fn read_object_parquet(
+        &self,
+        key: &str,
+    ) -> Result<(arrow::datatypes::SchemaRef, Vec<arrow::array::RecordBatch>), FaucetError> {
+        let data = self.read_object_bytes(key).await?;
+        let key_owned = key.to_string();
+        tokio::task::spawn_blocking(move || decode_parquet_bytes(data, &key_owned))
+            .await
+            .map_err(|e| {
+                FaucetError::Source(format!("parquet decode task for '{key}' panicked: {e}"))
+            })?
+    }
 }
 
 /// Parse file content into records for a given format. Free function (vs. a
@@ -239,7 +274,47 @@ pub(crate) fn parse_file_content(
             "key": key,
             "content": text,
         })]),
+        // Parquet is binary and is decoded via `read_object_parquet`, never
+        // through this text parser — reaching here is an internal invariant
+        // violation.
+        #[cfg(feature = "arrow")]
+        GcsFileFormat::Parquet => Err(FaucetError::Source(format!(
+            "GCS parquet object '{key}' cannot be parsed as text (internal error: \
+             parquet must use the binary decode path)"
+        ))),
     }
+}
+
+/// Decode a fully-buffered Parquet object into its Arrow schema and batches.
+///
+/// Synchronous (runs inside `spawn_blocking`). `bytes::Bytes` implements
+/// `parquet`'s `ChunkReader`, so the in-memory reader needs no temp file. The
+/// schema is captured before the reader is consumed so an object with zero
+/// row-groups still reports a schema for cross-object consistency checks.
+#[cfg(feature = "arrow")]
+fn decode_parquet_bytes(
+    data: bytes::Bytes,
+    key: &str,
+) -> Result<(arrow::datatypes::SchemaRef, Vec<arrow::array::RecordBatch>), FaucetError> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let builder = ParquetRecordBatchReaderBuilder::try_new(data).map_err(|e| {
+        FaucetError::Source(format!("failed to read parquet metadata for '{key}': {e}"))
+    })?;
+    let schema = builder.schema().clone();
+    let reader = builder.build().map_err(|e| {
+        FaucetError::Source(format!("failed to build parquet reader for '{key}': {e}"))
+    })?;
+
+    let mut batches = Vec::new();
+    for batch in reader {
+        batches.push(
+            batch.map_err(|e| {
+                FaucetError::Source(format!("parquet decode error in '{key}': {e}"))
+            })?,
+        );
+    }
+    Ok((schema, batches))
 }
 
 #[async_trait]
@@ -269,6 +344,16 @@ impl faucet_core::Source for GcsSource {
         let concurrency = self.config.concurrency.max(1);
         let results: Vec<Vec<Value>> = stream::iter(keys)
             .map(|key| async move {
+                #[cfg(feature = "arrow")]
+                if matches!(self.config.file_format, GcsFileFormat::Parquet) {
+                    let (_schema, batches) = self.read_object_parquet(&key).await?;
+                    let mut records = Vec::new();
+                    for batch in &batches {
+                        records.extend(faucet_core::columnar::record_batch_to_values(batch)?);
+                    }
+                    tracing::debug!(key = %key, records = records.len(), "Read GCS parquet object");
+                    return Ok::<Vec<Value>, FaucetError>(records);
+                }
                 let text = self.read_object_text(&key).await?;
                 let records = self.parse_content(&key, &text)?;
                 tracing::debug!(key = %key, records = records.len(), "Read GCS object");
@@ -369,6 +454,34 @@ impl faucet_core::Source for GcsSource {
                             yield StreamPage { records: page, bookmark: None };
                         }
                     }
+                    #[cfg(feature = "arrow")]
+                    GcsFileFormat::Parquet => {
+                        // Parquet objects are buffered and decoded to Arrow
+                        // `RecordBatch`es, then converted to JSON rows for the
+                        // row path. Rows accumulate across objects and chunk at
+                        // `batch_size`; `batch_size == 0` emits one page per
+                        // object.
+                        let (_schema, batches) = self.read_object_parquet(key).await?;
+                        for batch in &batches {
+                            let rows = faucet_core::columnar::record_batch_to_values(batch)?;
+                            for record in rows {
+                                buffer.push(record);
+                                if batch_size != 0 && buffer.len() >= chunk {
+                                    let page = std::mem::replace(
+                                        &mut buffer,
+                                        Vec::with_capacity(initial_capacity),
+                                    );
+                                    total += page.len();
+                                    yield StreamPage { records: page, bookmark: None };
+                                }
+                            }
+                        }
+                        if batch_size == 0 && !buffer.is_empty() {
+                            let page = std::mem::take(&mut buffer);
+                            total += page.len();
+                            yield StreamPage { records: page, bookmark: None };
+                        }
+                    }
                     GcsFileFormat::JsonArray => {
                         let text = self.read_object_text(key).await?;
                         let value: Value = serde_json::from_str(&text).map_err(|e| {
@@ -417,6 +530,89 @@ impl faucet_core::Source for GcsSource {
                 batch_size,
                 objects = keys.len(),
                 "GCS source stream complete",
+            );
+        })
+    }
+
+    /// The GCS source advertises the columnar fast path **only** when
+    /// configured for the [`Parquet`](GcsFileFormat::Parquet) format — the
+    /// text formats have no native Arrow representation and stay on the row
+    /// path (RFC 0002 / #375).
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        matches!(self.config.file_format, GcsFileFormat::Parquet)
+    }
+
+    /// Stream Parquet objects natively as Arrow `RecordBatch`es — one
+    /// [`ColumnarPage`](faucet_core::columnar::ColumnarPage) per batch — so a
+    /// `gcs(parquet) → parquet`/`delta`/`sql` chain never materializes
+    /// `serde_json::Value`. The first object's schema is the reference; a later
+    /// divergent object aborts after earlier objects' pages have been written
+    /// (the same non-atomic multi-object semantics the row path has). Empty
+    /// batches are skipped; every page carries `bookmark: None`.
+    #[cfg(feature = "arrow")]
+    fn stream_batches<'a>(
+        &'a self,
+        context: &'a std::collections::HashMap<String, Value>,
+        _batch_size: usize,
+    ) -> Pin<
+        Box<
+            dyn Stream<Item = Result<faucet_core::columnar::ColumnarPage, FaucetError>> + Send + 'a,
+        >,
+    > {
+        Box::pin(async_stream::try_stream! {
+            if !matches!(self.config.file_format, GcsFileFormat::Parquet) {
+                Err(FaucetError::Source(
+                    "GCS source: stream_batches invoked for a non-parquet file_format".into(),
+                ))?;
+            }
+
+            let substituted_prefix: Option<String> = if !context.is_empty() {
+                self.config
+                    .prefix
+                    .as_ref()
+                    .map(|p| faucet_core::util::substitute_context(p, context))
+            } else {
+                None
+            };
+
+            let keys = self.list_object_names(substituted_prefix.as_deref()).await?;
+            tracing::info!(
+                bucket = %self.config.bucket,
+                objects = keys.len(),
+                "Listed GCS objects (columnar stream)",
+            );
+
+            let mut reference: Option<arrow::datatypes::SchemaRef> = None;
+            let mut total_records = 0usize;
+            let mut total_pages = 0usize;
+            for key in &keys {
+                let (schema, batches) = self.read_object_parquet(key).await?;
+                match &reference {
+                    Some(first) if first != &schema => {
+                        Err(FaucetError::Source(format!(
+                            "GCS source: parquet schema mismatch — object '{key}' diverges from \
+                             the first object's schema"
+                        )))?;
+                    }
+                    None => reference = Some(schema),
+                    _ => {}
+                }
+                for batch in batches {
+                    if batch.num_rows() == 0 {
+                        continue;
+                    }
+                    total_records += batch.num_rows();
+                    total_pages += 1;
+                    yield faucet_core::columnar::ColumnarPage { batch, bookmark: None };
+                }
+            }
+
+            tracing::info!(
+                pages = total_pages,
+                total_records,
+                objects = keys.len(),
+                "GCS source columnar stream complete",
             );
         })
     }
@@ -779,5 +975,66 @@ mod tests {
             None => format!("gs://{}", config.bucket),
         };
         assert_eq!(uri, "gs://my-bucket/data/2026/");
+    }
+
+    // ── Parquet columnar path (feature `arrow`) ──────────────────────────────
+
+    #[cfg(feature = "arrow")]
+    fn sample_parquet_bytes() -> bytes::Bytes {
+        use arrow::array::{Int32Array, RecordBatch, StringArray};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![10, 20])),
+                Arc::new(StringArray::from(vec![Some("x"), None])),
+            ],
+        )
+        .unwrap();
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut writer = parquet::arrow::ArrowWriter::try_new(&mut buf, schema, None).unwrap();
+            writer.write(&batch).unwrap();
+            writer.close().unwrap();
+        }
+        bytes::Bytes::from(buf)
+    }
+
+    #[cfg(feature = "arrow")]
+    #[test]
+    fn decode_parquet_bytes_yields_schema_and_batches() {
+        let (schema, batches) = decode_parquet_bytes(sample_parquet_bytes(), "t.parquet").unwrap();
+        assert_eq!(schema.fields().len(), 2);
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 2);
+    }
+
+    #[cfg(feature = "arrow")]
+    #[test]
+    fn parquet_batches_convert_to_rows_with_explicit_nulls() {
+        let (_schema, batches) = decode_parquet_bytes(sample_parquet_bytes(), "t.parquet").unwrap();
+        let mut rows = Vec::new();
+        for b in &batches {
+            rows.extend(faucet_core::columnar::record_batch_to_values(b).unwrap());
+        }
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["id"], 10);
+        assert_eq!(rows[0]["name"], "x");
+        assert!(rows[1].as_object().unwrap().contains_key("name"));
+        assert!(rows[1]["name"].is_null());
+    }
+
+    #[cfg(feature = "arrow")]
+    #[test]
+    fn corrupt_parquet_bytes_error() {
+        let err =
+            decode_parquet_bytes(bytes::Bytes::from_static(b"nope"), "bad.parquet").unwrap_err();
+        assert!(matches!(err, FaucetError::Source(_)));
     }
 }

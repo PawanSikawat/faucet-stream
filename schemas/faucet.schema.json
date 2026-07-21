@@ -3909,6 +3909,11 @@
           "description": "Each file becomes a single record with `\"key\"` and `\"content\"` fields.",
           "type": "string",
           "const": "raw_text"
+        },
+        {
+          "description": "Apache Parquet objects. Each object is decoded via the Arrow Parquet\nreader; its `RecordBatch`es feed both the row path (converted to JSON\nrecords) and the **columnar** fast path\n([`Source::stream_batches`](faucet_core::Source::stream_batches)) so an\n`s3(parquet) → parquet`/`delta` chain never materializes\n`serde_json::Value`. Requires the crate-local `arrow` feature\n(RFC 0002 / #375).",
+          "type": "string",
+          "const": "parquet"
         }
       ]
     },
@@ -5996,6 +6001,11 @@
           "description": "Each file becomes a single record with `\"key\"` and `\"content\"` fields.",
           "type": "string",
           "const": "raw_text"
+        },
+        {
+          "description": "Apache Parquet objects. Decoded via the Arrow Parquet reader; the\nresulting `RecordBatch`es feed both the row path (converted to JSON)\nand the **columnar** fast path\n([`Source::stream_batches`](faucet_core::Source::stream_batches)) so a\n`gcs(parquet) → parquet`/`delta` chain never materializes\n`serde_json::Value`. Requires the crate-local `arrow` feature\n(RFC 0002 / #375).",
+          "type": "string",
+          "const": "parquet"
         }
       ]
     },
@@ -6815,6 +6825,21 @@
           }
         }
       }
+    },
+    "sink_s3__S3SinkFormat": {
+      "description": "On-the-wire format of objects written by the S3 sink.",
+      "oneOf": [
+        {
+          "description": "Newline-delimited JSON — one JSON record per line (the default).",
+          "type": "string",
+          "const": "json_lines"
+        },
+        {
+          "description": "Apache Parquet. Each written object is a complete, self-contained\nParquet file. Enables the **columnar** fast path\n([`Sink::write_batch_columnar`](faucet_core::Sink::write_batch_columnar))\nso a `parquet`/`delta` → `s3(parquet)` chain never materializes\n`serde_json::Value`. Requires the crate-local `arrow` feature\n(RFC 0002 / #375).",
+          "type": "string",
+          "const": "parquet"
+        }
+      ]
     },
     "sink_s3__CompressionConfig": {
       "description": "User-facing compression config. Defaults to [`Auto`](Self::Auto).",
@@ -8169,6 +8194,21 @@
           ]
         }
       }
+    },
+    "sink_gcs__GcsSinkFormat": {
+      "description": "On-the-wire format of objects written by the GCS sink.",
+      "oneOf": [
+        {
+          "description": "Newline-delimited JSON — one JSON record per line (the default).",
+          "type": "string",
+          "const": "json_lines"
+        },
+        {
+          "description": "Apache Parquet. Each written object is a complete, self-contained\nParquet file. Enables the **columnar** fast path\n([`Sink::write_batch_columnar`](faucet_core::Sink::write_batch_columnar))\nso a `parquet`/`delta` → `gcs(parquet)` chain never materializes\n`serde_json::Value`. Requires the crate-local `arrow` feature\n(RFC 0002 / #375).",
+          "type": "string",
+          "const": "parquet"
+        }
+      ]
     },
     "sink_gcs__GcsCredentials": {
       "description": "Credential source for a GCS client.\n\nSerializes as `{ type: <method>, config: { … } }` (adjacent tagging,\nsnake_case discriminators) — the consistent auth wire shape shared by\nevery faucet connector:\n`{ type: service_account_json_file, config: { path: \"/run/secrets/sa.json\" } }`.",
@@ -11953,6 +11993,14 @@
                       "minimum": 0,
                       "default": 1000
                     },
+                    "arrow_native": {
+                      "description": "Fetch results as Apache Arrow instead of JSON. When `true`, the\nstatement is submitted with `EXTERNAL_LINKS` disposition +\n`ARROW_STREAM` format; each chunk's presigned link is fetched and\ndecoded as an Arrow IPC stream. This enables the **columnar** fast path\n([`Source::stream_batches`](faucet_core::Source::stream_batches)) so a\n`databricks → parquet`/`delta` chain skips the per-cell JSON decode.\n\nRequires the crate-local `arrow` feature, and (in this release) only\n[`DatabricksReplication::Full`] — the columnar path does not run the\nper-row client-side incremental filter. Defaults to `false` (the\n`INLINE` + `JSON_ARRAY` row path, unchanged). RFC 0002 / #375.",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": false
+                    },
                     "replication": {
                       "description": "Replication mode. Defaults to [`DatabricksReplication::Full`].",
                       "$ref": "#/$defs/source_databricks__DatabricksReplication",
@@ -13073,6 +13121,11 @@
                       "description": "Key prefix for written objects.",
                       "type": "string"
                     },
+                    "format": {
+                      "description": "Object format (default: `json_lines`). Set to `parquet` (with the\n`arrow` feature) to write Parquet objects and enable the columnar\nfast path.",
+                      "$ref": "#/$defs/sink_s3__S3SinkFormat",
+                      "default": "json_lines"
+                    },
                     "region": {
                       "description": "AWS region. `None` uses the SDK default.",
                       "type": [
@@ -14186,6 +14239,11 @@
                     "prefix": {
                       "description": "Object-name prefix for written files.",
                       "type": "string"
+                    },
+                    "format": {
+                      "description": "Object format (default: `json_lines`). Set to `parquet` (with the\n`arrow` feature) to write Parquet objects and enable the columnar\nfast path.",
+                      "$ref": "#/$defs/sink_gcs__GcsSinkFormat",
+                      "default": "json_lines"
                     },
                     "auth": {
                       "description": "Credential source.",

@@ -22,3 +22,12 @@ ignore:
   - "**/examples/**"
   - "**/benches/**"
   - "cli/examples/**"
+  # The GCS connectors' data-plane I/O cannot be exercised in CI: the
+  # google-cloud-storage SDK speaks gRPC/JSON that `fake-gcs-server` (REST-only)
+  # does not implement, so the GCS integration tests are `#[ignore]`d (#220).
+  # These two files are therefore untestable here (S3 uses MinIO and IS covered;
+  # Databricks uses wiremock and IS covered). Their pure helpers are still unit
+  # tested; excluding the files keeps the coverage denominator honest rather
+  # than penalising provably-uncoverable I/O.
+  - "crates/source/gcs/src/stream.rs"
+  - "crates/sink/gcs/src/sink.rs"

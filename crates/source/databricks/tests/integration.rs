@@ -26,6 +26,7 @@ fn base_config(uri: &str, sql: &str) -> DatabricksSourceConfig {
         wait_timeout_secs: 50,
         poll_interval_secs: 1,
         batch_size: 1000,
+        arrow_native: false,
         replication: DatabricksReplication::Full,
         state_key: None,
     }
@@ -239,4 +240,93 @@ async fn check_probe_hits_warehouse() {
             .all(|p| matches!(p.status, faucet_core::check::ProbeStatus::Pass)),
         "{report:?}"
     );
+}
+
+// ── ARROW_STREAM (EXTERNAL_LINKS) columnar path (feature `arrow`) ────────────
+
+/// Build a synthetic Arrow IPC **stream** body (what an ARROW_STREAM external
+/// link serves): two rows, an Int64 `id` and a nullable Utf8 `name`.
+#[cfg(feature = "arrow")]
+fn arrow_ipc_chunk() -> Vec<u8> {
+    use arrow::array::{Int64Array, RecordBatch, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::ipc::writer::StreamWriter;
+    use std::sync::Arc;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2])),
+            Arc::new(StringArray::from(vec![Some("alice"), None])),
+        ],
+    )
+    .unwrap();
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let mut w = StreamWriter::try_new(&mut buf, &schema).unwrap();
+        w.write(&batch).unwrap();
+        w.finish().unwrap();
+    }
+    buf
+}
+
+#[cfg(feature = "arrow")]
+#[tokio::test]
+async fn arrow_stream_external_links_row_and_columnar() {
+    use futures::StreamExt;
+
+    let server = MockServer::start().await;
+    let ext_url = format!("{}/ext/chunk0", server.uri());
+
+    // The statement response points at one external link (presigned chunk URL).
+    let stmt_body = json!({
+        "statement_id": "s1",
+        "status": { "state": "SUCCEEDED" },
+        "manifest": { "format": "ARROW_STREAM",
+            "schema": { "column_count": 2, "columns": [
+                { "name": "id", "type_name": "LONG" },
+                { "name": "name", "type_name": "STRING" }]}},
+        "result": { "chunk_index": 0, "row_count": 2,
+            "external_links": [{ "chunk_index": 0, "external_link": ext_url }] }
+    });
+    Mock::given(method("POST"))
+        .and(path("/api/2.0/sql/statements"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(stmt_body))
+        .mount(&server)
+        .await;
+    // The presigned link serves the raw Arrow IPC stream bytes.
+    Mock::given(method("GET"))
+        .and(path("/ext/chunk0"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(arrow_ipc_chunk()))
+        .mount(&server)
+        .await;
+
+    let mut cfg = base_config(&server.uri(), "SELECT * FROM t");
+    cfg.arrow_native = true;
+    let src = DatabricksSource::new(cfg)
+        .unwrap()
+        .with_endpoint_base(server.uri());
+
+    // The source advertises columnar support in arrow_native mode.
+    assert!(Source::supports_columnar(&src));
+
+    // Row path (for a non-columnar sink): batches decode to JSON rows.
+    let rows = src.fetch_with_context(&HashMap::new()).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["id"], json!(1));
+    assert_eq!(rows[0]["name"], json!("alice"));
+    assert!(rows[1]["name"].is_null());
+
+    // Columnar path: RecordBatch pages come straight through.
+    let ctx: HashMap<String, Value> = HashMap::new();
+    let mut total = 0usize;
+    let mut s = src.stream_batches(&ctx, 1000);
+    while let Some(page) = s.next().await {
+        total += page.unwrap().num_rows();
+    }
+    assert_eq!(total, 2);
 }

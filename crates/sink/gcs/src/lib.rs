@@ -5,6 +5,6 @@
 mod config;
 mod sink;
 
-pub use config::GcsSinkConfig;
+pub use config::{GcsSinkConfig, GcsSinkFormat};
 pub use faucet_common_gcs::GcsCredentials;
 pub use sink::GcsSink;

@@ -15,6 +15,15 @@ pub enum S3FileFormat {
     JsonArray,
     /// Each file becomes a single record with `"key"` and `"content"` fields.
     RawText,
+    /// Apache Parquet objects. Each object is decoded via the Arrow Parquet
+    /// reader; its `RecordBatch`es feed both the row path (converted to JSON
+    /// records) and the **columnar** fast path
+    /// ([`Source::stream_batches`](faucet_core::Source::stream_batches)) so an
+    /// `s3(parquet) → parquet`/`delta` chain never materializes
+    /// `serde_json::Value`. Requires the crate-local `arrow` feature
+    /// (RFC 0002 / #375).
+    #[cfg(feature = "arrow")]
+    Parquet,
 }
 
 /// Configuration for the S3 source connector.

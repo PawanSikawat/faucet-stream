@@ -5,6 +5,23 @@ use faucet_core::DEFAULT_BATCH_SIZE;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// On-the-wire format of objects written by the GCS sink.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GcsSinkFormat {
+    /// Newline-delimited JSON — one JSON record per line (the default).
+    #[default]
+    JsonLines,
+    /// Apache Parquet. Each written object is a complete, self-contained
+    /// Parquet file. Enables the **columnar** fast path
+    /// ([`Sink::write_batch_columnar`](faucet_core::Sink::write_batch_columnar))
+    /// so a `parquet`/`delta` → `gcs(parquet)` chain never materializes
+    /// `serde_json::Value`. Requires the crate-local `arrow` feature
+    /// (RFC 0002 / #375).
+    #[cfg(feature = "arrow")]
+    Parquet,
+}
+
 /// Configuration for the GCS sink connector.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GcsSinkConfig {
@@ -12,6 +29,11 @@ pub struct GcsSinkConfig {
     pub bucket: String,
     /// Object-name prefix for written files.
     pub prefix: String,
+    /// Object format (default: `json_lines`). Set to `parquet` (with the
+    /// `arrow` feature) to write Parquet objects and enable the columnar
+    /// fast path.
+    #[serde(default)]
+    pub format: GcsSinkFormat,
     /// Credential source.
     #[serde(default)]
     pub auth: GcsCredentials,
@@ -58,6 +80,7 @@ impl GcsSinkConfig {
         Self {
             bucket: bucket.into(),
             prefix: String::new(),
+            format: GcsSinkFormat::default(),
             auth: GcsCredentials::default(),
             file_extension: default_file_extension(),
             max_records_per_file: None,
@@ -71,6 +94,12 @@ impl GcsSinkConfig {
 
     pub fn prefix(mut self, p: impl Into<String>) -> Self {
         self.prefix = p.into();
+        self
+    }
+    /// Set the object format (`json_lines` or, with the `arrow` feature,
+    /// `parquet`).
+    pub fn format(mut self, format: GcsSinkFormat) -> Self {
+        self.format = format;
         self
     }
     pub fn auth(mut self, c: GcsCredentials) -> Self {
@@ -181,5 +210,13 @@ mod tests {
         }"#;
         let cfg: GcsSinkConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.compression, faucet_core::CompressionConfig::Gzip);
+    }
+
+    #[cfg(feature = "arrow")]
+    #[test]
+    fn format_defaults_json_lines_and_builder_sets_parquet() {
+        assert_eq!(GcsSinkConfig::new("b").format, GcsSinkFormat::JsonLines);
+        let cfg = GcsSinkConfig::new("b").format(GcsSinkFormat::Parquet);
+        assert_eq!(cfg.format, GcsSinkFormat::Parquet);
     }
 }

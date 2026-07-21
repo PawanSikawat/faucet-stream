@@ -1,13 +1,16 @@
 //! S3 sink executor.
 
 use crate::config::S3SinkConfig;
+#[cfg(feature = "arrow")]
+use crate::config::S3SinkFormat;
 use async_trait::async_trait;
 use aws_sdk_s3::Client;
 use faucet_core::FaucetError;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use serde_json::Value;
 
-/// A sink that writes JSON records to S3 as JSON Lines files.
+/// A sink that writes JSON records to S3 as JSON Lines files (or, with the
+/// `arrow` feature, self-contained Parquet objects).
 pub struct S3Sink {
     config: S3SinkConfig,
     client: Client,
@@ -58,6 +61,20 @@ impl S3Sink {
         format!("{}{}{}", self.config.prefix, id, self.config.file_extension)
     }
 
+    /// The effective per-object record cap, combining `batch_size` (write-side
+    /// re-chunking) and `max_records_per_file`. `None` means "one object for
+    /// the whole call". Shared by the JSONL and Parquet write paths.
+    fn effective_chunk_cap(&self) -> Option<usize> {
+        match (self.config.batch_size, self.config.max_records_per_file) {
+            (0, None) => None,
+            (0, Some(0)) => None,
+            (0, Some(max)) => Some(max),
+            (bs, None) => Some(bs),
+            (bs, Some(0)) => Some(bs),
+            (bs, Some(max)) => Some(bs.min(max)),
+        }
+    }
+
     /// Upload a single JSONL file to S3.
     async fn upload_file(&self, key: &str, body: Vec<u8>) -> Result<(), FaucetError> {
         #[cfg(feature = "compression")]
@@ -78,6 +95,37 @@ impl S3Sink {
             .map_err(|e| FaucetError::Sink(format!("S3 put object error for key '{key}': {e}")))?;
 
         tracing::debug!(key = %key, "Uploaded S3 object");
+        Ok(())
+    }
+
+    /// Upload pre-encoded Parquet objects concurrently. Parquet carries its own
+    /// internal compression, so the crate-local `compression` wrapper is
+    /// deliberately **not** applied here; the content type advertises Parquet.
+    #[cfg(feature = "arrow")]
+    async fn upload_parquet_objects(
+        &self,
+        prepared: Vec<(String, Vec<u8>)>,
+    ) -> Result<(), FaucetError> {
+        let concurrency = self.config.concurrency.max(1);
+        stream::iter(prepared)
+            .map(|(key, body)| async move {
+                self.client
+                    .put_object()
+                    .bucket(&self.config.bucket)
+                    .key(&key)
+                    .body(body.into())
+                    .content_type("application/vnd.apache.parquet")
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        FaucetError::Sink(format!("S3 put object error for key '{key}': {e}"))
+                    })?;
+                tracing::debug!(key = %key, "Uploaded S3 parquet object");
+                Ok::<(), FaucetError>(())
+            })
+            .buffer_unordered(concurrency)
+            .try_collect::<Vec<()>>()
+            .await?;
         Ok(())
     }
 }
@@ -124,23 +172,30 @@ impl faucet_core::Sink for S3Sink {
             return Ok(0);
         }
 
-        // Effective per-object cap is the smaller of `batch_size` (when set)
-        // and `max_records_per_file` (when set). When neither caps the chunk,
-        // the whole slice is written as a single object.
-        let chunk_cap: Option<usize> =
-            match (self.config.batch_size, self.config.max_records_per_file) {
-                (0, None) => None,
-                (0, Some(0)) => None,
-                (0, Some(max)) => Some(max),
-                (bs, None) => Some(bs),
-                (bs, Some(0)) => Some(bs),
-                (bs, Some(max)) => Some(bs.min(max)),
-            };
-
-        let chunks: Vec<&[Value]> = match chunk_cap {
+        let chunks: Vec<&[Value]> = match self.effective_chunk_cap() {
             Some(cap) => records.chunks(cap).collect(),
             None => vec![records],
         };
+
+        // Parquet path: encode each chunk as a self-contained Parquet object.
+        #[cfg(feature = "arrow")]
+        if matches!(self.config.format, S3SinkFormat::Parquet) {
+            let prepared: Vec<(String, Vec<u8>)> = chunks
+                .iter()
+                .map(|chunk| {
+                    let batch = faucet_core::columnar::values_to_record_batch_inferred(chunk)?;
+                    let body = encode_parquet(&batch)?;
+                    Ok((self.generate_key(), body))
+                })
+                .collect::<Result<Vec<_>, FaucetError>>()?;
+            self.upload_parquet_objects(prepared).await?;
+            tracing::info!(
+                records = records.len(),
+                files = chunks.len(),
+                "S3 parquet batch write complete"
+            );
+            return Ok(records.len());
+        }
 
         let total_files = chunks.len();
         let concurrency = self.config.concurrency.max(1);
@@ -168,6 +223,76 @@ impl faucet_core::Sink for S3Sink {
         );
         Ok(records.len())
     }
+
+    /// The S3 sink consumes Arrow `RecordBatch`es natively **only** when
+    /// configured for the [`Parquet`](S3SinkFormat::Parquet) format; the JSONL
+    /// format has no columnar representation and stays on the row path
+    /// (RFC 0002 / #375).
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        matches!(self.config.format, S3SinkFormat::Parquet)
+    }
+
+    /// Write an Arrow `RecordBatch` as one or more self-contained Parquet
+    /// objects (sliced by the effective per-object cap), skipping the
+    /// `Value` round-trip. Falls back to the row path for a non-Parquet
+    /// format (which `supports_columnar` prevents the pipeline from reaching,
+    /// but a direct caller might).
+    #[cfg(feature = "arrow")]
+    async fn write_batch_columnar(
+        &self,
+        batch: &arrow::array::RecordBatch,
+    ) -> Result<usize, FaucetError> {
+        if batch.num_rows() == 0 {
+            return Ok(0);
+        }
+        if !matches!(self.config.format, S3SinkFormat::Parquet) {
+            let rows = faucet_core::columnar::record_batch_to_values(batch)?;
+            return self.write_batch(&rows).await;
+        }
+
+        let n = batch.num_rows();
+        let cap = self.effective_chunk_cap().unwrap_or(n).max(1);
+        let mut prepared: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut offset = 0usize;
+        while offset < n {
+            let len = cap.min(n - offset);
+            let slice = batch.slice(offset, len);
+            let body = encode_parquet(&slice)?;
+            prepared.push((self.generate_key(), body));
+            offset += len;
+        }
+
+        let files = prepared.len();
+        self.upload_parquet_objects(prepared).await?;
+        tracing::info!(records = n, files, "S3 parquet columnar write complete");
+        Ok(n)
+    }
+}
+
+/// Encode an Arrow `RecordBatch` into a complete, self-contained Parquet file
+/// (ZSTD-compressed) in memory.
+#[cfg(feature = "arrow")]
+fn encode_parquet(batch: &arrow::array::RecordBatch) -> Result<Vec<u8>, FaucetError> {
+    use parquet::arrow::ArrowWriter;
+    use parquet::basic::{Compression, ZstdLevel};
+    use parquet::file::properties::WriterProperties;
+
+    let props = WriterProperties::builder()
+        .set_compression(Compression::ZSTD(ZstdLevel::default()))
+        .build();
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let mut writer = ArrowWriter::try_new(&mut buf, batch.schema(), Some(props))
+            .map_err(|e| FaucetError::Sink(format!("parquet writer init failed: {e}")))?;
+        writer
+            .write(batch)
+            .map_err(|e| FaucetError::Sink(format!("parquet write failed: {e}")))?;
+        writer
+            .close()
+            .map_err(|e| FaucetError::Sink(format!("parquet finalize failed: {e}")))?;
+    }
+    Ok(buf)
 }
 
 #[cfg(test)]
@@ -246,6 +371,50 @@ mod tests {
             }
             _ => panic!("expected a batch_size Config error"),
         }
+    }
+
+    // ── Parquet columnar path (feature `arrow`) ──────────────────────────────
+
+    #[cfg(feature = "arrow")]
+    #[test]
+    fn supports_columnar_only_for_parquet_format() {
+        let parquet_sink = test_sink(S3SinkConfig::new("b").format(S3SinkFormat::Parquet));
+        assert!(faucet_core::Sink::supports_columnar(&parquet_sink));
+        let json_sink = test_sink(S3SinkConfig::new("b"));
+        assert!(!faucet_core::Sink::supports_columnar(&json_sink));
+    }
+
+    #[cfg(feature = "arrow")]
+    #[test]
+    fn encode_parquet_round_trips_via_reader() {
+        use arrow::array::{Int32Array, RecordBatch, StringArray};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec![Some("a"), None, Some("c")])),
+            ],
+        )
+        .unwrap();
+
+        let bytes = encode_parquet(&batch).unwrap();
+        // Parquet magic header/footer.
+        assert_eq!(&bytes[..4], b"PAR1");
+
+        let reader = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes))
+            .unwrap()
+            .build()
+            .unwrap();
+        let total: usize = reader.map(|b| b.unwrap().num_rows()).sum();
+        assert_eq!(total, 3);
     }
 
     #[cfg(feature = "compression")]

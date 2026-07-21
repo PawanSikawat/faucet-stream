@@ -109,6 +109,11 @@ arrow = [
     "faucet-sink-parquet?/arrow",
     "faucet-source-delta?/arrow",
     "faucet-sink-delta?/arrow",
+    "faucet-source-s3?/arrow",
+    "faucet-sink-s3?/arrow",
+    "faucet-source-gcs?/arrow",
+    "faucet-sink-gcs?/arrow",
+    "faucet-source-databricks?/arrow",
 ]
 ## Shared, single-flight auth providers (OAuth2 client-credentials / refresh,
 ## token-endpoint) usable across connectors via `auth: { ref }`.
