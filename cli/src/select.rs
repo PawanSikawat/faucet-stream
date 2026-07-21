@@ -12,8 +12,8 @@
 //! - **#370 — identity.** `--select <id>` (exact) / `--only <glob>` force-include
 //!   a row *by name*, bypassing the status gate; `--skip <id|glob>` removes last.
 //! - **#371 — readiness (`status`).** Each row's source carries a
-//!   [`SourceStatus`](crate::config::SourceStatus) ladder. The status gate
-//!   decides *eligibility*; `--status <tier>` additively widens the eligible set.
+//!   [`SourceStatus`] ladder. The status gate decides *eligibility*;
+//!   `--status <tier>` additively widens the eligible set.
 //! - **#376 — classification (`tags`).** `--tag <t>` narrows *within* the
 //!   eligible set. A tag can only shrink the eligible set, never resurrect a
 //!   non-ready (`available`/`draft`/`archived`) row.
