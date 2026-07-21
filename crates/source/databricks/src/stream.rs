@@ -84,6 +84,35 @@ struct ResultChunk {
     data_array: Option<Vec<Vec<Value>>>,
     #[serde(default)]
     next_chunk_internal_link: Option<String>,
+    /// Present under `EXTERNAL_LINKS` disposition (ARROW_STREAM): each entry
+    /// carries a presigned URL to an Arrow IPC chunk plus its own
+    /// next-chunk link. Only consumed by the `arrow` columnar path.
+    #[cfg(feature = "arrow")]
+    #[serde(default)]
+    external_links: Option<Vec<ExternalLink>>,
+}
+
+/// One `result.external_links[]` entry (EXTERNAL_LINKS disposition).
+#[cfg(feature = "arrow")]
+#[derive(Debug, Deserialize)]
+struct ExternalLink {
+    #[serde(default)]
+    external_link: Option<String>,
+    #[serde(default)]
+    next_chunk_internal_link: Option<String>,
+}
+
+/// The internal link to the next result chunk, checked at both the result
+/// level and (for EXTERNAL_LINKS) the first external-link level.
+#[cfg(feature = "arrow")]
+fn next_chunk_link(chunk: &ResultChunk) -> Option<String> {
+    chunk.next_chunk_internal_link.clone().or_else(|| {
+        chunk
+            .external_links
+            .as_ref()
+            .and_then(|l| l.first())
+            .and_then(|e| e.next_chunk_internal_link.clone())
+    })
 }
 
 /// Client-side incremental filter context.
@@ -215,13 +244,21 @@ impl DatabricksSource {
             }));
         }
 
+        // ARROW_STREAM is only valid with EXTERNAL_LINKS disposition; JSON_ARRAY
+        // stays INLINE. `arrow_native` is validated to require the `arrow`
+        // feature at config load, so requesting Arrow here is always decodable.
+        let (disposition, format) = if self.config.arrow_native {
+            ("EXTERNAL_LINKS", "ARROW_STREAM")
+        } else {
+            ("INLINE", "JSON_ARRAY")
+        };
         let mut body = json!({
             "statement": sql,
             "warehouse_id": self.config.warehouse_id,
             "wait_timeout": format!("{}s", self.config.wait_timeout_secs),
             "on_wait_timeout": "CONTINUE",
-            "disposition": "INLINE",
-            "format": "JSON_ARRAY",
+            "disposition": disposition,
+            "format": format,
         });
         if let Some(c) = &self.config.catalog {
             body["catalog"] = json!(c);
@@ -317,6 +354,52 @@ impl DatabricksSource {
         let parsed = parse_http::<ResultChunk>(resp).await?;
         Ok(parsed)
     }
+
+    /// Fetch a presigned external link and decode its body as an Arrow IPC
+    /// stream. The link is a pre-signed cloud-storage URL, so it is fetched
+    /// **without** an `Authorization` header (adding one breaks the signature).
+    #[cfg(feature = "arrow")]
+    async fn fetch_arrow_link(
+        &self,
+        url: &str,
+    ) -> Result<Vec<arrow::array::RecordBatch>, FaucetError> {
+        let resp = self.client.get(url).send().await.map_err(|e| {
+            FaucetError::Source(format!("databricks: external-link request failed: {e}"))
+        })?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(FaucetError::Source(format!(
+                "databricks: external link HTTP {status}: {body}"
+            )));
+        }
+        let data = resp.bytes().await.map_err(|e| {
+            FaucetError::Source(format!("databricks: reading external-link body failed: {e}"))
+        })?;
+        tokio::task::spawn_blocking(move || decode_arrow_ipc(data))
+            .await
+            .map_err(|e| {
+                FaucetError::Source(format!("databricks: arrow decode task panicked: {e}"))
+            })?
+    }
+}
+
+/// Decode an Arrow IPC **stream** (the ARROW_STREAM chunk body) into its
+/// `RecordBatch`es. Synchronous (runs inside `spawn_blocking`).
+#[cfg(feature = "arrow")]
+fn decode_arrow_ipc(data: bytes::Bytes) -> Result<Vec<arrow::array::RecordBatch>, FaucetError> {
+    use arrow::ipc::reader::StreamReader;
+
+    let reader = StreamReader::try_new(std::io::Cursor::new(data), None).map_err(|e| {
+        FaucetError::Source(format!("databricks: arrow IPC reader init failed: {e}"))
+    })?;
+    let mut batches = Vec::new();
+    for batch in reader {
+        batches.push(batch.map_err(|e| {
+            FaucetError::Source(format!("databricks: arrow IPC decode failed: {e}"))
+        })?);
+    }
+    Ok(batches)
 }
 
 /// Derive a stable state key from the workspace, warehouse, and query.
@@ -414,6 +497,69 @@ impl Source for DatabricksSource {
         Ok(())
     }
 
+    /// The Databricks source advertises the columnar fast path only when
+    /// [`arrow_native`](DatabricksSourceConfig::arrow_native) is set — i.e. the
+    /// statement is fetched as `ARROW_STREAM` (RFC 0002 / #375).
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        self.config.arrow_native
+    }
+
+    /// Stream the statement's `ARROW_STREAM` result chunks as Arrow
+    /// `RecordBatch`es — one [`ColumnarPage`](faucet_core::columnar::ColumnarPage)
+    /// per batch — so a `databricks → parquet`/`delta`/`sql` chain never
+    /// materializes `serde_json::Value`. `arrow_native` is Full-replication
+    /// only, so every page carries `bookmark: None`. Empty batches are skipped.
+    #[cfg(feature = "arrow")]
+    fn stream_batches<'a>(
+        &'a self,
+        context: &'a HashMap<String, Value>,
+        _batch_size: usize,
+    ) -> Pin<
+        Box<
+            dyn Stream<Item = Result<faucet_core::columnar::ColumnarPage, FaucetError>> + Send + 'a,
+        >,
+    > {
+        Box::pin(async_stream::try_stream! {
+            if !self.config.arrow_native {
+                Err(FaucetError::Source(
+                    "databricks: stream_batches requires `arrow_native: true`".into(),
+                ))?;
+            }
+            let auth = self.auth_header().await?;
+            let resp = self.run_statement(context, None).await?;
+            let mut chunk = resp.result;
+            let mut total_records = 0usize;
+            let mut total_pages = 0usize;
+            while let Some(c) = chunk {
+                if let Some(links) = c.external_links.as_ref() {
+                    for link in links {
+                        if let Some(url) = link.external_link.as_deref() {
+                            let batches = self.fetch_arrow_link(url).await?;
+                            for batch in batches {
+                                if batch.num_rows() == 0 {
+                                    continue;
+                                }
+                                total_records += batch.num_rows();
+                                total_pages += 1;
+                                yield faucet_core::columnar::ColumnarPage { batch, bookmark: None };
+                            }
+                        }
+                    }
+                }
+                chunk = match next_chunk_link(&c) {
+                    Some(link) => Some(self.fetch_chunk(&link, &auth).await?),
+                    None => None,
+                };
+            }
+            tracing::info!(
+                pages = total_pages,
+                total_records,
+                "databricks columnar stream complete",
+            );
+        })
+    }
+
     fn stream_pages<'a>(
         &'a self,
         context: &'a HashMap<String, Value>,
@@ -421,6 +567,50 @@ impl Source for DatabricksSource {
     ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
         Box::pin(async_stream::try_stream! {
             let auth = self.auth_header().await?;
+
+            // Arrow-native row path: fetch ARROW_STREAM chunks and decode each
+            // RecordBatch to JSON rows (for a non-columnar sink). `arrow_native`
+            // is Full-replication only (enforced by config validation), so no
+            // incremental filter runs here.
+            #[cfg(feature = "arrow")]
+            if self.config.arrow_native {
+                let resp = self.run_statement(context, None).await?;
+                let cap = if self.config.batch_size == 0 { 1024 } else { self.config.batch_size };
+                let mut buffer: Vec<Value> = Vec::with_capacity(cap);
+                let mut chunk = resp.result;
+                while let Some(c) = chunk {
+                    if let Some(links) = c.external_links.as_ref() {
+                        for link in links {
+                            if let Some(url) = link.external_link.as_deref() {
+                                let batches = self.fetch_arrow_link(url).await?;
+                                for batch in &batches {
+                                    for row in faucet_core::columnar::record_batch_to_values(batch)? {
+                                        buffer.push(row);
+                                        if self.config.batch_size != 0
+                                            && buffer.len() >= self.config.batch_size
+                                        {
+                                            let page = std::mem::replace(
+                                                &mut buffer,
+                                                Vec::with_capacity(cap),
+                                            );
+                                            yield StreamPage { records: page, bookmark: None };
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    chunk = match next_chunk_link(&c) {
+                        Some(link) => Some(self.fetch_chunk(&link, &auth).await?),
+                        None => None,
+                    };
+                }
+                if !buffer.is_empty() {
+                    yield StreamPage { records: buffer, bookmark: None };
+                }
+                return;
+            }
+
             let incr = self.incremental_ctx();
             let resp = self.run_statement(context, incr.as_ref()).await?;
 
@@ -576,6 +766,7 @@ mod tests {
             wait_timeout_secs: 50,
             poll_interval_secs: 1,
             batch_size: 1000,
+            arrow_native: false,
             replication: DatabricksReplication::Incremental {
                 column: "ts".into(),
                 initial_value: json!("2026-01-01"),

@@ -21,6 +21,16 @@ futures.workspace = true
 tracing.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
+# Arrow columnar path (opt-in `arrow` feature, RFC 0002 / #375): decode the
+# ARROW_STREAM (EXTERNAL_LINKS) result format as Arrow IPC for the row +
+# columnar lanes. Optional so default builds pull neither `arrow` nor `bytes`.
+arrow = { workspace = true, optional = true, features = ["ipc"] }
+bytes = { workspace = true, optional = true }
+
+[features]
+# Enables `arrow_native` (ARROW_STREAM result format) + the columnar
+# `stream_batches` fast path.
+arrow = ["faucet-core/arrow", "dep:arrow", "dep:bytes"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
@@ -28,6 +38,10 @@ wiremock = "0.6"
 faucet-conformance.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
+# For the arrow-gated ARROW_STREAM integration test (build a synthetic Arrow
+# IPC chunk body + iterate the columnar stream). Harmless when `arrow` is off.
+arrow = { workspace = true, features = ["ipc"] }
+futures.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

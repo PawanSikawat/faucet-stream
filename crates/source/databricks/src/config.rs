@@ -125,6 +125,19 @@ pub struct DatabricksSourceConfig {
     /// Page size — rows accumulated before a `StreamPage` is emitted.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Fetch results as Apache Arrow instead of JSON. When `true`, the
+    /// statement is submitted with `EXTERNAL_LINKS` disposition +
+    /// `ARROW_STREAM` format; each chunk's presigned link is fetched and
+    /// decoded as an Arrow IPC stream. This enables the **columnar** fast path
+    /// ([`Source::stream_batches`](faucet_core::Source::stream_batches)) so a
+    /// `databricks → parquet`/`delta` chain skips the per-cell JSON decode.
+    ///
+    /// Requires the crate-local `arrow` feature, and (in this release) only
+    /// [`DatabricksReplication::Full`] — the columnar path does not run the
+    /// per-row client-side incremental filter. Defaults to `false` (the
+    /// `INLINE` + `JSON_ARRAY` row path, unchanged). RFC 0002 / #375.
+    #[serde(default)]
+    pub arrow_native: bool,
     /// Replication mode. Defaults to [`DatabricksReplication::Full`].
     #[serde(default)]
     pub replication: DatabricksReplication,
@@ -160,6 +173,20 @@ impl DatabricksSourceConfig {
             )));
         }
         faucet_core::validate_batch_size(self.batch_size)?;
+        if self.arrow_native {
+            if !cfg!(feature = "arrow") {
+                return Err(FaucetError::Config(
+                    "databricks: `arrow_native` requires the crate-local `arrow` feature to be \
+                     enabled".into(),
+                ));
+            }
+            if !matches!(self.replication, DatabricksReplication::Full) {
+                return Err(FaucetError::Config(
+                    "databricks: `arrow_native` currently supports only `replication: full` — the \
+                     columnar path does not run the client-side incremental filter".into(),
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -181,6 +208,7 @@ mod tests {
             wait_timeout_secs: default_wait_timeout(),
             poll_interval_secs: default_poll_interval(),
             batch_size: DEFAULT_BATCH_SIZE,
+            arrow_native: false,
             replication: DatabricksReplication::Full,
             state_key: None,
         }
@@ -189,6 +217,29 @@ mod tests {
     #[test]
     fn valid_config_passes() {
         base().validate().unwrap();
+    }
+
+    #[cfg(feature = "arrow")]
+    #[test]
+    fn arrow_native_full_passes_but_incremental_rejected() {
+        let mut c = base();
+        c.arrow_native = true;
+        c.validate().unwrap();
+        c.replication = DatabricksReplication::Incremental {
+            column: "ts".into(),
+            initial_value: json!("2026-01-01"),
+        };
+        let err = c.validate().unwrap_err();
+        assert!(err.to_string().contains("arrow_native"));
+    }
+
+    #[cfg(not(feature = "arrow"))]
+    #[test]
+    fn arrow_native_requires_feature() {
+        let mut c = base();
+        c.arrow_native = true;
+        let err = c.validate().unwrap_err();
+        assert!(err.to_string().contains("arrow"));
     }
 
     #[test]
