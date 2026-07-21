@@ -4,12 +4,14 @@
 //! issues reports them together instead of failing at the first one.
 
 use crate::cli::ValidateArgs;
-use crate::config::PipelineConfig;
+use crate::config::{PipelineConfig, SourceStatus};
 use crate::error::{CliError, CliResult};
 use crate::expand::{NodeRole, expand};
 use crate::registry::{sink_schema, source_schema};
+use crate::select::RunSelection;
 use crate::state::available_state_kinds;
 use crate::transforms::available_transforms;
+use std::collections::HashSet;
 
 /// Execute the `validate` subcommand.
 pub async fn run(args: ValidateArgs) -> CliResult<()> {
@@ -141,6 +143,52 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
     );
     for node in &nodes {
         println!("{}", row_line(node));
+    }
+
+    // Runtime row-selection report (#370/#371/#376/#377). Only printed when the
+    // config actually uses the readiness ladder / tags, or a selector was
+    // passed — so a plain config's `validate` output is unchanged. The
+    // selection is computed the same way `faucet run` computes it, so the
+    // run/skip decision here matches what a run would do; a selection error
+    // (empty run set, missing ancestor, unknown token) is surfaced after the
+    // report so `validate` catches it in CI without a run.
+    let selection = RunSelection::from_args(&args.selection, cfg.selection.as_ref())?;
+    let uses_selection_model = nodes
+        .iter()
+        .any(|n| n.status != SourceStatus::Active || !n.tags.is_empty());
+    if selection.narrows() || uses_selection_model {
+        let has_matrix = !cfg.matrix.is_empty();
+        let selected = crate::select::select_nodes(nodes.clone(), &selection, has_matrix);
+        let run_ids: HashSet<String> = match &selected {
+            Ok(sel) => sel.iter().map(|n| n.id.clone()).collect(),
+            Err(_) => HashSet::new(),
+        };
+        println!(
+            "run selection (include_parents={}):",
+            selection.include_parents.as_str()
+        );
+        for node in &nodes {
+            let decision = if run_ids.contains(&node.id) {
+                "RUN"
+            } else {
+                "skip"
+            };
+            let tags = if node.tags.is_empty() {
+                String::new()
+            } else {
+                format!(" tags=[{}]", node.tags.join(", "))
+            };
+            println!(
+                "  - {} status={}{} -> {}",
+                node.id,
+                node.status.as_str(),
+                tags,
+                decision
+            );
+        }
+        // Propagate any selection error (empty run set / missing ancestor /
+        // unknown token) now that the report has been printed.
+        selected?;
     }
     Ok(())
 }

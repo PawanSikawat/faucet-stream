@@ -650,6 +650,93 @@ whose source reads what the first row wrote").
   `depends_on:` edges are rejected at load time (`faucet validate` catches
   them).
 
+#### Selecting which rows run — `status`, `tags`, and the selection flags
+
+Register many rows, run a few. Selection is resolved **after** expansion and never
+changes a row's state key (`{name}::{row_id}`), so bookmarks stay identical across a
+full run and any selected subset. Four axes compose through one formula:
+
+```
+1. eligible  = status gate ({mandatory, active} ∪ --status)
+2. narrowed  = (eligible ∩ --tag) ∪ (--select / --only by id)
+3. parents   = apply include_parents policy to narrowed
+4. run set   = parents − (--skip)
+```
+
+**Readiness ladder (`status:`)** — a field on the row's **source** (template or
+`source:` override; deep-merges like any scalar). Default when absent is `active`, so
+existing configs are unchanged.
+
+| `status` | runs when… |
+|---|---|
+| `mandatory` | **always** — removable only by an explicit `--skip <id>` |
+| `active` | **by default** (bare `faucet run`) — the absent-default |
+| `available` | only under `--status available` |
+| `draft` | only under `--status draft` |
+| `archived` | only under `--status archived` |
+
+**Tags (`tags:`)** — free-form `^[a-z0-9][a-z0-9_-]*$` labels on a row (union-merged
+with the source template's `tags:`). Orthogonal to `status`: tags *narrow within* the
+eligible set — `--tag finance` never resurrects a parked (`available`/`draft`/`archived`)
+row; raise the gate with `--status` for that.
+
+**Flags** (all repeatable and/or comma-joined; each has an env var; the flag wins):
+
+| Flag | Env | Effect |
+|---|---|---|
+| `--select <id>` | `FAUCET_SELECT` | Run rows whose id exactly matches — force-included **regardless of status/tags**. |
+| `--only <glob>` | — | Like `--select` but glob-matched (`--only 'timeoff_*'`); also bypasses the status gate. |
+| `--skip <id\|glob>` | `FAUCET_SKIP` | Remove matching rows, applied last. A `mandatory` row only via exact `--skip <id>`. |
+| `--status <tier>` | `FAUCET_STATUS` | Additively widen the eligible set (`{mandatory, active}` ∪ these). |
+| `--tag <t>` | `FAUCET_TAGS` | Keep eligible rows carrying any listed tag (union). |
+| `--include-parents <off\|eligible\|all>` | `FAUCET_INCLUDE_PARENTS` | Ancestor policy (below). Also `selection.include_parents:` in config. |
+
+Unknown tokens, an empty run set, and a missing required ancestor are **hard, fail-fast
+errors** (no partial run). Available on `run` (applies), `validate` (applies + prints
+each row's status/tags and the RUN/skip decision), and `preview` (first root of the
+selected set).
+
+```yaml
+matrix:
+  - id: people
+    source: { ref: hibob, status: active,    config: { path: /v1/people } }   # runs by default
+    tags: [core, daily]
+  - id: payroll
+    source: { ref: hibob, status: mandatory, config: { path: /v1/payroll } }  # always runs
+    tags: [finance]
+  - id: audit
+    source: { ref: hibob, status: available, config: { path: /v1/audit } }    # opt-in
+    tags: [finance]
+  - id: beta
+    source: { ref: hibob, status: draft,     config: { path: /v2/beta } }     # dev-only
+
+selection:
+  include_parents: off   # off (default) | eligible | all
+```
+
+| Command | Runs |
+|---|---|
+| `faucet run cfg.yaml` | people, payroll |
+| `faucet run cfg.yaml --tag finance` | payroll *(audit is finance but `available`)* |
+| `faucet run cfg.yaml --status available --tag finance` | payroll, audit |
+| `faucet run cfg.yaml --select beta` | beta *(draft, forced by name)* |
+| `faucet run cfg.yaml --only 'p*'` | people, payroll |
+
+#### `include_parents` — parent/dependency inclusion policy
+
+When a selected row's `parent:` / `depends_on:` ancestor is **not** independently in the
+run set, this single policy decides the outcome (config `selection.include_parents:` or
+`--include-parents`, flag > env > config > built-in default `off`):
+
+| policy | behaviour |
+|---|---|
+| `off` (**default**, strict) | Hard error naming every `dependent → ancestor` pair; select the ancestor by id or loosen the policy. |
+| `eligible` | Auto-include required ancestors whose status is eligible (logged); error if a required ancestor is parked. |
+| `all` | Include every required ancestor regardless of status (parked ones pulled in with a warning); never errors on ancestors. |
+
+`--select <id>` by name always satisfies a dependency regardless of policy. Skipping a
+row that a surviving row depends on is rejected (no orphaned children).
+
 #### Deep-merge rules
 
 - Objects merge recursively (overlay keys win on collision).

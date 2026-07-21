@@ -99,6 +99,8 @@ pub fn build_source(env: &HashMap<String, String>) -> CliResult<ConnectorSpec> {
         config,
         transforms: None,
         inherit_transforms: true,
+        status: None,
+        tags: Vec::new(),
     })
 }
 
@@ -121,6 +123,8 @@ pub fn build_sink(env: &HashMap<String, String>) -> CliResult<ConnectorSpec> {
         config,
         transforms: None,
         inherit_transforms: true,
+        status: None,
+        tags: Vec::new(),
     })
 }
 
@@ -250,6 +254,8 @@ fn build_named_catalog(
                 config,
                 transforms: None,
                 inherit_transforms: true,
+                status: None,
+                tags: Vec::new(),
             },
         );
     }
@@ -325,6 +331,7 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
         },
         matrix: Vec::new(),
         execution: None,
+        selection: None,
         observability: None,
         delivery: faucet_core::DeliveryMode::default(),
         resilience: None,

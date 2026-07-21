@@ -76,6 +76,17 @@ pub struct ExpandedNode {
     /// executor starts the node only after every listed row's invocations
     /// finish successfully; a failed or skipped dependency skips this node.
     pub depends_on: Vec<String>,
+    /// Resolved readiness status for this row's source (#371) — the source
+    /// template's `status` overridden by the row's `source.status`, defaulting
+    /// to [`SourceStatus::Active`] when neither is set. Drives the runtime
+    /// run-set status gate; does not affect the state key.
+    ///
+    /// [`SourceStatus::Active`]: crate::config::SourceStatus::Active
+    pub status: crate::config::SourceStatus,
+    /// Effective classification tags (#376) = source-template `tags` ∪ row
+    /// `tags` (union, deduped, sorted). Drives the runtime `--tag` narrowing;
+    /// does not affect the state key.
+    pub tags: Vec<String>,
     /// Every `${id.path}` placeholder that survived load-time interpolation.
     /// Populated by `collect_deferred`; the executor uses this to know
     /// which parent record to feed which row.
@@ -220,6 +231,12 @@ impl<'a> Registry<'a> {
             if let Some(c) = &p.config {
                 merge_value(&mut out.config, c.clone());
             }
+            // Readiness ladder is a scalar: a row `source.status` replaces the
+            // template's (#371). `tags` are handled separately (union, not
+            // replace) in `expand`, since `PartialConnector` carries no `tags`.
+            if p.status.is_some() {
+                out.status = p.status;
+            }
         }
         Ok(out)
     }
@@ -257,6 +274,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             state: None,
             dlq: None,
             delivery: None,
+            tags: Vec::new(),
         }];
         &synthetic_row
     } else {
@@ -407,6 +425,17 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
         let mut deferred = Vec::new();
         collect_deferred(&merged_source.config, &mut deferred);
         collect_deferred(&merged_sink.config, &mut deferred);
+
+        // Resolved readiness status (#371): `merged_source.status` already
+        // carries the template→row `source.status` scalar merge; default to
+        // `active` when neither declared it.
+        let status = merged_source.status.unwrap_or_default();
+
+        // Effective tags (#376) = source-template `tags` ∪ row `tags`. This is
+        // the one deliberate exception to `merge.rs`'s array-replace rule:
+        // tags union rather than replace. Validate + dedup + sort so the set is
+        // canonical and order-insensitive.
+        let tags = resolve_tags(&merged_source.tags, &row.tags, row_id)?;
 
         // Resolve transforms, state, and DLQ (row overrides win over base).
         // Three-layer additive resolution:
@@ -771,6 +800,8 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             sink_ref,
             schema: cfg.pipeline.schema.clone(),
             depends_on: deps_by_row[i].clone(),
+            status,
+            tags,
             deferred_refs: deferred,
             source_override: None,
         });
@@ -898,6 +929,43 @@ fn reject_runtime_tokens(value: &Value, location: &str) -> CliResult<()> {
         }
         Ok(())
     })
+}
+
+/// Compute a row's effective tag set = `template_tags` ∪ `row_tags` (#376).
+/// Union — the deliberate exception to `merge.rs`'s array-replace rule.
+/// Validates each tag (charset `^[a-z0-9][a-z0-9_-]*$`, non-empty), dedups, and
+/// returns a sorted, canonical list so `--tag` matching is order-insensitive.
+fn resolve_tags(
+    template_tags: &[String],
+    row_tags: &[String],
+    row_id: &str,
+) -> CliResult<Vec<String>> {
+    let mut set: BTreeSet<String> = BTreeSet::new();
+    for tag in template_tags.iter().chain(row_tags.iter()) {
+        validate_tag(tag, row_id)?;
+        set.insert(tag.clone());
+    }
+    Ok(set.into_iter().collect())
+}
+
+/// A tag must be lowercase kebab/snake: `^[a-z0-9][a-z0-9_-]*$`.
+fn validate_tag(tag: &str, row_id: &str) -> CliResult<()> {
+    let ok = {
+        let mut chars = tag.chars();
+        match chars.next() {
+            Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit() => {
+                chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+            }
+            _ => false,
+        }
+    };
+    if !ok {
+        return Err(CliError::Config(format!(
+            "row '{row_id}': invalid tag '{tag}' — tags must match ^[a-z0-9][a-z0-9_-]*$ \
+             (lowercase letters, digits, `_`, `-`; first char alphanumeric)"
+        )));
+    }
+    Ok(())
 }
 
 fn collect_deferred(value: &Value, out: &mut Vec<DeferredRef>) {

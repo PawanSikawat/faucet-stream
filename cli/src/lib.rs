@@ -43,6 +43,7 @@ pub mod scaffold;
 pub mod schedule;
 pub mod schema_compose;
 pub mod secrets;
+pub mod select;
 #[cfg(feature = "serve")]
 pub mod serve;
 pub mod sla;

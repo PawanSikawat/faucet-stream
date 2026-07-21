@@ -18,6 +18,8 @@ matrix: []                 # optional per-row overrides / DAG
 execution:                 # optional
   max_concurrent: 4
   on_error: continue       # continue | stop
+selection:                 # optional; row-selection policy (see Row selection)
+  include_parents: off     # off | eligible | all
 ```
 
 > **Unknown keys are rejected.** The structural blocks (`pipeline`, each
@@ -261,6 +263,65 @@ Semantics:
   `depends_on:` edges are rejected at load time by `faucet validate`.
 - Ordering works identically under `faucet run`, `schedule`, and `serve` —
   they all execute the same expanded plan.
+
+## Row selection
+
+Register many rows, run a few. Selection resolves **after** expansion and never
+changes a row's state key (`{name}::{row_id}`), so bookmarks are identical across a full
+run and any subset. It runs on `run`, `validate`, and `preview` via the flags in the
+[CLI reference](cli.md#run). Four axes compose through one formula:
+
+```
+1. eligible  = status gate ({mandatory, active} ∪ --status)
+2. narrowed  = (eligible ∩ --tag) ∪ (--select / --only by id)
+3. parents   = apply include_parents policy to narrowed
+4. run set   = parents − (--skip)
+```
+
+**`status:` (readiness ladder)** — a field on the row's **source** (template or
+`source:` override; deep-merges as a scalar). Default `active`, so existing configs are
+unchanged. `mandatory` always runs; `active` runs by default; `available`/`draft`/
+`archived` run only when their tier is added with `--status`. `mandatory` is removable
+only by an explicit `--skip <id>`.
+
+**`tags:`** — free-form `^[a-z0-9][a-z0-9_-]*$` labels on a row, **union-merged** with the
+source template's `tags:` (the one deliberate exception to array-replace). Tags *narrow
+within* the eligible set (`--tag`); they never resurrect a parked row — raise `--status`
+for that.
+
+**`selection.include_parents:`** — the single policy deciding whether a selected row's
+`parent:` / `depends_on:` ancestor (not independently selected) is pulled in. `off`
+(default, strict) errors naming each missing pair; `eligible` auto-includes
+status-eligible ancestors (errors on a parked one); `all` includes any (warns on parked).
+`--select <id>` by name always satisfies a dependency. Overridable with
+`--include-parents`; env `FAUCET_INCLUDE_PARENTS`; precedence flag > env > config >
+default.
+
+```yaml
+matrix:
+  - id: people
+    source: { ref: hibob, status: active,    config: { path: /v1/people } }
+    tags: [core, daily]
+  - id: payroll
+    source: { ref: hibob, status: mandatory, config: { path: /v1/payroll } }
+    tags: [finance]
+  - id: audit
+    source: { ref: hibob, status: available, config: { path: /v1/audit } }
+    tags: [finance]
+
+selection:
+  include_parents: off   # off (default) | eligible | all
+```
+
+| Command | Runs |
+|---|---|
+| `faucet run cfg.yaml` | people, payroll |
+| `faucet run cfg.yaml --tag finance` | payroll *(audit is finance but `available`)* |
+| `faucet run cfg.yaml --status available --tag finance` | payroll, audit |
+| `faucet run cfg.yaml --select audit` | audit *(opt-in, forced by name)* |
+
+Unknown tokens, an empty run set, and a missing required ancestor are hard, fail-fast
+errors (no partial run).
 
 ## `auth`
 

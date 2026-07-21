@@ -61,6 +61,17 @@
       ],
       "default": null
     },
+    "selection": {
+      "description": "Optional matrix-row selection policy (#377). Currently carries only\n`include_parents` — how a selected row's `parent:` / `depends_on:`\nancestors are resolved when they are not independently in the run set.\nAbsent = the built-in default (`include_parents: off`, strict).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SelectionSpec"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "observability": {
       "description": "Optional observability configuration (Prometheus + tracing).",
       "anyOf": [
@@ -324,6 +335,24 @@
           "description": "When `false`, drops upstream `T_pipeline` transforms for every matrix\nrow that resolves to this source template. Default `true`. Rejected\nat expand time on sinks.",
           "type": "boolean",
           "default": true
+        },
+        "status": {
+          "description": "Readiness ladder for the *source* side of a row (#371). Governs whether\na row runs by default. Deep-merges from template → row `source` override\nlike any scalar. `None` resolves to the built-in default (`active`).\nMeaningful only on source templates; ignored on sinks.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tags": {
+          "description": "Free-form classification tags for the *source* template (#376).\nUnion-merged (not replaced) with a matrix row's own `tags:` to form the\nrow's effective tag set. Meaningful only on source templates; ignored on\nsinks. Validated at expand time (charset `^[a-z0-9][a-z0-9_-]*$`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false,
@@ -347,6 +376,36 @@
       "additionalProperties": false,
       "required": [
         "type"
+      ]
+    },
+    "SourceStatus": {
+      "description": "Readiness ladder for a matrix row's source (#371). A single ordered axis\nanswering \"when does this row run?\". Default (when absent) is [`Active`].\n\n[`Active`]: SourceStatus::Active",
+      "oneOf": [
+        {
+          "description": "Always runs; cannot be narrowed out except by an explicit `--skip <id>`.",
+          "type": "string",
+          "const": "mandatory"
+        },
+        {
+          "description": "Runs by default (bare `faucet run`). The absent-default.",
+          "type": "string",
+          "const": "active"
+        },
+        {
+          "description": "Ready, but opt-in: runs only when requested via `--status available`.",
+          "type": "string",
+          "const": "available"
+        },
+        {
+          "description": "Work-in-progress: runs only under `--status draft`.",
+          "type": "string",
+          "const": "draft"
+        },
+        {
+          "description": "Retired, kept for history: runs only under `--status archived`.",
+          "type": "string",
+          "const": "archived"
+        }
       ]
     },
     "StateStoreSpec": {
@@ -1475,6 +1534,13 @@
             }
           ],
           "default": null
+        },
+        "tags": {
+          "description": "Free-form classification tags for this row (#376). Orthogonal to the\nsource's `status:` readiness ladder — `status` gates whether a row is\neligible; `tags` narrow *within* the eligible set at runtime via\n`--tag`. Union-merged with the source template's `tags:` to form the\neffective tag set. Validated at expand time (charset\n`^[a-z0-9][a-z0-9_-]*$`, deduped).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
@@ -1502,6 +1568,17 @@
         "config": {
           "description": "Partial config object — deep-merged into the resolved template's config.",
           "default": null
+        },
+        "status": {
+          "description": "Per-row readiness override for the source (#371). When `Some`, replaces\nthe template's `status` (scalar deep-merge). Only meaningful on a row's\n`source:` override; a `sink:` override's `status` is ignored.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -1654,6 +1731,38 @@
           "default": 50
         }
       }
+    },
+    "SelectionSpec": {
+      "description": "Matrix-row selection policy (#377). Currently a single knob:\n`include_parents`. Extensible for future selection-model settings.",
+      "type": "object",
+      "properties": {
+        "include_parents": {
+          "description": "How parent/dependency ancestors are resolved for a narrowed run set.",
+          "$ref": "#/$defs/IncludeParents",
+          "default": "off"
+        }
+      },
+      "additionalProperties": false
+    },
+    "IncludeParents": {
+      "description": "Policy for pulling a selected row's `parent:` / `depends_on:` ancestors into\nthe run set when they are not independently selected (#377). The **only**\nmechanism that decides ancestor inclusion. Default [`Off`] (strict).\n\n[`Off`]: IncludeParents::Off",
+      "oneOf": [
+        {
+          "description": "Include nothing automatically; a required ancestor missing from the run\nset is a hard, fail-fast error.",
+          "type": "string",
+          "const": "off"
+        },
+        {
+          "description": "Include required ancestors whose resolved status is eligible; error if a\nrequired ancestor is parked (`available`/`draft`/`archived`).",
+          "type": "string",
+          "const": "eligible"
+        },
+        {
+          "description": "Include every required ancestor regardless of status (parked ancestors\npulled in too, with a warning); never errors on ancestors.",
+          "type": "string",
+          "const": "all"
+        }
+      ]
     },
     "ObservabilitySpec": {
       "description": "Top-level observability block: Prometheus scrape endpoint and tracing level.",

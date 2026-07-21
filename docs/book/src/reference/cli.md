@@ -46,6 +46,10 @@ Flags:
 | `--profile <name>` | Select a named overlay from the config's `profiles:` block (see [Config composition](config.md#config-composition)). Overrides `FAUCET_PROFILE`. |
 | `--env-file <path>` / `--no-env-file` | Same `.env` handling as `validate` / `preview`. |
 | `--from-env` | Build the pipeline entirely from `FAUCET_*` environment variables; mutually exclusive with a positional config path. |
+| `--select <id>` / `--only <glob>` / `--skip <id\|glob>` | Runtime matrix-row selection by id. `--select`/`--only` force-include by name (bypassing the status gate); `--skip` removes last. See [Row selection](config.md#row-selection). Env: `FAUCET_SELECT` / `FAUCET_SKIP`. |
+| `--status <tier>` | Additively widen the eligible readiness set beyond `{mandatory, active}`: `available` / `draft` / `archived`. Env: `FAUCET_STATUS`. |
+| `--tag <t>` | Narrow the eligible set to rows carrying any listed tag (union). Env: `FAUCET_TAGS`. |
+| `--include-parents <off\|eligible\|all>` | Parent/`depends_on` inclusion policy for a narrowed run set (default `off`). Overrides `selection.include_parents:`. Env: `FAUCET_INCLUDE_PARENTS`. |
 | `--tui` | Show a live full-screen terminal UI while the pipeline runs: per-invocation source→sink route, records in/out, records/s, errors, DLQ counts, bookmark age, and a scrolling log pane. Press `q` (or `Ctrl-C`) to cancel cooperatively — in-flight invocations stop at their next page boundary and flush their sinks. Requires a binary built with the `cli-tui` feature (`cargo install faucet-cli --features cli-tui`); on a non-TTY stdout (CI, pipes) the flag logs a notice and runs normally. When the config has an `observability.prometheus` block, the `/metrics` endpoint stays up alongside the TUI; OTLP *metrics* export is skipped under `--tui` (traces are unaffected). |
 
 ## `validate`
@@ -98,6 +102,13 @@ faucet validate app.yaml --show-composed       # print the fully merged config
   selected profile applied, `!include` fragments substituted, and the
   `extends:` / `profiles:` metadata stripped — *before* `${...}` interpolation.
   It's the fastest way to confirm a multi-file setup resolves to what you expect.
+
+`validate` accepts the same [row-selection](config.md#row-selection) flags as `run`
+(`--select`/`--only`/`--skip`/`--status`/`--tag`/`--include-parents`). When the config
+uses the readiness ladder or tags — or a selector is passed — it prints a run-selection
+report listing each row's resolved `status`, its tags, and whether the selection would
+`RUN` or `skip` it, and surfaces selection errors (empty run set, missing ancestor,
+unknown token) in CI without a run.
 
 ## `discover`
 
