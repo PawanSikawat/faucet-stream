@@ -16,6 +16,15 @@ pub enum GcsFileFormat {
     JsonArray,
     /// Each file becomes a single record with `"key"` and `"content"` fields.
     RawText,
+    /// Apache Parquet objects. Decoded via the Arrow Parquet reader; the
+    /// resulting `RecordBatch`es feed both the row path (converted to JSON)
+    /// and the **columnar** fast path
+    /// ([`Source::stream_batches`](faucet_core::Source::stream_batches)) so a
+    /// `gcs(parquet) → parquet`/`delta` chain never materializes
+    /// `serde_json::Value`. Requires the crate-local `arrow` feature
+    /// (RFC 0002 / #375).
+    #[cfg(feature = "arrow")]
+    Parquet,
 }
 
 /// Configuration for the GCS source connector.
