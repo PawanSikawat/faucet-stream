@@ -34,6 +34,11 @@ running/billed compute and no Python.
 
 Cloud backends require the matching crate feature: `s3`, `azure`, `gcs`.
 
+The **`arrow`** feature opts this sink into the columnar fast path (#375): when
+the source is also Arrow-capable (e.g. `faucet-source-parquet` /
+`faucet-source-delta`), batches are written straight through delta-rs's
+`RecordBatchWriter` with no `serde_json::Value` materialization.
+
 ```yaml
 pipeline:
   sink:

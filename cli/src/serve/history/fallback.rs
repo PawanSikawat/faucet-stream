@@ -274,6 +274,18 @@ impl RunHistory for FallbackHistory {
     ) -> Result<Vec<crate::serve::history::catalog::CatalogLineageEdge>, HistoryError> {
         via!(self, p => p.catalog_lineage(root, depth), f => f.catalog_lineage(root, depth))
     }
+    async fn catalog_record_config_snapshot(
+        &self,
+        snapshot: &crate::serve::history::catalog::ConfigSnapshot,
+    ) -> Result<(), HistoryError> {
+        via!(self, p => p.catalog_record_config_snapshot(snapshot), f => f.catalog_record_config_snapshot(snapshot))
+    }
+    async fn catalog_last_config_snapshot(
+        &self,
+        pipeline: &str,
+    ) -> Result<Option<crate::serve::history::catalog::ConfigSnapshot>, HistoryError> {
+        via!(self, p => p.catalog_last_config_snapshot(pipeline), f => f.catalog_last_config_snapshot(pipeline))
+    }
 
     fn degraded(&self) -> bool {
         self.is_degraded()

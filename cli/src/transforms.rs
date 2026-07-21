@@ -477,6 +477,46 @@ fn compile_one(spec: &TransformSpec) -> CliResult<TransformStage> {
     }
 }
 
+/// Like [`compile_transforms`] but also returns each stage's Arrow
+/// `RecordBatch` form (parallel to the stages), so the executor can build a
+/// columnar-capable `TransformingSource` (#375). Only the `sql` transform
+/// supplies a batch form today; every other stage's entry is `None`, which
+/// keeps the whole chain on the `Value` path unless every stage is columnar.
+#[cfg(feature = "arrow")]
+pub fn compile_transforms_columnar(
+    specs: &[TransformSpec],
+) -> CliResult<(
+    Vec<TransformStage>,
+    Vec<Option<faucet_core::stage::PageFnBatchBox>>,
+)> {
+    let mut stages = Vec::with_capacity(specs.len());
+    let mut batches = Vec::with_capacity(specs.len());
+    for s in specs {
+        #[cfg(feature = "transform-sql")]
+        if s.kind == "sql" {
+            let cfg = decode_sql("sql", s.config.clone())?;
+            let transform = faucet_transform_sql::SqlTransform::compile(&cfg).map_err(|e| {
+                let message = match &e {
+                    faucet_core::FaucetError::Transform(m)
+                    | faucet_core::FaucetError::Config(m) => m.clone(),
+                    other => format!("{other}"),
+                };
+                CliError::InvalidTransform {
+                    name: "sql".to_owned(),
+                    message,
+                }
+            })?;
+            let (stage, batch) = transform.into_columnar_stage();
+            stages.push(stage);
+            batches.push(Some(batch));
+            continue;
+        }
+        stages.push(compile_one(s)?);
+        batches.push(None);
+    }
+    Ok((stages, batches))
+}
+
 /// One-line summary of every transform compiled into this build. Used by
 /// `faucet list`.
 pub fn transform_descriptions() -> Vec<(&'static str, &'static str)> {

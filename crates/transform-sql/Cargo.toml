@@ -11,7 +11,9 @@ keywords = ["sql", "duckdb", "transform", "pipeline", "etl"]
 description = "SQL-as-transform for faucet-stream — run DuckDB SQL over each pipeline page (the `batch` relation)."
 
 [dependencies]
-faucet-core.workspace = true
+# `arrow` so the SQL stage can expose its Arrow `RecordBatch` form
+# (via `into_columnar_stage`) — transform-sql is Arrow-native anyway.
+faucet-core = { workspace = true, features = ["arrow"] }
 duckdb = { workspace = true, features = ["bundled", "vtab-arrow"] }
 arrow.workspace = true
 arrow-json.workspace = true
@@ -27,6 +29,10 @@ tempfile.workspace = true
 # round-trip the Value-tax measurement attributes against. Bench-only.
 parquet.workspace = true
 bytes.workspace = true
+# Columnar pipeline acceptance test (#375): drive a Pipeline over a columnar
+# source → sql → columnar sink and assert the columnar path is taken.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+futures.workspace = true
 
 [[bench]]
 name = "sql_transform"

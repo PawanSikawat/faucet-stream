@@ -222,6 +222,8 @@ arrow = [
     "faucet-core/arrow",
     "faucet-source-parquet?/arrow",
     "faucet-sink-parquet?/arrow",
+    "faucet-source-delta?/arrow",
+    "faucet-sink-delta?/arrow",
 ]
 
 # Secrets-manager interpolation resolvers for the config layer. None in

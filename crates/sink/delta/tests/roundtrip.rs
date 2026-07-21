@@ -262,6 +262,99 @@ async fn invalid_timestamp_errors() {
     );
 }
 
+/// Read a table back through the source's **columnar** (`stream_batches`) path,
+/// converting each `RecordBatch` to JSON for assertions.
+#[cfg(feature = "arrow")]
+async fn read_all_columnar(uri: &str, cfg: impl FnOnce(&mut DeltaSourceConfig)) -> Vec<Value> {
+    use futures::StreamExt;
+    let mut sc = DeltaSourceConfig::new(uri);
+    cfg(&mut sc);
+    let source = DeltaSource::new(sc).await.expect("source");
+    assert!(
+        source.supports_columnar(),
+        "delta source is columnar-capable"
+    );
+    let ctx = HashMap::new();
+    let mut stream = source.stream_batches(&ctx, 0);
+    let mut out = Vec::new();
+    while let Some(page) = stream.next().await {
+        let page = page.expect("columnar page");
+        out.extend(
+            faucet_core::columnar::record_batch_to_values(&page.batch).expect("batch to values"),
+        );
+    }
+    out
+}
+
+/// Arrow end-to-end: write a `RecordBatch` via `write_batch_columnar` and read
+/// it back via `stream_batches` — no `Value` materialization on either side.
+#[cfg(feature = "arrow")]
+#[tokio::test]
+async fn columnar_round_trip_unpartitioned() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = table_uri(&dir, "colz");
+
+    let sink = DeltaSink::new(DeltaSinkConfig::new(&uri)).await.unwrap();
+    assert!(sink.supports_columnar(), "delta sink is columnar-capable");
+    let batch = faucet_core::columnar::values_to_record_batch_inferred(&[
+        json!({"id": 1, "name": "alice"}),
+        json!({"id": 2, "name": "bob"}),
+    ])
+    .unwrap();
+    let n = sink.write_batch_columnar(&batch).await.unwrap();
+    assert_eq!(n, 2);
+    sink.flush().await.unwrap();
+
+    let rows = read_all_columnar(&uri, |_| {}).await;
+    assert_eq!(rows.len(), 2);
+    let ids: Vec<i64> = rows.iter().map(|r| r["id"].as_i64().unwrap()).collect();
+    assert!(ids.contains(&1) && ids.contains(&2));
+    assert_eq!(
+        rows.iter().find(|r| r["id"] == json!(1)).unwrap()["name"],
+        json!("alice")
+    );
+}
+
+/// Columnar path over a partitioned table: the partition column lives in the
+/// file path, so the source must re-append it as a constant Arrow column
+/// (`append_partition_columns`) for the columnar output to match the row path.
+#[cfg(feature = "arrow")]
+#[tokio::test]
+async fn columnar_round_trip_partitioned() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = table_uri(&dir, "colzpart");
+
+    let mut cfg = DeltaSinkConfig::new(&uri);
+    cfg.partition_by = vec!["region".into()];
+    let sink = DeltaSink::new(cfg).await.unwrap();
+    let batch = faucet_core::columnar::values_to_record_batch_inferred(&[
+        json!({"id": 1, "region": "us"}),
+        json!({"id": 2, "region": "eu"}),
+        json!({"id": 3, "region": "us"}),
+    ])
+    .unwrap();
+    sink.write_batch_columnar(&batch).await.unwrap();
+    sink.flush().await.unwrap();
+
+    let rows = read_all_columnar(&uri, |_| {}).await;
+    assert_eq!(rows.len(), 3);
+    // Partition column reconstructed into the columnar batch.
+    assert_eq!(
+        rows.iter().filter(|r| r["region"] == json!("us")).count(),
+        2
+    );
+    assert_eq!(
+        rows.iter().filter(|r| r["region"] == json!("eu")).count(),
+        1
+    );
+    // And a projection that includes the partition column still works.
+    let only = read_all_columnar(&uri, |c| c.columns = vec!["region".into()]).await;
+    assert!(
+        only.iter()
+            .all(|r| r.get("id").is_none() && r.get("region").is_some())
+    );
+}
+
 #[tokio::test]
 async fn unknown_field_is_dropped_not_fatal() {
     let dir = tempfile::tempdir().unwrap();

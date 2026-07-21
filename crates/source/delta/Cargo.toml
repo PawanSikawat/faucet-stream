@@ -15,6 +15,9 @@ default = []
 s3 = ["faucet-common-delta/s3"]
 azure = ["faucet-common-delta/azure"]
 gcs = ["faucet-common-delta/gcs"]
+# Opt-in Arrow columnar fast path (#375): emit `ColumnarPage`s so a
+# `delta → parquet` / `delta → delta` chain skips `Value` materialization.
+arrow = ["faucet-core/arrow"]
 
 [dependencies]
 faucet-core.workspace = true

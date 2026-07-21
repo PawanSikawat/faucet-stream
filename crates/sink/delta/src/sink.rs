@@ -97,9 +97,21 @@ impl DeltaSink {
             state.schema = Some(schema);
         }
         let schema = state.schema.clone().expect("schema set above");
+        self.ensure_table_writer(state, &schema).await
+    }
 
+    /// Establish the table + record-batch writer for an already-locked `schema`.
+    /// Shared by the JSON path ([`ensure_open`](Self::ensure_open), which infers
+    /// the schema from records) and the columnar path
+    /// ([`write_batch_columnar`](faucet_core::Sink::write_batch_columnar), which
+    /// takes it from the incoming `RecordBatch`).
+    async fn ensure_table_writer(
+        &self,
+        state: &mut SinkState,
+        schema: &SchemaRef,
+    ) -> Result<(), FaucetError> {
         if state.table.is_none() {
-            let table = self.open_or_create(&schema).await?;
+            let table = self.open_or_create(schema).await?;
             state.table = Some(table);
         }
         if state.writer.is_none() {
@@ -268,6 +280,40 @@ impl faucet_core::Sink for DeltaSink {
             }
         }
         Ok(total)
+    }
+
+    /// delta-rs writes via `RecordBatchWriter`, so the sink consumes Arrow
+    /// batches natively (#375): a `parquet → delta` / `delta → delta` chain
+    /// never materializes `Value`.
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        true
+    }
+
+    /// Write an Arrow batch straight into the buffered `RecordBatchWriter`,
+    /// skipping the `Value → RecordBatch` encode. The schema is locked from the
+    /// first batch's own schema (the columnar analogue of inferring it from the
+    /// first records); partition columns must be present in the batch (the Delta
+    /// source appends them), matching the JSON path's create-table contract.
+    #[cfg(feature = "arrow")]
+    async fn write_batch_columnar(&self, batch: &RecordBatch) -> Result<usize, FaucetError> {
+        if batch.num_rows() == 0 {
+            return Ok(0);
+        }
+        let mut state = self.state.lock().await;
+        if state.schema.is_none() {
+            state.schema = Some(batch.schema());
+        }
+        let schema = state.schema.clone().expect("schema set above");
+        self.ensure_table_writer(&mut state, &schema).await?;
+        let rows = batch.num_rows();
+        let writer = state.writer.as_mut().expect("writer set");
+        writer
+            .write(batch.clone())
+            .await
+            .map_err(|e| FaucetError::Sink(format!("delta: columnar write failed: {e}")))?;
+        state.pending = true;
+        Ok(rows)
     }
 
     async fn flush(&self) -> Result<(), FaucetError> {

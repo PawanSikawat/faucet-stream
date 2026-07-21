@@ -33,6 +33,7 @@ cargo install faucet-cli --no-default-features \
 | `faucet list` | List every compiled-in source, sink, transform, and state-store backend, each with its conformance maturity tier. |
 | `faucet conformance [name] [--kind K] [--json] [--min-tier T]` | Score connectors against the SDK contract, print a scorecard + maturity tier (Stable/Experimental/Beta/Draft) and capability badges. `--min-tier` exits non-zero as an opt-in CI gate. |
 | `faucet preview <config> --limit N` | Run only the source side and emit the first N records to stdout as JSONL. |
+| `faucet plan <config> [--sample F\|--live] [--diff] [--json]` | Read-only "what would this do" preview (resolved pipeline, output schema, sink delta — never writes). `--diff` shows a `terraform plan`-style per-row config diff against the last recorded run (needs a `catalog:` block + `catalog` feature; secrets stored only as stable `<secret:sha256:…>` tokens). |
 | `faucet init [name] [--source X] [--sink Y]` | Scaffold a pipeline.yaml from each connector's JSON Schema. |
 | `faucet doctor <config> [--timeout-secs N] [--json]` | Probe every connector (auth/network/permissions/reachability) and print a checklist. Exits with the failed-probe count. |
 | `faucet test <specs…> [--filter S] [--json] [--clock C]` | Run fixture-based **offline** pipeline tests: stream sample records through a config's transforms/quality/contract with in-memory source/sink/DLQ and assert the output. Exits with the failed-case count. `faucet schema test` prints the spec-file JSON Schema. |

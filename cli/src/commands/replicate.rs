@@ -51,6 +51,15 @@ pub async fn run(args: ReplicateArgs) -> CliResult<()> {
         Some(spec) => Some(crate::catalog::connect_from_spec(spec).await?),
         None => None,
     };
+    // Config snapshot for `faucet plan --diff` (#374). Best-effort: skip if the
+    // config does not expand cleanly (some replication shapes are orchestration
+    // -only). Recorded after the replication run succeeds below.
+    #[cfg(feature = "catalog")]
+    let snapshot_inputs = catalog.as_ref().and_then(|handle| {
+        crate::expand::expand(&cfg)
+            .ok()
+            .map(|nodes| (handle.clone(), nodes, pipeline_name.clone()))
+    });
 
     run_replication(
         &cfg,
@@ -69,6 +78,20 @@ pub async fn run(args: ReplicateArgs) -> CliResult<()> {
         },
     )
     .await?;
+
+    // Reached only on success (errors returned via `?` above).
+    #[cfg(feature = "catalog")]
+    if let Some((handle, nodes, name)) = snapshot_inputs {
+        crate::catalog::snapshot::record_if_ok(
+            Some(&handle),
+            &name,
+            crate::catalog::snapshot::on_error_str(&cfg.execution),
+            &nodes,
+            true,
+            chrono::Utc::now(),
+        )
+        .await;
+    }
 
     // Flush any buffered OTLP telemetry before exiting (no-op without `otel`).
     faucet_core::shutdown_otel();

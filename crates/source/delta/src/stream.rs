@@ -232,6 +232,122 @@ impl faucet_core::Source for DeltaSource {
             }
         })
     }
+
+    /// Delta reads are natively Arrow (each data file is a parquet stream), so
+    /// the source participates in the opt-in columnar fast path (#375): a
+    /// `delta → parquet` / `delta → delta` chain never materializes `Value`.
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        true
+    }
+
+    /// Stream the table as Arrow [`ColumnarPage`](faucet_core::ColumnarPage)s.
+    /// Mirrors `stream_pages` but yields each parquet
+    /// `RecordBatch` directly; Hive partition-column values (which live in the
+    /// file path, not the parquet data) are appended as constant Arrow columns
+    /// so the columnar output matches the row-wise output field-for-field.
+    #[cfg(feature = "arrow")]
+    fn stream_batches<'a>(
+        &'a self,
+        _context: &'a HashMap<String, Value>,
+        _batch_size: usize,
+    ) -> Pin<Box<dyn Stream<Item = Result<faucet_core::ColumnarPage, FaucetError>> + Send + 'a>>
+    {
+        Box::pin(async_stream::try_stream! {
+            let table = self.open().await?;
+            let (files, schema, partition_cols) = self.resolve(&table).await?;
+            let store = table.object_store();
+            let data_projection = self.data_projection(&partition_cols);
+            let requested: Option<&[String]> =
+                if self.config.columns.is_empty() { None } else { Some(&self.config.columns) };
+
+            for file in &files {
+                let reader = ParquetObjectReader::new(store.clone(), file.path.clone());
+                let mut builder = ParquetRecordBatchStreamBuilder::new(reader).await.map_err(|e| {
+                    FaucetError::Source(format!("delta: could not open data file '{}': {e}", file.path))
+                })?;
+                if self.config.batch_size > 0 {
+                    builder = builder.with_batch_size(self.config.batch_size);
+                }
+                if let Some(cols) = &data_projection {
+                    let pq = builder.parquet_schema();
+                    let present: Vec<&str> = cols
+                        .iter()
+                        .filter(|c| pq.columns().iter().any(|col| col.name() == c.as_str()))
+                        .map(String::as_str)
+                        .collect();
+                    let mask = ProjectionMask::columns(pq, present.iter().copied());
+                    builder = builder.with_projection(mask);
+                }
+                let mut batches = builder.build().map_err(|e| {
+                    FaucetError::Source(format!("delta: could not build reader for '{}': {e}", file.path))
+                })?;
+                while let Some(batch) = batches.next().await {
+                    let batch = batch.map_err(|e| {
+                        FaucetError::Source(format!("delta: read error in '{}': {e}", file.path))
+                    })?;
+                    if batch.num_rows() == 0 {
+                        continue;
+                    }
+                    let batch = append_partition_columns(batch, &file.partitions, &schema, requested)?;
+                    yield faucet_core::ColumnarPage { batch, bookmark: None };
+                }
+            }
+        })
+    }
+}
+
+/// Append Hive partition columns to a data-file `RecordBatch` as constant
+/// columns, honoring the same `requested`-projection semantics as
+/// [`merge_partitions`] (add a partition column only when unprojected-away, and
+/// never shadow a real data column of the same name). Each constant column is
+/// built through the core `Value → RecordBatch` shim with the table's declared
+/// Arrow type, so a partition value round-trips identically to the row path.
+#[cfg(feature = "arrow")]
+fn append_partition_columns(
+    batch: arrow::array::RecordBatch,
+    partitions: &HashMap<String, Value>,
+    table_schema: &SchemaRef,
+    requested: Option<&[String]>,
+) -> Result<arrow::array::RecordBatch, FaucetError> {
+    use arrow::datatypes::{Field, Schema};
+    use std::sync::Arc;
+
+    if partitions.is_empty() {
+        return Ok(batch);
+    }
+    let in_schema = batch.schema();
+    let n = batch.num_rows();
+    let mut fields: Vec<Arc<Field>> = in_schema.fields().iter().cloned().collect();
+    let mut columns = batch.columns().to_vec();
+
+    // Deterministic order so the output schema is stable run-to-run.
+    let mut keys: Vec<&String> = partitions.keys().collect();
+    keys.sort();
+    for k in keys {
+        if let Some(cols) = requested
+            && !cols.iter().any(|c| c == k)
+        {
+            continue;
+        }
+        if in_schema.field_with_name(k).is_ok() {
+            continue; // a real data column of this name wins (merge_partitions)
+        }
+        let field = table_schema
+            .field_with_name(k)
+            .cloned()
+            .unwrap_or_else(|_| Field::new(k, arrow::datatypes::DataType::Utf8, true));
+        let one_schema = Arc::new(Schema::new(vec![field.clone().with_nullable(true)]));
+        let mut obj = serde_json::Map::new();
+        obj.insert(k.clone(), partitions[k].clone());
+        let rows = vec![Value::Object(obj); n];
+        let col_batch = faucet_core::values_to_record_batch(&rows, one_schema)?;
+        fields.push(Arc::new(field));
+        columns.push(col_batch.column(0).clone());
+    }
+
+    arrow::array::RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+        .map_err(|e| FaucetError::Source(format!("delta: assembling columnar batch failed: {e}")))
 }
 
 /// Parse Hive-style `col=value` segments out of a data file path, typing each

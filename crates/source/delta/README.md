@@ -32,6 +32,12 @@ Fabric) write.
 
 Cloud backends require the matching crate feature: `s3`, `azure`, `gcs`.
 
+The **`arrow`** feature opts this source into the columnar fast path (#375): when
+the sink is also Arrow-capable (e.g. `faucet-sink-parquet` /
+`faucet-sink-delta`), it emits Arrow `RecordBatch` pages directly (Hive
+partition columns re-appended as constant columns) with no `serde_json::Value`
+materialization.
+
 ```yaml
 pipeline:
   source:

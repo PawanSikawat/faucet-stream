@@ -30,6 +30,18 @@ use std::sync::Arc;
 /// [`TransformStage::PageFn`] and [`CompiledStage::PageFn`].
 pub type PageFnBox = Arc<dyn Fn(Vec<Value>) -> Result<Vec<Value>, FaucetError> + Send + Sync>;
 
+/// Type alias for the columnar (Arrow) form of a page transform: a
+/// `RecordBatch → RecordBatch` closure carried alongside a stage via
+/// [`TransformingSource::new_with_batches`](crate::TransformingSource::new_with_batches)
+/// so the stage can run on the opt-in columnar fast path (#375). Only present
+/// with the `arrow` feature.
+#[cfg(feature = "arrow")]
+pub type PageFnBatchBox = Arc<
+    dyn Fn(arrow::array::RecordBatch) -> Result<arrow::array::RecordBatch, FaucetError>
+        + Send
+        + Sync,
+>;
+
 /// One stage in a transform pipeline.
 pub enum TransformStage {
     /// Existing 1→1 record transform. Wraps unchanged.

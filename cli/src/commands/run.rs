@@ -114,6 +114,12 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
         None => None,
     };
     let nodes = expand(&cfg)?;
+    // Capture the config-snapshot inputs (#374) before `nodes` / `catalog` are
+    // moved into the executor; recorded after a fully-successful run below.
+    #[cfg(feature = "catalog")]
+    let snapshot_inputs = catalog
+        .as_ref()
+        .map(|handle| (handle.clone(), nodes.clone(), pipeline_name.clone()));
     // The TUI wires `q` / Ctrl-C to this token: in-flight invocations stop at
     // their next page boundary and flush (#146 H16). Plain runs keep `None`.
     #[cfg(feature = "cli-tui")]
@@ -174,6 +180,21 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
         .filter(|i| i.error.is_none())
         .count();
     let failed = summary.failure_count();
+
+    // Record the resolved config snapshot for `faucet plan --diff` (best-effort;
+    // #374 / #279) — only on a fully-successful run.
+    #[cfg(feature = "catalog")]
+    if let Some((handle, snap_nodes, name)) = snapshot_inputs {
+        crate::catalog::snapshot::record_if_ok(
+            Some(&handle),
+            &name,
+            crate::catalog::snapshot::on_error_str(&cfg.execution),
+            &snap_nodes,
+            failed == 0,
+            chrono::Utc::now(),
+        )
+        .await;
+    }
 
     tracing::info!(
         pipeline = %pipeline_name,

@@ -80,6 +80,61 @@ pub struct CatalogUpdate {
     pub column_lineage: Option<Value>,
 }
 
+// ── Config snapshots (#374) ──────────────────────────────────────────────────
+//
+// A `faucet plan --diff`-able record of the *resolved + expanded* config as it
+// last ran. One snapshot per pipeline (latest wins); each carries a per-row,
+// secret-redacted view so the diff reflects real data-movement effects, never a
+// misleading raw-YAML text diff. Stored types only — the build-from-`ExpandedNode`
+// and diff/render logic lives in `cli/src/catalog/snapshot.rs` (a higher layer
+// that may depend on the CLI's expand types; this module must not).
+
+/// A redacted, resolved+expanded config snapshot recorded on a successful run.
+/// Diffed by `faucet plan --diff` against the current config.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConfigSnapshot {
+    pub pipeline: String,
+    pub recorded_at: DateTime<Utc>,
+    /// `faucet` version that recorded the snapshot (informational).
+    pub faucet_version: String,
+    /// Expanded row id → row snapshot. `BTreeMap` so serialization and diffs are
+    /// deterministic regardless of expansion order.
+    pub rows: std::collections::BTreeMap<String, RowSnapshot>,
+}
+
+/// One expanded row (a single source→sink movement) as it last ran.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowSnapshot {
+    pub source: ConnectorSnapshot,
+    pub sink: ConnectorSnapshot,
+    pub transforms: Vec<TransformSnapshot>,
+    /// Durable state key for this row, when a state store is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_key: Option<String>,
+    /// End-to-end delivery guarantee (`Debug` of `DeliveryGuarantee`).
+    pub delivery_guarantee: String,
+    /// Pipeline-level `execution.on_error` (`"stop"` / `"continue"`).
+    pub on_error: String,
+    /// Whether a DLQ sink is attached to this row.
+    pub dlq: bool,
+}
+
+/// A connector (source or sink) with its **secret-redacted** resolved config.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectorSnapshot {
+    pub kind: String,
+    /// Resolved config with every secret-sourced value replaced by a stable
+    /// `<secret:sha256:…>` token — no secret material is ever persisted.
+    pub config: Value,
+}
+
+/// A transform stage with its resolved (redacted) config.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TransformSnapshot {
+    pub kind: String,
+    pub config: Value,
+}
+
 /// One catalogued dataset — the list element and the head of the detail view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogDataset {

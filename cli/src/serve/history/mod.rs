@@ -606,6 +606,28 @@ pub trait RunHistory: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Record the latest resolved+expanded config snapshot for a pipeline
+    /// (#374). Latest-wins per pipeline (upsert). Best-effort at the call site —
+    /// recording never fails a run. Default: no-op.
+    async fn catalog_record_config_snapshot(
+        &self,
+        snapshot: &catalog::ConfigSnapshot,
+    ) -> Result<(), HistoryError> {
+        let _ = snapshot;
+        Ok(())
+    }
+
+    /// The most recently recorded config snapshot for `pipeline`, or `None` if
+    /// nothing has been recorded yet (a first `faucet plan --diff`). Default:
+    /// `None`.
+    async fn catalog_last_config_snapshot(
+        &self,
+        pipeline: &str,
+    ) -> Result<Option<catalog::ConfigSnapshot>, HistoryError> {
+        let _ = pipeline;
+        Ok(None)
+    }
+
     /// True when the backend is in fallback mode (drives `/readyz`). Always false
     /// for memory.
     fn degraded(&self) -> bool;

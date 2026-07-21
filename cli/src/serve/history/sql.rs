@@ -127,6 +127,14 @@ pub const DDL: &[&str] = &[
         run_id TEXT NOT NULL,\
         records TEXT NOT NULL,\
         PRIMARY KEY (dataset_id, recorded_at))",
+    // Resolved+expanded config snapshots for `faucet plan --diff` (#374). One
+    // row per pipeline (latest-wins upsert); `body` is the redacted
+    // `ConfigSnapshot` JSON — no secret material is ever stored.
+    "CREATE TABLE IF NOT EXISTS faucet_config_snapshots (\
+        pipeline TEXT PRIMARY KEY,\
+        recorded_at TEXT NOT NULL,\
+        faucet_version TEXT NOT NULL,\
+        body TEXT NOT NULL)",
 ];
 
 /// SQL placeholder dialect.
@@ -259,6 +267,11 @@ pub struct Stmts {
     /// Drop volume points beyond the newest `STATS_RETAIN` for one dataset.
     /// Params: dataset_id, dataset_id, keep-limit.
     pub catalog_prune_stats: String,
+    /// Upsert the latest config snapshot for a pipeline (#374).
+    /// Params: pipeline, recorded_at, faucet_version, body.
+    pub catalog_upsert_config_snapshot: String,
+    /// The latest config snapshot body for a pipeline. Param: pipeline.
+    pub catalog_select_config_snapshot: String,
 }
 
 impl Stmts {
@@ -477,6 +490,13 @@ impl Stmts {
                     SELECT recorded_at FROM faucet_catalog_stats WHERE dataset_id=$2 \
                     ORDER BY recorded_at DESC LIMIT $3)"
                 .into(),
+            catalog_upsert_config_snapshot: "INSERT INTO faucet_config_snapshots \
+                (pipeline, recorded_at, faucet_version, body) VALUES ($1,$2,$3,$4) \
+                ON CONFLICT (pipeline) DO UPDATE SET recorded_at=excluded.recorded_at, \
+                faucet_version=excluded.faucet_version, body=excluded.body"
+                .into(),
+            catalog_select_config_snapshot:
+                "SELECT body FROM faucet_config_snapshots WHERE pipeline=$1".into(),
         }
     }
 
@@ -680,6 +700,13 @@ impl Stmts {
                     SELECT recorded_at FROM faucet_catalog_stats WHERE dataset_id=? \
                     ORDER BY recorded_at DESC LIMIT ?)"
                 .into(),
+            catalog_upsert_config_snapshot: "INSERT INTO faucet_config_snapshots \
+                (pipeline, recorded_at, faucet_version, body) VALUES (?,?,?,?) \
+                ON CONFLICT (pipeline) DO UPDATE SET recorded_at=excluded.recorded_at, \
+                faucet_version=excluded.faucet_version, body=excluded.body"
+                .into(),
+            catalog_select_config_snapshot:
+                "SELECT body FROM faucet_config_snapshots WHERE pipeline=?".into(),
         }
     }
 }
@@ -2073,6 +2100,47 @@ macro_rules! impl_sql_history {
                 use $crate::serve::history::catalog;
                 let edges = self.catalog_all_edges().await?;
                 Ok(catalog::lineage_slice(edges, root, depth))
+            }
+
+            async fn catalog_record_config_snapshot(
+                &self,
+                snapshot: &$crate::serve::history::catalog::ConfigSnapshot,
+            ) -> Result<(), $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                sqlx::query(&self.stmts.catalog_upsert_config_snapshot)
+                    .bind(&snapshot.pipeline)
+                    .bind(sql::fmt_ts(snapshot.recorded_at))
+                    .bind(&snapshot.faucet_version)
+                    .bind(sql::encode_json(snapshot, "config snapshot")?)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                Ok(())
+            }
+
+            async fn catalog_last_config_snapshot(
+                &self,
+                pipeline: &str,
+            ) -> Result<
+                Option<$crate::serve::history::catalog::ConfigSnapshot>,
+                $crate::serve::history::HistoryError,
+            > {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let Some(row) = sqlx::query(&self.stmts.catalog_select_config_snapshot)
+                    .bind(pipeline)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(backend)?
+                else {
+                    return Ok(None);
+                };
+                let body: String = row.try_get("body").map_err(backend)?;
+                Ok(Some(sql::decode_json(&body, "config snapshot")?))
             }
 
             fn degraded(&self) -> bool {

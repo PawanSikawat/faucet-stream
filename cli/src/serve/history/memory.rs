@@ -39,6 +39,8 @@ struct CatalogState {
     stats: std::collections::HashMap<String, Vec<CatalogStatsPoint>>,
     /// (src id, dst id) → edge.
     edges: std::collections::HashMap<(String, String), CatalogLineageEdge>,
+    /// pipeline name → latest config snapshot (#374). Latest-wins.
+    config_snapshots: std::collections::HashMap<String, super::catalog::ConfigSnapshot>,
 }
 
 pub struct MemoryHistory {
@@ -351,6 +353,30 @@ impl RunHistory for MemoryHistory {
                 .then_with(|| (&a.src_id, &a.dst_id).cmp(&(&b.src_id, &b.dst_id)))
         });
         Ok(catalog::lineage_slice(edges, root, depth))
+    }
+
+    async fn catalog_record_config_snapshot(
+        &self,
+        snapshot: &catalog::ConfigSnapshot,
+    ) -> Result<(), HistoryError> {
+        let mut cat = self
+            .catalog
+            .lock()
+            .map_err(|_| HistoryError::Backend("catalog lock poisoned".into()))?;
+        cat.config_snapshots
+            .insert(snapshot.pipeline.clone(), snapshot.clone());
+        Ok(())
+    }
+
+    async fn catalog_last_config_snapshot(
+        &self,
+        pipeline: &str,
+    ) -> Result<Option<catalog::ConfigSnapshot>, HistoryError> {
+        let cat = self
+            .catalog
+            .lock()
+            .map_err(|_| HistoryError::Backend("catalog lock poisoned".into()))?;
+        Ok(cat.config_snapshots.get(pipeline).cloned())
     }
 
     fn degraded(&self) -> bool {
@@ -694,6 +720,34 @@ mod tests {
             },
             column_lineage: None,
         }
+    }
+
+    #[tokio::test]
+    async fn config_snapshot_roundtrips_latest_wins() {
+        use crate::serve::history::catalog::ConfigSnapshot;
+        use std::collections::BTreeMap;
+        let h = MemoryHistory::new(Duration::from_secs(60));
+        assert!(
+            h.catalog_last_config_snapshot("p").await.unwrap().is_none(),
+            "no snapshot before any record"
+        );
+        let mk = |ver: &str| ConfigSnapshot {
+            pipeline: "p".into(),
+            recorded_at: Utc::now(),
+            faucet_version: ver.into(),
+            rows: BTreeMap::new(),
+        };
+        h.catalog_record_config_snapshot(&mk("1")).await.unwrap();
+        h.catalog_record_config_snapshot(&mk("2")).await.unwrap();
+        let got = h.catalog_last_config_snapshot("p").await.unwrap().unwrap();
+        assert_eq!(got.faucet_version, "2", "latest-wins upsert");
+        assert!(
+            h.catalog_last_config_snapshot("other")
+                .await
+                .unwrap()
+                .is_none(),
+            "snapshots are keyed per pipeline"
+        );
     }
 
     #[tokio::test]
