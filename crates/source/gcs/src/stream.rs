@@ -203,9 +203,10 @@ impl GcsSource {
         use tokio::io::AsyncReadExt as _;
         let mut reader = self.open_object_reader(key).await?;
         let mut buf = Vec::new();
-        reader.read_to_end(&mut buf).await.map_err(|e| {
-            FaucetError::Source(format!("GCS read error for key '{key}': {e}"))
-        })?;
+        reader
+            .read_to_end(&mut buf)
+            .await
+            .map_err(|e| FaucetError::Source(format!("GCS read error for key '{key}': {e}")))?;
         Ok(bytes::Bytes::from(buf))
     }
 
@@ -1032,8 +1033,8 @@ mod tests {
     #[cfg(feature = "arrow")]
     #[test]
     fn corrupt_parquet_bytes_error() {
-        let err = decode_parquet_bytes(bytes::Bytes::from_static(b"nope"), "bad.parquet")
-            .unwrap_err();
+        let err =
+            decode_parquet_bytes(bytes::Bytes::from_static(b"nope"), "bad.parquet").unwrap_err();
         assert!(matches!(err, FaucetError::Source(_)));
     }
 }

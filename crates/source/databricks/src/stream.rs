@@ -374,7 +374,9 @@ impl DatabricksSource {
             )));
         }
         let data = resp.bytes().await.map_err(|e| {
-            FaucetError::Source(format!("databricks: reading external-link body failed: {e}"))
+            FaucetError::Source(format!(
+                "databricks: reading external-link body failed: {e}"
+            ))
         })?;
         tokio::task::spawn_blocking(move || decode_arrow_ipc(data))
             .await

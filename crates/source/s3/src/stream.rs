@@ -141,9 +141,10 @@ impl S3Source {
         use tokio::io::AsyncReadExt as _;
         let mut reader = self.open_object_reader(key).await?;
         let mut buf = Vec::new();
-        reader.read_to_end(&mut buf).await.map_err(|e| {
-            FaucetError::Source(format!("S3 read error for key '{key}': {e}"))
-        })?;
+        reader
+            .read_to_end(&mut buf)
+            .await
+            .map_err(|e| FaucetError::Source(format!("S3 read error for key '{key}': {e}")))?;
         Ok(bytes::Bytes::from(buf))
     }
 
@@ -1118,8 +1119,7 @@ mod tests {
     #[cfg(feature = "arrow")]
     #[test]
     fn supports_columnar_only_for_parquet_format() {
-        let parquet_src =
-            test_source(S3SourceConfig::new("b").file_format(S3FileFormat::Parquet));
+        let parquet_src = test_source(S3SourceConfig::new("b").file_format(S3FileFormat::Parquet));
         assert!(faucet_core::Source::supports_columnar(&parquet_src));
 
         let json_src = test_source(S3SourceConfig::new("b"));

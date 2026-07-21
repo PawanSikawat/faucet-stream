@@ -177,13 +177,15 @@ impl DatabricksSourceConfig {
             if !cfg!(feature = "arrow") {
                 return Err(FaucetError::Config(
                     "databricks: `arrow_native` requires the crate-local `arrow` feature to be \
-                     enabled".into(),
+                     enabled"
+                        .into(),
                 ));
             }
             if !matches!(self.replication, DatabricksReplication::Full) {
                 return Err(FaucetError::Config(
                     "databricks: `arrow_native` currently supports only `replication: full` — the \
-                     columnar path does not run the client-side incremental filter".into(),
+                     columnar path does not run the client-side incremental filter"
+                        .into(),
                 ));
             }
         }
