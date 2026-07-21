@@ -309,7 +309,7 @@ async fn arrow_stream_external_links_row_and_columnar() {
     cfg.arrow_native = true;
     let src = DatabricksSource::new(cfg)
         .unwrap()
-        .with_endpoint_base(&server.uri());
+        .with_endpoint_base(server.uri());
 
     // The source advertises columnar support in arrow_native mode.
     assert!(Source::supports_columnar(&src));
