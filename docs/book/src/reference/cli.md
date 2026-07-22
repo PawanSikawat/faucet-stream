@@ -22,6 +22,7 @@ The `faucet` binary exposes these commands. Pass `--log-level <level>` (or set
 | `faucet replicate [config]` | Bulk-snapshot a table, then hand off to CDC for a gap-free mirror. |
 | `faucet schedule [config]` | Run a pipeline on a cron schedule (long-running foreground process). |
 | `faucet serve` | Run a long-running HTTP control plane: submit / poll / cancel pipeline runs over REST. |
+| `faucet completions <shell>` | Print a shell tab-completion script (bash / zsh / fish / powershell / elvish). |
 
 `[config]` is optional for `run` / `validate` / `preview` / `doctor` / `replicate` / `schedule`: if
 omitted, faucet auto-discovers `faucet.yaml` → `.yml` → `.json` in the current directory.
@@ -742,3 +743,43 @@ environment. Nested/tagged-enum fields use a `*_JSON` suffix.
 
 > The complete config grammar (matrix, templates, vars, execution) lives in
 > [`cli/README.md`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/README.md).
+
+## Shell completions
+
+`faucet` supports tab-completion in two ways.
+
+**Static script** — generate a completion script for your shell and install it
+the way that shell expects:
+
+```bash
+faucet completions bash   > /etc/bash_completion.d/faucet     # bash
+faucet completions zsh    > ~/.zfunc/_faucet                  # zsh (dir on $fpath)
+faucet completions fish   > ~/.config/fish/completions/faucet.fish
+faucet completions powershell >> $PROFILE                     # powershell
+```
+
+This completes subcommand names, flags, fixed-choice values, and file paths.
+
+**Dynamic (recommended)** — let the binary compute completions at completion
+time, so it stays in sync with the build and becomes **config-aware**. Add one
+line to your shell rc:
+
+```bash
+echo 'source <(COMPLETE=bash faucet)' >> ~/.bashrc     # bash
+echo 'source <(COMPLETE=zsh  faucet)' >> ~/.zshrc      # zsh
+echo 'COMPLETE=fish faucet | source'  >> ~/.config/fish/config.fish
+```
+
+With the dynamic hook enabled you get runtime-aware candidates:
+
+- `faucet schema source <TAB>` / `sink` / `transform` — the connectors and
+  transforms **compiled into this binary** (a slim build lists only its own).
+- `faucet run --select <TAB>` / `--only` / `--skip` — the **matrix row ids**
+  from the `faucet.yaml` in the current directory.
+- `faucet run --status <TAB>` — the readiness ladder
+  (`mandatory active available draft archived`).
+- `faucet run --tag <TAB>` — the tags present in the current config.
+
+The config-aware providers are best-effort and read-only: they parse and expand
+the local config but never resolve secrets, hit the network, or open a
+connector, and fall back to no suggestions if no config is present.
