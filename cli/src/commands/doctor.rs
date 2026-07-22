@@ -85,6 +85,19 @@ pub async fn run(args: DoctorArgs) -> CliResult<()> {
     let cfg_ms = t_cfg.elapsed().as_millis();
 
     let nodes = expand(&cfg)?;
+
+    // `--offline`: run only the static config lints — no connectors built, no
+    // network, no credentials. Fast, CI-friendly, and credential-free.
+    if args.offline {
+        let raw = std::fs::read_to_string(&path).unwrap_or_default();
+        let findings = lint_config(&cfg, &nodes, &raw);
+        let errors = render_lints(&path, &findings, args.json);
+        if errors > 0 {
+            return Err(CliError::DoctorFailed { failed: errors });
+        }
+        return Ok(());
+    }
+
     let auth = build_auth_catalog(cfg.auth.as_ref())?;
     let ctx = CheckContext {
         timeout: Duration::from_secs(args.timeout_secs),
@@ -417,6 +430,172 @@ fn render_human(
     );
 }
 
+// ── Offline config linter (#392) ─────────────────────────────────────────────
+
+/// Severity of a static config-lint finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LintSeverity {
+    /// A likely-broken config; counts toward the non-zero exit code.
+    Error,
+    /// A smell worth flagging; does not fail the lint.
+    Warning,
+}
+
+/// One static-lint finding: a severity, a short stable `code`, a message, and a
+/// fix hint.
+#[derive(Debug, Clone, Serialize)]
+pub struct LintFinding {
+    pub severity: LintSeverity,
+    pub code: &'static str,
+    pub message: String,
+    pub hint: String,
+}
+
+impl LintFinding {
+    fn error(code: &'static str, message: String, hint: impl Into<String>) -> Self {
+        Self {
+            severity: LintSeverity::Error,
+            code,
+            message,
+            hint: hint.into(),
+        }
+    }
+    fn warning(code: &'static str, message: String, hint: impl Into<String>) -> Self {
+        Self {
+            severity: LintSeverity::Warning,
+            code,
+            message,
+            hint: hint.into(),
+        }
+    }
+}
+
+/// File/append sinks where `batch_size` is a documented no-op (they write
+/// per-record regardless).
+const NO_OP_BATCH_SINKS: [&str; 3] = ["jsonl", "csv", "stdout"];
+
+/// Run the offline static lints over a resolved config + its expanded nodes.
+/// Pure: no I/O beyond the `raw` config text passed in for `${vars.*}` usage
+/// scanning. Reused by `faucet doctor --offline`.
+pub(crate) fn lint_config(
+    cfg: &PipelineConfig,
+    nodes: &[ExpandedNode],
+    raw: &str,
+) -> Vec<LintFinding> {
+    let mut out = Vec::new();
+
+    // Every `auth: { ref: NAME }` referenced by any node's source or sink.
+    let mut referenced: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for n in nodes {
+        for spec in [&n.source, &n.sink] {
+            if let Some(name) = crate::auth_catalog::auth_ref(&spec.config) {
+                referenced.insert(name);
+            }
+        }
+    }
+    let catalog: std::collections::BTreeSet<String> = cfg
+        .auth
+        .as_ref()
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+
+    // (1) Dangling auth ref — a connector references a provider not in `auth:`.
+    for name in &referenced {
+        if !catalog.contains(name) {
+            out.push(LintFinding::error(
+                "dangling-auth-ref",
+                format!("a connector references auth provider '{name}', which is not defined in the top-level `auth:` catalog"),
+                format!("add an `auth:` entry named '{name}', or fix the `auth: {{ ref: … }}` to match an existing provider"),
+            ));
+        }
+    }
+
+    // (2) Unreferenced auth provider — a catalog entry no connector uses.
+    for name in &catalog {
+        if !referenced.contains(name) {
+            out.push(LintFinding::warning(
+                "unreferenced-auth-provider",
+                format!("auth provider '{name}' is defined in `auth:` but never referenced by any connector"),
+                format!("reference it with `auth: {{ ref: {name} }}` on a connector, or remove the unused entry"),
+            ));
+        }
+    }
+
+    // (3) Unused vars — a `vars:` key never interpolated as `${vars.KEY}`.
+    if let Some(vars) = &cfg.vars {
+        for key in vars.keys() {
+            let token = format!("${{vars.{key}}}");
+            if !raw.contains(&token) {
+                out.push(LintFinding::warning(
+                    "unused-var",
+                    format!("`vars.{key}` is defined but never used (no `${{vars.{key}}}` reference found)"),
+                    "remove the unused variable, or reference it where intended",
+                ));
+            }
+        }
+    }
+
+    // (4) No-op sink `batch_size: 0` on file/append sinks.
+    for n in nodes {
+        if NO_OP_BATCH_SINKS.contains(&n.sink.kind.as_str())
+            && n.sink.config.get("batch_size").and_then(|v| v.as_u64()) == Some(0)
+        {
+            out.push(LintFinding::warning(
+                "noop-batch-size",
+                format!(
+                    "row '{}': sink `{}` sets `batch_size: 0`, which has no effect (this sink writes per-record)",
+                    n.id, n.sink.kind
+                ),
+                "drop `batch_size` from this sink — it only matters for batching sinks (databases, object stores, bulk APIs)",
+            ));
+        }
+    }
+
+    out
+}
+
+/// Render lint findings (human or `--json`) and return the number of *errors*
+/// (warnings don't count toward the exit code).
+fn render_lints(path: &Path, findings: &[LintFinding], json: bool) -> usize {
+    let errors = findings
+        .iter()
+        .filter(|f| f.severity == LintSeverity::Error)
+        .count();
+    let warnings = findings.len() - errors;
+
+    if json {
+        let v = serde_json::json!({
+            "config": path.display().to_string(),
+            "errors": errors,
+            "warnings": warnings,
+            "findings": findings,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&v).expect("lint json serializes")
+        );
+        return errors;
+    }
+
+    println!("Config lint: {}", path.display());
+    if findings.is_empty() {
+        println!("  ✓ no issues found");
+        return 0;
+    }
+    for f in findings {
+        let tag = match f.severity {
+            LintSeverity::Error => "error",
+            LintSeverity::Warning => "warn",
+        };
+        println!("  [{tag}] {} — {}", f.code, f.message);
+        println!("         hint: {}", f.hint);
+    }
+    println!();
+    println!("Lint: {errors} error(s), {warnings} warning(s)");
+    errors
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,5 +705,111 @@ mod tests {
             )]),
         ];
         assert_eq!(count_failures(&invs), 2);
+    }
+
+    // ── Offline linter (#392) ────────────────────────────────────────────────
+
+    /// Parse a YAML config, expand it, and run the offline lints.
+    fn lint_yaml(text: &str) -> Vec<LintFinding> {
+        let cfg = crate::config::parse_with_extension(text, "yaml").expect("config parses");
+        let nodes = expand(&cfg).expect("config expands");
+        lint_config(&cfg, &nodes, text)
+    }
+
+    fn has(findings: &[LintFinding], code: &str) -> bool {
+        findings.iter().any(|f| f.code == code)
+    }
+
+    #[test]
+    fn clean_config_has_no_findings() {
+        let cfg = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: "https://x", auth: { ref: idp } } }
+  sink: { type: jsonl, config: { path: out.jsonl } }
+auth:
+  idp: { type: static, config: { token: "${env:T}" } }
+"#;
+        assert!(lint_yaml(cfg).is_empty(), "{:?}", lint_yaml(cfg));
+    }
+
+    #[test]
+    fn flags_dangling_auth_ref_as_error() {
+        let cfg = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: "https://x", auth: { ref: missing } } }
+  sink: { type: jsonl, config: { path: out.jsonl } }
+"#;
+        let f = lint_yaml(cfg);
+        assert!(has(&f, "dangling-auth-ref"));
+        assert!(
+            f.iter()
+                .any(|x| x.code == "dangling-auth-ref" && x.severity == LintSeverity::Error)
+        );
+    }
+
+    #[test]
+    fn flags_unreferenced_auth_provider_as_warning() {
+        let cfg = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: "https://x" } }
+  sink: { type: jsonl, config: { path: out.jsonl } }
+auth:
+  unused_idp: { type: static, config: { token: "t" } }
+"#;
+        let f = lint_yaml(cfg);
+        let p = f.iter().find(|x| x.code == "unreferenced-auth-provider");
+        assert!(p.is_some());
+        assert_eq!(p.unwrap().severity, LintSeverity::Warning);
+    }
+
+    #[test]
+    fn flags_unused_var() {
+        let cfg = r#"
+version: 1
+vars:
+  used: "https://x"
+  never: 5
+pipeline:
+  source: { type: rest, config: { base_url: "${vars.used}" } }
+  sink: { type: jsonl, config: { path: out.jsonl } }
+"#;
+        let f = lint_yaml(cfg);
+        assert!(has(&f, "unused-var"));
+        // Only `never` is flagged — `used` is referenced.
+        assert!(
+            f.iter()
+                .any(|x| x.code == "unused-var" && x.message.contains("never"))
+        );
+        assert!(
+            !f.iter()
+                .any(|x| x.code == "unused-var" && x.message.contains("vars.used"))
+        );
+    }
+
+    #[test]
+    fn flags_noop_batch_size_on_file_sink() {
+        let cfg = r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: "https://x" } }
+  sink: { type: jsonl, config: { path: out.jsonl, batch_size: 0 } }
+"#;
+        let f = lint_yaml(cfg);
+        let p = f.iter().find(|x| x.code == "noop-batch-size");
+        assert!(p.is_some());
+        assert_eq!(p.unwrap().severity, LintSeverity::Warning);
+    }
+
+    #[test]
+    fn render_lints_counts_errors_only() {
+        let findings = vec![
+            LintFinding::error("dangling-auth-ref", "x".into(), "h"),
+            LintFinding::warning("unused-var", "y".into(), "h"),
+        ];
+        let errs = render_lints(Path::new("faucet.yaml"), &findings, true);
+        assert_eq!(errs, 1);
     }
 }

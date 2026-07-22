@@ -23,6 +23,8 @@ The `faucet` binary exposes these commands. Pass `--log-level <level>` (or set
 | `faucet schedule [config]` | Run a pipeline on a cron schedule (long-running foreground process). |
 | `faucet serve` | Run a long-running HTTP control plane: submit / poll / cancel pipeline runs over REST. |
 | `faucet completions <shell>` | Print a shell tab-completion script (bash / zsh / fish / powershell / elvish). |
+| `faucet migrate [config]` | Upgrade a config written against an older grammar to the current shape (idempotent). |
+| `faucet doctor --offline [config]` | Static, credential-free config lints (no network) — dangling/unused auth, unused vars, no-op sink `batch_size`. |
 
 `[config]` is optional for `run` / `validate` / `preview` / `doctor` / `replicate` / `schedule`: if
 omitted, faucet auto-discovers `faucet.yaml` → `.yml` → `.json` in the current directory.
@@ -783,3 +785,45 @@ With the dynamic hook enabled you get runtime-aware candidates:
 The config-aware providers are best-effort and read-only: they parse and expand
 the local config but never resolve secrets, hit the network, or open a
 connector, and fall back to no suggestions if no config is present.
+
+## `migrate`
+
+`faucet migrate [config]` upgrades a config written against an older `faucet`
+grammar to the current shape, in place. It is **idempotent** — running it on an
+already-current config changes nothing.
+
+```bash
+faucet migrate                 # migrate the discovered faucet.yaml
+faucet migrate old.yaml        # migrate a specific file (rewrites it)
+faucet migrate old.yaml --stdout   # print the migrated config, don't write
+faucet migrate --check         # exit non-zero if a migration is needed (CI)
+```
+
+Rules applied today:
+
+- **Top-level `source:` / `sink:` → `pipeline:`** — the pre-`pipeline` block
+  shape is wrapped into a `pipeline:` map (moving `transforms:` / `state:` too).
+- **Legacy auth → `{ type, config }`** — an `auth:` / `credentials:` block of
+  the old `{ type, <fields…> }` shape has its fields folded into a `config:`
+  sub-map, matching the current adjacently-tagged form.
+
+Each rule is a pure, unit-tested transform. Comments are not preserved (the
+config is parsed and re-serialized).
+
+## `doctor --offline`
+
+Beyond its connectivity probes, `faucet doctor` can run a **static, offline**
+config lint — no network, no credentials — ideal for CI:
+
+```bash
+faucet doctor --offline            # lint the discovered config
+faucet doctor --offline --json     # machine-readable findings
+```
+
+It flags: a connector `auth: { ref }` that points at a provider missing from the
+`auth:` catalog (**error**); an `auth:` provider nothing references (**warning**);
+a `vars:` entry never interpolated (**warning**); and a file/append sink
+(`jsonl`/`csv`/`stdout`) with `batch_size: 0`, which is a no-op (**warning**).
+The command exits non-zero on any lint *error* (warnings don't fail). Secret and
+`${env:…}` resolution is validated separately at config load (and by
+`faucet validate`).

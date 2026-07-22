@@ -43,6 +43,8 @@ cargo install faucet-cli --no-default-features \
 | `faucet schedule <config> [--once]` | Run a pipeline on a cron schedule (long-running foreground process). Requires a `schedule:` block. |
 | `faucet catalog datasets\|show\|lineage [--config C] [--json]` | Browse the Data Movement Catalog accumulated by a config's `catalog:` store: dataset list, per-dataset schema timeline / volume / edges, and the lineage graph. Requires the `catalog` build feature. `faucet schema catalog` prints the block's JSON Schema. |
 | `faucet completions <bash\|zsh\|fish\|powershell\|elvish>` | Print a shell tab-completion script. For registry- and config-aware **dynamic** completion, enable the `COMPLETE` hook instead (see [`faucet completions`](#faucet-completions)). |
+| `faucet migrate [config] [--check\|--stdout]` | Upgrade an old-grammar config to the current shape in place (idempotent): wraps top-level `source:`/`sink:` into `pipeline:`, folds legacy `auth`/`credentials` into `{ type, config }`. `--check` exits non-zero if a migration is needed (CI); `--stdout` previews without writing. |
+| `faucet doctor --offline [config]` | Static, credential-free config lints (no network): dangling / unreferenced `auth:` providers, unused `vars:`, no-op sink `batch_size: 0`. Exits non-zero on any lint error. |
 
 Pass `--log-level debug` (or set `FAUCET_LOG=debug`) for verbose tracing. Logs are written to stderr; pipeline records and command output go to stdout.
 

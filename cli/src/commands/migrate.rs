@@ -1,0 +1,360 @@
+//! `faucet migrate` — upgrade a config written against an older `faucet`
+//! grammar to the current shape (#388).
+//!
+//! Each migration is a **pure** `serde_json::Value → serde_json::Value`
+//! transform with a before/after unit test. The command reads a config, applies
+//! every rule, and (unless `--check`) rewrites it in place, printing which rules
+//! fired. Migrations are **idempotent**: running `migrate` on an already-current
+//! config changes nothing and exits 0.
+//!
+//! Two rules ship today:
+//!
+//! 1. **Top-level `source:` / `sink:` → `pipeline.source` / `pipeline.sink`**
+//!    (the pre-#54 shape). If the document has top-level `source`/`sink` keys
+//!    and no `pipeline`, they move under a new `pipeline:` map.
+//! 2. **Legacy auth → adjacently-tagged `{ type, config }`** (the pre-#113
+//!    shape). Any `auth:` / `credentials:` object carrying a `type` string plus
+//!    sibling fields but no `config` has those siblings folded into `config`.
+//!
+//! Comments are not preserved (the config is parsed and re-serialized) — the
+//! same limitation `faucet fmt` documents.
+
+use crate::cli::MigrateArgs;
+use crate::error::{CliError, CliResult};
+use serde_json::{Map, Value};
+use std::path::Path;
+
+/// Execute the `migrate` subcommand.
+pub async fn run(args: MigrateArgs) -> CliResult<()> {
+    let cwd = std::env::current_dir()?;
+    let path = match args.config.clone() {
+        Some(p) => p,
+        None => crate::env_loader::discover_config_path(&cwd)
+            .ok_or_else(|| CliError::Config("no config file found to migrate".into()))?,
+    };
+
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| CliError::Config(format!("cannot read '{}': {e}", path.display())))?;
+    let format = ConfigFormat::from_path(&path)?;
+    let mut value = format.parse(&text, &path)?;
+
+    let applied = migrate_value(&mut value);
+
+    if applied.is_empty() {
+        println!("{}: already current — no migration needed", path.display());
+        return Ok(());
+    }
+
+    let rendered = format.render(&value, &path)?;
+
+    if args.check {
+        eprintln!(
+            "{}: migration needed ({} rule{}):",
+            path.display(),
+            applied.len(),
+            if applied.len() == 1 { "" } else { "s" }
+        );
+        for rule in &applied {
+            eprintln!("  - {rule}");
+        }
+        return Err(CliError::Config(format!(
+            "{} is not up to date; run `faucet migrate` to upgrade it",
+            path.display()
+        )));
+    }
+
+    if args.stdout {
+        print!("{rendered}");
+        return Ok(());
+    }
+
+    std::fs::write(&path, rendered)
+        .map_err(|e| CliError::Config(format!("cannot write '{}': {e}", path.display())))?;
+    println!(
+        "{}: migrated ({} rule{} applied):",
+        path.display(),
+        applied.len(),
+        if applied.len() == 1 { "" } else { "s" }
+    );
+    for rule in &applied {
+        println!("  - {rule}");
+    }
+    Ok(())
+}
+
+/// The on-disk serialization of a config file.
+#[derive(Clone, Copy)]
+enum ConfigFormat {
+    Yaml,
+    Json,
+}
+
+impl ConfigFormat {
+    fn from_path(path: &Path) -> CliResult<Self> {
+        match path.extension().and_then(|e| e.to_str()) {
+            Some("yaml") | Some("yml") => Ok(ConfigFormat::Yaml),
+            Some("json") => Ok(ConfigFormat::Json),
+            _ => Err(CliError::Config(format!(
+                "unsupported config extension for '{}' (expected .yaml/.yml/.json)",
+                path.display()
+            ))),
+        }
+    }
+
+    fn parse(self, text: &str, path: &Path) -> CliResult<Value> {
+        let err = |e: String| CliError::Config(format!("cannot parse '{}': {e}", path.display()));
+        match self {
+            ConfigFormat::Yaml => serde_yaml::from_str(text).map_err(|e| err(e.to_string())),
+            ConfigFormat::Json => serde_json::from_str(text).map_err(|e| err(e.to_string())),
+        }
+    }
+
+    fn render(self, value: &Value, path: &Path) -> CliResult<String> {
+        let err =
+            |e: String| CliError::Config(format!("cannot serialize '{}': {e}", path.display()));
+        match self {
+            ConfigFormat::Yaml => serde_yaml::to_string(value).map_err(|e| err(e.to_string())),
+            ConfigFormat::Json => {
+                let mut s = serde_json::to_string_pretty(value).map_err(|e| err(e.to_string()))?;
+                s.push('\n');
+                Ok(s)
+            }
+        }
+    }
+}
+
+/// Apply every migration rule in order, returning a human description of each
+/// rule that actually changed the document. An empty result means the config is
+/// already current. Pure and idempotent.
+pub(crate) fn migrate_value(value: &mut Value) -> Vec<String> {
+    let mut applied = Vec::new();
+    if migrate_toplevel_source_sink(value) {
+        applied.push(
+            "wrapped top-level `source:` / `sink:` in a `pipeline:` block (pre-#54 shape)".into(),
+        );
+    }
+    let n = migrate_legacy_auth(value);
+    if n > 0 {
+        applied.push(format!(
+            "folded {n} legacy `auth`/`credentials` block{} into `{{ type, config }}` (pre-#113 shape)",
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+    applied
+}
+
+/// Rule 1: move top-level `source:` / `sink:` under a new `pipeline:` map.
+/// No-op if there is already a `pipeline:` key or neither top-level key exists.
+fn migrate_toplevel_source_sink(value: &mut Value) -> bool {
+    let Value::Object(root) = value else {
+        return false;
+    };
+    if root.contains_key("pipeline") {
+        return false;
+    }
+    let has_source = root.contains_key("source");
+    let has_sink = root.contains_key("sink");
+    if !has_source && !has_sink {
+        return false;
+    }
+    let mut pipeline = Map::new();
+    if let Some(s) = root.remove("source") {
+        pipeline.insert("source".into(), s);
+    }
+    if let Some(s) = root.remove("sink") {
+        pipeline.insert("sink".into(), s);
+    }
+    // Also relocate the sibling `transforms:` / `state:` blocks, which lived at
+    // the top level alongside the old `source:`/`sink:`.
+    for key in ["transforms", "state"] {
+        if let Some(v) = root.remove(key) {
+            pipeline.insert(key.into(), v);
+        }
+    }
+    root.insert("pipeline".into(), Value::Object(pipeline));
+    true
+}
+
+/// Rule 2: fold a legacy `auth`/`credentials` object of the shape
+/// `{ type: X, <field>: … }` into `{ type: X, config: { <field>: … } }`.
+/// Recurses through the whole document. Returns the number of blocks migrated.
+///
+/// Only objects reached under a key literally named `auth` or `credentials` are
+/// considered, and only when they carry a `type` string, at least one other
+/// field, and no existing `config` — so it never touches an already-migrated
+/// block or an unrelated object that happens to have a `type` field.
+fn migrate_legacy_auth(value: &mut Value) -> usize {
+    let mut count = 0;
+    walk_auth(value, false, &mut count);
+    count
+}
+
+fn walk_auth(value: &mut Value, under_auth_key: bool, count: &mut usize) {
+    match value {
+        Value::Object(map) => {
+            if under_auth_key && is_legacy_auth(map) {
+                fold_auth_config(map);
+                *count += 1;
+            }
+            for (k, v) in map.iter_mut() {
+                let child_is_auth = k == "auth" || k == "credentials";
+                walk_auth(v, child_is_auth, count);
+            }
+        }
+        Value::Array(items) => {
+            for v in items.iter_mut() {
+                // Array elements are not themselves "under" the auth key name.
+                walk_auth(v, false, count);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A map is the legacy auth shape if it has a string `type`, no `config`, and at
+/// least one field besides `type`.
+fn is_legacy_auth(map: &Map<String, Value>) -> bool {
+    map.get("type").is_some_and(Value::is_string)
+        && !map.contains_key("config")
+        && map.keys().any(|k| k != "type")
+}
+
+/// Move every field except `type` into a nested `config` object.
+fn fold_auth_config(map: &mut Map<String, Value>) {
+    let type_val = map.remove("type");
+    let mut config = Map::new();
+    let keys: Vec<String> = map.keys().cloned().collect();
+    for k in keys {
+        if let Some(v) = map.remove(&k) {
+            config.insert(k, v);
+        }
+    }
+    map.clear();
+    if let Some(t) = type_val {
+        map.insert("type".into(), t);
+    }
+    map.insert("config".into(), Value::Object(config));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn wraps_toplevel_source_sink_into_pipeline() {
+        let mut v = json!({
+            "version": 1,
+            "source": { "type": "rest", "config": { "url": "x" } },
+            "sink": { "type": "jsonl", "config": { "path": "o.jsonl" } },
+            "transforms": [{ "flatten": {} }]
+        });
+        let applied = migrate_value(&mut v);
+        assert_eq!(applied.len(), 1);
+        assert!(v.get("source").is_none());
+        assert!(v.get("sink").is_none());
+        let p = v.get("pipeline").unwrap();
+        assert_eq!(p["source"]["type"], "rest");
+        assert_eq!(p["sink"]["type"], "jsonl");
+        assert!(p.get("transforms").is_some());
+    }
+
+    #[test]
+    fn toplevel_rule_is_noop_when_pipeline_present() {
+        let mut v = json!({
+            "version": 1,
+            "pipeline": { "source": { "type": "rest" }, "sink": { "type": "jsonl" } }
+        });
+        assert!(migrate_value(&mut v).is_empty());
+    }
+
+    #[test]
+    fn folds_legacy_auth_into_type_config() {
+        let mut v = json!({
+            "version": 1,
+            "pipeline": {
+                "source": {
+                    "type": "rest",
+                    "config": {
+                        "url": "x",
+                        "auth": { "type": "bearer", "token": "${env:TOK}" }
+                    }
+                },
+                "sink": { "type": "jsonl", "config": { "path": "o.jsonl" } }
+            }
+        });
+        let applied = migrate_value(&mut v);
+        assert_eq!(applied.len(), 1);
+        let auth = &v["pipeline"]["source"]["config"]["auth"];
+        assert_eq!(auth["type"], "bearer");
+        assert_eq!(auth["config"]["token"], "${env:TOK}");
+        // No stray sibling left behind.
+        assert!(auth.get("token").is_none());
+    }
+
+    #[test]
+    fn auth_rule_is_idempotent_and_skips_current_shape() {
+        let v = json!({
+            "pipeline": { "source": { "type": "rest", "config": {
+                "auth": { "type": "bearer", "config": { "token": "t" } }
+            }}}
+        });
+        // Already `{type, config}` → untouched.
+        assert!(migrate_value(&mut v.clone()).is_empty());
+        // And running twice is a no-op on the second pass.
+        let mut once = v.clone();
+        migrate_value(&mut once);
+        let mut twice = once.clone();
+        assert!(migrate_value(&mut twice).is_empty());
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn does_not_touch_non_auth_objects_with_a_type_field() {
+        // A `source: { type, config }` has a `type` but is NOT under an
+        // auth/credentials key, so it must be left alone.
+        let mut v = json!({
+            "pipeline": {
+                "source": { "type": "rest", "url": "x" },
+                "sink": { "type": "jsonl" }
+            }
+        });
+        let before = v.clone();
+        migrate_value(&mut v);
+        // The source's `url` sibling is NOT folded into a config (it's not auth).
+        assert_eq!(v["pipeline"]["source"], before["pipeline"]["source"]);
+    }
+
+    #[test]
+    fn both_rules_compose() {
+        let mut v = json!({
+            "source": { "type": "rest", "config": {
+                "auth": { "type": "basic", "user": "u", "pass": "p" }
+            }},
+            "sink": { "type": "jsonl", "config": { "path": "o" } }
+        });
+        let applied = migrate_value(&mut v);
+        assert_eq!(
+            applied.len(),
+            2,
+            "both the source/sink wrap and the auth fold fire"
+        );
+        let auth = &v["pipeline"]["source"]["config"]["auth"];
+        assert_eq!(auth["type"], "basic");
+        assert_eq!(auth["config"]["user"], "u");
+        assert_eq!(auth["config"]["pass"], "p");
+    }
+
+    #[test]
+    fn fully_current_config_needs_no_migration() {
+        let mut v = json!({
+            "version": 1,
+            "pipeline": {
+                "source": { "type": "rest", "config": { "url": "x",
+                    "auth": { "type": "bearer", "config": { "token": "t" } } } },
+                "sink": { "type": "jsonl", "config": { "path": "o.jsonl" } }
+            }
+        });
+        assert!(migrate_value(&mut v).is_empty());
+    }
+}
