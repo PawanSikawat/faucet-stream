@@ -90,7 +90,8 @@ pub fn run_main(registry: PluginRegistry) -> std::process::ExitCode {
     // `COMPLETE` env var set, compute and print candidates, then exit — before
     // any normal parsing/tracing/runtime setup. A no-op otherwise. The registry
     // is installed above so connector-kind candidates reflect the live binary.
-    clap_complete::env::CompleteEnv::with_factory(<Cli as clap::CommandFactory>::command).complete();
+    clap_complete::env::CompleteEnv::with_factory(<Cli as clap::CommandFactory>::command)
+        .complete();
 
     let cli = Cli::parse();
     #[cfg(feature = "serve")]
