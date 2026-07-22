@@ -809,7 +809,46 @@ pipeline:
             LintFinding::error("dangling-auth-ref", "x".into(), "h"),
             LintFinding::warning("unused-var", "y".into(), "h"),
         ];
-        let errs = render_lints(Path::new("faucet.yaml"), &findings, true);
-        assert_eq!(errs, 1);
+        // JSON branch.
+        assert_eq!(render_lints(Path::new("faucet.yaml"), &findings, true), 1);
+        // Human branch (also exercises the empty-findings path).
+        assert_eq!(render_lints(Path::new("faucet.yaml"), &findings, false), 1);
+        assert_eq!(render_lints(Path::new("faucet.yaml"), &[], false), 0);
+    }
+
+    fn write_cfg(body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("faucet.yaml");
+        std::fs::write(&path, body).expect("write");
+        (dir, path)
+    }
+
+    fn offline_args(path: std::path::PathBuf) -> DoctorArgs {
+        DoctorArgs {
+            config: Some(path),
+            env_file: None,
+            no_env_file: true,
+            timeout_secs: 5,
+            json: false,
+            offline: true,
+            profile: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn offline_run_ok_on_clean_config() {
+        let (_d, path) = write_cfg(
+            "version: 1\npipeline:\n  source: { type: rest, config: { base_url: x } }\n  sink: { type: jsonl, config: { path: o } }\n",
+        );
+        super::run(offline_args(path)).await.expect("clean lint ok");
+    }
+
+    #[tokio::test]
+    async fn offline_run_errors_on_dangling_auth_ref() {
+        let (_d, path) = write_cfg(
+            "version: 1\npipeline:\n  source: { type: rest, config: { base_url: x, auth: { ref: nope } } }\n  sink: { type: jsonl, config: { path: o } }\n",
+        );
+        let err = super::run(offline_args(path)).await;
+        assert!(matches!(err, Err(CliError::DoctorFailed { failed }) if failed >= 1));
     }
 }

@@ -357,4 +357,112 @@ mod tests {
         });
         assert!(migrate_value(&mut v).is_empty());
     }
+
+    // ── ConfigFormat + the `run` command flow ────────────────────────────────
+
+    #[test]
+    fn config_format_from_path() {
+        assert!(matches!(
+            ConfigFormat::from_path(Path::new("a.yaml")),
+            Ok(ConfigFormat::Yaml)
+        ));
+        assert!(matches!(
+            ConfigFormat::from_path(Path::new("a.yml")),
+            Ok(ConfigFormat::Yaml)
+        ));
+        assert!(matches!(
+            ConfigFormat::from_path(Path::new("a.json")),
+            Ok(ConfigFormat::Json)
+        ));
+        assert!(ConfigFormat::from_path(Path::new("a.toml")).is_err());
+    }
+
+    #[test]
+    fn config_format_parse_render_roundtrip() {
+        let p = Path::new("f.yaml");
+        let v = ConfigFormat::Yaml
+            .parse("version: 1\nname: demo\n", p)
+            .unwrap();
+        assert_eq!(v["name"], "demo");
+        let s = ConfigFormat::Yaml.render(&v, p).unwrap();
+        assert!(s.contains("name: demo"));
+
+        let pj = Path::new("f.json");
+        let vj = ConfigFormat::Json.parse(r#"{"version":1}"#, pj).unwrap();
+        let sj = ConfigFormat::Json.render(&vj, pj).unwrap();
+        assert!(sj.ends_with('\n') && sj.contains("\"version\""));
+    }
+
+    const LEGACY_YAML: &str = "version: 1\n\
+source:\n  type: rest\n  config:\n    base_url: https://x\n    auth: { type: bearer, token: t }\n\
+sink:\n  type: jsonl\n  config: { path: out.jsonl }\n";
+
+    fn write_tmp(name: &str, body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(name);
+        std::fs::write(&path, body).expect("write");
+        (dir, path)
+    }
+
+    #[tokio::test]
+    async fn run_rewrites_legacy_file_in_place() {
+        let (_d, path) = write_tmp("old.yaml", LEGACY_YAML);
+        run(MigrateArgs {
+            config: Some(path.clone()),
+            check: false,
+            stdout: false,
+        })
+        .await
+        .unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("pipeline:"), "{after}");
+        assert!(after.contains("config:"));
+        // Idempotent: a second migrate reports no change and leaves the file.
+        let before2 = std::fs::read_to_string(&path).unwrap();
+        run(MigrateArgs {
+            config: Some(path.clone()),
+            check: false,
+            stdout: false,
+        })
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before2);
+    }
+
+    #[tokio::test]
+    async fn run_check_errors_on_legacy_and_passes_on_current() {
+        let (_d, legacy) = write_tmp("old.yaml", LEGACY_YAML);
+        let err = run(MigrateArgs {
+            config: Some(legacy),
+            check: true,
+            stdout: false,
+        })
+        .await;
+        assert!(err.is_err(), "--check must fail on a legacy config");
+
+        let current = "version: 1\npipeline:\n  source: { type: rest, config: { base_url: x } }\n  sink: { type: jsonl, config: { path: o } }\n";
+        let (_d2, cur) = write_tmp("cur.yaml", current);
+        run(MigrateArgs {
+            config: Some(cur),
+            check: true,
+            stdout: false,
+        })
+        .await
+        .expect("--check passes on a current config");
+    }
+
+    #[tokio::test]
+    async fn run_stdout_does_not_write_the_file() {
+        let (_d, path) = write_tmp("old.yaml", LEGACY_YAML);
+        let original = std::fs::read_to_string(&path).unwrap();
+        run(MigrateArgs {
+            config: Some(path.clone()),
+            check: false,
+            stdout: true,
+        })
+        .await
+        .unwrap();
+        // --stdout prints the migrated config but leaves the file untouched.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
 }
