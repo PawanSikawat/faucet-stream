@@ -30,9 +30,15 @@ use std::io;
 
 /// Emit a static completion script for `shell` to stdout.
 pub fn run(shell: Shell) -> CliResult<()> {
-    let mut cmd = Cli::command();
-    generate(shell, &mut cmd, "faucet", &mut io::stdout());
+    write_completions(shell, &mut io::stdout());
     Ok(())
+}
+
+/// Write the completion script for `shell` into `out`. Split from [`run`] so it
+/// is testable against an in-memory buffer (rather than the process's stdout).
+fn write_completions(shell: Shell, out: &mut impl io::Write) {
+    let mut cmd = Cli::command();
+    generate(shell, &mut cmd, "faucet", out);
 }
 
 // ── Dynamic candidate providers ─────────────────────────────────────────────
@@ -205,7 +211,8 @@ matrix:
 
     #[test]
     fn static_generation_produces_a_nonempty_script() {
-        // Exercise the static generator for every supported shell.
+        // Exercise the static generator for every supported shell, into a
+        // buffer (no stdout), via the same helper `run` delegates to.
         for shell in [
             Shell::Bash,
             Shell::Zsh,
@@ -213,9 +220,8 @@ matrix:
             Shell::PowerShell,
             Shell::Elvish,
         ] {
-            let mut cmd = Cli::command();
             let mut buf: Vec<u8> = Vec::new();
-            generate(shell, &mut cmd, "faucet", &mut buf);
+            write_completions(shell, &mut buf);
             let script = String::from_utf8(buf).expect("utf8 script");
             assert!(
                 script.contains("faucet"),
@@ -223,5 +229,25 @@ matrix:
             );
             assert!(!script.is_empty());
         }
+    }
+
+    #[test]
+    fn run_emits_a_script_and_succeeds() {
+        // Covers the stdout wrapper `run` itself; the script is written to the
+        // test harness's captured stdout.
+        run(Shell::Bash).expect("completions run should succeed");
+    }
+
+    #[test]
+    fn cwd_providers_are_best_effort_and_never_panic() {
+        // The public providers read the process's current directory. From an
+        // arbitrary cwd (no fixture) they must return a (possibly empty)
+        // candidate list without panicking — exercising the `current_dir()`
+        // path + the map that `#[arg(add = …)]` calls at completion time.
+        // Running these to completion without panicking IS the assertion (the
+        // documented best-effort contract); binding the results keeps the calls
+        // from being optimized away.
+        let _ids = matrix_id_candidates();
+        let _tags = tag_candidates();
     }
 }
