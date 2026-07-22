@@ -45,6 +45,10 @@ cargo install faucet-cli --no-default-features \
 | `faucet completions <bash\|zsh\|fish\|powershell\|elvish>` | Print a shell tab-completion script. For registry- and config-aware **dynamic** completion, enable the `COMPLETE` hook instead (see [`faucet completions`](#faucet-completions)). |
 | `faucet migrate [config] [--check\|--stdout]` | Upgrade an old-grammar config to the current shape in place (idempotent): wraps top-level `source:`/`sink:` into `pipeline:`, folds legacy `auth`/`credentials` into `{ type, config }`. `--check` exits non-zero if a migration is needed (CI); `--stdout` previews without writing. |
 | `faucet doctor --offline [config]` | Static, credential-free config lints (no network): dangling / unreferenced `auth:` providers, unused `vars:`, no-op sink `batch_size: 0`. Exits non-zero on any lint error. |
+| `faucet fmt [config] [--check\|--stdout]` | Canonicalize a config in place (stable key order); idempotent. `--check` is a CI gate (non-zero if not canonical); `--stdout` previews. Comments are not preserved. |
+| `faucet explain [config] [--json\|--rows]` | Plain-English narration of a pipeline (source → transforms → sink, matrix, delivery). Fully offline; never prints secrets. |
+| `faucet history [config] [--limit N\|--row R\|--json]` | Terminal view of the run history in the config's `catalog:` store (status/duration/throughput), newest first. Read-only; requires the `catalog` feature. |
+| `faucet run … --output <text\|json\|ndjson>` | End-of-run summary format. `json`/`ndjson` emit a machine-readable per-row + totals summary (clean stdout, logs on stderr) for CI/cron/Slack. |
 
 Pass `--log-level debug` (or set `FAUCET_LOG=debug`) for verbose tracing. Logs are written to stderr; pipeline records and command output go to stdout.
 

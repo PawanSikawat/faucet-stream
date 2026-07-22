@@ -182,6 +182,10 @@ pub async fn run_command(cli: Cli) -> CliResult<()> {
         Command::Catalog(args) => commands::catalog::run(args).await,
         Command::Completions(args) => commands::completions::run(args.shell),
         Command::Migrate(args) => commands::migrate::run(args).await,
+        Command::Fmt(args) => commands::fmt::run(args).await,
+        Command::Explain(args) => commands::explain::run(args).await,
+        #[cfg(feature = "catalog")]
+        Command::History(args) => commands::history::run(args).await,
     }
 }
 

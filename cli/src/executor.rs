@@ -130,6 +130,35 @@ pub struct InvocationOutcome {
     pub parent_record_key: Option<String>,
     pub records_written: usize,
     pub error: Option<String>,
+    /// Machine-readable per-invocation stats for `faucet run --output json`
+    /// (#390). `None` for synthetic outcomes (a task panic, or the placeholder
+    /// outcomes the replication / schedule orchestrators build) where no
+    /// pipeline actually ran.
+    pub metrics: Option<InvocationMetrics>,
+}
+
+/// Per-invocation stats surfaced by `faucet run --output json` (#390). Every
+/// field comes from counters the pipeline already maintains — no new
+/// measurement. `records_read` is `None` unless input sampling was active
+/// (a `lineage:` or `catalog:` block installs the source sampler).
+#[derive(Debug, Clone, Default)]
+pub struct InvocationMetrics {
+    pub source_kind: String,
+    pub sink_kind: String,
+    pub duration_ms: u64,
+    pub records_read: Option<u64>,
+    pub dlq_count: u64,
+    pub bookmark: Option<Value>,
+}
+
+/// What [`run_one_invocation`] hands back on success alongside the captured
+/// records — the pipeline-level counters `run_unit` folds into an
+/// [`InvocationMetrics`] (which then adds the connector kinds + wall-clock).
+struct PipelineStats {
+    records_written: usize,
+    records_read: Option<u64>,
+    dlq_count: u64,
+    bookmark: Option<Value>,
 }
 
 /// Aggregate outcome of `run_expanded`.
@@ -462,6 +491,7 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                         parent_record_key,
                         records_written: 0,
                         error: Some(format!("pipeline invocation task panicked: {e}")),
+                        metrics: None,
                     }
                 }
             };
@@ -539,6 +569,7 @@ async fn run_unit(
     cancel: CancellationToken,
 ) -> InvocationOutcome {
     let needs_capture = capture.is_some();
+    let started = std::time::Instant::now();
     let result = run_one_invocation(
         &unit.node,
         unit.parent_record.as_deref(),
@@ -548,10 +579,17 @@ async fn run_unit(
         cancel,
     )
     .await;
+    let duration_ms = started.elapsed().as_millis() as u64;
     let row_id = unit.node.id.clone();
     let parent_record_key = unit.parent_record_key.clone();
+    let base_metrics = || InvocationMetrics {
+        source_kind: unit.node.source.kind.clone(),
+        sink_kind: unit.node.sink.kind.clone(),
+        duration_ms,
+        ..Default::default()
+    };
     match result {
-        Ok((records, written)) => {
+        Ok((records, stats)) => {
             if needs_capture {
                 captured
                     .lock()
@@ -565,8 +603,14 @@ async fn run_unit(
             InvocationOutcome {
                 row_id,
                 parent_record_key,
-                records_written: written,
+                records_written: stats.records_written,
                 error: None,
+                metrics: Some(InvocationMetrics {
+                    records_read: stats.records_read,
+                    dlq_count: stats.dlq_count,
+                    bookmark: stats.bookmark,
+                    ..base_metrics()
+                }),
             }
         }
         Err(e) => InvocationOutcome {
@@ -574,6 +618,7 @@ async fn run_unit(
             parent_record_key,
             records_written: 0,
             error: Some(e.to_string()),
+            metrics: Some(base_metrics()),
         },
     }
 }
@@ -870,7 +915,7 @@ async fn run_one_invocation(
     capture: Option<Arc<Projection>>,
     opts: &ExecuteOptions,
     cancel: CancellationToken,
-) -> CliResult<(Vec<Value>, usize)> {
+) -> CliResult<(Vec<Value>, PipelineStats)> {
     // Observability identity for this invocation — built once, reused by both
     // the Pipeline builder and the transform instrumentation.
     let run_id = uuid::Uuid::now_v7().to_string();
@@ -1420,12 +1465,30 @@ async fn run_one_invocation(
 
     let result = result?;
 
+    // Per-invocation stats for `faucet run --output json` (#390). `records_read`
+    // is only known when the source sampler was installed (a `lineage:` or
+    // `catalog:` block); otherwise it stays `None` rather than guessing.
+    #[cfg(feature = "lineage")]
+    let records_read = in_sample.as_ref().map(|s| s.count());
+    #[cfg(not(feature = "lineage"))]
+    let records_read: Option<u64> = None;
+    let stats = PipelineStats {
+        records_written: result.records_written,
+        records_read,
+        dlq_count: result
+            .dlq
+            .as_ref()
+            .map(|d| d.records_dlq as u64)
+            .unwrap_or(0),
+        bookmark: result.bookmark.clone(),
+    };
+
     let captured = if capture.is_some() {
         std::mem::take(&mut *captured.lock().await)
     } else {
         Vec::new()
     };
-    Ok((captured, result.records_written))
+    Ok((captured, stats))
 }
 
 async fn build_state_for_node(

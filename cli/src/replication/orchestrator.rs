@@ -434,6 +434,7 @@ pipeline:
                 parent_record_key: None,
                 records_written: 0,
                 error: Some("connection refused".into()),
+                metrics: None,
             }],
         };
         let err = phase_failure(&summary, "snapshot");
@@ -456,6 +457,7 @@ pipeline:
                 parent_record_key: None,
                 records_written: 0,
                 error: None,
+                metrics: None,
             }],
         };
         let err = phase_failure(&summary, "CDC");

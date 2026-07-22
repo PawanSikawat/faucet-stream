@@ -147,6 +147,19 @@ pub enum Command {
     /// shape (e.g. pre-`pipeline:` top-level source/sink, legacy inline auth).
     /// Idempotent; rewrites in place unless `--check` / `--stdout`.
     Migrate(MigrateArgs),
+    /// Canonicalize a config: stable key order, normalized style. Idempotent;
+    /// rewrites in place unless `--check` / `--stdout`. Comments are not
+    /// preserved (the config is parsed and re-serialized).
+    Fmt(FmtArgs),
+    /// Explain, in plain English, what a pipeline config does — source →
+    /// transforms → sink, matrix expansion, replication, delivery guarantee,
+    /// and state store. Read-only and fully offline (no source is touched).
+    Explain(ExplainArgs),
+    /// Show recent run history recorded in a config's `catalog:` store —
+    /// status, duration, throughput, and bookmark. Read-only; requires the
+    /// `catalog` build feature.
+    #[cfg(feature = "catalog")]
+    History(HistoryArgs),
 }
 
 /// `faucet migrate` arguments.
@@ -163,6 +176,71 @@ pub struct MigrateArgs {
     /// Write the migrated config to stdout instead of rewriting the file.
     #[arg(long, conflicts_with = "check")]
     pub stdout: bool,
+}
+
+/// `faucet fmt` arguments.
+#[derive(Debug, Args)]
+pub struct FmtArgs {
+    /// Config file(s) to format. Auto-discovered (`faucet.yaml` → `.yml` →
+    /// `.json`) when none are given.
+    #[arg(value_hint = clap::ValueHint::FilePath)]
+    pub configs: Vec<PathBuf>,
+    /// Report whether each file is already canonical without writing (exits
+    /// non-zero and prints a unified diff for any file that is not). For CI.
+    #[arg(long)]
+    pub check: bool,
+    /// Write the formatted result to stdout instead of rewriting the file(s).
+    #[arg(long, conflicts_with = "check")]
+    pub stdout: bool,
+}
+
+/// `faucet explain` arguments.
+#[derive(Debug, Args)]
+pub struct ExplainArgs {
+    /// Path to a `.yaml`/`.yml`/`.json` config (auto-discovered if omitted).
+    pub config: Option<PathBuf>,
+    /// Path to a `.env` file to load for `${env:VAR}` interpolation.
+    /// Defaults to `.env` in cwd if present.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from cwd.
+    #[arg(long)]
+    pub no_env_file: bool,
+    /// Select a named overlay from the config's `profiles:` block.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
+    /// Emit the narration as structured JSON instead of prose.
+    #[arg(long)]
+    pub json: bool,
+    /// Narrate every matrix row instead of summarizing a large matrix.
+    #[arg(long)]
+    pub rows: bool,
+}
+
+/// `faucet history` arguments.
+#[cfg(feature = "catalog")]
+#[derive(Debug, Args)]
+pub struct HistoryArgs {
+    /// Path to a config carrying a `catalog:` block (auto-discovered if omitted).
+    pub config: Option<PathBuf>,
+    /// Path to a `.env` file to load for `${env:VAR}` interpolation.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from cwd.
+    #[arg(long)]
+    pub no_env_file: bool,
+    /// Select a named overlay from the config's `profiles:` block.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
+    /// Maximum number of runs to show, newest first.
+    #[arg(long, default_value_t = 20)]
+    pub limit: usize,
+    /// Show only runs that contain an invocation for this matrix row id.
+    #[arg(long)]
+    pub row: Option<String>,
+    /// Emit the history as JSON instead of a table.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// `faucet completions` arguments.
@@ -694,10 +772,29 @@ pub struct RunArgs {
     #[arg(long)]
     pub tui: bool,
 
+    /// Format for the end-of-run summary printed to stdout: `text` (default,
+    /// human), `json` (a single machine-readable document), or `ndjson` (one
+    /// JSON object per matrix row). With `json`/`ndjson`, stdout carries only
+    /// the summary — logs stay on stderr — so `faucet run` is scriptable.
+    #[arg(long, value_enum, default_value_t = RunOutput::Text)]
+    pub output: RunOutput,
+
     /// Runtime matrix-row selection (`--select`/`--only`/`--skip`/`--status`/
     /// `--tag`/`--include-parents`).
     #[command(flatten)]
     pub selection: SelectionArgs,
+}
+
+/// Format for `faucet run`'s end-of-run summary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum RunOutput {
+    /// Human-readable one-line summary (default).
+    #[default]
+    Text,
+    /// A single machine-readable JSON document with per-row + total stats.
+    Json,
+    /// One JSON object per matrix row (newline-delimited) for streaming consumers.
+    Ndjson,
 }
 
 /// `faucet backfill` arguments.

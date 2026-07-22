@@ -13,6 +13,10 @@ pub mod dev;
 pub mod discover;
 pub mod dlq;
 pub mod doctor;
+pub mod explain;
+pub mod fmt;
+#[cfg(feature = "catalog")]
+pub mod history;
 pub mod init;
 pub mod install;
 pub mod list;
