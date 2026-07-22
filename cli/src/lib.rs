@@ -85,6 +85,14 @@ pub fn run_main(registry: PluginRegistry) -> std::process::ExitCode {
         commands::report(&err);
         return ExitCode::from(1);
     }
+
+    // Dynamic shell completion (#383): when the shell invokes us with the
+    // `COMPLETE` env var set, compute and print candidates, then exit — before
+    // any normal parsing/tracing/runtime setup. A no-op otherwise. The registry
+    // is installed above so connector-kind candidates reflect the live binary.
+    clap_complete::env::CompleteEnv::with_factory(<Cli as clap::CommandFactory>::command)
+        .complete();
+
     let cli = Cli::parse();
     #[cfg(feature = "serve")]
     let is_serve = matches!(cli.command, Command::Serve(_));
@@ -172,6 +180,7 @@ pub async fn run_command(cli: Cli) -> CliResult<()> {
         Command::Notify(args) => commands::notify::run(args).await,
         #[cfg(feature = "catalog")]
         Command::Catalog(args) => commands::catalog::run(args).await,
+        Command::Completions(args) => commands::completions::run(args.shell),
     }
 }
 

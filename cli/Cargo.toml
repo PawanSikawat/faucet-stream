@@ -382,6 +382,12 @@ faucet-lineage = { workspace = true, optional = true }
 faucet-transform-sql = { workspace = true, optional = true }
 
 clap = { version = "4", features = ["derive", "env"] }
+# Shell tab-completion (#383): static script generation + dynamic
+# (registry/config-aware) completion via `CompleteEnv`. `unstable-dynamic`
+# is what enables the runtime candidate providers (connector kinds, matrix
+# row ids); it is an unstable API surface, kept contained to the completions
+# module + a few `#[arg(add = …)]` attributes.
+clap_complete = { version = "4", features = ["unstable-dynamic"] }
 dotenvy = "0.15"
 schemars.workspace = true
 serde.workspace = true

@@ -42,6 +42,7 @@ cargo install faucet-cli --no-default-features \
 | `faucet backfill <config> --from A --to B [--window W] [--resume]` | Replay a bounded historical window as resumable, bookmark-isolated window units (`${backfill.*}` tokens scope the source; durable progress marker; `--dry-run` to preview; bookmark mode via `--from-bookmark`). `faucet schema backfill` prints the defaults-block schema. Exits with the failed-unit count. |
 | `faucet schedule <config> [--once]` | Run a pipeline on a cron schedule (long-running foreground process). Requires a `schedule:` block. |
 | `faucet catalog datasets\|show\|lineage [--config C] [--json]` | Browse the Data Movement Catalog accumulated by a config's `catalog:` store: dataset list, per-dataset schema timeline / volume / edges, and the lineage graph. Requires the `catalog` build feature. `faucet schema catalog` prints the block's JSON Schema. |
+| `faucet completions <bash\|zsh\|fish\|powershell\|elvish>` | Print a shell tab-completion script. For registry- and config-aware **dynamic** completion, enable the `COMPLETE` hook instead (see [`faucet completions`](#faucet-completions)). |
 
 Pass `--log-level debug` (or set `FAUCET_LOG=debug`) for verbose tracing. Logs are written to stderr; pipeline records and command output go to stdout.
 
@@ -402,6 +403,36 @@ regardless of `--no-ui`.
 
 See the [web console guide](https://pawansikawat.github.io/faucet-stream/cookbook/web-console.html)
 for the full walkthrough.
+
+### `faucet completions`
+
+`faucet completions <shell>` prints a static tab-completion script for `bash`,
+`zsh`, `fish`, `powershell`, or `elvish`:
+
+```bash
+faucet completions zsh > ~/.zfunc/_faucet     # then ensure ~/.zfunc is on $fpath
+faucet completions bash > /etc/bash_completion.d/faucet
+```
+
+For **dynamic** completion — computed by the binary at completion time, so it
+reflects the connectors compiled into *this* build and reads the local config —
+enable the `COMPLETE` hook instead of installing a static script:
+
+```bash
+echo 'source <(COMPLETE=zsh  faucet)' >> ~/.zshrc      # zsh
+echo 'source <(COMPLETE=bash faucet)' >> ~/.bashrc     # bash
+echo 'COMPLETE=fish faucet | source'  >> ~/.config/fish/config.fish
+```
+
+Dynamic completion then offers runtime-aware candidates:
+
+- `faucet schema source|sink|transform <TAB>` — the connectors/transforms in this build.
+- `faucet run --select|--only|--skip <TAB>` — matrix row ids from the `faucet.yaml` in the cwd.
+- `faucet run --status <TAB>` — the readiness ladder; `--tag <TAB>` — the config's tags.
+
+The config-aware providers are read-only and best-effort: they parse + expand
+the local config but never resolve secrets, touch the network, or open a
+connector, and yield no suggestions when no config is present.
 
 ### `faucet init`
 

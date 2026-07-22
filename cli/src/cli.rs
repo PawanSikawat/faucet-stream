@@ -1,6 +1,8 @@
 //! Argument parser shared by `main.rs` and the integration tests.
 
+use crate::commands::completions;
 use clap::{Args, Parser, Subcommand};
+use clap_complete::engine::ArgValueCandidates;
 use std::path::PathBuf;
 
 /// Runtime matrix-row selection flags, shared by `run`/`validate`/`preview`/
@@ -11,29 +13,34 @@ pub struct SelectionArgs {
     /// Run only matrix rows whose id exactly matches. Repeatable and/or
     /// comma-joined (`--select people --select time_off` or `--select a,b`).
     /// Force-includes by name, bypassing the `status` gate. (#370)
-    #[arg(long = "select", value_delimiter = ',', env = "FAUCET_SELECT")]
+    #[arg(long = "select", value_delimiter = ',', env = "FAUCET_SELECT",
+          add = ArgValueCandidates::new(completions::matrix_id_candidates))]
     pub select: Vec<String>,
 
     /// Like `--select` but glob-matched against row ids (`--only 'timeoff_*'`).
     /// Also bypasses the `status` gate. Repeatable / comma-joined. (#370)
-    #[arg(long = "only", value_delimiter = ',')]
+    #[arg(long = "only", value_delimiter = ',',
+          add = ArgValueCandidates::new(completions::matrix_id_candidates))]
     pub only: Vec<String>,
 
     /// Remove matching rows (exact id or glob) from the run set, applied last.
     /// A `mandatory` row is removable only by an exact `--skip <id>`. (#370)
-    #[arg(long = "skip", value_delimiter = ',', env = "FAUCET_SKIP")]
+    #[arg(long = "skip", value_delimiter = ',', env = "FAUCET_SKIP",
+          add = ArgValueCandidates::new(completions::matrix_id_candidates))]
     pub skip: Vec<String>,
 
     /// Additively include a readiness tier beyond the default
     /// `{mandatory, active}` set: `available` / `draft` / `archived`.
     /// Repeatable / comma-joined. (#371)
-    #[arg(long = "status", value_delimiter = ',', env = "FAUCET_STATUS")]
+    #[arg(long = "status", value_delimiter = ',', env = "FAUCET_STATUS",
+          add = ArgValueCandidates::new(completions::status_candidates))]
     pub status: Vec<String>,
 
     /// Narrow the eligible set to rows carrying any listed tag (union).
     /// Cannot resurrect a non-eligible row — raise `--status` for that.
     /// Repeatable / comma-joined. (#376)
-    #[arg(long = "tag", value_delimiter = ',', env = "FAUCET_TAGS")]
+    #[arg(long = "tag", value_delimiter = ',', env = "FAUCET_TAGS",
+          add = ArgValueCandidates::new(completions::tag_candidates))]
     pub tags: Vec<String>,
 
     /// How a selected row's `parent:` / `depends_on:` ancestors are resolved
@@ -132,6 +139,17 @@ pub enum Command {
     /// store — datasets, schema timelines, volume/freshness, lineage.
     #[cfg(feature = "catalog")]
     Catalog(CatalogArgs),
+    /// Generate a shell tab-completion script (bash / zsh / fish / powershell /
+    /// elvish). For registry- and config-aware *dynamic* completion, enable the
+    /// `COMPLETE` hook instead, e.g. `source <(COMPLETE=zsh faucet)`.
+    Completions(CompletionsArgs),
+}
+
+/// `faucet completions` arguments.
+#[derive(Debug, Args)]
+pub struct CompletionsArgs {
+    /// Target shell.
+    pub shell: clap_complete::aot::Shell,
 }
 
 /// `faucet catalog` arguments.
@@ -840,17 +858,20 @@ pub enum SchemaTarget {
     /// JSON Schema for a source connector config.
     Source {
         /// Connector name (e.g. `rest`, `graphql`, `postgres`).
+        #[arg(add = ArgValueCandidates::new(completions::source_kind_candidates))]
         name: String,
     },
     /// JSON Schema for a sink connector config.
     Sink {
         /// Connector name (e.g. `jsonl`, `bigquery`, `postgres`).
+        #[arg(add = ArgValueCandidates::new(completions::sink_kind_candidates))]
         name: String,
     },
     /// JSON Schema for a transform's inline config.
     Transform {
         /// Transform name (e.g. `flatten`, `keys_case`, `cast`).
         /// Run `faucet list` to see what is compiled in.
+        #[arg(add = ArgValueCandidates::new(completions::transform_candidates))]
         name: String,
     },
     /// JSON Schema for the DLQ (Dead Letter Queue) specification.
