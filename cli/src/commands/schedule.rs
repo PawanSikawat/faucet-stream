@@ -835,6 +835,7 @@ mod tests {
                 } else {
                     None
                 },
+                metrics: None,
             });
         }
         RunSummary { invocations }
@@ -895,6 +896,7 @@ mod tests {
             parent_record_key: None,
             records_written: 0,
             error: Some(circuit_open_msg),
+            metrics: None,
         }];
         let joined = Ok(Ok(RunSummary { invocations }));
         let f = classify(joined, Some(Duration::from_secs(45)));
@@ -916,6 +918,7 @@ mod tests {
             parent_record_key: None,
             records_written: 0,
             error: Some(circuit_open_msg),
+            metrics: None,
         }];
         let joined = Ok(Ok(RunSummary { invocations }));
         let f = classify(joined, None);

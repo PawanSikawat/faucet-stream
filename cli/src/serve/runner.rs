@@ -1408,6 +1408,7 @@ mod tests {
                 parent_record_key: None,
                 records_written: 3,
                 error: None,
+                metrics: None,
             }],
         };
         let (status, reason, records, _, error) = classify_run(Ok(summary)).into_parts();
@@ -1425,6 +1426,7 @@ mod tests {
                 parent_record_key: None,
                 records_written: 0,
                 error: Some("boom".into()),
+                metrics: None,
             }],
         };
         let (status, reason, _, _, error) = classify_run(Ok(summary)).into_parts();

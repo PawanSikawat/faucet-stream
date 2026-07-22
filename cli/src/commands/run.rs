@@ -1,11 +1,13 @@
 //! `faucet run` — load a pipeline config, expand the matrix, execute every
 //! invocation under bounded concurrency.
 
-use crate::cli::RunArgs;
+use crate::cli::{RunArgs, RunOutput};
 use crate::config::PipelineConfig;
 use crate::error::{CliError, CliResult};
-use crate::executor::{ExecuteOptions, run_expanded};
+use crate::executor::{ExecuteOptions, RunSummary, run_expanded};
 use crate::expand::expand;
+use chrono::{DateTime, Utc};
+use serde::Serialize;
 
 /// Parse the optional `--clock` override (RFC3339 or `YYYY-MM-DD`), or default
 /// to process start. Returned as a UTC fixed-offset clock for `${now.*}`.
@@ -134,6 +136,7 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
     let tui_cancel = tui_active.then(faucet_core::CancellationToken::new);
     #[cfg(not(feature = "cli-tui"))]
     let tui_cancel: Option<faucet_core::CancellationToken> = None;
+    let started_at = Utc::now();
     let run_fut = run_expanded(
         nodes,
         ExecuteOptions {
@@ -181,6 +184,7 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
     #[cfg(not(feature = "cli-tui"))]
     let summary = run_fut.await?;
 
+    let finished_at = Utc::now();
     let total_written: usize = summary.invocations.iter().map(|i| i.records_written).sum();
     let success = summary
         .invocations
@@ -212,20 +216,39 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
         records_written = total_written,
         "pipeline completed"
     );
-    println!(
-        "{}: {} invocation{}, {} ok, {} failed, wrote {} record{}",
-        pipeline_name,
-        summary.invocations.len(),
-        if summary.invocations.len() == 1 {
-            ""
-        } else {
-            "s"
-        },
-        success,
-        failed,
-        total_written,
-        if total_written == 1 { "" } else { "s" }
-    );
+    // End-of-run summary. `text` is the human line (default); `json` / `ndjson`
+    // emit a machine-readable summary and keep stdout otherwise clean so
+    // `faucet run` is scriptable in CI / cron / Slack (#390). Logs are on stderr.
+    match args.output {
+        RunOutput::Text => println!(
+            "{}: {} invocation{}, {} ok, {} failed, wrote {} record{}",
+            pipeline_name,
+            summary.invocations.len(),
+            if summary.invocations.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            success,
+            failed,
+            total_written,
+            if total_written == 1 { "" } else { "s" }
+        ),
+        RunOutput::Json => {
+            let doc = summary_document(&pipeline_name, started_at, finished_at, &summary);
+            let rendered =
+                serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_string());
+            // Belt-and-suspenders: scrub any resolved secret that reached an
+            // error string before it hits stdout (#390 secret-redaction AC).
+            println!("{}", crate::secrets::registry::redact(&rendered));
+        }
+        RunOutput::Ndjson => {
+            for row in summary_rows(&summary) {
+                let line = serde_json::to_string(&row).unwrap_or_else(|_| "{}".to_string());
+                println!("{}", crate::secrets::registry::redact(&line));
+            }
+        }
+    }
 
     // Flush any buffered OTLP telemetry before the process exits (no-op without
     // the `otel` feature). Done on both the success and failure exit paths.
@@ -237,9 +260,151 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
     Ok(())
 }
 
+/// One matrix row's line in a `--output json`/`ndjson` summary (#390). Every
+/// field is a counter the pipeline already maintains; `rows_in` is `null` when
+/// input sampling was not active (no `lineage:` / `catalog:` block).
+#[derive(Debug, Serialize)]
+pub(crate) struct RunRowSummary {
+    pub row_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_key: Option<String>,
+    pub source: String,
+    pub sink: String,
+    pub status: &'static str,
+    pub rows_in: Option<u64>,
+    pub rows_out: u64,
+    pub duration_ms: u64,
+    pub dlq_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bookmark: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Aggregate counters across every row.
+#[derive(Debug, Serialize)]
+pub(crate) struct RunTotals {
+    pub rows: usize,
+    pub rows_out: u64,
+    pub dlq_count: u64,
+    pub ok: usize,
+    pub failed: usize,
+}
+
+/// The full `--output json` document.
+#[derive(Debug, Serialize)]
+pub(crate) struct RunSummaryDocument {
+    pub pipeline: String,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: DateTime<Utc>,
+    pub status: &'static str,
+    pub totals: RunTotals,
+    pub rows: Vec<RunRowSummary>,
+}
+
+/// Project one invocation outcome into its summary row.
+pub(crate) fn summary_rows(summary: &RunSummary) -> Vec<RunRowSummary> {
+    summary
+        .invocations
+        .iter()
+        .map(|o| {
+            let m = o.metrics.clone().unwrap_or_default();
+            RunRowSummary {
+                row_id: o.row_id.clone(),
+                parent_key: o.parent_record_key.clone(),
+                source: m.source_kind,
+                sink: m.sink_kind,
+                status: if o.error.is_some() { "failed" } else { "ok" },
+                rows_in: m.records_read,
+                rows_out: o.records_written as u64,
+                duration_ms: m.duration_ms,
+                dlq_count: m.dlq_count,
+                bookmark: m.bookmark,
+                error: o.error.clone(),
+            }
+        })
+        .collect()
+}
+
+/// Build the top-level `--output json` document from a run summary.
+pub(crate) fn summary_document(
+    pipeline: &str,
+    started_at: DateTime<Utc>,
+    finished_at: DateTime<Utc>,
+    summary: &RunSummary,
+) -> RunSummaryDocument {
+    let rows = summary_rows(summary);
+    let failed = rows.iter().filter(|r| r.status == "failed").count();
+    let totals = RunTotals {
+        rows: rows.len(),
+        rows_out: rows.iter().map(|r| r.rows_out).sum(),
+        dlq_count: rows.iter().map(|r| r.dlq_count).sum(),
+        ok: rows.len() - failed,
+        failed,
+    };
+    RunSummaryDocument {
+        pipeline: pipeline.to_string(),
+        started_at,
+        finished_at,
+        status: if failed > 0 { "failed" } else { "ok" },
+        totals,
+        rows,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::executor::{InvocationMetrics, InvocationOutcome};
+
+    fn outcome(id: &str, written: usize, err: Option<&str>) -> InvocationOutcome {
+        InvocationOutcome {
+            row_id: id.into(),
+            parent_record_key: None,
+            records_written: written,
+            error: err.map(|s| s.to_string()),
+            metrics: Some(InvocationMetrics {
+                source_kind: "rest".into(),
+                sink_kind: "jsonl".into(),
+                duration_ms: 12,
+                records_read: Some(written as u64),
+                dlq_count: 0,
+                bookmark: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn summary_document_aggregates_rows_and_status() {
+        let summary = RunSummary {
+            invocations: vec![outcome("a", 3, None), outcome("b", 0, Some("boom"))],
+        };
+        let now = Utc::now();
+        let doc = summary_document("demo", now, now, &summary);
+        assert_eq!(doc.status, "failed");
+        assert_eq!(doc.totals.rows, 2);
+        assert_eq!(doc.totals.rows_out, 3);
+        assert_eq!(doc.totals.ok, 1);
+        assert_eq!(doc.totals.failed, 1);
+        assert_eq!(doc.rows[0].source, "rest");
+        assert_eq!(doc.rows[0].rows_in, Some(3));
+        assert_eq!(doc.rows[1].status, "failed");
+        assert_eq!(doc.rows[1].error.as_deref(), Some("boom"));
+        // Serializes cleanly.
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(json.contains("\"pipeline\":\"demo\""), "{json}");
+    }
+
+    #[test]
+    fn all_ok_run_reports_ok_status() {
+        let summary = RunSummary {
+            invocations: vec![outcome("only", 5, None)],
+        };
+        let now = Utc::now();
+        let doc = summary_document("p", now, now, &summary);
+        assert_eq!(doc.status, "ok");
+        assert_eq!(doc.totals.failed, 0);
+    }
 
     #[test]
     fn run_clock_parses_rfc3339_date_and_defaults() {
