@@ -18,6 +18,7 @@ pub mod install;
 pub mod list;
 #[cfg(feature = "masking")]
 pub mod masking;
+pub mod migrate;
 pub mod new;
 #[cfg(feature = "notify")]
 pub mod notify;

@@ -143,6 +143,26 @@ pub enum Command {
     /// elvish). For registry- and config-aware *dynamic* completion, enable the
     /// `COMPLETE` hook instead, e.g. `source <(COMPLETE=zsh faucet)`.
     Completions(CompletionsArgs),
+    /// Upgrade a config written against an older `faucet` grammar to the current
+    /// shape (e.g. pre-`pipeline:` top-level source/sink, legacy inline auth).
+    /// Idempotent; rewrites in place unless `--check` / `--stdout`.
+    Migrate(MigrateArgs),
+}
+
+/// `faucet migrate` arguments.
+#[derive(Debug, Args)]
+pub struct MigrateArgs {
+    /// Config file to migrate. Auto-discovered (`faucet.yaml` → `.yml` →
+    /// `.json`) when omitted.
+    #[arg(value_hint = clap::ValueHint::FilePath)]
+    pub config: Option<PathBuf>,
+    /// Report whether a migration is needed without writing (exits non-zero if
+    /// the config is not current). For CI / pre-upgrade checks.
+    #[arg(long)]
+    pub check: bool,
+    /// Write the migrated config to stdout instead of rewriting the file.
+    #[arg(long, conflicts_with = "check")]
+    pub stdout: bool,
 }
 
 /// `faucet completions` arguments.
@@ -440,6 +460,12 @@ pub struct DoctorArgs {
     /// Emit machine-readable JSON instead of the human checklist.
     #[arg(long)]
     pub json: bool,
+    /// Run only the offline static config lints (no network probes): dangling /
+    /// unreferenced `auth:` providers, unused `vars:`, and no-op sink
+    /// `batch_size: 0`. Fast and credential-free — ideal for CI. Exits non-zero
+    /// on any lint *error* (warnings don't fail).
+    #[arg(long)]
+    pub offline: bool,
     /// Select a named overlay from the config's `profiles:` block and deep-merge
     /// it over the composed base. Overrides the `FAUCET_PROFILE` env var.
     #[arg(long, env = "FAUCET_PROFILE")]
