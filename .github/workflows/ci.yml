@@ -272,6 +272,8 @@ jobs:
           - cli-dev
           # Live terminal UI — `faucet run --tui` (CLI-only)
           - cli-tui
+          # Inline live progress line — `faucet run` (CLI-only, #385)
+          - cli-progress
           # Secrets backends
           - secrets-vault
           - secrets-aws-sm

@@ -26,7 +26,7 @@ cargo install faucet-cli --no-default-features \
 
 | Command | What it does |
 |---------|--------------|
-| `faucet run <config>` | Execute the pipeline end-to-end. Supports `--dry-run`, `--limit N`, `--state-path PATH`, and `--tui` (live full-screen progress view; `cli-tui` build feature, non-TTY falls back to a plain run). |
+| `faucet run <config>` | Execute the pipeline end-to-end. Supports `--dry-run`, `--limit N`, `--state-path PATH`, `--tui` (live full-screen progress view; `cli-tui` build feature), and `--quiet` (suppress the inline progress line). On an interactive terminal it shows a lightweight inline per-row progress line (records in/out, rows/s, pages, elapsed) on stderr; auto-disabled on a non-TTY stdout or under `--quiet` (`cli-progress` build feature, in the default build). |
 | `faucet validate <config>` | Parse + validate without running. Exits non-zero on error. |
 | `faucet schema source|sink|transform <name>` | Print the JSON Schema for a connector's or transform's config. |
 | `faucet schema dlq` | Print the JSON Schema for the dead-letter-queue spec. |

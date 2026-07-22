@@ -216,10 +216,18 @@ Arrow-native connectors:
   object is a self-contained ZSTD-compressed Parquet file).
 - **Databricks SQL** source — with `arrow_native: true` (fetches
   `EXTERNAL_LINKS` + `ARROW_STREAM`; requires `replication: full`).
+- **BigQuery** source — with `read_api: true` + `read_table` (reads the table
+  via the Storage Read API gRPC service as Arrow; full extract only).
+- **BigQuery** sink — with a `bulk_load` block (Parquet on a GCS staging bucket
+  then a `PARQUET` load job; append only).
+- **Snowflake** sink — with a `bulk_load` block (Parquet uploaded to an external
+  stage then `COPY INTO … FILE_FORMAT=(TYPE=PARQUET)`; append only). The
+  Snowflake *source* has no Arrow path (its v2 SQL API is jsonv2-only).
 
-So chains like `s3(parquet) → parquet`, `gcs(parquet) → delta`, or
-`databricks(arrow) → parquet` run Arrow end-to-end. See each connector's README
-for the exact config field and feature flag.
+So chains like `s3(parquet) → parquet`, `gcs(parquet) → delta`,
+`databricks(arrow) → parquet`, `bigquery(read-api) → parquet`, or
+`parquet → snowflake(bulk-load)` run Arrow end-to-end. See each connector's
+README for the exact config field and feature flag.
 
 ## Data-integrity notes
 

@@ -58,6 +58,19 @@ Flags:
 | `--tag <t>` | Narrow the eligible set to rows carrying any listed tag (union). Env: `FAUCET_TAGS`. |
 | `--include-parents <off\|eligible\|all>` | Parent/`depends_on` inclusion policy for a narrowed run set (default `off`). Overrides `selection.include_parents:`. Env: `FAUCET_INCLUDE_PARENTS`. |
 | `--tui` | Show a live full-screen terminal UI while the pipeline runs: per-invocation source→sink route, records in/out, records/s, errors, DLQ counts, bookmark age, and a scrolling log pane. Press `q` (or `Ctrl-C`) to cancel cooperatively — in-flight invocations stop at their next page boundary and flush their sinks. Requires a binary built with the `cli-tui` feature (`cargo install faucet-cli --features cli-tui`); on a non-TTY stdout (CI, pipes) the flag logs a notice and runs normally. When the config has an `observability.prometheus` block, the `/metrics` endpoint stays up alongside the TUI; OTLP *metrics* export is skipped under `--tui` (traces are unaffected). |
+| `--quiet` | Suppress the inline live progress line. |
+
+### Live progress line
+
+On an interactive terminal, `faucet run` shows a lightweight inline progress
+line per active matrix row — `row_id  src→sink  <in> in / <out> out  <r>/s
+page <p>  <elapsed>` — updated a few times a second and drawn on **stderr** so
+piped stdout stays clean for records. It is auto-disabled on a non-TTY stdout
+(CI, pipes) and under `--quiet`, both of which fall back to the periodic
+`tracing` progress logs; `--tui` (when built in) supersedes it. Requires the
+`cli-progress` build feature, which ships in the `default` build. The numbers
+come from the same in-process Prometheus recorder the TUI samples — no extra
+hot-path cost.
 
 ## `validate`
 

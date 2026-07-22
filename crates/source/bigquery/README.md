@@ -233,3 +233,29 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 ## License
 
 Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.
+
+## Arrow columnar read (opt-in, `arrow` feature)
+
+With a binary built `--features arrow`, set `read_api: true` + `read_table` to
+read a table directly through the BigQuery **Storage Read API** (gRPC) as Arrow
+`RecordBatch`es — no `jobs.query`, no per-row JSON. Paired with a columnar sink
+(e.g. `bigquery → parquet`) the whole pipeline runs on Arrow; with a row-based
+sink the batches are decoded to JSON transparently.
+
+```yaml
+source:
+  type: bigquery
+  config:
+    project_id: my-project
+    auth: { type: application_default }
+    query: ""                      # ignored in read_api mode
+    read_api: true
+    read_table: analytics.events   # dataset.table or project.dataset.table
+    row_restriction: "state = 'CA'"  # optional server-side filter
+    selected_fields: [id, state, amount]  # optional projection (empty = all)
+    max_streams: 1                 # streams to request (read sequentially)
+```
+
+This mode is **full-extract only** (no incremental bookmark) and requires a
+`read_table`; enabling it on an `arrow`-off binary is rejected at construction.
+The Snowflake source has no equivalent (its REST API is jsonv2-only).
