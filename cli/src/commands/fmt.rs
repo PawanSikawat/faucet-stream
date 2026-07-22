@@ -61,9 +61,8 @@ pub async fn run(args: FmtArgs) -> CliResult<()> {
         if formatted == text {
             println!("{}: already formatted", path.display());
         } else {
-            std::fs::write(path, &formatted).map_err(|e| {
-                CliError::Config(format!("cannot write '{}': {e}", path.display()))
-            })?;
+            std::fs::write(path, &formatted)
+                .map_err(|e| CliError::Config(format!("cannot write '{}': {e}", path.display())))?;
             println!("{}: formatted", path.display());
         }
     }
@@ -182,9 +181,7 @@ pub fn canonicalize(value: Value) -> Value {
         Value::Object(map) => {
             let mut entries: Vec<(String, Value)> =
                 map.into_iter().map(|(k, v)| (k, canonicalize(v))).collect();
-            entries.sort_by(|(a, _), (b, _)| {
-                key_rank(a).cmp(&key_rank(b)).then_with(|| a.cmp(b))
-            });
+            entries.sort_by(|(a, _), (b, _)| key_rank(a).cmp(&key_rank(b)).then_with(|| a.cmp(b)));
             Value::Object(entries.into_iter().collect::<Map<String, Value>>())
         }
         Value::Array(items) => Value::Array(items.into_iter().map(canonicalize).collect()),
@@ -306,7 +303,10 @@ mod tests {
     fn render_yaml_is_byte_stable_across_two_passes() {
         let p = Path::new("f.yaml");
         let v = ConfigFormat::Yaml
-            .parse("pipeline:\n  sink: {}\n  source: {}\nname: d\nversion: 1\n", p)
+            .parse(
+                "pipeline:\n  sink: {}\n  source: {}\nname: d\nversion: 1\n",
+                p,
+            )
             .unwrap();
         let once = ConfigFormat::Yaml.render(&canonicalize(v), p).unwrap();
         let reparsed = ConfigFormat::Yaml.parse(&once, p).unwrap();
@@ -332,8 +332,7 @@ mod tests {
         (dir, path)
     }
 
-    const UNSORTED: &str =
-        "name: demo\nversion: 1\npipeline:\n  sink: { type: jsonl, config: { path: o } }\n  source: { type: rest, config: {} }\n";
+    const UNSORTED: &str = "name: demo\nversion: 1\npipeline:\n  sink: { type: jsonl, config: { path: o } }\n  source: { type: rest, config: {} }\n";
 
     #[tokio::test]
     async fn run_rewrites_file_in_place_and_is_idempotent() {

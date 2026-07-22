@@ -236,8 +236,7 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
         ),
         RunOutput::Json => {
             let doc = summary_document(&pipeline_name, started_at, finished_at, &summary);
-            let rendered =
-                serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_string());
+            let rendered = serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_string());
             // Belt-and-suspenders: scrub any resolved secret that reached an
             // error string before it hits stdout (#390 secret-redaction AC).
             println!("{}", crate::secrets::registry::redact(&rendered));

@@ -39,11 +39,7 @@ pub async fn run(args: HistoryArgs) -> CliResult<()> {
         .await
         .map_err(|e| CliError::Internal(format!("catalog run-history read: {e}")))?;
 
-    let mut runs: Vec<RunRecord> = page.runs;
-    if let Some(row) = &args.row {
-        runs.retain(|r| r.invocations.iter().any(|i| &i.row_id == row));
-    }
-    runs.truncate(args.limit);
+    let runs = select_runs(page.runs, args.row.as_deref(), args.limit);
 
     if args.json {
         // The RunRecord's `Serialize` already omits secret-bearing fields
@@ -89,6 +85,21 @@ async fn connect(args: &HistoryArgs) -> CliResult<(CatalogHandle, Option<String>
     })?;
     let handle = crate::catalog::connect_from_spec(spec).await?;
     Ok((handle, cfg.name.clone()))
+}
+
+/// Apply the `--row` filter and `--limit` truncation to a fetched page
+/// (newest-first order preserved by the backend). Pure — unit-testable without
+/// a catalog store.
+pub(crate) fn select_runs(
+    mut runs: Vec<RunRecord>,
+    row: Option<&str>,
+    limit: usize,
+) -> Vec<RunRecord> {
+    if let Some(row) = row {
+        runs.retain(|r| r.invocations.iter().any(|i| i.row_id == row));
+    }
+    runs.truncate(limit);
+    runs
 }
 
 /// Render the run table (newest first). Pure so it is unit-testable.
@@ -199,9 +210,8 @@ mod tests {
     async fn reads_seeded_in_memory_catalog() {
         use crate::serve::history::RunHistory;
         // Seed a memory backend with two runs, then read them back via list().
-        let store = crate::serve::history::memory::MemoryHistory::new(
-            std::time::Duration::from_secs(3600),
-        );
+        let store =
+            crate::serve::history::memory::MemoryHistory::new(std::time::Duration::from_secs(3600));
         store
             .upsert(&record("a", RunStatus::Completed, 10, Some(1.0)))
             .await
@@ -221,5 +231,50 @@ mod tests {
         assert_eq!(page.runs.len(), 2);
         let t = render_table(&page.runs);
         assert!(t.contains("a") && t.contains("b"), "{t}");
+    }
+
+    #[test]
+    fn select_runs_filters_by_row_and_truncates() {
+        let mut a = record("a", RunStatus::Completed, 1, Some(1.0));
+        a.invocations[0].row_id = "us".into();
+        let mut b = record("b", RunStatus::Completed, 1, Some(1.0));
+        b.invocations[0].row_id = "eu".into();
+        let all = vec![a.clone(), b.clone()];
+
+        // --row keeps only matching invocations.
+        let only_eu = select_runs(all.clone(), Some("eu"), 20);
+        assert_eq!(only_eu.len(), 1);
+        assert_eq!(only_eu[0].run_id, "b");
+        // No filter, but --limit truncates.
+        let capped = select_runs(all.clone(), None, 1);
+        assert_eq!(capped.len(), 1);
+        // A row nobody has → empty.
+        assert!(select_runs(all, Some("apac"), 20).is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_errors_without_a_catalog_block() {
+        use crate::cli::HistoryArgs;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("faucet.yaml");
+        std::fs::write(
+            &path,
+            "version: 1\nname: demo\npipeline:\n  source: { type: rest, config: { path: /x } }\n  sink: { type: jsonl, config: { path: o } }\n",
+        )
+        .unwrap();
+        let err = super::run(HistoryArgs {
+            config: Some(path),
+            env_file: None,
+            no_env_file: true,
+            profile: None,
+            limit: 20,
+            row: None,
+            json: false,
+        })
+        .await;
+        match err {
+            Err(CliError::Config(m)) => assert!(m.contains("catalog"), "got: {m}"),
+            other => panic!("expected a no-catalog Config error, got {other:?}"),
+        }
     }
 }

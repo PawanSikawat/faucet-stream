@@ -230,7 +230,10 @@ pub(crate) fn render_prose(r: &Explanation, show_all: bool) -> String {
 
     // Intro line: expansion shape.
     if r.rows_total == 1 {
-        out.push_str(&format!("Pipeline '{}' is a single pipeline.\n", r.pipeline));
+        out.push_str(&format!(
+            "Pipeline '{}' is a single pipeline.\n",
+            r.pipeline
+        ));
     } else {
         out.push_str(&format!(
             "Pipeline '{}' expands to {} rows ({} root{}, {} child{}).",
@@ -298,14 +301,7 @@ fn narrate_row(row: &RowExplanation) -> String {
     };
     format!(
         "• {}{}: reads from {}{}writes to {}{}. delivery: {}{}.\n",
-        row.id,
-        parent,
-        row.source,
-        lineage,
-        row.sink,
-        write,
-        row.delivery_guarantee,
-        state,
+        row.id, parent, row.source, lineage, row.sink, write, row.delivery_guarantee, state,
     )
 }
 
@@ -442,5 +438,47 @@ pipeline:
         ))
         .unwrap();
         assert_eq!(a, b);
+    }
+
+    // ── `run` command flow (offline; tempfile) ───────────────────────────────
+
+    fn write_cfg(body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("faucet.yaml");
+        std::fs::write(&path, body).expect("write");
+        (dir, path)
+    }
+
+    fn args(path: std::path::PathBuf, json: bool, rows: bool) -> ExplainArgs {
+        ExplainArgs {
+            config: Some(path),
+            env_file: None,
+            no_env_file: true,
+            profile: None,
+            json,
+            rows,
+        }
+    }
+
+    const CFG: &str = "version: 1\nname: demo\npipeline:\n  source: { type: rest, config: { path: /x } }\n  sink: { type: jsonl, config: { path: o } }\n";
+
+    #[tokio::test]
+    async fn run_prose_succeeds() {
+        let (_d, path) = write_cfg(CFG);
+        run(args(path, false, false)).await.expect("prose ok");
+    }
+
+    #[tokio::test]
+    async fn run_json_succeeds() {
+        let (_d, path) = write_cfg(CFG);
+        run(args(path, true, false)).await.expect("json ok");
+    }
+
+    #[tokio::test]
+    async fn run_prose_all_rows_on_a_matrix() {
+        // A matrix config exercises the `--rows` (narrate every row) path.
+        let cfg = "version: 1\nname: m\nmatrix:\n  - { id: a }\n  - { id: b }\npipeline:\n  source: { type: rest, config: { path: /x } }\n  sink: { type: jsonl, config: { path: o } }\n";
+        let (_d, path) = write_cfg(cfg);
+        run(args(path, false, true)).await.expect("matrix prose ok");
     }
 }

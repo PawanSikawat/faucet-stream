@@ -25,6 +25,10 @@ The `faucet` binary exposes these commands. Pass `--log-level <level>` (or set
 | `faucet completions <shell>` | Print a shell tab-completion script (bash / zsh / fish / powershell / elvish). |
 | `faucet migrate [config]` | Upgrade a config written against an older grammar to the current shape (idempotent). |
 | `faucet doctor --offline [config]` | Static, credential-free config lints (no network) — dangling/unused auth, unused vars, no-op sink `batch_size`. |
+| `faucet fmt [config] [--check]` | Canonicalize a config (stable key order); `--check` is a CI gate. |
+| `faucet explain [config]` | Plain-English narration of what a pipeline does (offline, zero I/O). |
+| `faucet history [config]` | Terminal view of the run history in a config's `catalog:` store. |
+| `faucet run … --output json\|ndjson` | Machine-readable end-of-run summary (per-row + totals) for scripting. |
 
 `[config]` is optional for `run` / `validate` / `preview` / `doctor` / `replicate` / `schedule`: if
 omitted, faucet auto-discovers `faucet.yaml` → `.yml` → `.json` in the current directory.
@@ -827,3 +831,63 @@ a `vars:` entry never interpolated (**warning**); and a file/append sink
 The command exits non-zero on any lint *error* (warnings don't fail). Secret and
 `${env:…}` resolution is validated separately at config load (and by
 `faucet validate`).
+
+## `fmt`
+
+`faucet fmt [config…]` rewrites a config into a canonical form — a stable key
+order (a curated priority for well-known blocks like `version`/`name`/`pipeline`,
+then alphabetical), so diffs stay meaningful and reviews stay quiet. Running it
+twice is always a no-op, so `--check` is a cheap CI gate.
+
+```bash
+faucet fmt pipeline.yaml            # rewrite in place
+faucet fmt pipeline.yaml --stdout   # print, don't write
+faucet fmt pipeline.yaml --check    # exit non-zero if not already canonical (CI)
+```
+
+Comments are not preserved (the file is parsed and re-serialized).
+
+## `explain`
+
+`faucet explain [config]` narrates, in plain English, what a pipeline does —
+source → transforms → sink, write mode/key, matrix expansion, delivery
+guarantee. It is built entirely from the resolved config: **fully offline, zero
+I/O, no source touched**, and secrets are never printed (only a curated
+allowlist of structural fields is surfaced, and the output is scrubbed).
+
+```bash
+faucet explain pipeline.yaml          # prose
+faucet explain pipeline.yaml --json   # structured
+faucet explain pipeline.yaml --rows   # narrate every row of a large matrix
+```
+
+## `history`
+
+`faucet history [config]` prints the recent run history recorded in the config's
+`catalog:` store (the same backend `faucet serve` history and `faucet plan
+--diff` use) — status, duration, throughput — without standing up `faucet
+serve`. Read-only; requires the `catalog` build feature.
+
+```bash
+faucet history                 # table, newest first (default 20)
+faucet history --limit 50      # more rows
+faucet history --row us        # only runs with an invocation for row `us`
+faucet history --json          # machine-readable
+```
+
+Run records are written by `faucet serve`; point `history` at the same store.
+
+## `run --output`
+
+`faucet run … --output json` (or `ndjson`) emits a machine-readable end-of-run
+summary instead of the human line, keeping stdout otherwise clean (logs stay on
+stderr) so `faucet run` is composable in CI / cron / Slack:
+
+```bash
+faucet run pipeline.yaml --output json      # one JSON document: per-row + totals
+faucet run pipeline.yaml --output ndjson     # one JSON object per matrix row
+```
+
+Each row reports `rows_in` / `rows_out` / `duration_ms` / `dlq_count` / `status`
+/ `bookmark`; the exit code is unchanged (non-zero on failure). Secret material
+is scrubbed from the output.

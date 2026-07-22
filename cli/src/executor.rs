@@ -1469,13 +1469,17 @@ async fn run_one_invocation(
     // is only known when the source sampler was installed (a `lineage:` or
     // `catalog:` block); otherwise it stays `None` rather than guessing.
     #[cfg(feature = "lineage")]
-    let records_read = in_sample.as_ref().map(|s| s.count() as u64);
+    let records_read = in_sample.as_ref().map(|s| s.count());
     #[cfg(not(feature = "lineage"))]
     let records_read: Option<u64> = None;
     let stats = PipelineStats {
         records_written: result.records_written,
         records_read,
-        dlq_count: result.dlq.as_ref().map(|d| d.records_dlq as u64).unwrap_or(0),
+        dlq_count: result
+            .dlq
+            .as_ref()
+            .map(|d| d.records_dlq as u64)
+            .unwrap_or(0),
         bookmark: result.bookmark.clone(),
     };
 

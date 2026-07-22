@@ -20,6 +20,7 @@ fn run_args(config: PathBuf) -> faucet_cli::cli::RunArgs {
         clock: None,
         profile: None,
         tui: false,
+        output: Default::default(),
         selection: Default::default(),
     }
 }
