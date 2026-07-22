@@ -53,6 +53,52 @@ pub struct BigQuerySinkConfig {
     /// column(s) of the target table.
     #[serde(flatten)]
     pub write: faucet_core::WriteSpec,
+    /// Arrow columnar **load-job** mode (#380): buffer Arrow `RecordBatch`es to
+    /// Parquet, stage them on a GCS bucket, then run a BigQuery `PARQUET` load
+    /// job (`jobs.insert`) instead of the per-row `insertAll` path. Only
+    /// present in `arrow` builds; drives the columnar fast path the pipeline
+    /// negotiates when the source and sink are both columnar. Load jobs are
+    /// append/truncate only, so the sink advertises columnar support **only**
+    /// when the write mode is `append` — upsert/delete stay on the MERGE path.
+    #[cfg(feature = "arrow")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bulk_load: Option<BigQueryLoadConfig>,
+}
+
+/// GCS-staged Parquet load-job configuration for the Arrow columnar path.
+#[cfg(feature = "arrow")]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BigQueryLoadConfig {
+    /// GCS bucket used to stage Parquet files before the load job. Files are
+    /// written as `gs://<bucket>/<staging_prefix><uuid>.parquet`.
+    pub staging_bucket: String,
+    /// Object-key prefix within the bucket. Default `faucet-bq-load/`. A
+    /// trailing `/` is added if missing.
+    #[serde(default = "default_staging_prefix")]
+    pub staging_prefix: String,
+    /// Credentials for the GCS staging upload (independent of the BigQuery
+    /// `auth` used for the load job). Defaults to Application Default
+    /// Credentials.
+    #[serde(default)]
+    pub gcs_auth: faucet_common_gcs::GcsCredentials,
+    /// BigQuery load `writeDisposition` — `WRITE_APPEND` (default),
+    /// `WRITE_TRUNCATE`, or `WRITE_EMPTY`.
+    #[serde(default = "default_write_disposition")]
+    pub write_disposition: String,
+    /// Optional GCS storage endpoint override (e.g. a fake-gcs-server host for
+    /// tests). `None` uses the real Google endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_host: Option<String>,
+}
+
+#[cfg(feature = "arrow")]
+fn default_staging_prefix() -> String {
+    "faucet-bq-load/".to_string()
+}
+
+#[cfg(feature = "arrow")]
+fn default_write_disposition() -> String {
+    "WRITE_APPEND".to_string()
 }
 
 fn default_batch_size() -> usize {
@@ -75,7 +121,16 @@ impl BigQuerySinkConfig {
             batch_size: DEFAULT_BATCH_SIZE,
             insert_id_field: None,
             write: faucet_core::WriteSpec::default(),
+            #[cfg(feature = "arrow")]
+            bulk_load: None,
         }
+    }
+
+    /// Enable Arrow columnar bulk-load via a GCS-staged Parquet load job (#380).
+    #[cfg(feature = "arrow")]
+    pub fn with_bulk_load(mut self, load: BigQueryLoadConfig) -> Self {
+        self.bulk_load = Some(load);
+        self
     }
 
     /// Set the record field used as the per-row BigQuery streaming `insertId`

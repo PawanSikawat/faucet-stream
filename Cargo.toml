@@ -312,6 +312,10 @@ tempfile = "3"
 # Default features include the crossterm backend.
 ratatui = "0.30"
 
+# Inline per-row progress line for `faucet run` (#385, CLI-only `cli-progress`
+# feature). Draws to stderr so piped stdout stays clean.
+indicatif = "0.18"
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"

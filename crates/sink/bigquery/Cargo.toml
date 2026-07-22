@@ -21,6 +21,29 @@ tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
 async-trait.workspace = true
 
+# Arrow columnar load-job path (#380, `arrow` feature): buffer RecordBatches to
+# Parquet, stage on GCS, then `jobs.insert` a PARQUET load job.
+faucet-common-gcs = { workspace = true, optional = true }
+google-cloud-storage = { workspace = true, optional = true }
+arrow = { workspace = true, optional = true }
+parquet = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+
+[features]
+# Opt-in Arrow columnar fast path (#380): Arrow RecordBatches → Parquet on a
+# GCS staging bucket → BigQuery load job. Additive — default (arrow-off)
+# builds are byte-identical to the streaming/MERGE sink.
+arrow = [
+    "faucet-core/arrow",
+    "dep:faucet-common-gcs",
+    "dep:google-cloud-storage",
+    "dep:arrow",
+    "dep:parquet",
+    "dep:bytes",
+    "dep:uuid",
+]
+
 [dev-dependencies]
 faucet-conformance.workspace = true
 serde_json.workspace = true

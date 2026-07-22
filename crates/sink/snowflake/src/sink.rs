@@ -32,6 +32,11 @@ pub struct SnowflakeSink {
     /// the data transaction). A failed attempt leaves the cell empty and is
     /// retried on the next call.
     commit_table_ready: OnceCell<()>,
+    /// Lazily-resolved external-stage upload store for the Arrow columnar
+    /// bulk-load path (#381). Built once from `config.bulk_load` on the first
+    /// columnar write and reused for every subsequent staged file.
+    #[cfg(feature = "arrow")]
+    bulk_store: OnceCell<crate::bulk::BulkStore>,
 }
 
 #[derive(Deserialize)]
@@ -73,12 +78,25 @@ impl SnowflakeSink {
     /// `MAX_BATCH_SIZE` (#78/#44).
     pub fn new(config: SnowflakeSinkConfig) -> Result<Self, FaucetError> {
         faucet_core::validate_batch_size(config.batch_size)?;
+        // `bulk_load` (Arrow columnar COPY) only functions with the `arrow`
+        // feature compiled in — reject a config that requests it otherwise so
+        // the failure is loud at load time, not a silent row-path fallback.
+        #[cfg(not(feature = "arrow"))]
+        if config.bulk_load.is_some() {
+            return Err(FaucetError::Config(
+                "snowflake `bulk_load` requires a binary built with the `arrow` feature \
+                 (e.g. `cargo install faucet-cli --features arrow`)"
+                    .into(),
+            ));
+        }
         Ok(Self {
             config,
             client: Client::new(),
             endpoint: None,
             auth_provider: None,
             commit_table_ready: OnceCell::new(),
+            #[cfg(feature = "arrow")]
+            bulk_store: OnceCell::new(),
         })
     }
 
@@ -577,6 +595,70 @@ impl faucet_core::Sink for SnowflakeSink {
             },
         }
     }
+
+    /// Columnar bulk-load is available only when a `bulk_load` external stage
+    /// is configured (#381). Otherwise the sink participates on the row path
+    /// via the default `write_batch_columnar` fallback.
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        self.config.bulk_load.is_some()
+    }
+
+    /// Write one Arrow [`RecordBatch`](arrow::array::RecordBatch) by encoding
+    /// it to a self-contained Parquet file, uploading it to the external
+    /// stage's backing storage, and issuing `COPY INTO … FILE_FORMAT=(TYPE=
+    /// PARQUET)` over the SQL REST API. Append-only — the exactly-once
+    /// watermark path stays on the `Value` route (the pipeline never selects
+    /// the columnar loop when exactly-once is configured).
+    #[cfg(feature = "arrow")]
+    async fn write_batch_columnar(
+        &self,
+        batch: &arrow::array::RecordBatch,
+    ) -> Result<usize, FaucetError> {
+        if batch.num_rows() == 0 {
+            return Ok(0);
+        }
+        let stage = self.config.bulk_load.as_ref().ok_or_else(|| {
+            FaucetError::Sink(
+                "Snowflake columnar write requested with no `bulk_load` stage configured".into(),
+            )
+        })?;
+
+        // Parquet encode is CPU-bound — keep it off the async runtime.
+        let batch_owned = batch.clone();
+        let bytes = tokio::task::spawn_blocking(move || crate::bulk::encode_parquet(&batch_owned))
+            .await
+            .map_err(|e| FaucetError::Sink(format!("parquet encode task panicked: {e}")))??;
+
+        // Resolve (once) the stage's object store, then upload the file.
+        let store = self
+            .bulk_store
+            .get_or_try_init(|| async { crate::bulk::resolve_store(stage) })
+            .await?;
+        let file = format!("faucet-{}.parquet", uuid::Uuid::new_v4());
+        crate::bulk::upload(store, &file, bytes).await?;
+
+        // Load the staged Parquet file into the target table.
+        let sql = crate::bulk::build_copy_into(
+            &self.config.database,
+            &self.config.schema,
+            &self.config.table,
+            stage,
+            &file,
+        );
+        self.execute_sql(&sql, None).await?;
+
+        tracing::info!(
+            table = %format!(
+                "{}.{}.{}",
+                self.config.database, self.config.schema, self.config.table
+            ),
+            rows = batch.num_rows(),
+            file = %file,
+            "Snowflake columnar bulk-load COPY complete"
+        );
+        Ok(batch.num_rows())
+    }
 }
 
 #[cfg(test)]
@@ -600,6 +682,34 @@ mod tests {
             sink.dataset_uri(),
             "snowflake://myacct.us-east-1/mydb/PUBLIC?table=events"
         );
+    }
+
+    #[cfg(feature = "arrow")]
+    #[test]
+    fn supports_columnar_only_with_bulk_load() {
+        use crate::config::SnowflakeStageConfig;
+        let base = SnowflakeSinkConfig::new(
+            "acct",
+            "wh",
+            "db",
+            "PUBLIC",
+            "t",
+            SnowflakeAuth::OAuth { token: "t".into() },
+        );
+        // No bulk_load → row path only.
+        let plain = SnowflakeSink::new(base.clone()).unwrap();
+        assert!(!plain.supports_columnar());
+
+        // bulk_load configured → columnar fast path advertised.
+        let staged = SnowflakeSink::new(base.with_bulk_load(SnowflakeStageConfig {
+            stage: "MY_STAGE".into(),
+            url: "s3://bucket/prefix/".into(),
+            storage_options: Default::default(),
+            match_by_column_name: "CASE_INSENSITIVE".into(),
+            purge: false,
+        }))
+        .unwrap();
+        assert!(staged.supports_columnar());
     }
 
     #[test]

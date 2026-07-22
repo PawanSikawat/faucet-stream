@@ -98,6 +98,39 @@ pub struct BigQuerySourceConfig {
     /// many small ones.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Arrow columnar **Storage Read API** mode (#380). When `true`, the source
+    /// reads [`read_table`](Self::read_table) directly via the BigQuery Storage
+    /// Read gRPC API as Arrow `RecordBatch`es (no `jobs.query`), driving the
+    /// columnar fast path when the sink is also columnar and decoding Arrow →
+    /// JSON on the row path otherwise. Requires a binary built with this
+    /// crate's `arrow` feature and a `read_table`; the `query` field is ignored
+    /// in this mode. Full extract only — no incremental bookmark.
+    #[serde(default)]
+    pub read_api: bool,
+    /// Table to read in `read_api` mode: `dataset.table` (billed to
+    /// `project_id`) or a fully-qualified `project.dataset.table`. Required
+    /// when `read_api` is set; ignored otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_table: Option<String>,
+    /// Optional Storage Read API `row_restriction` — a SQL predicate (e.g.
+    /// `state = "CA"`) pushed to the read session so BigQuery filters rows
+    /// server-side. Only used in `read_api` mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_restriction: Option<String>,
+    /// Optional column projection for `read_api` mode — the columns to read.
+    /// Empty means all columns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_fields: Vec<String>,
+    /// Maximum number of Storage Read API streams to request (`read_api`
+    /// mode). Defaults to 1 (a single ordered stream). Higher values let
+    /// BigQuery shard large tables; the source reads the returned streams
+    /// sequentially.
+    #[serde(default = "default_max_streams")]
+    pub max_streams: i32,
+}
+
+fn default_max_streams() -> i32 {
+    1
 }
 
 impl std::fmt::Debug for BigQuerySourceConfig {
@@ -113,6 +146,11 @@ impl std::fmt::Debug for BigQuerySourceConfig {
             .field("statement_timeout", &self.statement_timeout)
             .field("poll_timeout", &self.poll_timeout)
             .field("batch_size", &self.batch_size)
+            .field("read_api", &self.read_api)
+            .field("read_table", &self.read_table)
+            .field("row_restriction", &self.row_restriction)
+            .field("selected_fields", &self.selected_fields)
+            .field("max_streams", &self.max_streams)
             .finish()
     }
 }
@@ -135,7 +173,20 @@ impl BigQuerySourceConfig {
             statement_timeout: default_statement_timeout(),
             poll_timeout: default_poll_timeout(),
             batch_size: DEFAULT_BATCH_SIZE,
+            read_api: false,
+            read_table: None,
+            row_restriction: None,
+            selected_fields: Vec::new(),
+            max_streams: default_max_streams(),
         }
+    }
+
+    /// Enable Arrow Storage Read API mode reading `table` (`dataset.table` or
+    /// `project.dataset.table`) instead of running a query (#380).
+    pub fn with_read_api(mut self, table: impl Into<String>) -> Self {
+        self.read_api = true;
+        self.read_table = Some(table.into());
+        self
     }
 
     /// Enable BigQuery's legacy SQL dialect.

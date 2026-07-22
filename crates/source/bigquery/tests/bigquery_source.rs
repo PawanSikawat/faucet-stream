@@ -893,3 +893,33 @@ async fn check_probe_fails_on_dry_run_error() {
         "a failing probe should carry a remediation hint"
     );
 }
+
+/// #380: the source advertises the Arrow columnar fast path exactly when
+/// `read_api` is enabled — the "columnar path is taken" acceptance criterion.
+#[cfg(feature = "arrow")]
+#[tokio::test]
+async fn columnar_taken_only_in_read_api_mode() {
+    use faucet_core::Source as _;
+    let server = MockServer::start().await;
+
+    // Query mode → row path only.
+    let (query_src, _sa1) = build_source(
+        &server,
+        BigQuerySourceConfig::new(
+            PROJECT_ID,
+            BigQueryCredentials::ApplicationDefault,
+            "SELECT 1",
+        ),
+    )
+    .await;
+    assert!(!query_src.supports_columnar());
+
+    // read_api mode → columnar fast path advertised.
+    let (read_src, _sa2) = build_source(
+        &server,
+        BigQuerySourceConfig::new(PROJECT_ID, BigQueryCredentials::ApplicationDefault, "")
+            .with_read_api("my_dataset.my_table"),
+    )
+    .await;
+    assert!(read_src.supports_columnar());
+}

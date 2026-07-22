@@ -16,12 +16,16 @@
 //! at capture with the same registry the stdout writer uses. On a non-TTY
 //! (CI, pipes) the flag degrades to a plain run with a one-line notice.
 
-pub mod metrics;
 pub mod view;
 
-use crate::error::{CliError, CliResult};
+// The Prometheus recorder installer and the pure text sampler now live in the
+// shared `livemetrics` module (reused by the `cli-progress` line); re-export
+// them here so the TUI's `crate::tui::{metrics, setup_observability, …}` call
+// sites are unchanged.
+pub use crate::livemetrics::{self as metrics, install_metrics_recorder, setup_observability};
+
 use faucet_core::CancellationToken;
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use metrics_exporter_prometheus::PrometheusHandle;
 use std::collections::VecDeque;
 use std::io::IsTerminal;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -118,90 +122,6 @@ pub fn install_tui_tracing(level: &str) -> LogBuffer {
 /// The TUI log ring, if `run_main` installed one this process.
 pub fn log_buffer() -> Option<LogBuffer> {
     TUI_LOGS.get().cloned()
-}
-
-/// Default histogram buckets — mirrors `faucet-core`'s installer so a
-/// TUI-owned recorder behaves identically for any `/metrics` scraper.
-const DEFAULT_BUCKETS: &[f64] = &[
-    0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0,
-];
-
-/// The handle of the recorder this module installed, if any — makes
-/// [`install_metrics_recorder`] idempotent (second call returns the same
-/// handle instead of racing on the process-global recorder slot).
-static RECORDER_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
-
-/// Install the Prometheus recorder for a TUI session and return its render
-/// handle. When the config carries an `observability.prometheus` block the
-/// `/metrics` HTTP endpoint is preserved (recorder + listener, exactly what
-/// `install_observability` would have set up); otherwise a listener-less
-/// recorder is installed purely as the TUI's data source. Idempotent: a
-/// second call returns the first call's handle.
-pub fn install_metrics_recorder(
-    prom: Option<&faucet_core::PrometheusConfig>,
-) -> CliResult<PrometheusHandle> {
-    // Validate the listener address up front so a config error surfaces even
-    // when the recorder slot is already occupied.
-    let listen: Option<std::net::SocketAddr> = match prom {
-        Some(p) => Some(
-            p.listen
-                .parse()
-                .map_err(|e| CliError::Observability(format!("prometheus listen: {e}")))?,
-        ),
-        None => None,
-    };
-    if let Some(handle) = RECORDER_HANDLE.get() {
-        return Ok(handle.clone());
-    }
-    let handle = match (prom, listen) {
-        (Some(p), Some(listen)) => {
-            let (recorder, exporter) = PrometheusBuilder::new()
-                .with_http_listener(listen)
-                .set_buckets(p.buckets.as_deref().unwrap_or(DEFAULT_BUCKETS))
-                .map_err(|e| CliError::Observability(e.to_string()))?
-                .build()
-                .map_err(|e| CliError::Observability(e.to_string()))?;
-            let handle = recorder.handle();
-            if ::metrics::set_global_recorder(recorder).is_ok() {
-                tokio::spawn(exporter);
-                tracing::info!("Prometheus /metrics listening on {}", p.listen);
-            } else {
-                warn_recorder_occupied();
-            }
-            handle
-        }
-        _ => {
-            let recorder = PrometheusBuilder::new()
-                .set_buckets(DEFAULT_BUCKETS)
-                .map_err(|e| CliError::Observability(e.to_string()))?
-                .build_recorder();
-            let handle = recorder.handle();
-            if ::metrics::set_global_recorder(recorder).is_err() {
-                warn_recorder_occupied();
-            }
-            handle
-        }
-    };
-    Ok(RECORDER_HANDLE.get_or_init(|| handle).clone())
-}
-
-fn warn_recorder_occupied() {
-    tracing::warn!(
-        "metrics recorder already installed; the TUI may show no data (was a recorder installed before `faucet run --tui`?)"
-    );
-}
-
-/// Install the TUI session's observability: the TUI owns the metrics
-/// recorder (keeping the `/metrics` endpoint when one is configured) so it
-/// can render the recorder's output; the rest of the observability config
-/// (OTLP traces — the tracing level was already routed into the TUI log ring
-/// by `run_main`) installs as usual with the prometheus block taken out.
-pub fn setup_observability(cfg: &crate::config::PipelineConfig) -> CliResult<PrometheusHandle> {
-    let mut obs_cfg = crate::obs::build_observability_config(cfg);
-    let prom = obs_cfg.prometheus.take();
-    let handle = install_metrics_recorder(prom.as_ref())?;
-    faucet_core::install_observability(&obs_cfg)?;
-    Ok(handle)
 }
 
 /// Source of user cancel requests — abstracted from crossterm so
@@ -465,37 +385,6 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(text.contains("cancelling…"), "{text}");
-    }
-
-    #[test]
-    fn install_metrics_recorder_is_idempotent() {
-        let first = install_metrics_recorder(None).expect("first install");
-        let second = install_metrics_recorder(None).expect("second install");
-        // Both render (same underlying registry once cached).
-        let _ = first.render();
-        let _ = second.render();
-    }
-
-    #[test]
-    fn install_metrics_recorder_rejects_a_bad_listen_address() {
-        let prom = faucet_core::PrometheusConfig {
-            listen: "not-an-address".into(),
-            buckets: None,
-        };
-        let err = install_metrics_recorder(Some(&prom)).expect_err("bad listen");
-        assert!(matches!(err, CliError::Observability(_)), "{err:?}");
-    }
-
-    #[tokio::test]
-    async fn install_metrics_recorder_accepts_a_listener_config() {
-        // Ephemeral port; whichever install wins the process-global slot,
-        // the call must succeed and hand back a handle.
-        let prom = faucet_core::PrometheusConfig {
-            listen: "127.0.0.1:0".into(),
-            buckets: None,
-        };
-        let handle = install_metrics_recorder(Some(&prom)).expect("listener install");
-        let _ = handle.render();
     }
 
     #[test]

@@ -772,6 +772,14 @@ pub struct RunArgs {
     #[arg(long)]
     pub tui: bool,
 
+    /// Suppress the inline live progress line (records in/out, rows/s, pages,
+    /// elapsed) that `faucet run` shows on an interactive terminal. The
+    /// progress line is already auto-disabled on a non-TTY stdout (CI, pipes)
+    /// and when `--tui` is used; `--quiet` turns it off explicitly, keeping
+    /// only the periodic log output.
+    #[arg(long)]
+    pub quiet: bool,
+
     /// Format for the end-of-run summary printed to stdout: `text` (default,
     /// human), `json` (a single machine-readable document), or `ndjson` (one
     /// JSON object per matrix row). With `json`/`ndjson`, stdout carries only

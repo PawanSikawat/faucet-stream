@@ -57,8 +57,43 @@ impl BigQuerySource {
     /// failures.
     pub async fn new(config: BigQuerySourceConfig) -> Result<Self, FaucetError> {
         faucet_core::validate_batch_size(config.batch_size)?;
+        Self::validate_read_api(&config)?;
         let client = build_client(&config.auth).await?;
         Ok(Self { config, client })
+    }
+
+    /// Validate `read_api` mode: it needs the `arrow` feature and a
+    /// `read_table`. Rejecting here makes a misconfiguration loud at load time
+    /// rather than silently falling back to the (empty) query path.
+    fn validate_read_api(config: &BigQuerySourceConfig) -> Result<(), FaucetError> {
+        if !config.read_api {
+            return Ok(());
+        }
+        #[cfg(not(feature = "arrow"))]
+        {
+            Err(FaucetError::Config(
+                "BigQuery `read_api` requires a binary built with the `arrow` feature \
+                 (e.g. `cargo install faucet-cli --features arrow`)"
+                    .into(),
+            ))
+        }
+        #[cfg(feature = "arrow")]
+        {
+            if config.read_table.as_deref().unwrap_or("").is_empty() {
+                return Err(FaucetError::Config(
+                    "BigQuery `read_api` requires `read_table` (dataset.table or \
+                     project.dataset.table)"
+                        .into(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    /// Accessor for the Arrow Storage Read path (`storage_read.rs`).
+    #[cfg(feature = "arrow")]
+    pub(crate) fn config(&self) -> &BigQuerySourceConfig {
+        &self.config
     }
 
     /// Construct a source from a pre-built BigQuery client.
@@ -543,11 +578,36 @@ impl faucet_core::Source for BigQuerySource {
     /// pages are concatenated and emitted as a single page. The source has
     /// no incremental-replication mode today, so every emitted page carries
     /// `bookmark: None`.
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        self.config.read_api
+    }
+
+    #[cfg(feature = "arrow")]
+    fn stream_batches<'a>(
+        &'a self,
+        _context: &'a HashMap<String, Value>,
+        _batch_size: usize,
+    ) -> Pin<
+        Box<
+            dyn Stream<Item = Result<faucet_core::columnar::ColumnarPage, FaucetError>> + Send + 'a,
+        >,
+    > {
+        crate::storage_read::stream_batches_arrow(self)
+    }
+
     fn stream_pages<'a>(
         &'a self,
         context: &'a HashMap<String, Value>,
         _batch_size: usize,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
+        // `read_api` mode reads the table via the Storage Read API (Arrow →
+        // JSON on this row path); the `query` path below is skipped entirely.
+        #[cfg(feature = "arrow")]
+        if self.config.read_api {
+            return crate::storage_read::stream_pages_arrow(self);
+        }
+
         let batch_size = self.config.batch_size;
 
         Box::pin(async_stream::try_stream! {

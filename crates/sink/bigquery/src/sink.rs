@@ -64,7 +64,17 @@ pub struct BigQuerySink {
     /// the next page diffs against the evolved table. Unused on the plain
     /// streaming path.
     schema_cache: RwLock<Option<Vec<idempotent::FieldSpec>>>,
+    /// Lazily-built GCS client for the Arrow columnar load-job staging upload
+    /// (#380). Built once from `config.bulk_load.gcs_auth` on the first
+    /// columnar write and reused for every staged file.
+    #[cfg(feature = "arrow")]
+    gcs_store: tokio::sync::OnceCell<google_cloud_storage::client::Storage>,
 }
+
+/// Max wall-clock spent polling a columnar Parquet **load job** to `DONE`.
+/// Load jobs can move a lot of data, so this is generous.
+#[cfg(feature = "arrow")]
+const LOAD_JOB_TIMEOUT: Duration = Duration::from_secs(3600);
 
 impl BigQuerySink {
     /// Create a new BigQuery sink from the given configuration.
@@ -79,6 +89,8 @@ impl BigQuerySink {
             config,
             client,
             schema_cache: RwLock::new(None),
+            #[cfg(feature = "arrow")]
+            gcs_store: tokio::sync::OnceCell::new(),
         })
     }
 
@@ -96,6 +108,8 @@ impl BigQuerySink {
             config,
             client,
             schema_cache: RwLock::new(None),
+            #[cfg(feature = "arrow")]
+            gcs_store: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -904,6 +918,139 @@ impl faucet_core::Sink for BigQuerySink {
         // (and the next drift diff) reads the evolved table.
         *self.schema_cache.write().await = None;
         Ok(())
+    }
+
+    /// Columnar load-job is available only when a `bulk_load` staging config is
+    /// set **and** the write mode is `append` (#380). Load jobs are
+    /// append/truncate only; upsert/delete stay on the `Value` MERGE path, so
+    /// the pipeline never negotiates the columnar loop for them.
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        self.config.bulk_load.is_some()
+            && self.config.write.write_mode == faucet_core::WriteMode::Append
+    }
+
+    /// Write one Arrow [`RecordBatch`](arrow::array::RecordBatch) by encoding
+    /// it to Parquet, staging it on GCS, and running a BigQuery `PARQUET` load
+    /// job to completion. Append-only.
+    #[cfg(feature = "arrow")]
+    async fn write_batch_columnar(
+        &self,
+        batch: &arrow::array::RecordBatch,
+    ) -> Result<usize, FaucetError> {
+        use google_cloud_storage::client::Storage;
+
+        if batch.num_rows() == 0 {
+            return Ok(0);
+        }
+        let cfg = self.config.bulk_load.as_ref().ok_or_else(|| {
+            FaucetError::Sink("BigQuery columnar write requested with no `bulk_load` config".into())
+        })?;
+
+        // Parquet encode is CPU-bound — off the async runtime.
+        let batch_owned = batch.clone();
+        let bytes = tokio::task::spawn_blocking(move || crate::load::encode_parquet(&batch_owned))
+            .await
+            .map_err(|e| FaucetError::Sink(format!("parquet encode task panicked: {e}")))??;
+
+        // Build (once) the GCS client, then stage the Parquet object.
+        let store: &Storage = self
+            .gcs_store
+            .get_or_try_init(|| async {
+                faucet_common_gcs::build_storage(&cfg.gcs_auth, cfg.storage_host.as_deref()).await
+            })
+            .await?;
+        let prefix = if cfg.staging_prefix.is_empty() || cfg.staging_prefix.ends_with('/') {
+            cfg.staging_prefix.clone()
+        } else {
+            format!("{}/", cfg.staging_prefix)
+        };
+        let key = format!("{prefix}faucet-{}.parquet", uuid::Uuid::now_v7());
+        let bucket_path = format!("projects/_/buckets/{}", cfg.staging_bucket);
+        store
+            .write_object(bucket_path, key.clone(), bytes::Bytes::from(bytes))
+            .set_content_type("application/vnd.apache.parquet")
+            .send_unbuffered()
+            .await
+            .map_err(|e| {
+                FaucetError::Sink(format!(
+                    "BigQuery load staging upload failed for {key}: {e}"
+                ))
+            })?;
+
+        // Insert + poll the load job.
+        let source_uri = format!("gs://{}/{key}", cfg.staging_bucket);
+        let job = crate::load::build_load_job(
+            &self.config.project_id,
+            &self.config.dataset_id,
+            &self.config.table_id,
+            &source_uri,
+            &cfg.write_disposition,
+        );
+        let inserted = self
+            .client
+            .job()
+            .insert(&self.config.project_id, job)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("BigQuery load jobs.insert failed: {e}")))?;
+        let job_ref = inserted.job_reference.ok_or_else(|| {
+            FaucetError::Sink("BigQuery load job returned no jobReference".into())
+        })?;
+        let job_id = job_ref
+            .job_id
+            .ok_or_else(|| FaucetError::Sink("BigQuery load job returned no jobId".into()))?;
+        self.await_load_job(&job_id, job_ref.location.as_deref())
+            .await?;
+
+        tracing::info!(
+            table = %format!(
+                "{}.{}.{}",
+                self.config.project_id, self.config.dataset_id, self.config.table_id
+            ),
+            rows = batch.num_rows(),
+            uri = %source_uri,
+            "BigQuery columnar Parquet load job complete"
+        );
+        Ok(batch.num_rows())
+    }
+}
+
+#[cfg(feature = "arrow")]
+impl BigQuerySink {
+    /// Poll a load job by id until it reports `DONE`, mapping a runtime
+    /// `status.error_result` to `Err` (a failed job still returns HTTP 200 with
+    /// the error in the body — the same trap `await_query_complete` guards).
+    async fn await_load_job(
+        &self,
+        job_id: &str,
+        location: Option<&str>,
+    ) -> Result<(), FaucetError> {
+        let deadline = std::time::Instant::now() + LOAD_JOB_TIMEOUT;
+        loop {
+            let job = self
+                .client
+                .job()
+                .get_job(&self.config.project_id, job_id, location)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("BigQuery load jobs.get failed: {e}")))?;
+            let status = job.status.ok_or_else(|| {
+                FaucetError::Sink("BigQuery load job returned no status; cannot confirm".into())
+            })?;
+            if let Some(err) = status.error_result {
+                return Err(FaucetError::Sink(format!(
+                    "BigQuery load job {job_id} failed: {err}"
+                )));
+            }
+            if status.state.as_deref() == Some("DONE") {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(FaucetError::Sink(format!(
+                    "BigQuery load job {job_id} did not finish within {LOAD_JOB_TIMEOUT:?}"
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
     }
 }
 
