@@ -63,8 +63,8 @@ pub async fn upload(bs: &BulkStore, file: &str, bytes: Vec<u8>) -> Result<(), Fa
     Ok(())
 }
 
-/// Encode one Arrow [`RecordBatch`] as a self-contained ZSTD-compressed
-/// Parquet file in memory. Mirrors the S3/GCS sinks' `encode_parquet`.
+/// Encode one Arrow `RecordBatch` as a self-contained ZSTD-compressed Parquet
+/// file in memory. Mirrors the S3/GCS sinks' `encode_parquet`.
 pub fn encode_parquet(batch: &RecordBatch) -> Result<Vec<u8>, FaucetError> {
     let props = WriterProperties::builder()
         .set_compression(Compression::ZSTD(ZstdLevel::default()))

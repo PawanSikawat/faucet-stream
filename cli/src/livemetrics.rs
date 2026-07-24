@@ -5,8 +5,8 @@
 //! progress line (`cli-progress`) sample the same in-process Prometheus
 //! recorder's rendered text a few times a second (read-only — zero hot-path
 //! impact) and reduce the handful of `faucet_*` series they care about into a
-//! [`TuiModel`] per tick. Everything below the recorder installer is pure and
-//! unit-tested; the render loops just call [`Sampler::observe`] with the
+//! `TuiModel` per tick. Everything below the recorder installer is pure and
+//! unit-tested; the render loops just call `Sampler::observe` with the
 //! rendered text.
 //!
 //! This module is compiled whenever *either* live-view feature is on, so the
@@ -239,7 +239,7 @@ pub struct TuiModel {
     pub total_rate: f64,
 }
 
-/// Turns successive Prometheus renders into [`TuiModel`]s, computing
+/// Turns successive Prometheus renders into `TuiModel`s, computing
 /// records/s from consecutive sink-records totals.
 #[derive(Debug, Default)]
 pub struct Sampler {

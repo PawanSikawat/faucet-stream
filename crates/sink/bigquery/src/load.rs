@@ -1,11 +1,11 @@
 //! Arrow columnar load-job helpers (#380) — Parquet encode + the BigQuery
 //! `PARQUET` load-job builder.
 //!
-//! The columnar sink path buffers each Arrow [`RecordBatch`] to a
-//! self-contained Parquet file, uploads it to a GCS staging bucket, and then
-//! runs a BigQuery load job (`jobs.insert`) with `sourceFormat = PARQUET`.
-//! The pure pieces here (Parquet encode, the [`Job`] builder) are unit-tested;
-//! the GCS upload + job polling live in `sink.rs`.
+//! The columnar sink path buffers each Arrow `RecordBatch` to a self-contained
+//! Parquet file, uploads it to a GCS staging bucket, and then runs a BigQuery
+//! load job (`jobs.insert`) with `sourceFormat = PARQUET`. The pure pieces here
+//! (Parquet encode, the `Job` builder) are unit-tested; the GCS upload + job
+//! polling live in `sink.rs`.
 
 use arrow::array::RecordBatch;
 use faucet_core::FaucetError;
@@ -17,8 +17,8 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 
-/// Encode one Arrow [`RecordBatch`] as a self-contained ZSTD-compressed
-/// Parquet file in memory. Mirrors the S3/GCS sinks' `encode_parquet`.
+/// Encode one Arrow `RecordBatch` as a self-contained ZSTD-compressed Parquet
+/// file in memory. Mirrors the S3/GCS sinks' `encode_parquet`.
 pub fn encode_parquet(batch: &RecordBatch) -> Result<Vec<u8>, FaucetError> {
     let props = WriterProperties::builder()
         .set_compression(Compression::ZSTD(ZstdLevel::default()))
@@ -37,8 +37,8 @@ pub fn encode_parquet(batch: &RecordBatch) -> Result<Vec<u8>, FaucetError> {
     Ok(buf)
 }
 
-/// Build a BigQuery `PARQUET` load [`Job`] that loads `source_uri` (a
-/// `gs://…` object) into the fully-qualified destination table. Pure.
+/// Build a BigQuery `PARQUET` load `Job` that loads `source_uri` (a `gs://…`
+/// object) into the fully-qualified destination table. Pure.
 pub fn build_load_job(
     project_id: &str,
     dataset_id: &str,
