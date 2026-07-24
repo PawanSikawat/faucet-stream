@@ -2516,6 +2516,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "510ca239cf13b7f8d16a2b48f263de7b4f8c566f0af58d901031473c76afb1e3"
 
 [[package]]
+name = "console"
+version = "0.16.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fe5f465a4f6fee88fad41b85d990f84c835335e85b5d9e6e63e0d06d28cba7c"
+dependencies = [
+ "encode_unicode",
+ "libc",
+ "unicode-width 0.2.2",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3528,6 +3540,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "encode_unicode"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3878,6 +3896,7 @@ dependencies = [
  "glob",
  "google-cloud-auth",
  "hmac 0.12.1",
+ "indicatif",
  "inquire",
  "jsonschema",
  "metrics",
@@ -4210,18 +4229,24 @@ dependencies = [
 name = "faucet-sink-bigquery"
 version = "1.3.1"
 dependencies = [
+ "arrow 58.3.0",
  "async-trait",
+ "bytes",
  "faucet-common-bigquery",
+ "faucet-common-gcs",
  "faucet-conformance",
  "faucet-core",
  "flate2",
  "gcp-bigquery-client",
+ "google-cloud-storage",
+ "parquet 58.3.0",
  "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing",
+ "uuid",
  "wiremock",
 ]
 
@@ -4617,17 +4642,22 @@ dependencies = [
 name = "faucet-sink-snowflake"
 version = "1.2.1"
 dependencies = [
+ "arrow 58.3.0",
  "async-trait",
  "base64 0.22.1",
  "faucet-common-snowflake",
  "faucet-conformance",
  "faucet-core",
+ "object_store",
+ "parquet 58.3.0",
  "reqwest 0.13.3",
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
+ "url",
  "uuid",
  "wiremock",
 ]
@@ -4711,12 +4741,16 @@ dependencies = [
 name = "faucet-source-bigquery"
 version = "1.2.0"
 dependencies = [
+ "arrow 58.3.0",
  "async-stream",
  "async-trait",
  "faucet-common-bigquery",
  "faucet-conformance",
  "faucet-core",
  "futures",
+ "gcloud-auth",
+ "gcloud-gax",
+ "gcloud-googleapis",
  "gcp-bigquery-client",
  "schemars 1.2.1",
  "serde",
@@ -7114,6 +7148,19 @@ dependencies = [
  "hashbrown 0.17.1",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "indicatif"
+version = "0.18.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9433806cd6b4ec1aba79c021c7e4c58fb4c3b9977c085062e611ac929998fb0c"
+dependencies = [
+ "console",
+ "portable-atomic",
+ "unicode-width 0.2.2",
+ "unit-prefix",
+ "web-time",
 ]
 
 [[package]]
@@ -13097,6 +13144,12 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "unit-prefix"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81e544489bf3d8ef66c953931f56617f423cd4b5494be343d9b9d3dda037b9a3"
 
 [[package]]
 name = "universal-hash"

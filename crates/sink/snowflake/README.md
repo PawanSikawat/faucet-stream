@@ -341,3 +341,39 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 ## License
 
 Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.
+
+## Arrow columnar bulk load (opt-in, `arrow` feature)
+
+With a binary built `--features arrow`, add a `bulk_load` block to switch the
+sink onto the Arrow columnar fast path: incoming Arrow `RecordBatch`es are
+written to Parquet, uploaded to an **external** stage's backing cloud storage,
+and loaded with `COPY INTO <table> FROM @stage FILE_FORMAT=(TYPE=PARQUET)`. This
+runs end-to-end without per-row JSON when the source is also columnar (e.g.
+`parquet → snowflake`). It is **append-only** and independent of the row-path
+`INSERT`/exactly-once code, which is unchanged.
+
+```yaml
+sink:
+  type: snowflake
+  config:
+    account: ${env:SNOWFLAKE_ACCOUNT}
+    warehouse: LOAD_WH
+    database: ANALYTICS
+    schema: PUBLIC
+    table: EVENTS
+    auth: { type: oauth, config: { token: ${env:SNOWFLAKE_TOKEN} } }
+    bulk_load:
+      stage: ANALYTICS.PUBLIC.EVENTS_STAGE   # existing external stage
+      url: s3://my-bucket/snowflake-stage/   # the stage's backing location
+      storage_options:                       # object_store keys for the upload
+        aws_access_key_id: ${env:AWS_ACCESS_KEY_ID}
+        aws_secret_access_key: ${env:AWS_SECRET_ACCESS_KEY}
+        aws_region: us-east-1
+      match_by_column_name: CASE_INSENSITIVE  # default
+      purge: false                            # default; PURGE=TRUE removes staged files
+```
+
+Only external stages are supported — internal-stage `PUT` is a driver command
+the SQL REST API cannot run. The Snowflake **source** has no Arrow path (the v2
+SQL API is jsonv2-only). `bulk_load` on an `arrow`-off binary is rejected at
+construction.

@@ -9,6 +9,10 @@
 
 pub mod config;
 pub mod convert;
+/// BigQuery Storage Read API (gRPC) Arrow path (#380). Only compiled with the
+/// `arrow` feature.
+#[cfg(feature = "arrow")]
+pub mod storage_read;
 pub mod stream;
 
 pub use faucet_core::{FaucetError, Source};

@@ -33,6 +33,21 @@ pub(crate) fn resolve_run_clock(
     }
 }
 
+/// Drive the run future under the inline progress line when a recorder handle
+/// is present (interactive terminal, not `--quiet`/`--tui`), else await it
+/// plainly. Keeps the two summary call sites in `run` free of nested cfgs.
+#[cfg(feature = "cli-progress")]
+async fn drive_progress_or_plain<T>(
+    run: impl Future<Output = T>,
+    pipeline: &str,
+    handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
+) -> T {
+    match handle {
+        Some(h) => crate::progress::drive(run, pipeline, h).await,
+        None => run.await,
+    }
+}
+
 /// Execute the `run` subcommand.
 pub async fn run(args: RunArgs) -> CliResult<()> {
     let cwd = std::env::current_dir()?;
@@ -78,18 +93,47 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
     }
     #[cfg(feature = "cli-tui")]
     let tui_active = crate::tui::is_tui_session(args.tui);
+    #[cfg(not(feature = "cli-tui"))]
+    let tui_active = false;
+
+    // Exactly one observability install. A live view (the full-screen `--tui`
+    // or the inline `--progress` line) owns the Prometheus recorder so it can
+    // render the recorder's output; otherwise the standard install runs. The
+    // TUI supersedes the inline line when both are eligible.
+    #[cfg_attr(
+        not(any(feature = "cli-tui", feature = "cli-progress")),
+        allow(unused_mut)
+    )]
+    let mut live_view_owns_recorder = false;
+
     #[cfg(feature = "cli-tui")]
     let tui_handle = if tui_active {
-        Some(crate::tui::setup_observability(&cfg)?)
+        let h = crate::tui::setup_observability(&cfg)?;
+        live_view_owns_recorder = true;
+        Some(h)
     } else {
         if args.tui {
             tracing::info!("--tui: stdout is not a terminal; running without the TUI");
         }
-        crate::obs::install(&cfg)?;
         None
     };
-    #[cfg(not(feature = "cli-tui"))]
-    crate::obs::install(&cfg)?;
+
+    // Inline progress line (#385): only when the TUI isn't taking over, stdout
+    // is a terminal, and the operator did not pass `--quiet`. On a non-TTY /
+    // `--quiet` this is `None` and the run falls back to periodic log lines.
+    #[cfg(feature = "cli-progress")]
+    let progress_handle =
+        if !tui_active && crate::progress::is_progress_session(args.quiet, args.tui) {
+            let h = crate::livemetrics::setup_observability(&cfg)?;
+            live_view_owns_recorder = true;
+            Some(h)
+        } else {
+            None
+        };
+
+    if !live_view_owns_recorder {
+        crate::obs::install(&cfg)?;
+    }
 
     let pipeline_name = cfg.name.clone().unwrap_or_else(|| {
         resolved_config_path
@@ -179,10 +223,22 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
             }
             result?
         }
-        _ => run_fut.await?,
+        _ => {
+            #[cfg(feature = "cli-progress")]
+            let s = drive_progress_or_plain(run_fut, &pipeline_name, progress_handle).await?;
+            #[cfg(not(feature = "cli-progress"))]
+            let s = run_fut.await?;
+            s
+        }
     };
     #[cfg(not(feature = "cli-tui"))]
-    let summary = run_fut.await?;
+    let summary = {
+        #[cfg(feature = "cli-progress")]
+        let s = drive_progress_or_plain(run_fut, &pipeline_name, progress_handle).await?;
+        #[cfg(not(feature = "cli-progress"))]
+        let s = run_fut.await?;
+        s
+    };
 
     let finished_at = Utc::now();
     let total_written: usize = summary.invocations.iter().map(|i| i.records_written).sum();
@@ -403,6 +459,14 @@ mod tests {
         let doc = summary_document("p", now, now, &summary);
         assert_eq!(doc.status, "ok");
         assert_eq!(doc.totals.failed, 0);
+    }
+
+    #[cfg(feature = "cli-progress")]
+    #[tokio::test]
+    async fn drive_progress_or_plain_without_handle_just_awaits() {
+        // No recorder handle (non-TTY / --quiet) → the future is awaited plainly.
+        let out = super::drive_progress_or_plain(async { 7_usize }, "p", None).await;
+        assert_eq!(out, 7);
     }
 
     #[test]

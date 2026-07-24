@@ -26,12 +26,25 @@ reqwest.workspace = true
 base64.workspace = true
 uuid.workspace = true
 
+# Arrow columnar bulk-load path (#381, `arrow` feature): buffer RecordBatches
+# to Parquet, upload to an external stage's cloud storage, then `COPY INTO`.
+arrow = { workspace = true, optional = true }
+parquet = { workspace = true, optional = true }
+object_store = { workspace = true, features = ["aws", "gcp", "azure"], optional = true }
+url = { workspace = true, optional = true }
+
+[features]
+# Opt-in Arrow columnar fast path (RFC 0002 / #375, #381). Additive: default
+# (arrow-off) builds are byte-identical to the row-only sink.
+arrow = ["faucet-core/arrow", "dep:arrow", "dep:parquet", "dep:object_store", "dep:url"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 serde_json.workspace = true
 faucet-conformance.workspace = true
 schemars.workspace = true
 wiremock = "0.6"
+tempfile = "3"
 
 [package.metadata.docs.rs]
 all-features = true

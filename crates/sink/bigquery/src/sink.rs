@@ -64,6 +64,11 @@ pub struct BigQuerySink {
     /// the next page diffs against the evolved table. Unused on the plain
     /// streaming path.
     schema_cache: RwLock<Option<Vec<idempotent::FieldSpec>>>,
+    /// Lazily-built GCS client for the Arrow columnar load-job staging upload
+    /// (#380). Built once from `config.bulk_load.gcs_auth` on the first
+    /// columnar write and reused for every staged file.
+    #[cfg(feature = "arrow")]
+    gcs_store: tokio::sync::OnceCell<google_cloud_storage::client::Storage>,
 }
 
 impl BigQuerySink {
@@ -79,6 +84,8 @@ impl BigQuerySink {
             config,
             client,
             schema_cache: RwLock::new(None),
+            #[cfg(feature = "arrow")]
+            gcs_store: tokio::sync::OnceCell::new(),
         })
     }
 
@@ -96,6 +103,8 @@ impl BigQuerySink {
             config,
             client,
             schema_cache: RwLock::new(None),
+            #[cfg(feature = "arrow")]
+            gcs_store: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -904,6 +913,29 @@ impl faucet_core::Sink for BigQuerySink {
         // (and the next drift diff) reads the evolved table.
         *self.schema_cache.write().await = None;
         Ok(())
+    }
+
+    /// Columnar load-job is available only when a `bulk_load` staging config is
+    /// set **and** the write mode is `append` (#380). Load jobs are
+    /// append/truncate only; upsert/delete stay on the `Value` MERGE path, so
+    /// the pipeline never negotiates the columnar loop for them.
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        self.config.bulk_load.is_some()
+            && self.config.write.write_mode == faucet_core::WriteMode::Append
+    }
+
+    /// Write one Arrow `RecordBatch` by encoding it to Parquet, staging it on
+    /// GCS, and running a BigQuery `PARQUET` load job to completion. Append-only.
+    /// The body lives in `load.rs` (pure cloud I/O — a GCS-SDK staging upload +
+    /// live load job — that can't run in CI, so `codecov.yml` excludes that file
+    /// exactly as it does the GCS connectors).
+    #[cfg(feature = "arrow")]
+    async fn write_batch_columnar(
+        &self,
+        batch: &arrow::array::RecordBatch,
+    ) -> Result<usize, FaucetError> {
+        crate::load::write_columnar(&self.client, &self.config, &self.gcs_store, batch).await
     }
 }
 

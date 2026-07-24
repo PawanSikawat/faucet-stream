@@ -1,12 +1,113 @@
-//! Pure Prometheus-text parsing + per-row aggregation for the live TUI.
+//! Shared live-metrics plumbing for `faucet run` — the in-process Prometheus
+//! recorder installer plus a pure Prometheus-text parser/aggregator.
 //!
-//! The TUI samples the in-process Prometheus recorder's rendered text every
-//! few hundred milliseconds and reduces the handful of `faucet_*` series it
-//! displays into one [`TuiModel`] per tick. Everything in this module is
-//! pure and unit-tested; the terminal loop just calls
-//! [`Sampler::observe`] with the rendered text.
+//! Both the full-screen TUI (`--tui`, `cli-tui`) and the lightweight inline
+//! progress line (`cli-progress`) sample the same in-process Prometheus
+//! recorder's rendered text a few times a second (read-only — zero hot-path
+//! impact) and reduce the handful of `faucet_*` series they care about into a
+//! `TuiModel` per tick. Everything below the recorder installer is pure and
+//! unit-tested; the render loops just call `Sampler::observe` with the
+//! rendered text.
+//!
+//! This module is compiled whenever *either* live-view feature is on, so the
+//! recorder + parser are shared rather than duplicated.
 
+use crate::error::{CliError, CliResult};
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
+
+// ---------------------------------------------------------------------------
+// Recorder install (moved from `tui` so `cli-progress` can reuse it without
+// pulling ratatui).
+// ---------------------------------------------------------------------------
+
+/// Default histogram buckets — mirrors `faucet-core`'s installer so a
+/// CLI-owned recorder behaves identically for any `/metrics` scraper.
+const DEFAULT_BUCKETS: &[f64] = &[
+    0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0,
+];
+
+/// The handle of the recorder this module installed, if any — makes
+/// [`install_metrics_recorder`] idempotent (a second call returns the same
+/// handle instead of racing on the process-global recorder slot).
+static RECORDER_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
+
+/// Install the Prometheus recorder for a live-view session and return its
+/// render handle. When the config carries an `observability.prometheus` block
+/// the `/metrics` HTTP endpoint is preserved (recorder + listener, exactly
+/// what `install_observability` would have set up); otherwise a listener-less
+/// recorder is installed purely as the live view's data source. Idempotent: a
+/// second call returns the first call's handle.
+pub fn install_metrics_recorder(
+    prom: Option<&faucet_core::PrometheusConfig>,
+) -> CliResult<PrometheusHandle> {
+    // Validate the listener address up front so a config error surfaces even
+    // when the recorder slot is already occupied.
+    let listen: Option<std::net::SocketAddr> = match prom {
+        Some(p) => Some(
+            p.listen
+                .parse()
+                .map_err(|e| CliError::Observability(format!("prometheus listen: {e}")))?,
+        ),
+        None => None,
+    };
+    if let Some(handle) = RECORDER_HANDLE.get() {
+        return Ok(handle.clone());
+    }
+    let handle = match (prom, listen) {
+        (Some(p), Some(listen)) => {
+            let (recorder, exporter) = PrometheusBuilder::new()
+                .with_http_listener(listen)
+                .set_buckets(p.buckets.as_deref().unwrap_or(DEFAULT_BUCKETS))
+                .map_err(|e| CliError::Observability(e.to_string()))?
+                .build()
+                .map_err(|e| CliError::Observability(e.to_string()))?;
+            let handle = recorder.handle();
+            if ::metrics::set_global_recorder(recorder).is_ok() {
+                tokio::spawn(exporter);
+                tracing::info!("Prometheus /metrics listening on {}", p.listen);
+            } else {
+                warn_recorder_occupied();
+            }
+            handle
+        }
+        _ => {
+            let recorder = PrometheusBuilder::new()
+                .set_buckets(DEFAULT_BUCKETS)
+                .map_err(|e| CliError::Observability(e.to_string()))?
+                .build_recorder();
+            let handle = recorder.handle();
+            if ::metrics::set_global_recorder(recorder).is_err() {
+                warn_recorder_occupied();
+            }
+            handle
+        }
+    };
+    Ok(RECORDER_HANDLE.get_or_init(|| handle).clone())
+}
+
+fn warn_recorder_occupied() {
+    tracing::warn!(
+        "metrics recorder already installed; the live view may show no data (was a recorder installed before this `faucet run`?)"
+    );
+}
+
+/// Install a live-view session's observability: the CLI owns the metrics
+/// recorder (keeping the `/metrics` endpoint when one is configured) so it can
+/// render the recorder's output; the rest of the observability config (OTLP
+/// traces) installs as usual with the prometheus block taken out.
+pub fn setup_observability(cfg: &crate::config::PipelineConfig) -> CliResult<PrometheusHandle> {
+    let mut obs_cfg = crate::obs::build_observability_config(cfg);
+    let prom = obs_cfg.prometheus.take();
+    let handle = install_metrics_recorder(prom.as_ref())?;
+    faucet_core::install_observability(&obs_cfg)?;
+    Ok(handle)
+}
+
+// ---------------------------------------------------------------------------
+// Pure Prometheus-text parsing + per-row aggregation.
+// ---------------------------------------------------------------------------
 
 /// One parsed sample line: `name{label="v",…} 1.5`.
 #[derive(Debug, Clone, PartialEq)]
@@ -17,8 +118,8 @@ pub struct Sample {
 }
 
 /// Parse the Prometheus text exposition format, skipping `# HELP` / `# TYPE`
-/// comments and lines that don't parse (robustness over strictness — the TUI
-/// must never crash on exporter output).
+/// comments and lines that don't parse (robustness over strictness — a live
+/// view must never crash on exporter output).
 pub fn parse_samples(text: &str) -> Vec<Sample> {
     text.lines().filter_map(parse_line).collect()
 }
@@ -114,6 +215,8 @@ pub struct RowStats {
     pub sink: String,
     pub records_in: u64,
     pub records_out: u64,
+    /// Source pages fetched so far (`faucet_source_pages_total`).
+    pub pages: u64,
     /// Sink records/second over the last sampling window.
     pub rate: f64,
     pub source_errors: u64,
@@ -126,7 +229,7 @@ pub struct RowStats {
     pub in_flight: bool,
 }
 
-/// The reduced model the renderer draws.
+/// The reduced model the renderers draw.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TuiModel {
     /// Row-id → stats, sorted by row id (BTreeMap keeps render order stable).
@@ -136,7 +239,7 @@ pub struct TuiModel {
     pub total_rate: f64,
 }
 
-/// Turns successive Prometheus renders into [`TuiModel`]s, computing
+/// Turns successive Prometheus renders into `TuiModel`s, computing
 /// records/s from consecutive sink-records totals.
 #[derive(Debug, Default)]
 pub struct Sampler {
@@ -152,8 +255,8 @@ impl Sampler {
         }
     }
 
-    /// Reduce one rendered scrape into a model. `elapsed` is time since TUI
-    /// start (monotonic), used for rate windows.
+    /// Reduce one rendered scrape into a model. `elapsed` is time since the
+    /// live view started (monotonic), used for rate windows.
     pub fn observe(&mut self, text: &str, elapsed: std::time::Duration) -> TuiModel {
         let mut model = TuiModel::default();
         for s in parse_samples(text) {
@@ -170,6 +273,7 @@ impl Sampler {
                         row.source = connector;
                     }
                 }
+                "faucet_source_pages_total" => row.pages += s.value as u64,
                 "faucet_sink_records_total" => {
                     row.records_out += s.value as u64;
                     if !connector.is_empty() {
@@ -301,6 +405,7 @@ faucet_source_records_total{pipeline=\"p\",row=\"r1\",connector=\"csv\"} 42
     fn sampler_aggregates_row_fields() {
         let text = "\
 faucet_source_records_total{pipeline=\"p\",row=\"r\",connector=\"spanner\"} 10
+faucet_source_pages_total{pipeline=\"p\",row=\"r\",connector=\"spanner\"} 4
 faucet_sink_records_total{pipeline=\"p\",row=\"r\",connector=\"jsonl\"} 8
 faucet_source_errors_total{pipeline=\"p\",row=\"r\",connector=\"spanner\",kind=\"http\"} 1
 faucet_sink_errors_total{pipeline=\"p\",row=\"r\",connector=\"jsonl\",kind=\"io\"} 2
@@ -315,6 +420,7 @@ faucet_pipeline_in_flight{pipeline=\"p\",row=\"r\"} 1
         assert_eq!(row.sink, "jsonl");
         assert_eq!(row.records_in, 10);
         assert_eq!(row.records_out, 8);
+        assert_eq!(row.pages, 4);
         assert_eq!(row.source_errors, 1);
         assert_eq!(row.sink_errors, 2);
         assert_eq!(row.dlq_records, 3);
@@ -335,5 +441,49 @@ faucet_pipeline_in_flight{pipeline=\"p\",row=\"r\"} 1
         let m = s.observe(&(ok.to_string() + err), Duration::from_secs(2));
         // Any err marks the row failed even alongside an ok retry count.
         assert_eq!(m.rows["r"].finished, Some(false));
+    }
+
+    #[test]
+    fn install_metrics_recorder_is_idempotent() {
+        let first = install_metrics_recorder(None).expect("first install");
+        let second = install_metrics_recorder(None).expect("second install");
+        let _ = first.render();
+        let _ = second.render();
+    }
+
+    #[test]
+    fn install_metrics_recorder_rejects_a_bad_listen_address() {
+        let prom = faucet_core::PrometheusConfig {
+            listen: "not-an-address".into(),
+            buckets: None,
+        };
+        let err = install_metrics_recorder(Some(&prom)).expect_err("bad listen");
+        assert!(matches!(err, CliError::Observability(_)), "{err:?}");
+    }
+
+    #[test]
+    fn setup_observability_installs_from_a_config_without_prometheus() {
+        // No `observability.prometheus` block → listener-less recorder + the
+        // rest of observability install (both idempotent). Covers the
+        // `setup_observability` wiring end to end.
+        let yaml = "version: 1\n\
+            pipeline:\n\
+            \x20 source: { type: rest, config: { base_url: \"http://x\" } }\n\
+            \x20 sink: { type: stdout, config: {} }\n";
+        let cfg = crate::config::parse_with_extension(yaml, "yaml").expect("parse cfg");
+        let handle = setup_observability(&cfg).expect("setup observability");
+        let _ = handle.render();
+    }
+
+    #[tokio::test]
+    async fn install_metrics_recorder_accepts_a_listener_config() {
+        // Ephemeral port; whichever install wins the process-global slot, the
+        // call must succeed and hand back a handle.
+        let prom = faucet_core::PrometheusConfig {
+            listen: "127.0.0.1:0".into(),
+            buckets: None,
+        };
+        let handle = install_metrics_recorder(Some(&prom)).expect("listener install");
+        let _ = handle.render();
     }
 }

@@ -24,7 +24,7 @@ path = "src/main.rs"
 # `serve` (HTTP control plane; links a web-server dependency tree and opens a
 # network listener). Opt in with `--features schedule` / `--features serve`, or
 # take everything with `--features full`.
-default = ["observability", "source", "sink", "state", "transforms", "compression", "quality", "contract", "masking"]
+default = ["observability", "source", "sink", "state", "transforms", "compression", "quality", "contract", "masking", "cli-progress"]
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
@@ -229,6 +229,9 @@ arrow = [
     "faucet-source-gcs?/arrow",
     "faucet-sink-gcs?/arrow",
     "faucet-source-databricks?/arrow",
+    "faucet-source-bigquery?/arrow",
+    "faucet-sink-bigquery?/arrow",
+    "faucet-sink-snowflake?/arrow",
 ]
 
 # Secrets-manager interpolation resolvers for the config layer. None in
@@ -266,6 +269,16 @@ cli-dev = ["dep:notify-fs"]
 # per-row throughput/errors/DLQ/bookmark age, sampled from the in-process
 # Prometheus recorder (implies `observability`). Opt-in; not in `default`.
 cli-tui = ["observability", "dep:ratatui"]
+
+# Inline live progress for `faucet run` (#385): one lightweight `indicatif`
+# line per active matrix-row invocation (records in/out, rows/s, pages,
+# elapsed), sampled a few times a second from the same in-process Prometheus
+# recorder the TUI uses (read-only — zero hot-path impact). Rendered on stderr
+# so piped stdout stays clean for records. Auto-disabled on a non-TTY stdout
+# (CI, pipes) and under `--quiet`, falling back to the periodic log lines;
+# `--tui` takes precedence when both are requested. Implies `observability`.
+# Shipped in `default`.
+cli-progress = ["observability", "dep:indicatif"]
 
 transforms = [
     "faucet-core/transforms",
@@ -406,6 +419,7 @@ inquire = { version = "0.9", optional = true, default-features = false, features
 # the `notify` *feature* (the notification/incident-routing layer).
 notify-fs = { package = "notify", version = "8", optional = true }
 ratatui = { workspace = true, optional = true }
+indicatif = { workspace = true, optional = true }
 futures = { workspace = true }
 glob = { workspace = true }
 reqwest = { workspace = true, optional = true }

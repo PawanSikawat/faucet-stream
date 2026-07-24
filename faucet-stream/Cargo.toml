@@ -114,6 +114,9 @@ arrow = [
     "faucet-source-gcs?/arrow",
     "faucet-sink-gcs?/arrow",
     "faucet-source-databricks?/arrow",
+    "faucet-source-bigquery?/arrow",
+    "faucet-sink-bigquery?/arrow",
+    "faucet-sink-snowflake?/arrow",
 ]
 ## Shared, single-flight auth providers (OAuth2 client-credentials / refresh,
 ## token-endpoint) usable across connectors via `auth: { ref }`.

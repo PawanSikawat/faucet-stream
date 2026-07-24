@@ -272,6 +272,8 @@ jobs:
           - cli-dev
           # Live terminal UI — `faucet run --tui` (CLI-only)
           - cli-tui
+          # Inline live progress line — `faucet run` (CLI-only, #385)
+          - cli-progress
           # Secrets backends
           - secrets-vault
           - secrets-aws-sm
@@ -306,7 +308,7 @@ jobs:
           # Secrets, schedule, serve, catalog, and triggers features live in
           # faucet-cli (CLI layer), not in the faucet-stream umbrella crate.
           # Route accordingly.
-          if [[ "${{ matrix.feature }}" == secrets-* || "${{ matrix.feature }}" == "schedule" || "${{ matrix.feature }}" == serve* || "${{ matrix.feature }}" == "catalog" || "${{ matrix.feature }}" == triggers* || "${{ matrix.feature }}" == "notify" || "${{ matrix.feature }}" == "cli-dev" || "${{ matrix.feature }}" == "cli-tui" ]]; then
+          if [[ "${{ matrix.feature }}" == secrets-* || "${{ matrix.feature }}" == "schedule" || "${{ matrix.feature }}" == serve* || "${{ matrix.feature }}" == "catalog" || "${{ matrix.feature }}" == triggers* || "${{ matrix.feature }}" == "notify" || "${{ matrix.feature }}" == "cli-dev" || "${{ matrix.feature }}" == "cli-tui" || "${{ matrix.feature }}" == "cli-progress" ]]; then
             cargo check -p faucet-cli --no-default-features --features ${{ matrix.feature }}
           else
             cargo check -p faucet-stream --no-default-features --features ${{ matrix.feature }}

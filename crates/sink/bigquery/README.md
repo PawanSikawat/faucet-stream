@@ -408,3 +408,32 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.
 </content>
 </invoke>
+
+## Arrow columnar load job (opt-in, `arrow` feature)
+
+With a binary built `--features arrow`, add a `bulk_load` block to switch the
+sink onto the Arrow columnar fast path: incoming Arrow `RecordBatch`es are
+written to Parquet on a GCS staging bucket, then loaded with a BigQuery
+`PARQUET` load job (`jobs.insert`, polled to `DONE`) instead of per-row
+`tabledata.insertAll`. This runs end-to-end without per-row JSON when the source
+is also columnar (e.g. `parquet → bigquery`). Load jobs are append/truncate
+only, so the columnar path is used **only** when `write_mode` is `append`
+(upsert/delete stay on the streaming/MERGE path).
+
+```yaml
+sink:
+  type: bigquery
+  config:
+    project_id: my-project
+    dataset_id: analytics
+    table_id: events
+    auth: { type: application_default }
+    bulk_load:
+      staging_bucket: my-bq-staging          # GCS bucket for Parquet staging
+      staging_prefix: faucet-bq-load/         # default
+      gcs_auth: { type: application_default }  # creds for the staging upload
+      write_disposition: WRITE_APPEND          # default (or WRITE_TRUNCATE / WRITE_EMPTY)
+```
+
+`bulk_load` is only present in `arrow` builds. The Storage **Write** API
+(gRPC `AppendRows`) is a separate future enhancement.
