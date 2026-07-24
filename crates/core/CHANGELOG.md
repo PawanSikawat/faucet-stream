@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.6.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-core-v1.5.0...faucet-core-v1.6.0) - 2026-07-24
+
+### Documentation
+
+- Architecture-review follow-ups — ADRs, SDK streaming docs, build_pipeline refactor, Arrow benchmark ([#324](https://github.com/PawanSikawat/faucet-stream/pull/324)) ([#373](https://github.com/PawanSikawat/faucet-stream/pull/373))
+
+### Features
+
+- *(cli)* Config-change preview — `faucet plan --diff` ([#374](https://github.com/PawanSikawat/faucet-stream/pull/374)) ([#378](https://github.com/PawanSikawat/faucet-stream/pull/378))
+
 ## [1.5.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-core-v1.4.0...faucet-core-v1.5.0) - 2026-07-17
 
 ### Bug Fixes
