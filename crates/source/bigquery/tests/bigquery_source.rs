@@ -922,4 +922,11 @@ async fn columnar_taken_only_in_read_api_mode() {
     )
     .await;
     assert!(read_src.supports_columnar());
+
+    // Both entry points route to the Storage Read path when `read_api` is set.
+    // Building the streams performs no gRPC (they are lazy), so we can exercise
+    // the dispatch without a live BigQuery: just confirm a stream is returned.
+    let ctx = HashMap::new();
+    let _batches = read_src.stream_batches(&ctx, 0);
+    let _pages = read_src.stream_pages(&ctx, 0);
 }

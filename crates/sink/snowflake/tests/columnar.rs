@@ -96,3 +96,21 @@ async fn columnar_write_stages_parquet_and_issues_copy() {
     let empty = RecordBatch::new_empty(batch().schema());
     assert_eq!(sink.write_batch_columnar(&empty).await.unwrap(), 0);
 }
+
+#[tokio::test]
+async fn columnar_write_without_bulk_load_errors() {
+    // A sink with no `bulk_load` does not advertise columnar; calling the
+    // method directly must fail loudly rather than silently no-op.
+    let sink = SnowflakeSink::new(SnowflakeSinkConfig::new(
+        "acct",
+        "WH",
+        "DB",
+        "PUBLIC",
+        "EVENTS",
+        SnowflakeAuth::OAuth { token: "t".into() },
+    ))
+    .unwrap();
+    assert!(!sink.supports_columnar());
+    let err = sink.write_batch_columnar(&batch()).await.unwrap_err();
+    assert!(format!("{err}").contains("bulk_load"), "{err}");
+}

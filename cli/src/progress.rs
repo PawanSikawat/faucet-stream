@@ -268,6 +268,23 @@ mod tests {
         assert_eq!(out, "done");
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn public_drive_wrapper_runs() {
+        // Exercise the public `drive` entry point (stderr draw target). In the
+        // non-TTY test env indicatif renders nothing; the future still resolves.
+        let handle = crate::livemetrics::install_metrics_recorder(None).expect("recorder");
+        let out = drive(
+            async {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                99u8
+            },
+            "wrap",
+            handle,
+        )
+        .await;
+        assert_eq!(out, 99);
+    }
+
     #[test]
     fn count_and_elapsed_formatting() {
         assert_eq!(format_count(999), "999");

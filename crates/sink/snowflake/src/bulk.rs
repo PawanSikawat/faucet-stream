@@ -169,6 +169,22 @@ mod tests {
     }
 
     #[test]
+    fn resolve_store_rejects_a_bad_url() {
+        let mut s = stage();
+        s.url = "http:// not a url".into();
+        assert!(matches!(resolve_store(&s), Err(FaucetError::Config(_))));
+    }
+
+    #[test]
+    fn resolve_store_opens_a_local_file_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = stage();
+        s.url = format!("file://{}/", dir.path().to_str().unwrap());
+        // A `file://` URL resolves to a LocalFileSystem store without error.
+        assert!(resolve_store(&s).is_ok());
+    }
+
+    #[test]
     fn encode_parquet_roundtrips_a_batch() {
         use arrow::array::Int64Array;
         use arrow::datatypes::{DataType, Field, Schema};
