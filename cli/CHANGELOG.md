@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.6.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-cli-v1.5.0...faucet-cli-v1.6.0) - 2026-07-24
+
+### Documentation
+
+- Architecture-review follow-ups — ADRs, SDK streaming docs, build_pipeline refactor, Arrow benchmark ([#324](https://github.com/PawanSikawat/faucet-stream/pull/324)) ([#373](https://github.com/PawanSikawat/faucet-stream/pull/373))
+
+### Features
+
+- Live `run` progress + Arrow BigQuery & Snowflake paths (#385, #380, #381) ([#395](https://github.com/PawanSikawat/faucet-stream/pull/395))
+- *(cli)* Tier-3 commands — fmt, explain, history, run --output json (#387,#389,#390,#391) ([#394](https://github.com/PawanSikawat/faucet-stream/pull/394))
+- *(cli)* `faucet migrate` + `doctor --offline` config linter (#388, #392) ([#393](https://github.com/PawanSikawat/faucet-stream/pull/393))
+- *(cli)* Shell tab-completion — `faucet completions` + dynamic (registry/config-aware) completion ([#383](https://github.com/PawanSikawat/faucet-stream/pull/383)) ([#384](https://github.com/PawanSikawat/faucet-stream/pull/384))
+- Arrow columnar path for S3, GCS, and Databricks — RFC 0002 Phase 4 ([#375](https://github.com/PawanSikawat/faucet-stream/pull/375)) ([#382](https://github.com/PawanSikawat/faucet-stream/pull/382))
+- *(cli)* Runtime matrix-row selection model (#370, #371, #376, #377) ([#379](https://github.com/PawanSikawat/faucet-stream/pull/379))
+- *(cli)* Config-change preview — `faucet plan --diff` ([#374](https://github.com/PawanSikawat/faucet-stream/pull/374)) ([#378](https://github.com/PawanSikawat/faucet-stream/pull/378))
+- *(cli)* Surface connector conformance maturity tiers ([#330](https://github.com/PawanSikawat/faucet-stream/pull/330)) ([#367](https://github.com/PawanSikawat/faucet-stream/pull/367))
+- *(connectors)* Redshift, Pub/Sub, ClickHouse, Azure Blob, and SQL Server CDC ([#362](https://github.com/PawanSikawat/faucet-stream/pull/362))
+
 ## [1.5.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-cli-v1.4.0...faucet-cli-v1.5.0) - 2026-07-17
 
 ### Bug Fixes

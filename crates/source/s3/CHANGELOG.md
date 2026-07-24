@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.6.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-source-s3-v1.5.0...faucet-source-s3-v1.6.0) - 2026-07-24
+
+### Features
+
+- Arrow columnar path for S3, GCS, and Databricks — RFC 0002 Phase 4 ([#375](https://github.com/PawanSikawat/faucet-stream/pull/375)) ([#382](https://github.com/PawanSikawat/faucet-stream/pull/382))
+
 ## [1.5.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-source-s3-v1.4.0...faucet-source-s3-v1.5.0) - 2026-07-17
 
 ### Features

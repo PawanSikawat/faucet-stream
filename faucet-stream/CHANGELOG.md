@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.5.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.4.0...faucet-stream-v1.5.0) - 2026-07-24
+
+### Documentation
+
+- Architecture-review follow-ups — ADRs, SDK streaming docs, build_pipeline refactor, Arrow benchmark ([#324](https://github.com/PawanSikawat/faucet-stream/pull/324)) ([#373](https://github.com/PawanSikawat/faucet-stream/pull/373))
+- WS-11 — Airflow/Dagster+dbt orchestration recipe & evergreen posts ([#314](https://github.com/PawanSikawat/faucet-stream/pull/314)) ([#361](https://github.com/PawanSikawat/faucet-stream/pull/361))
+- Reconcile counts, annotate benchmark, per-page SEO (closes #335, #336, #337) ([#339](https://github.com/PawanSikawat/faucet-stream/pull/339))
+- Upgrade Mermaid diagrams to V2 role-coded style ([#340](https://github.com/PawanSikawat/faucet-stream/pull/340))
+- Brand all GitHub-viewed Mermaid diagrams with the faucet teal theme ([#338](https://github.com/PawanSikawat/faucet-stream/pull/338))
+- Brand the docs site with the faucet-stream teal (#14B8A6) ([#332](https://github.com/PawanSikawat/faucet-stream/pull/332))
+- Architecture learning path, interactive docs site, platform/governance repositioning (+ release-plz retry fix) ([#326](https://github.com/PawanSikawat/faucet-stream/pull/326))
+
+### Features
+
+- Live `run` progress + Arrow BigQuery & Snowflake paths (#385, #380, #381) ([#395](https://github.com/PawanSikawat/faucet-stream/pull/395))
+- Arrow columnar path for S3, GCS, and Databricks — RFC 0002 Phase 4 ([#375](https://github.com/PawanSikawat/faucet-stream/pull/375)) ([#382](https://github.com/PawanSikawat/faucet-stream/pull/382))
+- *(cli)* Config-change preview — `faucet plan --diff` ([#374](https://github.com/PawanSikawat/faucet-stream/pull/374)) ([#378](https://github.com/PawanSikawat/faucet-stream/pull/378))
+- *(connectors)* Redshift, Pub/Sub, ClickHouse, Azure Blob, and SQL Server CDC ([#362](https://github.com/PawanSikawat/faucet-stream/pull/362))
+
 ## [1.4.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.3.0...faucet-stream-v1.4.0) - 2026-07-17
 
 ### Features
