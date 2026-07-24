@@ -735,6 +735,28 @@ mod tests {
     use crate::config::BigQueryCredentials;
     use serde_json::json;
 
+    #[test]
+    fn validate_read_api_rules() {
+        // read_api off → always ok.
+        let mut c =
+            BigQuerySourceConfig::new("p", BigQueryCredentials::ApplicationDefault, "SELECT 1");
+        assert!(BigQuerySource::validate_read_api(&c).is_ok());
+
+        c.read_api = true;
+        #[cfg(feature = "arrow")]
+        {
+            // read_api on but no table → error.
+            assert!(BigQuerySource::validate_read_api(&c).is_err());
+            c.read_table = Some("ds.events".into());
+            assert!(BigQuerySource::validate_read_api(&c).is_ok());
+        }
+        #[cfg(not(feature = "arrow"))]
+        {
+            // read_api on without the arrow feature → error.
+            assert!(BigQuerySource::validate_read_api(&c).is_err());
+        }
+    }
+
     fn cfg() -> BigQuerySourceConfig {
         BigQuerySourceConfig::new(
             "my-project",

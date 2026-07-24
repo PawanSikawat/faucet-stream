@@ -293,6 +293,30 @@ mod tests {
         assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
     }
 
+    #[cfg(feature = "arrow")]
+    #[test]
+    fn bulk_load_builder_and_defaults() {
+        let cfg = BigQuerySinkConfig::new("p", "d", "t", BigQueryCredentials::ApplicationDefault)
+            .with_bulk_load(BigQueryLoadConfig {
+                staging_bucket: "b".into(),
+                staging_prefix: default_staging_prefix(),
+                gcs_auth: Default::default(),
+                write_disposition: default_write_disposition(),
+                storage_host: None,
+            });
+        let load = cfg.bulk_load.expect("bulk_load set");
+        assert_eq!(load.staging_bucket, "b");
+        assert_eq!(load.staging_prefix, "faucet-bq-load/");
+        assert_eq!(load.write_disposition, "WRITE_APPEND");
+
+        // JSON: staging_prefix + write_disposition default when omitted.
+        let json = r#"{ "staging_bucket": "bk" }"#;
+        let l: BigQueryLoadConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(l.staging_prefix, "faucet-bq-load/");
+        assert_eq!(l.write_disposition, "WRITE_APPEND");
+        assert!(l.storage_host.is_none());
+    }
+
     #[test]
     fn write_mode_defaults_to_append() {
         let config =

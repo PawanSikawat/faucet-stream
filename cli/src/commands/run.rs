@@ -461,6 +461,14 @@ mod tests {
         assert_eq!(doc.totals.failed, 0);
     }
 
+    #[cfg(feature = "cli-progress")]
+    #[tokio::test]
+    async fn drive_progress_or_plain_without_handle_just_awaits() {
+        // No recorder handle (non-TTY / --quiet) → the future is awaited plainly.
+        let out = super::drive_progress_or_plain(async { 7_usize }, "p", None).await;
+        assert_eq!(out, 7);
+    }
+
     #[test]
     fn run_clock_parses_rfc3339_date_and_defaults() {
         // RFC3339

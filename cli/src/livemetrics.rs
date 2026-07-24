@@ -461,6 +461,20 @@ faucet_pipeline_in_flight{pipeline=\"p\",row=\"r\"} 1
         assert!(matches!(err, CliError::Observability(_)), "{err:?}");
     }
 
+    #[test]
+    fn setup_observability_installs_from_a_config_without_prometheus() {
+        // No `observability.prometheus` block → listener-less recorder + the
+        // rest of observability install (both idempotent). Covers the
+        // `setup_observability` wiring end to end.
+        let yaml = "version: 1\n\
+            pipeline:\n\
+            \x20 source: { type: rest, config: { base_url: \"http://x\" } }\n\
+            \x20 sink: { type: stdout, config: {} }\n";
+        let cfg = crate::config::parse_with_extension(yaml, "yaml").expect("parse cfg");
+        let handle = setup_observability(&cfg).expect("setup observability");
+        let _ = handle.render();
+    }
+
     #[tokio::test]
     async fn install_metrics_recorder_accepts_a_listener_config() {
         // Ephemeral port; whichever install wins the process-global slot, the

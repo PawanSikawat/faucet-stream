@@ -44,6 +44,7 @@ serde_json.workspace = true
 faucet-conformance.workspace = true
 schemars.workspace = true
 wiremock = "0.6"
+tempfile = "3"
 
 [package.metadata.docs.rs]
 all-features = true

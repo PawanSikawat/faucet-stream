@@ -31,3 +31,11 @@ ignore:
   # than penalising provably-uncoverable I/O.
   - "crates/source/gcs/src/stream.rs"
   - "crates/sink/gcs/src/sink.rs"
+  # BigQuery Arrow columnar I/O (#380) is provably-uncoverable in CI for the
+  # same reasons: the Storage Read API is gRPC with no emulator, and the load
+  # sink stages Parquet through the google-cloud-storage SDK (the very SDK the
+  # GCS exclusions above cover) before a live load job. The pure helpers
+  # (`build_load_job`, `resolve_table`, Parquet encode) are unit-tested; these
+  # two files are the untestable transport/I/O.
+  - "crates/source/bigquery/src/storage_read.rs"
+  - "crates/sink/bigquery/src/load.rs"

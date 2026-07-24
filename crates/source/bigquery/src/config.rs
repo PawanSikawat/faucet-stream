@@ -327,6 +327,41 @@ mod tests {
     }
 
     #[test]
+    fn read_api_defaults_and_builder() {
+        let c = sample();
+        assert!(!c.read_api);
+        assert!(c.read_table.is_none());
+        assert_eq!(c.max_streams, 1);
+        assert!(c.selected_fields.is_empty());
+
+        let c = sample().with_read_api("ds.events");
+        assert!(c.read_api);
+        assert_eq!(c.read_table.as_deref(), Some("ds.events"));
+        // Debug renders the new fields without panicking.
+        assert!(format!("{c:?}").contains("read_api: true"));
+    }
+
+    #[test]
+    fn read_api_fields_deserialize() {
+        let json = r#"{
+            "project_id": "p",
+            "auth": {"type": "application_default"},
+            "query": "",
+            "read_api": true,
+            "read_table": "ds.t",
+            "row_restriction": "x = 1",
+            "selected_fields": ["a", "b"],
+            "max_streams": 3
+        }"#;
+        let c: BigQuerySourceConfig = serde_json::from_str(json).unwrap();
+        assert!(c.read_api);
+        assert_eq!(c.read_table.as_deref(), Some("ds.t"));
+        assert_eq!(c.row_restriction.as_deref(), Some("x = 1"));
+        assert_eq!(c.selected_fields, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(c.max_streams, 3);
+    }
+
+    #[test]
     fn debug_masks_inline_credentials() {
         let c = BigQuerySourceConfig::new(
             "p",

@@ -236,6 +236,51 @@ mod tests {
     }
 
     #[test]
+    fn with_bulk_load_sets_stage_and_defaults_deserialize() {
+        let cfg = sample_config().with_bulk_load(SnowflakeStageConfig {
+            stage: "STG".into(),
+            url: "s3://b/p/".into(),
+            storage_options: std::collections::HashMap::new(),
+            match_by_column_name: default_match_by_column_name(),
+            purge: false,
+        });
+        let stage = cfg.bulk_load.expect("bulk_load set");
+        assert_eq!(stage.stage, "STG");
+        assert_eq!(stage.match_by_column_name, "CASE_INSENSITIVE");
+        assert!(!stage.purge);
+
+        // JSON defaults: match_by_column_name + purge fall back sensibly.
+        let json = r#"{ "stage": "S", "url": "gs://b/" }"#;
+        let s: SnowflakeStageConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(s.match_by_column_name, "CASE_INSENSITIVE");
+        assert!(!s.purge);
+        assert!(s.storage_options.is_empty());
+    }
+
+    #[test]
+    fn stage_debug_masks_storage_option_values() {
+        let mut opts = std::collections::HashMap::new();
+        opts.insert(
+            "aws_secret_access_key".to_string(),
+            "SUPER_SECRET".to_string(),
+        );
+        let stage = SnowflakeStageConfig {
+            stage: "STG".into(),
+            url: "s3://b/".into(),
+            storage_options: opts,
+            match_by_column_name: default_match_by_column_name(),
+            purge: true,
+        };
+        let dbg = format!("{stage:?}");
+        assert!(!dbg.contains("SUPER_SECRET"), "secret leaked: {dbg}");
+        assert!(
+            dbg.contains("aws_secret_access_key"),
+            "key name shown: {dbg}"
+        );
+        assert!(dbg.contains("purge: true"), "{dbg}");
+    }
+
+    #[test]
     fn batch_size_deserializes_from_json() {
         let json = r#"{
             "account": "xy12345",

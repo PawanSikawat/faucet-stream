@@ -40,10 +40,22 @@ const TICK: Duration = Duration::from_millis(100);
 /// `handle` is the same one `livemetrics::setup_observability` installed.
 pub async fn drive<T>(run: impl Future<Output = T>, pipeline: &str, handle: PrometheusHandle) -> T {
     let multi = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(RENDER_HZ));
+    drive_with(run, pipeline, handle, multi, TICK).await
+}
+
+/// The render/sample loop behind [`drive`], generic over the [`MultiProgress`]
+/// draw target and tick so it runs headless (hidden target) under test.
+async fn drive_with<T>(
+    run: impl Future<Output = T>,
+    pipeline: &str,
+    handle: PrometheusHandle,
+    multi: MultiProgress,
+    tick: Duration,
+) -> T {
     let mut bars: HashMap<String, ProgressBar> = HashMap::new();
     let mut sampler = Sampler::new(pipeline);
     let started = Instant::now();
-    let mut interval = tokio::time::interval(TICK);
+    let mut interval = tokio::time::interval(tick);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     tokio::pin!(run);
@@ -221,6 +233,39 @@ mod tests {
         let line = format_row_line("r", &r, Duration::from_secs(2));
         assert!(line.contains("10 dlq"), "{line}");
         assert!(line.contains("FAILED"), "{line}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drive_loop_samples_and_finalizes() {
+        // Install the shared recorder and emit a couple of series for pipeline
+        // "p" so the sampler creates a bar and the render loop runs.
+        let handle = crate::livemetrics::install_metrics_recorder(None).expect("recorder");
+        metrics::counter!(
+            "faucet_source_records_total",
+            "pipeline" => "p", "row" => "r", "connector" => "rest"
+        )
+        .increment(5);
+        metrics::counter!(
+            "faucet_sink_records_total",
+            "pipeline" => "p", "row" => "r", "connector" => "jsonl"
+        )
+        .increment(5);
+
+        // Hidden draw target → no terminal needed. The run future outlives a
+        // few ticks so the loop samples at least once, then completes.
+        let multi = MultiProgress::with_draw_target(ProgressDrawTarget::hidden());
+        let out = drive_with(
+            async {
+                tokio::time::sleep(Duration::from_millis(350)).await;
+                "done"
+            },
+            "p",
+            handle,
+            multi,
+            Duration::from_millis(100),
+        )
+        .await;
+        assert_eq!(out, "done");
     }
 
     #[test]
