@@ -66,3 +66,7 @@ cargo bench -p faucet-core --bench observability
 
 Numbers are hardware-dependent, so run the benchmark on your target machine
 rather than relying on published figures.
+
+For the end-to-end throughput comparison against Meltano (Singer) — charted per
+scenario, with the full methodology and caveats — see
+[Benchmarks (vs Meltano)](../comparison/benchmarks.md).
