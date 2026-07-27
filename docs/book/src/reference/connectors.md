@@ -46,12 +46,12 @@ Legend: ✓ supported · ✗ not applicable. Tier: T1 = passes the faucet-confor
 | Elasticsearch | T1 ✅ᵐ | `source-elasticsearch` | ✓ | ✗ | ✗ | ✗ | ✓ | search/scroll API |
 | Apache Kafka | T1 ✅ | `source-kafka` | ✓ | ✓ | **✓** | ✗ | ✗ | consumer; idle/max-messages termination, offset bookmarks |
 | AWS Kinesis | T1 ✅ | `source-kinesis` | ✓ | ✓ | ✗ | ✗ | ✗ | per-shard GetRecords workers; sequence-number bookmarks, idle/max-messages termination |
-| Google Cloud Pub/Sub | T2 | `source-pubsub` | ✓ | ✓ | ✗ | ✗ | ✗ | streaming pull; per-message records + attributes, ack at durable page boundary (at-least-once), idle/max-messages termination |
+| Google Cloud Pub/Sub | T1 ✅ᵉ | `source-pubsub` | ✓ | ✓ | ✗ | ✗ | ✗ | streaming pull; per-message records + attributes, ack at durable page boundary (at-least-once), idle/max-messages termination |
 | Apache Parquet | T1 ✅ | `source-parquet` | ✓ | ✗ | ✗ | ✗ | ✗ | local/glob/S3, vectorized Arrow reader, projection |
-| Apache Delta Lake | T2 | `source-delta` | ✓ | ✗ | ✗ | ✗ | ✗ | local FS or S3/Azure/GCS; time travel (version/timestamp), projection pushdown, partition reconstruction |
-| Databricks SQL | T3 | `source-databricks` | ✓ | ✓ | ✗ | ✗ | ✗ | Statement Execution API; async poll, chunk pagination, typed decode, incremental `${bookmark}` |
+| Apache Delta Lake | T1 ✅ | `source-delta` | ✓ | ✗ | ✗ | ✗ | ✗ | local FS or S3/Azure/GCS; time travel (version/timestamp), projection pushdown, partition reconstruction |
+| Databricks SQL | T1 ✅ᵐ | `source-databricks` | ✓ | ✓ | ✗ | ✗ | ✗ | Statement Execution API; async poll, chunk pagination, typed decode, incremental `${bookmark}` |
 | Amazon Redshift | T1 ✅ | `source-redshift` | ✓ | ✓ | ✗ | ✗ | ✗ | PostgreSQL wire; SQL query, rows as JSON; incremental replication |
-| ClickHouse | T2 | `source-clickhouse` | ✓ | ✓ | ✗ | ✗ | ✗ | HTTP interface, `FORMAT JSONEachRow` streaming; incremental replication |
+| ClickHouse | T1 ✅ | `source-clickhouse` | ✓ | ✓ | ✗ | ✗ | ✗ | HTTP interface, `FORMAT JSONEachRow` streaming; incremental replication |
 | BigQuery | T1 ✅ᵐ | `source-bigquery` | ✓ | ✗ | ✗ | ✗ | ✓ | `jobs.query` + pageToken pagination |
 | Snowflake | T1 ✅ᵐ | `source-snowflake` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL REST API, server-side partitions |
 | Cloud Spanner | T1 ✅ᵉ | `source-spanner` | ✓ | ✓⁸ | ✗ | ✗ | ✓ | streaming SQL (gRPC), incremental `@bookmark` replication, stale reads, PK-range sharding |
@@ -90,13 +90,18 @@ individual tap — pair it with a keyed/upsert sink for clean, effectively-once
 >
 > **ᵐ** marks a connector whose battery runs in CI against a **wiremock HTTP
 > mock**, not a live service instance — the `rest`, `graphql`, `xml`,
-> `elasticsearch`, `bigquery`, and `snowflake` sources and the `http` sink. The
-> mock faithfully drives the paging, schema, and error-handling behavior the
-> checks assert, but it is not an end-to-end test against the real system (no
-> credentialed cloud/service backend runs in CI). **ᵉ** marks the Cloud Spanner
-> pair, whose battery runs against Google's official **Spanner emulator**
-> (Docker) — a real gRPC Spanner implementation, closer to end-to-end than a
-> wiremock but still not the managed service.
+> `elasticsearch`, `bigquery`, `snowflake`, and `databricks` sources and the
+> `http` sink. The mock faithfully drives the paging, schema, and error-handling
+> behavior the checks assert, but it is not an end-to-end test against the real
+> system (no credentialed cloud/service backend runs in CI). **ᵉ** marks a
+> connector whose battery runs against an official **emulator** in Docker — a
+> real implementation, closer to end-to-end than a wiremock but still not the
+> managed service: the Cloud **Spanner** pair (Spanner emulator, gRPC), the
+> **Pub/Sub** source and sink (Pub/Sub emulator, gRPC), and the **Azure Blob**
+> sink (Azurite). Unmarked **T1 ✅** connectors run against a real backend with
+> no emulator caveat — a local filesystem (`delta`, `parquet`, `csv`), or a
+> testcontainers-launched real server (`postgres`, `mysql`, `mongodb`, `redis`,
+> `clickhouse`, `kafka`, …).
 >
 > The connectors still marked **Tier-2** are the ones whose full battery cannot
 > run in CI (so they are not conformance-certified — Tier-2 means "not certified,"
@@ -153,13 +158,13 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 | JSON Lines | T1 ✅ | `sink-jsonl` | no-op | ✓ | ✗ | ✗ | buffered file append |
 | Snowflake | T2 | `sink-snowflake` | ✓ | ✗ | ✗ | **✓** | SQL REST API; multi-statement `BEGIN;INSERT;MERGE;COMMIT` transaction for effectively-once |
 | Amazon Redshift | T1 ✅ | `sink-redshift` | ✓ | ✗ | ✗ | ✗ | COPY-from-S3 (staged) or multi-row `INSERT`; append-only |
-| ClickHouse | T2 | `sink-clickhouse` | ✓ | ✗ | ✗ | ✗ | `INSERT … FORMAT JSONEachRow`; optional `async_insert`; append-only |
+| ClickHouse | T1 ✅ | `sink-clickhouse` | ✓ | ✗ | ✗ | ✗ | `INSERT … FORMAT JSONEachRow`; optional `async_insert`; append-only |
 | MySQL | T1 ✅ | `sink-mysql` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` |
 | Microsoft SQL Server | T1 ✅ | `sink-mssql` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` (2100-param auto-split, per-row DLQ) |
 | SQLite | T1 ✅ | `sink-sqlite` | ✓ | ✗ | **✓** | **✓** | transaction-wrapped batch |
 | AWS S3 | T1 ✅ | `sink-s3` | ✓ | ✓ | ✗ | ✗ | JSONL objects, parallel uploads |
 | Google Cloud Storage | T2 | `sink-gcs` | ✓ | ✓ | ✗ | ✗ | JSONL objects |
-| Azure Blob / ADLS Gen2 | T2 | `sink-azure-blob` | ✓ | ✓ | ✗ | ✗ | JSONL blobs (object_store), batch/byte rollover |
+| Azure Blob / ADLS Gen2 | T1 ✅ᵉ | `sink-azure-blob` | ✓ | ✓ | ✗ | ✗ | JSONL blobs (object_store), batch/byte rollover |
 | MongoDB | T1 ✅ | `sink-mongodb` | ✓ | ✗ | **✓** | **✓** | `insert_many`; multi-document transaction for effectively-once (replica set required) |
 | Redis | T1 ✅ | `sink-redis` | ✓ | ✗ | ✗ | **✓** | streams, lists, key-value (pipelined); `MULTI`/`EXEC` transaction for effectively-once |
 | CSV | T1 ✅ | `sink-csv` | no-op | ✓ | ✗ | ✗ | buffered file rows; column set frozen from first batch (`on_unknown_field: warn`/`error`) |
@@ -168,10 +173,10 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 | Stdout | T1 ✅ | `sink-stdout` | no-op | ✗ | ✗ | ✗ | JSON Lines / pretty JSON / TSV |
 | Apache Kafka | T1 ✅ | `sink-kafka` | ✓ | ✗ | ✗ | **✓** | producer, batched sends, multi-topic routing; transactional producer + compacted watermark side-topic for effectively-once |
 | AWS Kinesis | T1 ✅ | `sink-kinesis` | ✓ | ✗ | ✗ | ✗ | batched PutRecords; partition-key routing, per-entry partial-failure retry (DLQ-routable) |
-| Google Cloud Pub/Sub | T2 | `sink-pubsub` | ✓ | ✗ | ✗ | ✗ | batched publish; optional ordering key, per-entry partial-failure retry (DLQ-routable) |
+| Google Cloud Pub/Sub | T1 ✅ᵉ | `sink-pubsub` | ✓ | ✗ | ✗ | ✗ | batched publish; optional ordering key, per-entry partial-failure retry (DLQ-routable) |
 | Cloud Spanner | T1 ✅ᵉ | `sink-spanner` | ✓ | ✗ | **✓** | **✓** | batched mutations (`insert` / `insert_or_update` / `delete`), cell-budget chunking, commit-token transaction for effectively-once |
 | Apache Parquet | T1 ✅ | `sink-parquet` | ✓ | ✗⁶ | ✗ | ✗ | local/S3, schema inference (re-inferred per file on rollover), row/byte rollover |
-| Apache Delta Lake | T2 | `sink-delta` | ✓ | ✗⁶ | ✗ | ✗ | append-only; local FS or S3/Azure/GCS; schema-inferred table creation, partitioning, one commit per flush |
+| Apache Delta Lake | T1 ✅ | `sink-delta` | ✓ | ✗⁶ | ✗ | ✗ | append-only; local FS or S3/Azure/GCS; schema-inferred table creation, partitioning, one commit per flush |
 | Apache Iceberg | T2 | `sink-iceberg` | ✓ | ✗⁶ | ✗ | **✓** | REST/Glue/SQL/HMS catalog, local + cloud (S3/GCS) warehouses, `fast_append` snapshot, Parquet data files |
 
 ⁶ Parquet and Iceberg both handle compression internally at the Parquet column
