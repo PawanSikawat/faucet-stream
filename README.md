@@ -227,13 +227,18 @@ for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Pa
 > **That battery *is* the tiering mechanism** — there is no separate scheme, and
 > the Tier-1 set grows as more connectors wire it in. **ᵐ** marks a connector
 > whose battery runs against a **wiremock HTTP mock** in CI rather than a live
-> service (the `rest`, `graphql`, `xml`, `elasticsearch`, `bigquery`, `snowflake`
-> sources and the `http` sink): the mock faithfully drives the paging / schema /
-> error paths the checks assert, but it is not an end-to-end test against the real
-> system. **ᵉ** marks the Cloud Spanner pair, whose battery runs against Google's
-> official **Spanner emulator** (Docker) — a real gRPC Spanner implementation.
-> **Tier-2** connectors are **not conformance-certified in CI** — either their
-> full battery can't run without a live cloud backend (the BigQuery / Snowflake /
+> service (the `rest`, `graphql`, `xml`, `elasticsearch`, `bigquery`, `snowflake`,
+> `databricks` sources and the `http` sink): the mock faithfully drives the
+> paging / schema / error paths the checks assert, but it is not an end-to-end
+> test against the real system. **ᵉ** marks a connector whose battery runs against
+> an official **emulator** in Docker — a real implementation, not the managed
+> service: the Cloud **Spanner** pair (Spanner emulator), the **Pub/Sub** source
+> and sink (Pub/Sub emulator), and the **Azure Blob** sink (Azurite). Unmarked
+> **T1 ✅** connectors run against a real backend with no caveat — a local
+> filesystem (`delta`, `parquet`, `csv`) or a testcontainers-launched real server
+> (`postgres`, `mysql`, `mongodb`, `redis`, `clickhouse`, `kafka`, …).
+> **Tier-2** connectors are **not conformance-certified in CI** — their full
+> battery can't run without a live cloud backend (the BigQuery / Snowflake /
 > Elasticsearch sinks are tested against wiremock, which can't prove real
 > idempotent dedup; the GCS source/sink need a real gRPC backend the emulator
 > doesn't provide), or the connector's shape doesn't fit a check (the webhook
@@ -266,15 +271,15 @@ wired into the battery (see the support-tiers note above).
 | [`faucet-source-redis`](crates/source/redis) | T1 ✅ | Redis — read from streams, lists, or key patterns |
 | [`faucet-source-kafka`](crates/source/kafka) | T1 ✅ | Apache Kafka — consumer with idle/max-messages termination |
 | [`faucet-source-kinesis`](crates/source/kinesis) | T1 ✅ | AWS Kinesis Data Streams — sharded consumer with resumable sequence checkpoints |
-| [`faucet-source-pubsub`](crates/source/pubsub) | T2 | Google Cloud Pub/Sub — streaming pull; per-message records + attributes, resumable |
+| [`faucet-source-pubsub`](crates/source/pubsub) | T1 ✅ᵉ | Google Cloud Pub/Sub — streaming pull; per-message records + attributes, resumable |
 | [`faucet-source-s3`](crates/source/s3) | T1 ✅ | AWS S3 — read objects as JSONL, JSON array, or raw text |
 | [`faucet-source-gcs`](crates/source/gcs) | T2 | Google Cloud Storage — read objects as JSONL, JSON array, or raw text |
 | [`faucet-source-azure-blob`](crates/source/azure-blob) | T1 ✅ | Azure Blob / ADLS Gen2 — read objects as JSONL, JSON array, or raw text |
 | [`faucet-source-parquet`](crates/source/parquet) | T1 ✅ | Apache Parquet — local file, glob, or S3; vectorized Arrow reader, projection |
-| [`faucet-source-delta`](crates/source/delta) | T2 | Apache Delta Lake — local FS or S3/Azure/GCS; time travel, projection pushdown |
-| [`faucet-source-databricks`](crates/source/databricks) | T3 | Databricks SQL query source (Statement Execution API) — typed rows, chunk pagination, incremental |
+| [`faucet-source-delta`](crates/source/delta) | T1 ✅ | Apache Delta Lake — local FS or S3/Azure/GCS; time travel, projection pushdown |
+| [`faucet-source-databricks`](crates/source/databricks) | T1 ✅ᵐ | Databricks SQL query source (Statement Execution API) — typed rows, chunk pagination, incremental |
 | [`faucet-source-redshift`](crates/source/redshift) | T1 ✅ | Amazon Redshift — SQL query over the PostgreSQL wire, incremental replication |
-| [`faucet-source-clickhouse`](crates/source/clickhouse) | T2 | ClickHouse — HTTP interface, `FORMAT JSONEachRow` streaming, incremental replication |
+| [`faucet-source-clickhouse`](crates/source/clickhouse) | T1 ✅ | ClickHouse — HTTP interface, `FORMAT JSONEachRow` streaming, incremental replication |
 | [`faucet-source-elasticsearch`](crates/source/elasticsearch) | T1 ✅ᵐ | Elasticsearch — search/scroll API |
 | [`faucet-source-bigquery`](crates/source/bigquery) | T1 ✅ᵐ | Google BigQuery — `jobs.query` + `getQueryResults`, type-aware decoding |
 | [`faucet-source-snowflake`](crates/source/snowflake) | T1 ✅ᵐ | Snowflake — SQL REST API, server-side partition pagination, JWT / OAuth |
@@ -296,19 +301,19 @@ wired into the battery (see the support-tiers note above).
 | [`faucet-sink-sqlite`](crates/sink/sqlite) | **T1 ✅** | SQLite — JSON column or auto-mapped columns; upsert/delete; effectively-once |
 | [`faucet-sink-snowflake`](crates/sink/snowflake) | T2 | Snowflake — SQL REST API with JWT/OAuth |
 | [`faucet-sink-redshift`](crates/sink/redshift) | T1 ✅ | Amazon Redshift — COPY-from-S3 (staged) or multi-row `INSERT`; append-only |
-| [`faucet-sink-clickhouse`](crates/sink/clickhouse) | T2 | ClickHouse — `INSERT … FORMAT JSONEachRow`; optional `async_insert`; append-only |
+| [`faucet-sink-clickhouse`](crates/sink/clickhouse) | T1 ✅ | ClickHouse — `INSERT … FORMAT JSONEachRow`; optional `async_insert`; append-only |
 | [`faucet-sink-mongodb`](crates/sink/mongodb) | T1 ✅ | MongoDB — insert_many; upsert/delete by key |
 | [`faucet-sink-redis`](crates/sink/redis) | T1 ✅ | Redis — write to streams, lists, or key-value |
 | [`faucet-sink-kafka`](crates/sink/kafka) | T1 ✅ | Apache Kafka — producer with batching, multi-topic routing |
 | [`faucet-sink-kinesis`](crates/sink/kinesis) | T1 ✅ | AWS Kinesis Data Streams — batched PutRecords with partition-key routing |
-| [`faucet-sink-pubsub`](crates/sink/pubsub) | T2 | Google Cloud Pub/Sub — batched publish; optional ordering key, per-entry retry |
+| [`faucet-sink-pubsub`](crates/sink/pubsub) | T1 ✅ᵉ | Google Cloud Pub/Sub — batched publish; optional ordering key, per-entry retry |
 | [`faucet-sink-spanner`](crates/sink/spanner) | T1 ✅ᵉ | Google Cloud Spanner — batched mutations; upsert/delete, effectively-once commit tokens, schema evolution |
 | [`faucet-sink-elasticsearch`](crates/sink/elasticsearch) | T2 | Elasticsearch — bulk index API; upsert/delete by `_id` |
 | [`faucet-sink-s3`](crates/sink/s3) | T1 ✅ | AWS S3 — write JSONL files to bucket |
 | [`faucet-sink-gcs`](crates/sink/gcs) | T2 | Google Cloud Storage — write JSONL files to bucket |
-| [`faucet-sink-azure-blob`](crates/sink/azure-blob) | T2 | Azure Blob / ADLS Gen2 — write JSONL blobs; batch/byte rollover |
+| [`faucet-sink-azure-blob`](crates/sink/azure-blob) | T1 ✅ᵉ | Azure Blob / ADLS Gen2 — write JSONL blobs; batch/byte rollover |
 | [`faucet-sink-parquet`](crates/sink/parquet) | T1 ✅ | Apache Parquet — local file or S3; schema inference, row/byte rollover |
-| [`faucet-sink-delta`](crates/sink/delta) | T2 | Apache Delta Lake — append-only; local FS or S3/Azure/GCS; one commit per flush |
+| [`faucet-sink-delta`](crates/sink/delta) | T1 ✅ | Apache Delta Lake — append-only; local FS or S3/Azure/GCS; one commit per flush |
 | [`faucet-sink-jsonl`](crates/sink/jsonl) | **T1 ✅** | JSON Lines — file output with append/truncate |
 | [`faucet-sink-csv`](crates/sink/csv) | T1 ✅ | CSV — write JSON records as CSV rows |
 | [`faucet-sink-http`](crates/sink/http) | T1 ✅ᵐ | HTTP — POST records to any endpoint |
