@@ -61,6 +61,6 @@ Then start from [your first pipeline](../getting-started/first-pipeline.md) and 
 
 ## See for yourself
 
-- **[Benchmarks](https://github.com/PawanSikawat/faucet-stream/blob/main/BENCHMARKS.md)** — full methodology and honest caveats.
+- **[Benchmarks (vs Meltano)](./benchmarks.md)** — the numbers charted per scenario, with full methodology and honest caveats ([raw source](https://github.com/PawanSikawat/faucet-stream/blob/main/BENCHMARKS.md)).
 - **[Try it in 60 seconds](../getting-started/try-it-locally.md)** — no infrastructure needed.
 - **[Choosing a connector](../reference/choosing.md)** — confirm your sources and sinks are covered.

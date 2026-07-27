@@ -67,6 +67,7 @@
 # Comparisons
 
 - [How faucet-stream compares](./comparison/index.md)
+- [Benchmarks (vs Meltano)](./comparison/benchmarks.md)
 - [vs. Meltano (Singer)](./comparison/meltano.md)
 - [vs. Airbyte](./comparison/airbyte.md)
 - [vs. Singer](./comparison/singer.md)
