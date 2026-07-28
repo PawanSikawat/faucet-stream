@@ -80,13 +80,24 @@ async fn conformance_bounded_memory() {
     let conn = connection(port);
 
     // Seed a 5,000-record JSONL file into the writable upload directory.
+    // `SftpSession::write` opens with WRITE only (no CREATE), so it cannot
+    // create a new file — open explicitly with CREATE|WRITE|TRUNCATE.
+    use faucet_common_sftp::OpenFlags;
+    use tokio::io::AsyncWriteExt;
     let sftp = faucet_common_sftp::connect(&conn)
         .await
         .expect("seed connect");
     let body = jsonl_body(1, 5_000);
-    sftp.write(format!("{UPLOAD_DIR}/data.jsonl"), body.as_bytes())
+    let mut file = sftp
+        .open_with_flags(
+            format!("{UPLOAD_DIR}/data.jsonl"),
+            OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE,
+        )
         .await
-        .expect("seed write");
+        .expect("seed open");
+    file.write_all(body.as_bytes()).await.expect("seed write");
+    file.shutdown().await.expect("seed close");
+    drop(file);
     drop(sftp);
 
     let config = SftpSourceConfig::new(conn, UPLOAD_DIR).with_batch_size(250);

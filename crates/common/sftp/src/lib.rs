@@ -35,6 +35,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use russh_sftp::client::SftpSession;
+// Re-exported so callers can open files for writing with explicit flags. The
+// `SftpSession::write` convenience opens with `WRITE` only (no `CREATE`), so it
+// cannot create a new file — writing one requires
+// `open_with_flags(path, OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE)`.
+pub use russh_sftp::protocol::OpenFlags;
 
 /// Default SSH port.
 pub const DEFAULT_PORT: u16 = 22;

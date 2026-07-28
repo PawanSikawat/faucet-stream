@@ -25,7 +25,7 @@ futures.workspace = true
 [dev-dependencies]
 faucet-conformance.workspace = true
 faucet-common-sftp.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }
 serde_json.workspace = true
 schemars.workspace = true
 futures = { workspace = true }
