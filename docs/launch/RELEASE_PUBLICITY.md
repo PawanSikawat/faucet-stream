@@ -27,7 +27,7 @@ per-crate patch bump. Rule of thumb:
 - [ ] Release PR merged; crates published; the umbrella tag is live and installable
       (`cargo install faucet-cli` / the Homebrew tap / the installer script all resolve).
 - [ ] Connector count in the templates below still matches reality
-      (`ls crates/source/* crates/sink/*` → currently 28 + 21 = **49**).
+      (`ls crates/source/* crates/sink/*` → currently 33 + 25 = **58**).
 - [ ] Pull the release highlights from the per-crate `CHANGELOG.md` files (release-plz writes
       these from `feat`/`fix`/`perf` commits). Pick the 2–4 user-facing headlines.
 - [ ] The repo **social-preview image** (Settings → Social preview, 1280×640) is set so
@@ -59,14 +59,14 @@ Front-load the high-signal, low-effort channels; do the rest as time allows.
 
 ## Copy templates
 
-Reuse verbatim; swap `vX.Y.Z` and the highlights. All counts are **49**; all benchmark
+Reuse verbatim; swap `vX.Y.Z` and the highlights. All counts are **58**; all benchmark
 figures come from [`BENCHMARKS.md`](../../BENCHMARKS.md) (quote **~16×** for a realistic
 DB→DB move, **~96×** as the CSV→JSONL upper bound — never the ~96× alone).
 
 ### Elevator pitch (one-liner — use everywhere)
 
 > **faucet-stream** — the fast, config-driven way to move data in Rust. A data-movement
-> platform with 49 source and sink connectors for ETL, CDC, and streaming, run from a YAML
+> platform with 58 source and sink connectors for ETL, CDC, and streaming, run from a YAML
 > file by a single binary or embedded as a Rust library.
 
 ### Release thread (X / Bluesky / Mastodon / LinkedIn)
