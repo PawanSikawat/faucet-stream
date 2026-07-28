@@ -16,10 +16,10 @@ invokes and passes these checks in CI; connectors that don't are Tier-2
 |---|---|---|
 | 1 | `assert_config_schema_valid` | ✅ implemented — `config_schema()` is a valid, round-tripping JSON Schema |
 | 2 | `assert_bounded_memory` | ✅ implemented — `stream_pages` pages instead of buffering the whole set |
-| 3 | `assert_bookmark_roundtrip` | 🚧 skeleton (stable signature, `// TODO`) |
-| 4 | `assert_idempotent_replay` | 🚧 skeleton |
-| 5 | `assert_capabilities_truthful` | 🚧 skeleton |
-| 6 | `assert_errors_not_panics` | 🚧 skeleton |
+| 3 | `assert_bookmark_roundtrip` | ✅ implemented — a resumed run picks up *after* the emitted bookmark; strictly fewer records reappear |
+| 4 | `assert_idempotent_replay` | ✅ implemented — atomic-watermark replay (or keyed-upsert) converges to one row per key, no double-writes |
+| 5 | `assert_capabilities_truthful` | ✅ implemented — advertised `supports_*` capabilities match actual behavior (idempotency, schema evolution) |
+| 6 | `assert_errors_not_panics` | ✅ implemented — a failing source surfaces a typed `FaucetError` without unwinding |
 
 ## Usage
 

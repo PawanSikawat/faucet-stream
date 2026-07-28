@@ -8,7 +8,7 @@ A **repeatable, per-release** playbook so publicity is routine, not heroic. Wher
 account. Keep the copy consistent across channels: consistency compounds recognition.
 
 > **Single source of truth:** the canonical pitch and the connector count live in the root
-> [`README.md`](../../README.md) hero (currently **49 connectors — 28 sources / 21 sinks**).
+> [`README.md`](../../README.md) hero (currently **58 connectors — 33 sources / 25 sinks**).
 > Copy from there; don't invent variants. If the count changed this release, update the
 > templates below in the same PR.
 
@@ -83,7 +83,7 @@ DB→DB move, **~96×** as the CSV→JSONL upper bound — never the ~96× alone
 
 ### This Week in Rust
 
-> **faucet-stream vX.Y.Z** — a config-driven data-movement platform for Rust: 49 connectors,
+> **faucet-stream vX.Y.Z** — a config-driven data-movement platform for Rust: 58 connectors,
 > a `faucet` CLI that runs pipelines from YAML, and an embeddable library, with streaming,
 > Postgres CDC, dead-letter queues, and built-in Prometheus/tracing. This release:
 > <one-line highlight>.

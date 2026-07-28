@@ -52,6 +52,10 @@ cargo add faucet-stream           # the library
   (~96× faster, ~62× less memory, exact row parity); sink-bound moves like
   Postgres→Postgres narrow the gap. See [`BENCHMARKS.md`](BENCHMARKS.md) for the
   methodology, the sink-bound scenario, and honest caveats.
+- **🔌 Adopt incrementally — bring your Singer taps** — the `singer` source runs any
+  existing Singer/Meltano tap unchanged, so you can start with the taps you already
+  have and move to native connectors where throughput matters. _Experimental (v0):
+  single-stream today, and a bridged tap still runs its own Python process._
 - **🧩 Config-driven _or_ embeddable** — run `faucet run pipeline.yaml`, or call
   `Pipeline::new(&source, &sink).run().await?` from Rust. Same orchestration either way.
 - **⚙️ A runtime, not just connectors** — incremental + resumable replication, change-data-capture,
@@ -398,6 +402,7 @@ own service.
 | Config-driven (YAML/JSON) | ✓ | ✓ | via UI/API | ✓ | ✓ | via UI |
 | Embeddable as a library | ✓ (Rust) | ✗ | ✗ | ✓ (Go) | ✗ | ✗ |
 | Connector count | 58, growing | 600+ taps | 350+ | dozens | dozens | 500+ |
+| Runs existing Singer taps | ✓ bridge (experimental) | ✓ native | ✗ | ✗ | ✗ | ✗ |
 | Change data capture | ✓ Postgres / MySQL / Mongo / SQL Server | partial¹ | ✓ | partial | ✗ | ✓ |
 | Incremental + resumable state | ✓ | ✓ | ✓ | partial | n/a | ✓ |
 | Effectively-once delivery³ | ✓ (11 sinks incl. Kafka, Iceberg, BigQuery) | ✗ | partial | ✗ | ✗ | ✓ |
