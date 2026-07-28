@@ -814,6 +814,11 @@ fn shipped_example_yamls_pass_validate() {
         ("SOAP_PASS", "x"),
         ("STRIPE_TOKEN", "x"),
         ("FEED_TOKEN", "x"),
+        // sftp_to_jsonl.yaml (SFTP source password).
+        ("SFTP_PASSWORD", "x"),
+        // airtable_to_jsonl.yaml (Airtable PAT + base id, via the rest source).
+        ("AIRTABLE_TOKEN", "x"),
+        ("AIRTABLE_BASE_ID", "appXXXXXXXXXXXXXX"),
         // shared_auth_rest.yaml (top-level `auth:` catalog provider).
         ("API_BASE_URL", "https://api.example.com"),
         ("API_TOKEN_URL", "https://auth.example.com/oauth/token"),
