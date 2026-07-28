@@ -22,8 +22,8 @@
 ~62× less memory than Meltano**, output identical row-for-row ([see the benchmarks](BENCHMARKS.md)).
 No Python runtime, no platform to stand up, no daemon to babysit.
 
-faucet-stream is a **data-movement platform** for Rust — with governance built in: **37 source**
-and **29 sink** connectors (**66 in total**) plus in-flight transforms, including a page-level
+faucet-stream is a **data-movement platform** for Rust — with governance built in: **<!--COUNT:sources-->37<!--/COUNT--> source**
+and **<!--COUNT:sinks-->29<!--/COUNT--> sink** connectors (**<!--COUNT:connectors-->66<!--/COUNT--> in total**) plus in-flight transforms, including a page-level
 embedded-DuckDB `sql` transform — wired by a single `faucet` binary that runs pipelines
 declaratively from YAML/JSON (no Rust code required), or embedded in your own service through
 the typed `Source` / `Sink` traits. One platform, whether you want a CLI you can drop on any
@@ -68,7 +68,7 @@ cargo add faucet-stream           # the library
   sink sees a row), schema-drift detection & policy, column-level lineage (OpenLineage) + a
   data-movement catalog, and freshness/volume SLA monitoring.
 - **📦 Pay only for what you use** — every connector is a Cargo feature, so a slim build can
-  be just REST + JSONL, or pull in all 58 connectors with `--features full`.
+  be just REST + JSONL, or pull in all <!--COUNT:connectors-->66<!--/COUNT--> connectors with `--features full`.
 
 **Documentation:** the [faucet-stream guide](https://pawansikawat.github.io/faucet-stream/)
 (getting started, tutorials, cookbook, operations) · API reference on
@@ -485,7 +485,7 @@ flowchart LR
     class K sink
 ```
 
-faucet-stream is a Cargo workspace with **91 crates** — 37 sources, 29 sinks, 16 shared
+faucet-stream is a Cargo workspace with **<!--COUNT:crates-->91<!--/COUNT--> crates** — <!--COUNT:sources-->37<!--/COUNT--> sources, <!--COUNT:sinks-->29<!--/COUNT--> sinks, <!--COUNT:common-->16<!--/COUNT--> shared
 connector libraries, the shared auth-provider library, 2 state-store backends, the lineage
 crate, the SQL transform crate, the conformance test battery, the shared core, the umbrella
 crate, and the CLI binary. See
@@ -847,13 +847,13 @@ and the runnable [`cli/examples/custom-cli/`](cli/examples/custom-cli/main.rs).
 ## Project structure
 
 ```
-Cargo.toml                    — workspace manifest (91 crates)
+Cargo.toml                    — workspace manifest (<!--COUNT:crates-->91<!--/COUNT--> crates)
 crates/
   core/                       — faucet-core: shared types, traits, pipeline, transforms, config
   auth/                       — faucet-auth: shared OAuth2 / token-endpoint providers
-  source/                     — 37 source connectors (rest, graphql, xml, grpc, *-cdc, kafka, s3, azure-blob, redshift, clickhouse, pubsub, delta, databricks, singer, duckdb, sqs, nats, sftp, …)
-  sink/                       — 29 sink connectors (bigquery, iceberg, delta, postgres, parquet, kafka, redshift, clickhouse, pubsub, azure-blob, duckdb, sqs, nats, sftp, …)
-  common/                     — 16 shared connector libraries (bigquery, elasticsearch, gcs, kafka, snowflake, mssql, kinesis, spanner, delta, redshift, pubsub, clickhouse, azure, sqs, nats, sftp)
+  source/                     — <!--COUNT:sources-->37<!--/COUNT--> source connectors (rest, graphql, xml, grpc, *-cdc, kafka, s3, azure-blob, redshift, clickhouse, pubsub, delta, databricks, singer, duckdb, sqs, nats, sftp, …)
+  sink/                       — <!--COUNT:sinks-->29<!--/COUNT--> sink connectors (bigquery, iceberg, delta, postgres, parquet, kafka, redshift, clickhouse, pubsub, azure-blob, duckdb, sqs, nats, sftp, …)
+  common/                     — <!--COUNT:common-->16<!--/COUNT--> shared connector libraries (bigquery, elasticsearch, gcs, kafka, snowflake, mssql, kinesis, spanner, delta, redshift, pubsub, clickhouse, azure, sqs, nats, sftp)
   state/                      — Redis- and Postgres-backed StateStore backends
   lineage/                    — faucet-lineage: OpenLineage event emission
   transform-sql/              — faucet-transform-sql: embedded DuckDB SQL transform
