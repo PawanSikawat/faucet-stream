@@ -1,0 +1,401 @@
+//! DuckDB sink implementation — the one module that performs I/O.
+//!
+//! `duckdb` is synchronous, so every write runs inside
+//! [`tokio::task::spawn_blocking`]. Each `write_batch` is applied as one
+//! `BEGIN`/`COMMIT` transaction of `batch_size`-row multi-row `INSERT`s
+//! (rolled back on error). The sink is append-only; keyed upsert and an
+//! Arrow-native columnar fast path are tracked as follow-ups.
+
+use crate::config::{DuckdbColumnMapping, DuckdbSinkConfig};
+use async_trait::async_trait;
+use duckdb::types::Value as DuckValue;
+use duckdb::{AccessMode, Config, Connection};
+use faucet_core::FaucetError;
+use faucet_core::util::quote_ident;
+use serde_json::Value;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+
+/// A sink that writes JSON records to a DuckDB table.
+pub struct DuckdbSink {
+    config: DuckdbSinkConfig,
+    conn: Arc<Mutex<Connection>>,
+}
+
+fn open(path: &str) -> Result<Connection, FaucetError> {
+    let flags = Config::default()
+        .access_mode(AccessMode::ReadWrite)
+        .map_err(|e| FaucetError::Config(format!("duckdb config: {e}")))?;
+    let conn = if path == ":memory:" {
+        Connection::open_in_memory_with_flags(flags)
+    } else {
+        Connection::open_with_flags(path, flags)
+    };
+    conn.map_err(|e| FaucetError::Sink(format!("DuckDB open failed ({path}): {e}")))
+}
+
+/// Convert a JSON value into an owned DuckDB parameter value.
+fn json_to_duck(v: &Value) -> DuckValue {
+    match v {
+        Value::Null => DuckValue::Null,
+        Value::Bool(b) => DuckValue::Boolean(*b),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                DuckValue::BigInt(i)
+            } else if let Some(u) = n.as_u64() {
+                DuckValue::UBigInt(u)
+            } else if let Some(f) = n.as_f64() {
+                DuckValue::Double(f)
+            } else {
+                DuckValue::Null
+            }
+        }
+        Value::String(s) => DuckValue::Text(s.clone()),
+        // Arrays/objects have no scalar SQL form — store their JSON text.
+        other => DuckValue::Text(other.to_string()),
+    }
+}
+
+/// Insert records as a single JSON text column via one multi-row INSERT.
+fn insert_json(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    records: &[Value],
+) -> Result<usize, FaucetError> {
+    if records.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = vec!["(?)"; records.len()].join(", ");
+    let sql = format!(
+        "INSERT INTO {} ({}) VALUES {}",
+        quote_ident(table),
+        quote_ident(column),
+        placeholders
+    );
+    let mut params: Vec<DuckValue> = Vec::with_capacity(records.len());
+    for r in records {
+        let text = serde_json::to_string(r)
+            .map_err(|e| FaucetError::Sink(format!("failed to serialize record: {e}")))?;
+        params.push(DuckValue::Text(text));
+    }
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| FaucetError::Sink(format!("DuckDB prepare failed: {e}")))?;
+    stmt.execute(duckdb::params_from_iter(params))
+        .map_err(|e| FaucetError::Sink(format!("DuckDB insert failed: {e}")))?;
+    Ok(records.len())
+}
+
+/// Insert records mapping top-level JSON keys onto existing table columns.
+fn insert_auto_map(
+    conn: &Connection,
+    table: &str,
+    records: &[Value],
+) -> Result<usize, FaucetError> {
+    if records.is_empty() {
+        return Ok(0);
+    }
+
+    // Discover the table's columns (in declared order) via information_schema.
+    let mut cstmt = conn
+        .prepare(
+            "SELECT column_name FROM information_schema.columns \
+             WHERE table_name = ? ORDER BY ordinal_position",
+        )
+        .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?;
+    let cols: Vec<String> = cstmt
+        .query_map([table], |row| row.get::<_, String>(0))
+        .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?
+        .collect::<Result<Vec<String>, _>>()
+        .map_err(|e| FaucetError::Sink(format!("failed to decode table columns: {e}")))?;
+
+    if cols.is_empty() {
+        return Err(FaucetError::Sink(format!(
+            "table '{table}' has no columns or does not exist"
+        )));
+    }
+
+    // Records with at least one matching column; the INSERT column set is the
+    // union of table columns present in any such record (declared order). A row
+    // missing a unioned column binds SQL NULL. Records with no matching key are
+    // skipped (mirrors the SQLite sink).
+    let mut used: HashSet<&str> = HashSet::new();
+    let mut rows: Vec<&serde_json::Map<String, Value>> = Vec::with_capacity(records.len());
+    for rec in records {
+        let obj = rec
+            .as_object()
+            .ok_or_else(|| FaucetError::Sink("AutoMap requires JSON object records".into()))?;
+        if !cols.iter().any(|c| obj.contains_key(c)) {
+            tracing::warn!(
+                record_keys = ?obj.keys().collect::<Vec<_>>(),
+                "record has no keys matching table columns, skipping"
+            );
+            continue;
+        }
+        for c in &cols {
+            if obj.contains_key(c) {
+                used.insert(c.as_str());
+            }
+        }
+        rows.push(obj);
+    }
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    let insert_cols: Vec<&String> = cols.iter().filter(|c| used.contains(c.as_str())).collect();
+    let num_cols = insert_cols.len();
+    let col_list = insert_cols
+        .iter()
+        .map(|c| quote_ident(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let row_ph = format!("({})", vec!["?"; num_cols].join(", "));
+    let values = vec![row_ph.as_str(); rows.len()].join(", ");
+    let sql = format!(
+        "INSERT INTO {} ({}) VALUES {}",
+        quote_ident(table),
+        col_list,
+        values
+    );
+
+    let mut params: Vec<DuckValue> = Vec::with_capacity(rows.len() * num_cols);
+    for obj in &rows {
+        for c in &insert_cols {
+            params.push(obj.get(*c).map(json_to_duck).unwrap_or(DuckValue::Null));
+        }
+    }
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| FaucetError::Sink(format!("DuckDB prepare failed: {e}")))?;
+    stmt.execute(duckdb::params_from_iter(params))
+        .map_err(|e| FaucetError::Sink(format!("DuckDB insert failed: {e}")))?;
+    Ok(rows.len())
+}
+
+/// Apply the whole batch inside one `BEGIN`/`COMMIT` transaction, re-chunking
+/// into `batch_size` multi-row INSERTs. Any error rolls the transaction back.
+fn write_all_blocking(
+    conn: &Arc<Mutex<Connection>>,
+    config: &DuckdbSinkConfig,
+    records: &[Value],
+) -> Result<usize, FaucetError> {
+    let guard = conn
+        .lock()
+        .map_err(|_| FaucetError::Sink("duckdb connection mutex poisoned".into()))?;
+
+    let chunk = if config.batch_size == 0 {
+        records.len().max(1)
+    } else {
+        config.batch_size
+    };
+
+    guard
+        .execute_batch("BEGIN TRANSACTION")
+        .map_err(|e| FaucetError::Sink(format!("DuckDB begin failed: {e}")))?;
+
+    let applied = (|| -> Result<usize, FaucetError> {
+        let mut total = 0usize;
+        for c in records.chunks(chunk) {
+            total += match &config.column_mapping {
+                DuckdbColumnMapping::Json { column } => {
+                    insert_json(&guard, &config.table_name, column, c)?
+                }
+                DuckdbColumnMapping::AutoMap => insert_auto_map(&guard, &config.table_name, c)?,
+            };
+        }
+        Ok(total)
+    })();
+
+    match applied {
+        Ok(total) => {
+            guard
+                .execute_batch("COMMIT")
+                .map_err(|e| FaucetError::Sink(format!("DuckDB commit failed: {e}")))?;
+            Ok(total)
+        }
+        Err(e) => {
+            let _ = guard.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+impl DuckdbSink {
+    /// Create a new DuckDB sink, opening (and reusing) one read-write connection.
+    pub async fn new(config: DuckdbSinkConfig) -> Result<Self, FaucetError> {
+        faucet_core::validate_batch_size(config.batch_size)?;
+        let path = config.resolved_path().to_string();
+        let conn = tokio::task::spawn_blocking(move || open(&path))
+            .await
+            .map_err(|e| FaucetError::Sink(format!("duckdb open task panicked: {e}")))??;
+        Ok(Self {
+            config,
+            conn: Arc::new(Mutex::new(conn)),
+        })
+    }
+
+    /// Run an arbitrary SQL statement (e.g. DDL) on the sink's connection.
+    ///
+    /// Exposed for setup/introspection in tests and tooling — DuckDB permits a
+    /// single read-write handle per database, so callers that need to create a
+    /// table or inspect state must go through the sink's own connection.
+    #[doc(hidden)]
+    pub async fn run_sql(&self, sql: &str) -> Result<(), FaucetError> {
+        let conn = self.conn.clone();
+        let sql = sql.to_string();
+        tokio::task::spawn_blocking(move || {
+            let guard = conn
+                .lock()
+                .map_err(|_| FaucetError::Sink("duckdb connection mutex poisoned".into()))?;
+            guard
+                .execute_batch(&sql)
+                .map_err(|e| FaucetError::Sink(format!("DuckDB statement failed: {e}")))
+        })
+        .await
+        .map_err(|e| FaucetError::Sink(format!("duckdb task panicked: {e}")))?
+    }
+
+    /// `SELECT count(*)` over `table` on the sink's connection.
+    #[doc(hidden)]
+    pub async fn scalar_count(&self, table: &str) -> Result<i64, FaucetError> {
+        let conn = self.conn.clone();
+        let sql = format!("SELECT count(*) FROM {}", quote_ident(table));
+        tokio::task::spawn_blocking(move || {
+            let guard = conn
+                .lock()
+                .map_err(|_| FaucetError::Sink("duckdb connection mutex poisoned".into()))?;
+            guard
+                .query_row(&sql, [], |r| r.get::<_, i64>(0))
+                .map_err(|e| FaucetError::Sink(format!("DuckDB count failed: {e}")))
+        })
+        .await
+        .map_err(|e| FaucetError::Sink(format!("duckdb task panicked: {e}")))?
+    }
+}
+
+#[async_trait]
+impl faucet_core::Sink for DuckdbSink {
+    fn config_schema(&self) -> Value {
+        serde_json::to_value(faucet_core::schema_for!(DuckdbSinkConfig))
+            .expect("schema serialization")
+    }
+
+    fn connector_name(&self) -> &'static str {
+        "duckdb"
+    }
+
+    fn dataset_uri(&self) -> String {
+        format!(
+            "duckdb://{}?table={}",
+            self.config.resolved_path(),
+            self.config.table_name
+        )
+    }
+
+    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.clone();
+        let config = self.config.clone();
+        let owned = records.to_vec();
+        let n = tokio::task::spawn_blocking(move || write_all_blocking(&conn, &config, &owned))
+            .await
+            .map_err(|e| FaucetError::Sink(format!("duckdb write task panicked: {e}")))??;
+        tracing::info!(
+            table = %self.config.table_name,
+            rows = n,
+            "DuckDB write complete"
+        );
+        Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use faucet_core::Sink as _;
+    use serde_json::json;
+
+    async fn sink_with_table(ddl: &str, table: &str, mapping: DuckdbColumnMapping) -> DuckdbSink {
+        let sink =
+            DuckdbSink::new(DuckdbSinkConfig::new(":memory:", table).column_mapping(mapping))
+                .await
+                .unwrap();
+        sink.conn.lock().unwrap().execute_batch(ddl).expect("ddl");
+        sink
+    }
+
+    fn count(sink: &DuckdbSink, table: &str) -> i64 {
+        let guard = sink.conn.lock().unwrap();
+        guard
+            .query_row(
+                &format!("SELECT count(*) FROM {}", quote_ident(table)),
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn writes_json_column() {
+        let sink = sink_with_table(
+            "CREATE TABLE events (data TEXT)",
+            "events",
+            DuckdbColumnMapping::Json {
+                column: "data".into(),
+            },
+        )
+        .await;
+        let n = sink
+            .write_batch(&[json!({"a": 1}), json!({"a": 2})])
+            .await
+            .unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(count(&sink, "events"), 2);
+        assert_eq!(sink.connector_name(), "duckdb");
+    }
+
+    #[tokio::test]
+    async fn writes_auto_mapped_columns() {
+        let sink = sink_with_table(
+            "CREATE TABLE t (id INTEGER, name TEXT)",
+            "t",
+            DuckdbColumnMapping::AutoMap,
+        )
+        .await;
+        let n = sink
+            .write_batch(&[
+                json!({"id": 1, "name": "a", "extra": "ignored"}),
+                json!({"id": 2, "name": "b"}),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(count(&sink, "t"), 2);
+    }
+
+    #[tokio::test]
+    async fn empty_batch_is_noop() {
+        let sink = sink_with_table(
+            "CREATE TABLE t (data TEXT)",
+            "t",
+            DuckdbColumnMapping::default(),
+        )
+        .await;
+        assert_eq!(sink.write_batch(&[]).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn missing_table_errors_not_panics() {
+        let sink = DuckdbSink::new(
+            DuckdbSinkConfig::new(":memory:", "nope").column_mapping(DuckdbColumnMapping::AutoMap),
+        )
+        .await
+        .unwrap();
+        assert!(sink.write_batch(&[json!({"a": 1})]).await.is_err());
+    }
+}

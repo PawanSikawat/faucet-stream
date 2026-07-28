@@ -1,0 +1,22 @@
+# DuckDB query → JSONL on disk.
+#
+#   faucet run cli/examples/duckdb_to_jsonl.yaml
+#
+# Point `database` at an existing .duckdb file (or use ":memory:" and a query
+# that reads a file via DuckDB's read_parquet/read_csv — though faucet has
+# native Parquet/CSV connectors for that). Rows stream in bounded-memory pages.
+version: 1
+name: duckdb_to_jsonl
+
+pipeline:
+  source:
+    type: duckdb
+    config:
+      database: ./warehouse.duckdb
+      query: "SELECT id, name, amount FROM sales WHERE amount > 0 ORDER BY id"
+      batch_size: 5000
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/sales.jsonl

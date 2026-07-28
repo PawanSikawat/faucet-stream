@@ -20,6 +20,10 @@
 //! | `source-mysql` | MySQL query source |
 //! | `source-mssql` | Microsoft SQL Server query source |
 //! | `source-sqlite` | SQLite query source |
+//! | `source-duckdb` | DuckDB query source |
+//! | `source-sqs` | AWS SQS source |
+//! | `source-nats` | NATS source |
+//! | `source-sftp` | SFTP source |
 
 //! | `source-s3` | AWS S3 file source |
 //! | `source-mongodb` | MongoDB query source |
@@ -44,6 +48,10 @@
 //! | `sink-mysql` | MySQL sink |
 //! | `sink-mssql` | Microsoft SQL Server sink |
 //! | `sink-sqlite` | SQLite sink |
+//! | `sink-duckdb` | DuckDB sink |
+//! | `sink-sqs` | AWS SQS sink |
+//! | `sink-nats` | NATS sink |
+//! | `sink-sftp` | SFTP sink |
 
 //! | `sink-s3` | AWS S3 file sink |
 //! | `sink-mongodb` | MongoDB insert sink |
@@ -125,6 +133,26 @@ pub mod source {
     #[cfg(feature = "source-sqlite")]
     pub mod sqlite {
         pub use faucet_source_sqlite::*;
+    }
+
+    #[cfg(feature = "source-duckdb")]
+    pub mod duckdb {
+        pub use faucet_source_duckdb::*;
+    }
+
+    #[cfg(feature = "source-sqs")]
+    pub mod sqs {
+        pub use faucet_source_sqs::*;
+    }
+
+    #[cfg(feature = "source-nats")]
+    pub mod nats {
+        pub use faucet_source_nats::*;
+    }
+
+    #[cfg(feature = "source-sftp")]
+    pub mod sftp {
+        pub use faucet_source_sftp::*;
     }
 
     #[cfg(feature = "source-s3")]
@@ -289,6 +317,26 @@ pub mod source {
     #[cfg(feature = "source-sqlite")]
     pub mod sqlite {
         pub use faucet_source_sqlite::*;
+    }
+
+    #[cfg(feature = "source-duckdb")]
+    pub mod duckdb {
+        pub use faucet_source_duckdb::*;
+    }
+
+    #[cfg(feature = "source-sqs")]
+    pub mod sqs {
+        pub use faucet_source_sqs::*;
+    }
+
+    #[cfg(feature = "source-nats")]
+    pub mod nats {
+        pub use faucet_source_nats::*;
+    }
+
+    #[cfg(feature = "source-sftp")]
+    pub mod sftp {
+        pub use faucet_source_sftp::*;
     }
 
     #[cfg(feature = "source-s3")]
@@ -461,6 +509,26 @@ pub mod sink {
     #[cfg(feature = "sink-sqlite")]
     pub mod sqlite {
         pub use faucet_sink_sqlite::*;
+    }
+
+    #[cfg(feature = "sink-duckdb")]
+    pub mod duckdb {
+        pub use faucet_sink_duckdb::*;
+    }
+
+    #[cfg(feature = "sink-sqs")]
+    pub mod sqs {
+        pub use faucet_sink_sqs::*;
+    }
+
+    #[cfg(feature = "sink-nats")]
+    pub mod nats {
+        pub use faucet_sink_nats::*;
+    }
+
+    #[cfg(feature = "sink-sftp")]
+    pub mod sftp {
+        pub use faucet_sink_sftp::*;
     }
 
     #[cfg(feature = "sink-s3")]

@@ -79,6 +79,17 @@ members = [
     "crates/sink/pubsub",
     "crates/sink/clickhouse",
     "crates/sink/azure-blob",
+    "crates/source/duckdb",
+    "crates/sink/duckdb",
+    "crates/common/sqs",
+    "crates/source/sqs",
+    "crates/sink/sqs",
+    "crates/common/nats",
+    "crates/source/nats",
+    "crates/sink/nats",
+    "crates/common/sftp",
+    "crates/source/sftp",
+    "crates/sink/sftp",
     "crates/state/redis",
     "crates/state/postgres",
     "faucet-stream",
@@ -181,6 +192,17 @@ faucet-sink-clickhouse = { path = "crates/sink/clickhouse", version = "1.0.0" }
 faucet-common-azure = { path = "crates/common/azure", version = "1.0.0" }
 faucet-source-azure-blob = { path = "crates/source/azure-blob", version = "1.0.0" }
 faucet-sink-azure-blob = { path = "crates/sink/azure-blob", version = "1.0.0" }
+faucet-source-duckdb = { path = "crates/source/duckdb", version = "1.0.0" }
+faucet-sink-duckdb = { path = "crates/sink/duckdb", version = "1.0.0" }
+faucet-common-sqs = { path = "crates/common/sqs", version = "1.0.0" }
+faucet-source-sqs = { path = "crates/source/sqs", version = "1.0.0" }
+faucet-sink-sqs = { path = "crates/sink/sqs", version = "1.0.0" }
+faucet-common-nats = { path = "crates/common/nats", version = "1.0.0" }
+faucet-source-nats = { path = "crates/source/nats", version = "1.0.0" }
+faucet-sink-nats = { path = "crates/sink/nats", version = "1.0.0" }
+faucet-common-sftp = { path = "crates/common/sftp", version = "1.0.0" }
+faucet-source-sftp = { path = "crates/source/sftp", version = "1.0.0" }
+faucet-sink-sftp = { path = "crates/sink/sftp", version = "1.0.0" }
 faucet-source-mssql-cdc = { path = "crates/source/mssql-cdc", version = "1.0.0" }
 
 # Shared external deps
@@ -245,8 +267,14 @@ gcloud-pubsub = { version = "1", default-features = false, features = ["auth", "
 gcloud-auth = { version = "1", default-features = false, features = ["rustls-tls", "jwt-rust-crypto"] }
 aws-sdk-kinesis = "1"
 aws-sdk-s3 = "1"
+aws-sdk-sqs = "1"
 aws-sdk-secretsmanager = "1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
+# NATS (JetStream-capable async client) for the nats source/sink pair.
+async-nats = "0.50"
+# SFTP over SSH (pure-Rust) for the sftp source/sink pair.
+russh = "0.62"
+russh-sftp = "2"
 azure_security_keyvault_secrets = "1"
 azure_identity = "1"
 azure_core = "1"

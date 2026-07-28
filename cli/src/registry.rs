@@ -355,6 +355,29 @@ pub async fn build_source(
                 faucet_source_sqlite::SqliteSource::new(cfg).await?,
             ))
         }
+        #[cfg(feature = "source-duckdb")]
+        "duckdb" => {
+            let cfg =
+                decode::<faucet_source_duckdb::DuckdbSourceConfig>("source", "duckdb", config)?;
+            Ok(Box::new(
+                faucet_source_duckdb::DuckdbSource::new(cfg).await?,
+            ))
+        }
+        #[cfg(feature = "source-sqs")]
+        "sqs" => {
+            let cfg = decode::<faucet_source_sqs::SqsSourceConfig>("source", "sqs", config)?;
+            Ok(Box::new(faucet_source_sqs::SqsSource::new(cfg).await?))
+        }
+        #[cfg(feature = "source-nats")]
+        "nats" => {
+            let cfg = decode::<faucet_source_nats::NatsSourceConfig>("source", "nats", config)?;
+            Ok(Box::new(faucet_source_nats::NatsSource::new(cfg).await?))
+        }
+        #[cfg(feature = "source-sftp")]
+        "sftp" => {
+            let cfg = decode::<faucet_source_sftp::SftpSourceConfig>("source", "sftp", config)?;
+            Ok(Box::new(faucet_source_sftp::SftpSource::new(cfg)?))
+        }
         #[cfg(feature = "source-s3")]
         "s3" => {
             let cfg = decode::<faucet_source_s3::S3SourceConfig>("source", "s3", config)?;
@@ -629,6 +652,26 @@ pub async fn build_sink(kind: &str, config: Value, auth: &AuthCatalog) -> CliRes
             let cfg = decode::<faucet_sink_sqlite::SqliteSinkConfig>("sink", "sqlite", config)?;
             Ok(Box::new(faucet_sink_sqlite::SqliteSink::new(cfg).await?))
         }
+        #[cfg(feature = "sink-duckdb")]
+        "duckdb" => {
+            let cfg = decode::<faucet_sink_duckdb::DuckdbSinkConfig>("sink", "duckdb", config)?;
+            Ok(Box::new(faucet_sink_duckdb::DuckdbSink::new(cfg).await?))
+        }
+        #[cfg(feature = "sink-sqs")]
+        "sqs" => {
+            let cfg = decode::<faucet_sink_sqs::SqsSinkConfig>("sink", "sqs", config)?;
+            Ok(Box::new(faucet_sink_sqs::SqsSink::new(cfg).await?))
+        }
+        #[cfg(feature = "sink-nats")]
+        "nats" => {
+            let cfg = decode::<faucet_sink_nats::NatsSinkConfig>("sink", "nats", config)?;
+            Ok(Box::new(faucet_sink_nats::NatsSink::new(cfg).await?))
+        }
+        #[cfg(feature = "sink-sftp")]
+        "sftp" => {
+            let cfg = decode::<faucet_sink_sftp::SftpSinkConfig>("sink", "sftp", config)?;
+            Ok(Box::new(faucet_sink_sftp::SftpSink::new(cfg)?))
+        }
         #[cfg(feature = "sink-s3")]
         "s3" => {
             let cfg = decode::<faucet_sink_s3::S3SinkConfig>("sink", "s3", config)?;
@@ -894,6 +937,14 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         "mssql" => Ok(schema::<faucet_source_mssql::MssqlSourceConfig>()),
         #[cfg(feature = "source-sqlite")]
         "sqlite" => Ok(schema::<faucet_source_sqlite::SqliteSourceConfig>()),
+        #[cfg(feature = "source-duckdb")]
+        "duckdb" => Ok(schema::<faucet_source_duckdb::DuckdbSourceConfig>()),
+        #[cfg(feature = "source-sqs")]
+        "sqs" => Ok(schema::<faucet_source_sqs::SqsSourceConfig>()),
+        #[cfg(feature = "source-nats")]
+        "nats" => Ok(schema::<faucet_source_nats::NatsSourceConfig>()),
+        #[cfg(feature = "source-sftp")]
+        "sftp" => Ok(schema::<faucet_source_sftp::SftpSourceConfig>()),
         #[cfg(feature = "source-s3")]
         "s3" => Ok(schema::<faucet_source_s3::S3SourceConfig>()),
         #[cfg(feature = "source-mongodb")]
@@ -982,6 +1033,14 @@ pub fn sink_schema(kind: &str) -> CliResult<Value> {
         "mssql" => Ok(schema::<faucet_sink_mssql::MssqlSinkConfig>()),
         #[cfg(feature = "sink-sqlite")]
         "sqlite" => Ok(schema::<faucet_sink_sqlite::SqliteSinkConfig>()),
+        #[cfg(feature = "sink-duckdb")]
+        "duckdb" => Ok(schema::<faucet_sink_duckdb::DuckdbSinkConfig>()),
+        #[cfg(feature = "sink-sqs")]
+        "sqs" => Ok(schema::<faucet_sink_sqs::SqsSinkConfig>()),
+        #[cfg(feature = "sink-nats")]
+        "nats" => Ok(schema::<faucet_sink_nats::NatsSinkConfig>()),
+        #[cfg(feature = "sink-sftp")]
+        "sftp" => Ok(schema::<faucet_sink_sftp::SftpSinkConfig>()),
         #[cfg(feature = "sink-s3")]
         "s3" => Ok(schema::<faucet_sink_s3::S3SinkConfig>()),
         #[cfg(feature = "sink-mongodb")]
@@ -1052,6 +1111,26 @@ fn builtin_source_descriptions() -> Vec<(&'static str, &'static str)> {
     v.push(("mssql", "Microsoft SQL Server query source"));
     #[cfg(feature = "source-sqlite")]
     v.push(("sqlite", "SQLite query source"));
+    #[cfg(feature = "source-duckdb")]
+    v.push((
+        "duckdb",
+        "DuckDB query source. Runs SQL against a DuckDB file or in-memory database and streams rows as JSON with bounded memory.",
+    ));
+    #[cfg(feature = "source-sqs")]
+    v.push((
+        "sqs",
+        "AWS SQS source. Long-polls ReceiveMessage, deletes after the batch is emitted (at-least-once), with idle/max-messages termination.",
+    ));
+    #[cfg(feature = "source-nats")]
+    v.push((
+        "nats",
+        "NATS source. Subscribes to a subject (or a JetStream durable consumer) and drains with idle/max-messages termination.",
+    ));
+    #[cfg(feature = "source-sftp")]
+    v.push((
+        "sftp",
+        "SFTP source. Lists/globs a remote directory and streams JSONL / JSON-array / raw-text files over SSH.",
+    ));
     #[cfg(feature = "source-s3")]
     v.push(("s3", "AWS S3 object source"));
     #[cfg(feature = "source-mongodb")]
@@ -1168,6 +1247,26 @@ fn builtin_sink_descriptions() -> Vec<(&'static str, &'static str)> {
     ));
     #[cfg(feature = "sink-sqlite")]
     v.push(("sqlite", "SQLite sink"));
+    #[cfg(feature = "sink-duckdb")]
+    v.push((
+        "duckdb",
+        "DuckDB sink. Transaction-wrapped multi-row INSERT (JSON column or auto-mapped columns).",
+    ));
+    #[cfg(feature = "sink-sqs")]
+    v.push((
+        "sqs",
+        "AWS SQS sink. Batched SendMessageBatch (10-message chunks) with per-entry partial-failure retry; FIFO group/dedup support.",
+    ));
+    #[cfg(feature = "sink-nats")]
+    v.push((
+        "nats",
+        "NATS sink. Publishes records to a subject (optionally subject-per-record) and flushes per batch.",
+    ));
+    #[cfg(feature = "sink-sftp")]
+    v.push((
+        "sftp",
+        "SFTP sink. Writes JSONL files over SSH with atomic temp-then-rename uploads.",
+    ));
     #[cfg(feature = "sink-s3")]
     v.push(("s3", "AWS S3 object sink"));
     #[cfg(feature = "sink-mongodb")]
