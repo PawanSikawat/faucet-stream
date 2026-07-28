@@ -1,0 +1,22 @@
+# AWS SQS → JSONL. Runs against LocalStack:
+#   docker run -p 4566:4566 -e SERVICES=sqs localstack/localstack
+#   faucet run cli/examples/sqs_to_jsonl.yaml
+version: 1
+name: sqs_to_jsonl
+pipeline:
+  source:
+    type: sqs
+    config:
+      queue_url: https://sqs.us-east-1.amazonaws.com/000000000000/events
+      region: us-east-1
+      endpoint_url: http://localhost:4566
+      credentials:
+        type: access_key
+        config: { access_key_id: test, secret_access_key: test }
+      idle_timeout_secs: 30        # at least one of idle_timeout_secs / max_messages is required
+      wait_time_seconds: 10
+      batch_size: 1000
+  sink:
+    type: jsonl
+    config:
+      path: ./out/sqs_events.jsonl

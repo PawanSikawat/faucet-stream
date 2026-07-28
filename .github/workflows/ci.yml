@@ -180,6 +180,10 @@ jobs:
           - source-clickhouse
           - source-azure-blob
           - source-sqlite
+          - source-duckdb
+          - source-sqs
+          - source-nats
+          - source-sftp
           - source-s3
           - source-mongodb
           - source-mongodb-cdc
@@ -207,6 +211,10 @@ jobs:
           - sink-mysql
           - sink-mssql
           - sink-sqlite
+          - sink-duckdb
+          - sink-sqs
+          - sink-nats
+          - sink-sftp
           - sink-s3
           - sink-mongodb
           - sink-redis

@@ -22,8 +22,8 @@
 ~62× less memory than Meltano**, output identical row-for-row ([see the benchmarks](BENCHMARKS.md)).
 No Python runtime, no platform to stand up, no daemon to babysit.
 
-faucet-stream is a **data-movement platform** for Rust — with governance built in: **33 source**
-and **25 sink** connectors (**58 in total**) plus in-flight transforms, including a page-level
+faucet-stream is a **data-movement platform** for Rust — with governance built in: **37 source**
+and **29 sink** connectors (**66 in total**) plus in-flight transforms, including a page-level
 embedded-DuckDB `sql` transform — wired by a single `faucet` binary that runs pipelines
 declaratively from YAML/JSON (no Rust code required), or embedded in your own service through
 the typed `Source` / `Sink` traits. One platform, whether you want a CLI you can drop on any
@@ -270,6 +270,10 @@ wired into the battery (see the support-tiers note above).
 | [`faucet-source-mssql`](crates/source/mssql) | T1 ✅ | Microsoft SQL Server — streaming queries, incremental replication |
 | [`faucet-source-mssql-cdc`](crates/source/mssql-cdc) | T1 ✅ | Microsoft SQL Server CDC — change tables (`fn_cdc_get_all_changes`), LSN bookmarks, resumable |
 | [`faucet-source-sqlite`](crates/source/sqlite) | **T1 ✅** | SQLite — run SQL queries, return rows as JSON |
+| [`faucet-source-duckdb`](crates/source/duckdb) | T2 | DuckDB — run SQL against a file or `:memory:` database, stream rows as JSON |
+| [`faucet-source-sqs`](crates/source/sqs) | T2 | AWS SQS — long-poll receive, delete-after-emit (at-least-once), idle/max termination |
+| [`faucet-source-nats`](crates/source/nats) | T2 | NATS — subject subscription or JetStream consumer; idle/max termination |
+| [`faucet-source-sftp`](crates/source/sftp) | T2 | SFTP — list/glob a remote directory over SSH; JSONL / JSON array / raw text |
 | [`faucet-source-mongodb`](crates/source/mongodb) | T1 ✅ | MongoDB — find() with filter, projection, sort |
 | [`faucet-source-mongodb-cdc`](crates/source/mongodb-cdc) | T1 ✅ | MongoDB CDC — Change Streams, resumable via resumeToken |
 | [`faucet-source-redis`](crates/source/redis) | T1 ✅ | Redis — read from streams, lists, or key patterns |
@@ -303,6 +307,10 @@ wired into the battery (see the support-tiers note above).
 | [`faucet-sink-mysql`](crates/sink/mysql) | T1 ✅ | MySQL — JSON column or auto-mapped columns; upsert/delete |
 | [`faucet-sink-mssql`](crates/sink/mssql) | T1 ✅ | Microsoft SQL Server — JSON or auto-mapped columns, 2100-param split |
 | [`faucet-sink-sqlite`](crates/sink/sqlite) | **T1 ✅** | SQLite — JSON column or auto-mapped columns; upsert/delete; effectively-once |
+| [`faucet-sink-duckdb`](crates/sink/duckdb) | T2 | DuckDB — transaction-wrapped multi-row INSERT (JSON column or auto-mapped); append-only |
+| [`faucet-sink-sqs`](crates/sink/sqs) | T2 | AWS SQS — batched SendMessageBatch with per-entry retry; FIFO group/dedup |
+| [`faucet-sink-nats`](crates/sink/nats) | T2 | NATS — publish records to a subject (optional subject-per-record), flush per batch |
+| [`faucet-sink-sftp`](crates/sink/sftp) | T2 | SFTP — write JSONL files over SSH with atomic temp-then-rename |
 | [`faucet-sink-snowflake`](crates/sink/snowflake) | T2 | Snowflake — SQL REST API with JWT/OAuth |
 | [`faucet-sink-redshift`](crates/sink/redshift) | T1 ✅ | Amazon Redshift — COPY-from-S3 (staged) or multi-row `INSERT`; append-only |
 | [`faucet-sink-clickhouse`](crates/sink/clickhouse) | T1 ✅ | ClickHouse — `INSERT … FORMAT JSONEachRow`; optional `async_insert`; append-only |
@@ -477,7 +485,7 @@ flowchart LR
     class K sink
 ```
 
-faucet-stream is a Cargo workspace with **80 crates** — 33 sources, 25 sinks, 13 shared
+faucet-stream is a Cargo workspace with **91 crates** — 37 sources, 29 sinks, 16 shared
 connector libraries, the shared auth-provider library, 2 state-store backends, the lineage
 crate, the SQL transform crate, the conformance test battery, the shared core, the umbrella
 crate, and the CLI binary. See
@@ -531,6 +539,10 @@ Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`,
 | `source-mssql` | no | Microsoft SQL Server query source |
 | `source-mssql-cdc` | no | Microsoft SQL Server CDC source (change tables) |
 | `source-sqlite` | no | SQLite query source |
+| `source-duckdb` | no | DuckDB query source |
+| `source-sqs` | no | AWS SQS source |
+| `source-nats` | no | NATS source |
+| `source-sftp` | no | SFTP source |
 | `source-mongodb` | no | MongoDB query source |
 | `source-mongodb-cdc` | no | MongoDB CDC source (Change Streams) |
 | `source-redis` | no | Redis source |
@@ -559,6 +571,10 @@ Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`,
 | `sink-mysql` | no | MySQL sink |
 | `sink-mssql` | no | Microsoft SQL Server sink |
 | `sink-sqlite` | no | SQLite sink |
+| `sink-duckdb` | no | DuckDB sink |
+| `sink-sqs` | no | AWS SQS sink |
+| `sink-nats` | no | NATS sink |
+| `sink-sftp` | no | SFTP sink |
 | `sink-snowflake` | no | Snowflake sink |
 | `sink-redshift` | no | Amazon Redshift sink (COPY-from-S3 or multi-row INSERT) |
 | `sink-clickhouse` | no | ClickHouse sink (INSERT … FORMAT JSONEachRow) |
@@ -831,13 +847,13 @@ and the runnable [`cli/examples/custom-cli/`](cli/examples/custom-cli/main.rs).
 ## Project structure
 
 ```
-Cargo.toml                    — workspace manifest (80 crates)
+Cargo.toml                    — workspace manifest (91 crates)
 crates/
   core/                       — faucet-core: shared types, traits, pipeline, transforms, config
   auth/                       — faucet-auth: shared OAuth2 / token-endpoint providers
-  source/                     — 33 source connectors (rest, graphql, xml, grpc, *-cdc, kafka, s3, azure-blob, redshift, clickhouse, pubsub, delta, databricks, singer, …)
-  sink/                       — 25 sink connectors (bigquery, iceberg, delta, postgres, parquet, kafka, redshift, clickhouse, pubsub, azure-blob, …)
-  common/                     — 13 shared connector libraries (bigquery, elasticsearch, gcs, kafka, snowflake, mssql, kinesis, spanner, delta, redshift, pubsub, clickhouse, azure)
+  source/                     — 37 source connectors (rest, graphql, xml, grpc, *-cdc, kafka, s3, azure-blob, redshift, clickhouse, pubsub, delta, databricks, singer, duckdb, sqs, nats, sftp, …)
+  sink/                       — 29 sink connectors (bigquery, iceberg, delta, postgres, parquet, kafka, redshift, clickhouse, pubsub, azure-blob, duckdb, sqs, nats, sftp, …)
+  common/                     — 16 shared connector libraries (bigquery, elasticsearch, gcs, kafka, snowflake, mssql, kinesis, spanner, delta, redshift, pubsub, clickhouse, azure, sqs, nats, sftp)
   state/                      — Redis- and Postgres-backed StateStore backends
   lineage/                    — faucet-lineage: OpenLineage event emission
   transform-sql/              — faucet-transform-sql: embedded DuckDB SQL transform

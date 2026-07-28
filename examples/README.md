@@ -39,6 +39,11 @@ These run immediately after installing the CLI — great for a first smoke test:
 | `csv_to_delta.yaml` | CSV → local Apache Delta Lake table (point `table_uri` at `s3://…` + add `credentials:` for cloud) |
 | `delta_to_jsonl.yaml` | local Delta Lake table → JSONL (run `csv_to_delta.yaml` first); supports `version`/`timestamp` time travel |
 | `sqlite_to_jsonl.yaml`, `sqlite_to_csv.yaml` | local SQLite → file |
+| `duckdb_to_jsonl.yaml` | local DuckDB (file or `:memory:`) query → JSONL |
+| `sqs_to_jsonl.yaml` | AWS SQS → JSONL; runs against LocalStack (`docker run -p 4566:4566 -e SERVICES=sqs localstack/localstack`) |
+| `nats_to_jsonl.yaml` | NATS → JSONL; runs against a local NATS (`docker run -p 4222:4222 nats:latest -js`) |
+| `sftp_to_jsonl.yaml` | SFTP directory → JSONL over SSH; point `host`/`username`/`path` at a real server (set `SFTP_PASSWORD`) |
+| `airtable_to_jsonl.yaml` | Airtable base/table → JSONL via the generic `rest` source (bearer PAT + offset-token pagination); set `AIRTABLE_TOKEN` + `AIRTABLE_BASE_ID` |
 | `rest_to_jsonl.yaml`, `rest_streaming.yaml`, `rest_to_stdout_preview.yaml` | point `base_url` at any HTTP API; preview needs no sink setup |
 | `rest_filter_explode_to_stdout.yaml` | `filter` + `explode` + `keys_case` against DummyJSON; demonstrates the v1 JSONPath subset and the merge rule |
 | `shared_auth_rest.yaml` | one OAuth2 provider in the top-level `auth:` block shared across four matrix rows via `auth: { ref }` — single token, single-flight refresh (point `base_url` / token endpoint at a real API) |

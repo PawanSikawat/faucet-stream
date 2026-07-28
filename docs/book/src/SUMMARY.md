@@ -20,6 +20,7 @@
 # Cookbook
 
 - [Pagination styles](./cookbook/pagination.md)
+- [Airtable (via REST source)](./cookbook/airtable.md)
 - [Authentication](./cookbook/auth.md)
 - [Incremental replication & state](./cookbook/state.md)
 - [Upsert / mirror tables](./cookbook/upsert.md)
