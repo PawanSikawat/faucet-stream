@@ -9,7 +9,7 @@
 [![Guide](https://img.shields.io/badge/guide-pawansikawat.github.io-1f6feb)](https://pawansikawat.github.io/faucet-stream/)
 [![CI](https://github.com/PawanSikawat/faucet-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/PawanSikawat/faucet-stream/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/PawanSikawat/faucet-stream/branch/main/graph/badge.svg)](https://codecov.io/gh/PawanSikawat/faucet-stream)
-[![Downloads](https://img.shields.io/crates/d/faucet-stream.svg)](https://crates.io/crates/faucet-stream)
+[![Downloads](https://img.shields.io/crates/d/faucet-core.svg)](https://crates.io/crates/faucet-stream)
 [![MSRV](https://img.shields.io/crates/msrv/faucet-stream.svg)](rust-toolchain.toml)
 [![Dependencies](https://img.shields.io/badge/deps-cargo--deny-blue)](deny.toml)
 [![License](https://img.shields.io/crates/l/faucet-stream.svg)](#license)
