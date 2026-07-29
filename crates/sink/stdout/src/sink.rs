@@ -415,6 +415,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn csv_renders_null_as_empty_and_object_as_json() {
+        let (sink, capture) = sink_with(StdoutSinkConfig::new().format(StdoutFormat::Csv));
+        // keys sorted: meta (object), val (null) — exercises the Null and
+        // Object/Array cell arms.
+        sink.write_batch(&[json!({"val": null, "meta": {"k": 1}})])
+            .await
+            .unwrap();
+        let out = capture.as_str();
+        let mut rdr = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .from_reader(out.as_bytes());
+        let rec = rdr.records().next().unwrap().unwrap();
+        assert_eq!(&rec[0], r#"{"k":1}"#); // meta (object → compact JSON)
+        assert_eq!(&rec[1], ""); // val (null → empty)
+    }
+
+    #[tokio::test]
     async fn empty_batch_returns_zero() {
         let (sink, _capture) = sink_with(StdoutSinkConfig::new());
         let n = sink.write_batch(&[]).await.unwrap();

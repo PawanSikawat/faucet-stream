@@ -978,6 +978,147 @@ mod tests {
 
     #[cfg(feature = "transforms")]
     #[test]
+    fn compiles_hash_with_defaults_and_options() {
+        let specs = vec![
+            TransformSpec {
+                kind: "hash".into(),
+                config: json!({"fields": ["email"]}),
+            },
+            TransformSpec {
+                kind: "hash".into(),
+                config: json!({
+                    "fields": ["user_id"],
+                    "algorithm": "blake3",
+                    "encoding": "base64",
+                    "salt": "pepper",
+                    "into": "user_id_hash"
+                }),
+            },
+        ];
+        let out = compile_transforms(&specs).unwrap();
+        assert_eq!(out.len(), 2);
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn hash_empty_fields_is_rejected_at_load() {
+        let specs = vec![TransformSpec {
+            kind: "hash".into(),
+            config: json!({"fields": []}),
+        }];
+        match compile_transforms(&specs).unwrap_err() {
+            CliError::InvalidTransform { name, .. } => assert_eq!(name, "hash"),
+            other => panic!("expected InvalidTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn hash_into_with_multiple_fields_is_rejected_at_load() {
+        let specs = vec![TransformSpec {
+            kind: "hash".into(),
+            config: json!({"fields": ["a", "b"], "into": "x"}),
+        }];
+        match compile_transforms(&specs).unwrap_err() {
+            CliError::InvalidTransform { name, message } => {
+                assert_eq!(name, "hash");
+                assert!(message.contains("into"), "{message}");
+            }
+            other => panic!("expected InvalidTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn compiles_json_parse_with_on_error() {
+        let specs = vec![TransformSpec {
+            kind: "json_parse".into(),
+            config: json!({"fields": ["payload"], "on_error": "null", "into": "parsed"}),
+        }];
+        let out = compile_transforms(&specs).unwrap();
+        assert_eq!(out.len(), 1);
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn json_parse_into_with_multiple_fields_is_rejected_at_load() {
+        let specs = vec![TransformSpec {
+            kind: "json_parse".into(),
+            config: json!({"fields": ["a", "b"], "into": "x"}),
+        }];
+        match compile_transforms(&specs).unwrap_err() {
+            CliError::InvalidTransform { name, .. } => assert_eq!(name, "json_parse"),
+            other => panic!("expected InvalidTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn compiles_coalesce_with_default() {
+        let specs = vec![TransformSpec {
+            kind: "coalesce".into(),
+            config: json!({"field": "status", "default": "unknown"}),
+        }];
+        let out = compile_transforms(&specs).unwrap();
+        assert_eq!(out.len(), 1);
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn compiles_coalesce_with_from() {
+        let specs = vec![TransformSpec {
+            kind: "coalesce".into(),
+            config: json!({"field": "status", "from": ["status", "state"]}),
+        }];
+        let out = compile_transforms(&specs).unwrap();
+        assert_eq!(out.len(), 1);
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn coalesce_both_default_and_from_is_rejected_at_load() {
+        let specs = vec![TransformSpec {
+            kind: "coalesce".into(),
+            config: json!({"field": "s", "default": "x", "from": ["y"]}),
+        }];
+        match compile_transforms(&specs).unwrap_err() {
+            CliError::InvalidTransform { name, .. } => assert_eq!(name, "coalesce"),
+            other => panic!("expected InvalidTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn coalesce_neither_default_nor_from_is_rejected_at_load() {
+        let specs = vec![TransformSpec {
+            kind: "coalesce".into(),
+            config: json!({"field": "s"}),
+        }];
+        match compile_transforms(&specs).unwrap_err() {
+            CliError::InvalidTransform { name, .. } => assert_eq!(name, "coalesce"),
+            other => panic!("expected InvalidTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn compiles_split_and_join() {
+        let specs = vec![
+            TransformSpec {
+                kind: "split".into(),
+                config: json!({"field": "tags", "delimiter": ",", "trim": true}),
+            },
+            TransformSpec {
+                kind: "join".into(),
+                config: json!({"field": "tags", "delimiter": ",", "into": "csv"}),
+            },
+        ];
+        let out = compile_transforms(&specs).unwrap();
+        assert_eq!(out.len(), 2);
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
     fn value_case_requires_mode() {
         let specs = vec![TransformSpec {
             kind: "value_case".into(),
