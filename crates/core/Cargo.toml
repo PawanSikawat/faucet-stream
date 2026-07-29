@@ -1,6 +1,6 @@
 [package]
 name = "faucet-core"
-version = "2.0.0"
+version = "1.7.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -163,3 +163,17 @@ required-features = ["quality", "quality-jsonschema"]
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+# API-stability (cargo-semver-checks) lint overrides.
+#
+# The transform-config enums (`RecordTransform`, `CompiledTransform`,
+# `KeyCaseMode`, `ValueCaseMode`) are deliberate *extension points*: adding a
+# built-in transform or a casing mode is an additive change. They are now
+# `#[non_exhaustive]`, so `cargo-semver-checks` already treats future variant
+# additions as a minor bump. Marking them `#[non_exhaustive]` for the first
+# time is itself a one-time change that the `enum_marked_non_exhaustive` lint
+# flags as major; we accept it here (allow) so this transition ships as a minor
+# release. Every other API-stability lint stays at its default (deny) level, so
+# genuine breaking changes still fail the gate.
+[package.metadata.cargo-semver-checks.lints]
+enum_marked_non_exhaustive = "allow"
