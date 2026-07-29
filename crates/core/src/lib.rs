@@ -119,6 +119,10 @@ pub use transform::RecordTransform;
 pub use transform::ValueCaseMode;
 #[cfg(feature = "transform-cast")]
 pub use transform::{CastOnError, CastType};
+#[cfg(feature = "transform-hash")]
+pub use transform::{HashAlgorithm, HashEncoding};
+#[cfg(feature = "transform-json-parse")]
+pub use transform::JsonParseOnError;
 pub use transforming_source::TransformingSource;
 pub use util::redact_uri_credentials;
 pub use verify::{IntegrityCheck, LengthCheck, VerifyingReader};

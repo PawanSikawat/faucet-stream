@@ -6,7 +6,10 @@
 use crate::config::TransformSpec;
 use crate::error::{CliError, CliResult};
 #[cfg(feature = "transforms")]
-use faucet_core::{CastOnError, CastType, KeyCaseMode, ValueCaseMode};
+use faucet_core::{
+    CastOnError, CastType, HashAlgorithm, HashEncoding, JsonParseOnError, KeyCaseMode,
+    ValueCaseMode,
+};
 #[cfg(any(feature = "transforms", feature = "transform-cdc-unwrap"))]
 use faucet_core::{JsonSchema, schema_for};
 use faucet_core::{RecordTransform, TransformStage};
@@ -116,6 +119,83 @@ fn default_spell_separator() -> String {
 struct KeysCaseConfig {
     /// Output convention for every key in the record.
     mode: KeyCaseMode,
+}
+
+#[cfg(feature = "transforms")]
+#[derive(Debug, Deserialize, JsonSchema)]
+struct HashConfig {
+    /// One or more field names to hash. When `into` is set, exactly one.
+    fields: Vec<String>,
+    /// Hash algorithm. Default: `sha256`.
+    #[serde(default)]
+    algorithm: HashAlgorithm,
+    /// Digest encoding. Default: `hex`.
+    #[serde(default)]
+    encoding: HashEncoding,
+    /// Optional salt prepended before hashing. Recommend `${env:...}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    salt: Option<String>,
+    /// Optional target key for the digest (source left intact). `null` =
+    /// replace in place. Only valid with a single field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    into: Option<String>,
+}
+
+#[cfg(feature = "transforms")]
+#[derive(Debug, Deserialize, JsonSchema)]
+struct JsonParseConfig {
+    /// Field names holding stringified JSON to parse.
+    fields: Vec<String>,
+    /// What to do when a value is a string but not valid JSON. Default: `keep`.
+    #[serde(default)]
+    on_error: JsonParseOnError,
+    /// Optional target key for the parsed value. `null` = replace in place.
+    /// Only valid with a single field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    into: Option<String>,
+}
+
+#[cfg(feature = "transforms")]
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CoalesceConfig {
+    /// Target field to fill when missing or null.
+    field: String,
+    /// Literal default value. Mutually exclusive with `from`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default: Option<Value>,
+    /// Fallback keys; the first non-null wins. Mutually exclusive with `default`.
+    #[serde(default)]
+    from: Vec<String>,
+    /// Treat an empty string as null. Default: `false`.
+    #[serde(default)]
+    treat_empty_string_as_null: bool,
+}
+
+#[cfg(feature = "transforms")]
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SplitConfig {
+    /// String field to split into an array.
+    field: String,
+    /// Delimiter to split on.
+    delimiter: String,
+    /// Trim whitespace from each element. Default: `false`.
+    #[serde(default)]
+    trim: bool,
+    /// Optional target key for the array. `null` = replace in place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    into: Option<String>,
+}
+
+#[cfg(feature = "transforms")]
+#[derive(Debug, Deserialize, JsonSchema)]
+struct JoinConfig {
+    /// Array field to join into a string.
+    field: String,
+    /// Delimiter placed between elements.
+    delimiter: String,
+    /// Optional target key for the string. `null` = replace in place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    into: Option<String>,
 }
 
 #[cfg(feature = "transform-filter")]
@@ -355,6 +435,81 @@ fn registry() -> Vec<TransformDef> {
                     Ok(TransformStage::Map(RecordTransform::SpellSymbols {
                         extra: cfg.extra,
                         separator: cfg.separator,
+                    }))
+                },
+            },
+            TransformDef {
+                kind: "hash",
+                description: "Hash listed fields (SHA-256 / BLAKE3) into stable, join-able tokens.",
+                schema_fn: || schema::<HashConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<HashConfig>(kind, config)?;
+                    let stage = TransformStage::Map(RecordTransform::Hash {
+                        fields: cfg.fields,
+                        algorithm: cfg.algorithm,
+                        encoding: cfg.encoding,
+                        salt: cfg.salt,
+                        into: cfg.into,
+                    });
+                    validate_stage(kind, &stage)?;
+                    Ok(stage)
+                },
+            },
+            TransformDef {
+                kind: "json_parse",
+                description: "Parse a stringified-JSON field into a real nested JSON value.",
+                schema_fn: || schema::<JsonParseConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<JsonParseConfig>(kind, config)?;
+                    let stage = TransformStage::Map(RecordTransform::JsonParse {
+                        fields: cfg.fields,
+                        on_error: cfg.on_error,
+                        into: cfg.into,
+                    });
+                    validate_stage(kind, &stage)?;
+                    Ok(stage)
+                },
+            },
+            TransformDef {
+                kind: "coalesce",
+                description: "Fill a missing/null field from a default or first non-null fallback key.",
+                schema_fn: || schema::<CoalesceConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<CoalesceConfig>(kind, config)?;
+                    let stage = TransformStage::Map(RecordTransform::Coalesce {
+                        field: cfg.field,
+                        default: cfg.default,
+                        from: cfg.from,
+                        treat_empty_string_as_null: cfg.treat_empty_string_as_null,
+                    });
+                    validate_stage(kind, &stage)?;
+                    Ok(stage)
+                },
+            },
+            TransformDef {
+                kind: "split",
+                description: "Split a string field into an array on a delimiter.",
+                schema_fn: || schema::<SplitConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<SplitConfig>(kind, config)?;
+                    Ok(TransformStage::Map(RecordTransform::Split {
+                        field: cfg.field,
+                        delimiter: cfg.delimiter,
+                        trim: cfg.trim,
+                        into: cfg.into,
+                    }))
+                },
+            },
+            TransformDef {
+                kind: "join",
+                description: "Join an array field into a string with a delimiter.",
+                schema_fn: || schema::<JoinConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<JoinConfig>(kind, config)?;
+                    Ok(TransformStage::Map(RecordTransform::Join {
+                        field: cfg.field,
+                        delimiter: cfg.delimiter,
+                        into: cfg.into,
                     }))
                 },
             },
@@ -600,6 +755,26 @@ fn decode<T: serde::de::DeserializeOwned>(name: &str, config: Value) -> CliResul
     })
 }
 
+/// Compile-validate a `Map` stage so its config errors (empty `fields`, `into`
+/// with multiple fields, `coalesce` requiring exactly one source) surface at
+/// load time as `CliError::InvalidTransform` — mirroring how `filter` /
+/// `explode` validate their specs at compile time.
+#[cfg(feature = "transforms")]
+fn validate_stage(kind: &str, stage: &TransformStage) -> CliResult<()> {
+    faucet_core::compile_stage(stage)
+        .map(|_| ())
+        .map_err(|e| {
+            let message = match e {
+                faucet_core::FaucetError::Transform(m) | faucet_core::FaucetError::Config(m) => m,
+                other => format!("{other}"),
+            };
+            CliError::InvalidTransform {
+                name: kind.to_owned(),
+                message,
+            }
+        })
+}
+
 #[cfg(feature = "transform-sql")]
 fn schema_sql() -> Value {
     serde_json::to_value(faucet_core::schema_for!(
@@ -833,6 +1008,11 @@ mod tests {
             "redact",
             "value_case",
             "spell_symbols",
+            "hash",
+            "json_parse",
+            "coalesce",
+            "split",
+            "join",
             "filter",
             "explode",
         ] {

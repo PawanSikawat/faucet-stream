@@ -5,13 +5,13 @@
 [![MSRV](https://img.shields.io/crates/msrv/faucet-sink-stdout.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
 [![License](https://img.shields.io/crates/l/faucet-sink-stdout.svg)](https://github.com/PawanSikawat/faucet-stream#license)
 
-Standard-stream (**stdout / stderr**) sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes each record to a standard stream in one of three formats — compact JSON Lines, pretty-printed JSON, or tab-separated values.
+Standard-stream (**stdout / stderr**) sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes each record to a standard stream in one of four formats — compact JSON Lines, pretty-printed JSON, tab-separated values, or RFC-4180 CSV.
 
 Reach for it whenever you want to *see* what a pipeline produces: debugging a new source, eyeballing the shape of records before wiring up a real destination, building a quick demo, sampling the first few rows with `faucet preview`, or piping records into another shell tool (`jq`, `head`, `grep`, `column`). It's the zero-setup sink — no credentials, no connection, no files — so it's almost always the first sink you point a new source at.
 
 ## Feature highlights
 
-- **Three output formats** — `json_lines` (one compact object per line, the de-facto debug format), `pretty_json` (indented and readable), and `tsv` (tab-separated, spreadsheet-friendly).
+- **Four output formats** — `json_lines` (one compact object per line, the de-facto debug format), `pretty_json` (indented and readable), `tsv` (tab-separated, spreadsheet-friendly), and `csv` (RFC-4180 comma-separated).
 - **Pick the stream** — write to `stdout` (default, honors shell redirection) or `stderr` (when stdout is reserved for piping the pipeline's own output).
 - **Buffered, async writes** — records go through a buffered `tokio` async writer, so high-volume runs aren't bottlenecked on per-record syscalls.
 - **Live-preview flushing** — `flush_per_record` flushes after every record for low-latency, line-at-a-time output (e.g. tailing a streaming source).
@@ -60,7 +60,7 @@ All fields are optional; an empty `config: {}` writes JSON Lines to stdout with 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `destination` | `stdout` \| `stderr` | `stdout` | Which standard stream to write to. `stderr` is useful when stdout is reserved for the pipeline's own structured output. |
-| `format` | `json_lines` \| `pretty_json` \| `tsv` | `json_lines` | How each record is serialized — see [Formats](#formats). |
+| `format` | `json_lines` \| `pretty_json` \| `tsv` \| `csv` | `json_lines` | How each record is serialized — see [Formats](#formats). |
 | `flush_per_record` | bool | `false` | Flush the underlying writer after every record instead of at batch boundaries. Lower latency for live preview, slightly lower throughput. |
 | `max_records` | int | *(unset → unlimited)* | Stop after this many records. Once reached, subsequent `write_batch` calls become no-ops. Powers `faucet preview --limit N`. |
 | `batch_size` | int | `1000` | Records per upstream `StreamPage`. **No behavioural impact at this sink** — present only for config parity across the workspace. See [Streaming & batching](#streaming--batching). |
@@ -72,6 +72,7 @@ All fields are optional; an empty `config: {}` writes JSON Lines to stdout with 
 | `json_lines` | One compact JSON object per line (newline-delimited). The standard debug / pipe-into-`jq` format. |
 | `pretty_json` | Indented (pretty-printed) JSON, each record separated by a newline. Easier to read by eye; not a single-line format. |
 | `tsv` | Tab-separated values. Each record's keys are sorted alphabetically; scalar values are emitted raw (control characters in strings replaced by spaces), and nested objects/arrays are emitted as compact JSON. **Requires every record to be a JSON object.** |
+| `csv` | RFC-4180 comma-separated values. Same column resolution as `tsv` (keys sorted, one line per record, no header row), but the `csv` crate handles quoting/escaping so values containing commas, quotes, or newlines round-trip; nested objects/arrays are emitted as compact JSON. Line terminator is `\n` (not CRLF), matching the other formats. **Requires every record to be a JSON object.** |
 
 ## Examples
 

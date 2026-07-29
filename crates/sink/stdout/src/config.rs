@@ -27,6 +27,12 @@ pub enum StdoutFormat {
     /// Tab-separated values, with each record's keys sorted alphabetically.
     /// Scalars are emitted as-is; nested objects/arrays are emitted as compact JSON.
     Tsv,
+    /// RFC-4180 comma-separated values, with each record's keys sorted
+    /// alphabetically. Same column-resolution as [`StdoutFormat::Tsv`] (one
+    /// line per record, keys sorted, no header row); values containing commas,
+    /// quotes, or newlines are properly quoted. Nested objects/arrays are
+    /// emitted as compact JSON.
+    Csv,
 }
 
 /// Configuration for the stdout/stderr sink.

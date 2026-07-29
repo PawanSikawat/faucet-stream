@@ -15,6 +15,10 @@
 //! | [`RecordTransform::Redact`] | `transform-redact` | off |
 //! | [`RecordTransform::ValueCase`] | `transform-value-case` | off |
 //! | [`RecordTransform::SpellSymbols`] | `transform-spell-symbols` | off |
+//! | [`RecordTransform::Hash`] | `transform-hash` | off |
+//! | [`RecordTransform::JsonParse`] | `transform-json-parse` | off |
+//! | [`RecordTransform::Coalesce`] | `transform-coalesce` | off |
+//! | [`RecordTransform::Split`] / [`RecordTransform::Join`] | `transform-split-join` | off |
 //!
 //! The `transforms` aggregate feature pulls in every variant above.
 //!
@@ -135,6 +139,9 @@ pub enum KeyCaseMode {
     Kebab,
     /// `SCREAMING_SNAKE_CASE` — words separated by `_`, all uppercase.
     ScreamingSnake,
+    /// `dot.case` — words separated by `.`, all lowercase. Useful for
+    /// dotted-field backends (some search / metrics systems).
+    Dot,
 }
 
 /// String-value casing mode for [`RecordTransform::ValueCase`].
@@ -150,6 +157,84 @@ pub enum ValueCaseMode {
     Upper,
     /// Trim leading/trailing whitespace from the value.
     Trim,
+    /// Title Case — upper-case the first letter of each whitespace-delimited
+    /// word, lower-case the rest. ASCII/Unicode via `char::to_uppercase`.
+    Title,
+    /// Capitalize — upper-case only the first character of the whole string,
+    /// lower-case the rest.
+    Capitalize,
+}
+
+/// Hash algorithm for [`RecordTransform::Hash`].
+#[cfg(feature = "transform-hash")]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Deserialize,
+    serde::Serialize,
+    schemars::JsonSchema,
+    Default,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum HashAlgorithm {
+    /// SHA-256 (default).
+    #[default]
+    Sha256,
+    /// BLAKE3.
+    Blake3,
+}
+
+/// Output encoding for [`RecordTransform::Hash`] digests.
+#[cfg(feature = "transform-hash")]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Deserialize,
+    serde::Serialize,
+    schemars::JsonSchema,
+    Default,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum HashEncoding {
+    /// Lowercase hexadecimal (default).
+    #[default]
+    Hex,
+    /// Standard (padded) base64.
+    Base64,
+}
+
+/// Failure policy for [`RecordTransform::JsonParse`]. Default: `Keep`.
+///
+/// A 1→1 record transform cannot drop a record, so there is no `skip_record`
+/// policy — compose a downstream `filter` stage if you need to drop rows whose
+/// JSON failed to parse.
+#[cfg(feature = "transform-json-parse")]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Deserialize,
+    serde::Serialize,
+    schemars::JsonSchema,
+    Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum JsonParseOnError {
+    /// Leave the original (unparsed) string value unchanged.
+    #[default]
+    Keep,
+    /// Replace the un-parseable value with [`Value::Null`].
+    Null,
+    /// Return [`FaucetError::Transform`].
+    Error,
 }
 
 // ── Public config-facing type ─────────────────────────────────────────────────
@@ -320,6 +405,96 @@ pub enum RecordTransform {
         separator: String,
     },
 
+    /// Replace (or copy) each listed field's value with a cryptographic hash of
+    /// that value — stable, join-able pseudonymization that preserves
+    /// referential integrity (equal inputs → equal tokens).
+    ///
+    /// String values are hashed over their raw UTF-8 bytes; every other JSON
+    /// value is hashed over its canonical serialization. An optional `salt` is
+    /// prepended before hashing. Missing fields are silently skipped.
+    ///
+    /// When `into` is `Some`, exactly one field is allowed and the digest is
+    /// written to `into` (the source field is left intact); when `None`, each
+    /// field is replaced in place.
+    ///
+    /// _Requires feature `transform-hash`._
+    #[cfg(feature = "transform-hash")]
+    Hash {
+        fields: Vec<String>,
+        algorithm: HashAlgorithm,
+        encoding: HashEncoding,
+        salt: Option<String>,
+        into: Option<String>,
+    },
+
+    /// Parse a stringified-JSON field into a real nested JSON value.
+    ///
+    /// Fields whose value is already an object/array (or any non-string) are
+    /// left unchanged (idempotent). Missing fields are silently skipped. Parse
+    /// failures are governed by [`JsonParseOnError`].
+    ///
+    /// When `into` is `Some`, exactly one field is allowed and the parsed value
+    /// is written to `into`; when `None`, each field is replaced in place.
+    ///
+    /// _Requires feature `transform-json-parse`._
+    #[cfg(feature = "transform-json-parse")]
+    JsonParse {
+        fields: Vec<String>,
+        on_error: JsonParseOnError,
+        into: Option<String>,
+    },
+
+    /// Fill a missing or null field with a default — either a literal value, or
+    /// the first non-null value among a list of fallback keys.
+    ///
+    /// Exactly one of `default` / `from` must be set. The target is written
+    /// only when it is absent or JSON `null` (or, when
+    /// `treat_empty_string_as_null` is true, an empty string); a present,
+    /// non-null target is left unchanged (idempotent).
+    ///
+    /// _Requires feature `transform-coalesce`._
+    #[cfg(feature = "transform-coalesce")]
+    Coalesce {
+        field: String,
+        /// Literal fallback value. Mutually exclusive with `from`.
+        default: Option<Value>,
+        /// Fallback keys; the first non-null wins. Mutually exclusive with
+        /// `default`.
+        from: Vec<String>,
+        /// Treat an empty string as null for both the target and `from` keys.
+        treat_empty_string_as_null: bool,
+    },
+
+    /// Split a string field into an array on `delimiter`.
+    ///
+    /// Non-string / absent fields are left unchanged. With `trim`, each element
+    /// is whitespace-trimmed; empty segments are kept. When `into` is `Some`
+    /// the array is written there (overwriting), else in place.
+    ///
+    /// _Requires feature `transform-split-join`._
+    #[cfg(feature = "transform-split-join")]
+    Split {
+        field: String,
+        delimiter: String,
+        trim: bool,
+        into: Option<String>,
+    },
+
+    /// Join an array field into a string with `delimiter`.
+    ///
+    /// Non-array / absent fields are left unchanged. Non-string elements are
+    /// rendered via their JSON scalar form (strings without quotes, everything
+    /// else as compact JSON). When `into` is `Some` the string is written
+    /// there, else in place.
+    ///
+    /// _Requires feature `transform-split-join`._
+    #[cfg(feature = "transform-split-join")]
+    Join {
+        field: String,
+        delimiter: String,
+        into: Option<String>,
+    },
+
     /// A user-supplied transformation function.
     ///
     /// The function receives each record as a [`Value`] and returns the
@@ -383,6 +558,70 @@ impl fmt::Debug for RecordTransform {
                 .field("extra", extra)
                 .field("separator", separator)
                 .finish(),
+            #[cfg(feature = "transform-hash")]
+            Self::Hash {
+                fields,
+                algorithm,
+                encoding,
+                salt,
+                into,
+            } => f
+                .debug_struct("Hash")
+                .field("fields", fields)
+                .field("algorithm", algorithm)
+                .field("encoding", encoding)
+                // Never print salt material.
+                .field("salt", &salt.as_ref().map(|_| "<redacted>"))
+                .field("into", into)
+                .finish(),
+            #[cfg(feature = "transform-json-parse")]
+            Self::JsonParse {
+                fields,
+                on_error,
+                into,
+            } => f
+                .debug_struct("JsonParse")
+                .field("fields", fields)
+                .field("on_error", on_error)
+                .field("into", into)
+                .finish(),
+            #[cfg(feature = "transform-coalesce")]
+            Self::Coalesce {
+                field,
+                default,
+                from,
+                treat_empty_string_as_null,
+            } => f
+                .debug_struct("Coalesce")
+                .field("field", field)
+                .field("default", default)
+                .field("from", from)
+                .field("treat_empty_string_as_null", treat_empty_string_as_null)
+                .finish(),
+            #[cfg(feature = "transform-split-join")]
+            Self::Split {
+                field,
+                delimiter,
+                trim,
+                into,
+            } => f
+                .debug_struct("Split")
+                .field("field", field)
+                .field("delimiter", delimiter)
+                .field("trim", trim)
+                .field("into", into)
+                .finish(),
+            #[cfg(feature = "transform-split-join")]
+            Self::Join {
+                field,
+                delimiter,
+                into,
+            } => f
+                .debug_struct("Join")
+                .field("field", field)
+                .field("delimiter", delimiter)
+                .field("into", into)
+                .finish(),
             Self::Custom(_) => write!(f, "Custom(<fn>)"),
         }
     }
@@ -443,6 +682,64 @@ impl Clone for RecordTransform {
                 extra: extra.clone(),
                 separator: separator.clone(),
             },
+            #[cfg(feature = "transform-hash")]
+            Self::Hash {
+                fields,
+                algorithm,
+                encoding,
+                salt,
+                into,
+            } => Self::Hash {
+                fields: fields.clone(),
+                algorithm: *algorithm,
+                encoding: *encoding,
+                salt: salt.clone(),
+                into: into.clone(),
+            },
+            #[cfg(feature = "transform-json-parse")]
+            Self::JsonParse {
+                fields,
+                on_error,
+                into,
+            } => Self::JsonParse {
+                fields: fields.clone(),
+                on_error: *on_error,
+                into: into.clone(),
+            },
+            #[cfg(feature = "transform-coalesce")]
+            Self::Coalesce {
+                field,
+                default,
+                from,
+                treat_empty_string_as_null,
+            } => Self::Coalesce {
+                field: field.clone(),
+                default: default.clone(),
+                from: from.clone(),
+                treat_empty_string_as_null: *treat_empty_string_as_null,
+            },
+            #[cfg(feature = "transform-split-join")]
+            Self::Split {
+                field,
+                delimiter,
+                trim,
+                into,
+            } => Self::Split {
+                field: field.clone(),
+                delimiter: delimiter.clone(),
+                trim: *trim,
+                into: into.clone(),
+            },
+            #[cfg(feature = "transform-split-join")]
+            Self::Join {
+                field,
+                delimiter,
+                into,
+            } => Self::Join {
+                field: field.clone(),
+                delimiter: delimiter.clone(),
+                into: into.clone(),
+            },
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
         }
     }
@@ -502,6 +799,64 @@ impl Clone for CompiledTransform {
             } => Self::SpellSymbols {
                 replacements: replacements.clone(),
                 separator: separator.clone(),
+            },
+            #[cfg(feature = "transform-hash")]
+            Self::Hash {
+                fields,
+                algorithm,
+                encoding,
+                salt,
+                into,
+            } => Self::Hash {
+                fields: fields.clone(),
+                algorithm: *algorithm,
+                encoding: *encoding,
+                salt: salt.clone(),
+                into: into.clone(),
+            },
+            #[cfg(feature = "transform-json-parse")]
+            Self::JsonParse {
+                fields,
+                on_error,
+                into,
+            } => Self::JsonParse {
+                fields: fields.clone(),
+                on_error: *on_error,
+                into: into.clone(),
+            },
+            #[cfg(feature = "transform-coalesce")]
+            Self::Coalesce {
+                field,
+                default,
+                from,
+                treat_empty_string_as_null,
+            } => Self::Coalesce {
+                field: field.clone(),
+                default: default.clone(),
+                from: from.clone(),
+                treat_empty_string_as_null: *treat_empty_string_as_null,
+            },
+            #[cfg(feature = "transform-split-join")]
+            Self::Split {
+                field,
+                delimiter,
+                trim,
+                into,
+            } => Self::Split {
+                field: field.clone(),
+                delimiter: delimiter.clone(),
+                trim: *trim,
+                into: into.clone(),
+            },
+            #[cfg(feature = "transform-split-join")]
+            Self::Join {
+                field,
+                delimiter,
+                into,
+            } => Self::Join {
+                field: field.clone(),
+                delimiter: delimiter.clone(),
+                into: into.clone(),
             },
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
         }
@@ -601,6 +956,40 @@ pub enum CompiledTransform {
         replacements: Vec<(String, String)>,
         separator: String,
     },
+    #[cfg(feature = "transform-hash")]
+    Hash {
+        fields: Vec<String>,
+        algorithm: HashAlgorithm,
+        encoding: HashEncoding,
+        salt: Option<String>,
+        into: Option<String>,
+    },
+    #[cfg(feature = "transform-json-parse")]
+    JsonParse {
+        fields: Vec<String>,
+        on_error: JsonParseOnError,
+        into: Option<String>,
+    },
+    #[cfg(feature = "transform-coalesce")]
+    Coalesce {
+        field: String,
+        default: Option<Value>,
+        from: Vec<String>,
+        treat_empty_string_as_null: bool,
+    },
+    #[cfg(feature = "transform-split-join")]
+    Split {
+        field: String,
+        delimiter: String,
+        trim: bool,
+        into: Option<String>,
+    },
+    #[cfg(feature = "transform-split-join")]
+    Join {
+        field: String,
+        delimiter: String,
+        into: Option<String>,
+    },
     Custom(Arc<dyn Fn(Value) -> Value + Send + Sync>),
 }
 
@@ -680,6 +1069,106 @@ pub fn compile(t: &RecordTransform) -> Result<CompiledTransform, FaucetError> {
                 separator: separator.clone(),
             })
         }
+        #[cfg(feature = "transform-hash")]
+        RecordTransform::Hash {
+            fields,
+            algorithm,
+            encoding,
+            salt,
+            into,
+        } => {
+            if fields.is_empty() {
+                return Err(FaucetError::Config(
+                    "hash: `fields` must not be empty".to_owned(),
+                ));
+            }
+            if into.is_some() && fields.len() != 1 {
+                return Err(FaucetError::Config(
+                    "hash: `into` is only valid with exactly one field".to_owned(),
+                ));
+            }
+            Ok(CompiledTransform::Hash {
+                fields: fields.clone(),
+                algorithm: *algorithm,
+                encoding: *encoding,
+                salt: salt.clone(),
+                into: into.clone(),
+            })
+        }
+        #[cfg(feature = "transform-json-parse")]
+        RecordTransform::JsonParse {
+            fields,
+            on_error,
+            into,
+        } => {
+            if fields.is_empty() {
+                return Err(FaucetError::Config(
+                    "json_parse: `fields` must not be empty".to_owned(),
+                ));
+            }
+            if into.is_some() && fields.len() != 1 {
+                return Err(FaucetError::Config(
+                    "json_parse: `into` is only valid with exactly one field".to_owned(),
+                ));
+            }
+            Ok(CompiledTransform::JsonParse {
+                fields: fields.clone(),
+                on_error: *on_error,
+                into: into.clone(),
+            })
+        }
+        #[cfg(feature = "transform-coalesce")]
+        RecordTransform::Coalesce {
+            field,
+            default,
+            from,
+            treat_empty_string_as_null,
+        } => {
+            match (default.is_some(), from.is_empty()) {
+                // default set, from empty → ok
+                (true, true) => {}
+                // default unset, from non-empty → ok
+                (false, false) => {}
+                (true, false) => {
+                    return Err(FaucetError::Config(
+                        "coalesce: set exactly one of `default` or `from`, not both".to_owned(),
+                    ));
+                }
+                (false, true) => {
+                    return Err(FaucetError::Config(
+                        "coalesce: set exactly one of `default` or `from`".to_owned(),
+                    ));
+                }
+            }
+            Ok(CompiledTransform::Coalesce {
+                field: field.clone(),
+                default: default.clone(),
+                from: from.clone(),
+                treat_empty_string_as_null: *treat_empty_string_as_null,
+            })
+        }
+        #[cfg(feature = "transform-split-join")]
+        RecordTransform::Split {
+            field,
+            delimiter,
+            trim,
+            into,
+        } => Ok(CompiledTransform::Split {
+            field: field.clone(),
+            delimiter: delimiter.clone(),
+            trim: *trim,
+            into: into.clone(),
+        }),
+        #[cfg(feature = "transform-split-join")]
+        RecordTransform::Join {
+            field,
+            delimiter,
+            into,
+        } => Ok(CompiledTransform::Join {
+            field: field.clone(),
+            delimiter: delimiter.clone(),
+            into: into.clone(),
+        }),
         RecordTransform::Custom(f) => Ok(CompiledTransform::Custom(Arc::clone(f))),
     }
 }
@@ -726,6 +1215,53 @@ fn apply_one(value: Value, t: &CompiledTransform) -> Result<Value, FaucetError> 
             replacements,
             separator,
         } => spell_symbols(value, replacements, separator),
+        #[cfg(feature = "transform-hash")]
+        CompiledTransform::Hash {
+            fields,
+            algorithm,
+            encoding,
+            salt,
+            into,
+        } => Ok(hash_fields(
+            value,
+            fields,
+            *algorithm,
+            *encoding,
+            salt.as_deref(),
+            into.as_deref(),
+        )),
+        #[cfg(feature = "transform-json-parse")]
+        CompiledTransform::JsonParse {
+            fields,
+            on_error,
+            into,
+        } => json_parse_fields(value, fields, *on_error, into.as_deref()),
+        #[cfg(feature = "transform-coalesce")]
+        CompiledTransform::Coalesce {
+            field,
+            default,
+            from,
+            treat_empty_string_as_null,
+        } => Ok(coalesce_field(
+            value,
+            field,
+            default.as_ref(),
+            from,
+            *treat_empty_string_as_null,
+        )),
+        #[cfg(feature = "transform-split-join")]
+        CompiledTransform::Split {
+            field,
+            delimiter,
+            trim,
+            into,
+        } => Ok(split_field(value, field, delimiter, *trim, into.as_deref())),
+        #[cfg(feature = "transform-split-join")]
+        CompiledTransform::Join {
+            field,
+            delimiter,
+            into,
+        } => Ok(join_field(value, field, delimiter, into.as_deref())),
         CompiledTransform::Custom(f) => Ok(f(value)),
     }
 }
@@ -889,6 +1425,11 @@ fn apply_key_case(tokens: Vec<String>, mode: KeyCaseMode) -> String {
             .map(|t| t.to_lowercase())
             .collect::<Vec<_>>()
             .join("-"),
+        KeyCaseMode::Dot => tokens
+            .iter()
+            .map(|t| t.to_lowercase())
+            .collect::<Vec<_>>()
+            .join("."),
         KeyCaseMode::Camel => {
             let mut iter = tokens.into_iter();
             match iter.next() {
@@ -1204,6 +1745,8 @@ fn value_case(value: Value, fields: &[String], mode: ValueCaseMode) -> Value {
                         ValueCaseMode::Lower => s.to_lowercase(),
                         ValueCaseMode::Upper => s.to_uppercase(),
                         ValueCaseMode::Trim => s.trim().to_owned(),
+                        ValueCaseMode::Title => title_case(s),
+                        ValueCaseMode::Capitalize => capitalize_str(s),
                     };
                     map.insert(f.clone(), Value::String(new_s));
                 }
@@ -1211,6 +1754,43 @@ fn value_case(value: Value, fields: &[String], mode: ValueCaseMode) -> Value {
             Value::Object(map)
         }
         other => other,
+    }
+}
+
+/// Title-case: upper-case the first letter of each whitespace-delimited word,
+/// lower-case the rest. Word boundaries are ASCII/Unicode whitespace only
+/// (punctuation and underscores do NOT start a new word — `"o'brien"` →
+/// `"O'brien"`). Uses `char::to_uppercase` semantics.
+#[cfg(feature = "transform-value-case")]
+fn title_case(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut at_word_start = true;
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            at_word_start = true;
+            out.push(ch);
+        } else if at_word_start {
+            out.extend(ch.to_uppercase());
+            at_word_start = false;
+        } else {
+            out.extend(ch.to_lowercase());
+        }
+    }
+    out
+}
+
+/// Capitalize: upper-case only the first character of the whole string,
+/// lower-case the rest.
+#[cfg(feature = "transform-value-case")]
+fn capitalize_str(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => {
+            let mut out: String = first.to_uppercase().collect();
+            out.push_str(&chars.as_str().to_lowercase());
+            out
+        }
     }
 }
 
@@ -1321,6 +1901,231 @@ fn spell_symbols_in_key(key: &str, replacements: &[(String, String)], separator:
         }
     }
     out
+}
+
+// ── Hash ──────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "transform-hash")]
+fn hash_fields(
+    value: Value,
+    fields: &[String],
+    algorithm: HashAlgorithm,
+    encoding: HashEncoding,
+    salt: Option<&str>,
+    into: Option<&str>,
+) -> Value {
+    match value {
+        Value::Object(mut map) => {
+            for field in fields {
+                let Some(current) = map.get(field) else {
+                    continue;
+                };
+                // String values hash over their raw UTF-8 bytes; every other
+                // JSON value hashes over its canonical serialization.
+                let input = match current {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                let digest = hash_string(&input, algorithm, encoding, salt);
+                let target = into.unwrap_or(field.as_str());
+                map.insert(target.to_owned(), Value::String(digest));
+            }
+            Value::Object(map)
+        }
+        other => other,
+    }
+}
+
+#[cfg(feature = "transform-hash")]
+fn hash_string(
+    input: &str,
+    algorithm: HashAlgorithm,
+    encoding: HashEncoding,
+    salt: Option<&str>,
+) -> String {
+    // Salt is prepended before the value bytes.
+    let mut bytes: Vec<u8> = Vec::with_capacity(salt.map_or(0, str::len) + input.len());
+    if let Some(s) = salt {
+        bytes.extend_from_slice(s.as_bytes());
+    }
+    bytes.extend_from_slice(input.as_bytes());
+    let digest: Vec<u8> = match algorithm {
+        HashAlgorithm::Sha256 => {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(&bytes);
+            h.finalize().to_vec()
+        }
+        HashAlgorithm::Blake3 => blake3::hash(&bytes).as_bytes().to_vec(),
+    };
+    match encoding {
+        HashEncoding::Hex => hex_encode(&digest),
+        HashEncoding::Base64 => {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(&digest)
+        }
+    }
+}
+
+#[cfg(feature = "transform-hash")]
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    s
+}
+
+// ── JsonParse ───────────────────────────────────────────────────────────────
+
+#[cfg(feature = "transform-json-parse")]
+fn json_parse_fields(
+    value: Value,
+    fields: &[String],
+    on_error: JsonParseOnError,
+    into: Option<&str>,
+) -> Result<Value, FaucetError> {
+    match value {
+        Value::Object(mut map) => {
+            for field in fields {
+                // Only string values are candidates; a non-string (already
+                // parsed) value passes through untouched — idempotent.
+                let Some(Value::String(s)) = map.get(field) else {
+                    continue;
+                };
+                let s = s.clone();
+                match serde_json::from_str::<Value>(&s) {
+                    Ok(parsed) => {
+                        let target = into.unwrap_or(field.as_str());
+                        map.insert(target.to_owned(), parsed);
+                    }
+                    Err(e) => match on_error {
+                        JsonParseOnError::Keep => { /* leave the string as-is */ }
+                        JsonParseOnError::Null => {
+                            let target = into.unwrap_or(field.as_str());
+                            map.insert(target.to_owned(), Value::Null);
+                        }
+                        JsonParseOnError::Error => {
+                            return Err(FaucetError::Transform(format!(
+                                "json_parse: field '{field}' is not valid JSON: {e}"
+                            )));
+                        }
+                    },
+                }
+            }
+            Ok(Value::Object(map))
+        }
+        other => Ok(other),
+    }
+}
+
+// ── Coalesce ──────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "transform-coalesce")]
+fn coalesce_field(
+    value: Value,
+    field: &str,
+    default: Option<&Value>,
+    from: &[String],
+    treat_empty_string_as_null: bool,
+) -> Value {
+    match value {
+        Value::Object(mut map) => {
+            if is_nullish(map.get(field), treat_empty_string_as_null) {
+                let replacement: Option<Value> = match default {
+                    Some(d) => Some(d.clone()),
+                    None => from.iter().find_map(|k| {
+                        let v = map.get(k);
+                        if is_nullish(v, treat_empty_string_as_null) {
+                            None
+                        } else {
+                            v.cloned()
+                        }
+                    }),
+                };
+                if let Some(v) = replacement {
+                    map.insert(field.to_owned(), v);
+                }
+            }
+            Value::Object(map)
+        }
+        other => other,
+    }
+}
+
+/// A value counts as "nullish" (eligible for coalescing) when it is absent or
+/// JSON `null`, or — when `treat_empty_string_as_null` — an empty string.
+#[cfg(feature = "transform-coalesce")]
+fn is_nullish(v: Option<&Value>, treat_empty_string_as_null: bool) -> bool {
+    match v {
+        None | Some(Value::Null) => true,
+        Some(Value::String(s)) => treat_empty_string_as_null && s.is_empty(),
+        _ => false,
+    }
+}
+
+// ── Split / Join ────────────────────────────────────────────────────────────
+
+#[cfg(feature = "transform-split-join")]
+fn split_field(value: Value, field: &str, delimiter: &str, trim: bool, into: Option<&str>) -> Value {
+    match value {
+        Value::Object(mut map) => {
+            let Some(Value::String(s)) = map.get(field) else {
+                return Value::Object(map);
+            };
+            let s = s.clone();
+            // An empty delimiter is treated as "no split" — one element holding
+            // the whole (optionally trimmed) string — rather than the surprising
+            // std behaviour of splitting between every char.
+            let parts: Vec<Value> = if delimiter.is_empty() {
+                vec![Value::String(if trim { s.trim().to_owned() } else { s })]
+            } else {
+                s.split(delimiter)
+                    .map(|part| {
+                        let p = if trim { part.trim() } else { part };
+                        Value::String(p.to_owned())
+                    })
+                    .collect()
+            };
+            let target = into.unwrap_or(field);
+            map.insert(target.to_owned(), Value::Array(parts));
+            Value::Object(map)
+        }
+        other => other,
+    }
+}
+
+#[cfg(feature = "transform-split-join")]
+fn join_field(value: Value, field: &str, delimiter: &str, into: Option<&str>) -> Value {
+    match value {
+        Value::Object(mut map) => {
+            let Some(Value::Array(arr)) = map.get(field) else {
+                return Value::Object(map);
+            };
+            let joined = arr
+                .iter()
+                .map(scalar_to_string)
+                .collect::<Vec<_>>()
+                .join(delimiter);
+            let target = into.unwrap_or(field);
+            map.insert(target.to_owned(), Value::String(joined));
+            Value::Object(map)
+        }
+        other => other,
+    }
+}
+
+/// Render a JSON array element for `join`: strings emit their raw value, null
+/// emits an empty string, everything else its compact JSON scalar form.
+#[cfg(feature = "transform-split-join")]
+fn scalar_to_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -3025,5 +3830,621 @@ mod tests {
                 "expected type name {ty_name:?} in: {msg}"
             );
         }
+    }
+
+    // ── Hash (#403) ─────────────────────────────────────────────────────────
+
+    #[cfg(feature = "transform-hash")]
+    fn hash_spec(fields: &[&str], enc: HashEncoding, salt: Option<&str>) -> Vec<RecordTransform> {
+        vec![RecordTransform::Hash {
+            fields: fields.iter().map(|s| (*s).to_owned()).collect(),
+            algorithm: HashAlgorithm::Sha256,
+            encoding: enc,
+            salt: salt.map(str::to_owned),
+            into: None,
+        }]
+    }
+
+    #[cfg(feature = "transform-hash")]
+    #[test]
+    fn hash_replaces_in_place_and_is_stable() {
+        let a = apply_all(
+            json!({"email": "a@b.com", "id": 1}),
+            &compiled(&hash_spec(&["email"], HashEncoding::Hex, None)),
+        );
+        let b = apply_all(
+            json!({"email": "a@b.com", "id": 1}),
+            &compiled(&hash_spec(&["email"], HashEncoding::Hex, None)),
+        );
+        // Deterministic (same input → same token) and id untouched.
+        assert_eq!(a["email"], b["email"]);
+        assert_eq!(a["id"], 1);
+        // Known SHA-256 hex of "a@b.com".
+        assert_eq!(a["email"].as_str().unwrap().len(), 64);
+        assert_ne!(a["email"], json!("a@b.com"));
+    }
+
+    #[cfg(feature = "transform-hash")]
+    #[test]
+    fn hash_salt_changes_output() {
+        let unsalted = apply_all(
+            json!({"email": "a@b.com"}),
+            &compiled(&hash_spec(&["email"], HashEncoding::Hex, None)),
+        );
+        let salted = apply_all(
+            json!({"email": "a@b.com"}),
+            &compiled(&hash_spec(&["email"], HashEncoding::Hex, Some("pepper"))),
+        );
+        assert_ne!(unsalted["email"], salted["email"]);
+    }
+
+    #[cfg(feature = "transform-hash")]
+    #[test]
+    fn hash_hex_vs_base64_differ_and_both_decode() {
+        let hex = apply_all(
+            json!({"v": "x"}),
+            &compiled(&hash_spec(&["v"], HashEncoding::Hex, None)),
+        );
+        let b64 = apply_all(
+            json!({"v": "x"}),
+            &compiled(&hash_spec(&["v"], HashEncoding::Base64, None)),
+        );
+        assert_ne!(hex["v"], b64["v"]);
+        // hex is 64 chars; base64 of 32 bytes is 44 chars incl. padding.
+        assert_eq!(hex["v"].as_str().unwrap().len(), 64);
+        assert_eq!(b64["v"].as_str().unwrap().len(), 44);
+    }
+
+    #[cfg(feature = "transform-hash")]
+    #[test]
+    fn hash_into_preserves_source() {
+        let out = apply_all(
+            json!({"email": "a@b.com"}),
+            &compiled(&[RecordTransform::Hash {
+                fields: vec!["email".into()],
+                algorithm: HashAlgorithm::Sha256,
+                encoding: HashEncoding::Hex,
+                salt: None,
+                into: Some("email_hash".into()),
+            }]),
+        );
+        assert_eq!(out["email"], "a@b.com");
+        assert_eq!(out["email_hash"].as_str().unwrap().len(), 64);
+    }
+
+    #[cfg(feature = "transform-hash")]
+    #[test]
+    fn hash_missing_field_is_no_op() {
+        let out = apply_all(
+            json!({"id": 1}),
+            &compiled(&hash_spec(&["email"], HashEncoding::Hex, None)),
+        );
+        assert_eq!(out, json!({"id": 1}));
+    }
+
+    #[cfg(feature = "transform-hash")]
+    #[test]
+    fn hash_non_string_hashes_canonical_json() {
+        // A number hashes over its canonical JSON serialization ("42").
+        let out = apply_all(
+            json!({"n": 42}),
+            &compiled(&hash_spec(&["n"], HashEncoding::Hex, None)),
+        );
+        let expected = hash_string("42", HashAlgorithm::Sha256, HashEncoding::Hex, None);
+        assert_eq!(out["n"], Value::String(expected));
+    }
+
+    #[cfg(feature = "transform-hash")]
+    #[test]
+    fn hash_blake3_differs_from_sha256() {
+        let sha = apply_all(
+            json!({"v": "x"}),
+            &compiled(&[RecordTransform::Hash {
+                fields: vec!["v".into()],
+                algorithm: HashAlgorithm::Sha256,
+                encoding: HashEncoding::Hex,
+                salt: None,
+                into: None,
+            }]),
+        );
+        let b3 = apply_all(
+            json!({"v": "x"}),
+            &compiled(&[RecordTransform::Hash {
+                fields: vec!["v".into()],
+                algorithm: HashAlgorithm::Blake3,
+                encoding: HashEncoding::Hex,
+                salt: None,
+                into: None,
+            }]),
+        );
+        assert_ne!(sha["v"], b3["v"]);
+        assert_eq!(b3["v"].as_str().unwrap().len(), 64);
+    }
+
+    #[cfg(feature = "transform-hash")]
+    #[test]
+    fn hash_empty_fields_is_config_error() {
+        let res = compile(&RecordTransform::Hash {
+            fields: vec![],
+            algorithm: HashAlgorithm::Sha256,
+            encoding: HashEncoding::Hex,
+            salt: None,
+            into: None,
+        });
+        assert!(matches!(res, Err(FaucetError::Config(_))));
+    }
+
+    #[cfg(feature = "transform-hash")]
+    #[test]
+    fn hash_into_with_multiple_fields_is_config_error() {
+        let res = compile(&RecordTransform::Hash {
+            fields: vec!["a".into(), "b".into()],
+            algorithm: HashAlgorithm::Sha256,
+            encoding: HashEncoding::Hex,
+            salt: None,
+            into: Some("x".into()),
+        });
+        assert!(matches!(res, Err(FaucetError::Config(_))));
+    }
+
+    #[cfg(feature = "transform-hash")]
+    #[test]
+    fn hash_debug_redacts_salt() {
+        let dbg = format!(
+            "{:?}",
+            RecordTransform::Hash {
+                fields: vec!["a".into()],
+                algorithm: HashAlgorithm::Sha256,
+                encoding: HashEncoding::Hex,
+                salt: Some("supersecret".into()),
+                into: None,
+            }
+        );
+        assert!(!dbg.contains("supersecret"), "{dbg}");
+        assert!(dbg.contains("redacted"), "{dbg}");
+    }
+
+    // ── JsonParse (#404) ──────────────────────────────────────────────────────
+
+    #[cfg(feature = "transform-json-parse")]
+    fn json_parse_spec(field: &str, on_error: JsonParseOnError) -> Vec<RecordTransform> {
+        vec![RecordTransform::JsonParse {
+            fields: vec![field.to_owned()],
+            on_error,
+            into: None,
+        }]
+    }
+
+    #[cfg(feature = "transform-json-parse")]
+    #[test]
+    fn json_parse_object_string_becomes_object() {
+        let out = apply_all(
+            json!({"payload": "{\"a\":1,\"b\":[2,3]}"}),
+            &compiled(&json_parse_spec("payload", JsonParseOnError::Keep)),
+        );
+        assert_eq!(out["payload"], json!({"a": 1, "b": [2, 3]}));
+    }
+
+    #[cfg(feature = "transform-json-parse")]
+    #[test]
+    fn json_parse_already_parsed_is_no_op() {
+        let record = json!({"payload": {"a": 1}});
+        let out = apply_all(
+            record.clone(),
+            &compiled(&json_parse_spec("payload", JsonParseOnError::Error)),
+        );
+        assert_eq!(out, record);
+    }
+
+    #[cfg(feature = "transform-json-parse")]
+    #[test]
+    fn json_parse_missing_field_is_no_op() {
+        let out = apply_all(
+            json!({"id": 1}),
+            &compiled(&json_parse_spec("payload", JsonParseOnError::Error)),
+        );
+        assert_eq!(out, json!({"id": 1}));
+    }
+
+    #[cfg(feature = "transform-json-parse")]
+    #[test]
+    fn json_parse_invalid_keep_leaves_string() {
+        let out = apply_all(
+            json!({"payload": "not json"}),
+            &compiled(&json_parse_spec("payload", JsonParseOnError::Keep)),
+        );
+        assert_eq!(out["payload"], "not json");
+    }
+
+    #[cfg(feature = "transform-json-parse")]
+    #[test]
+    fn json_parse_invalid_null_replaces() {
+        let out = apply_all(
+            json!({"payload": "not json"}),
+            &compiled(&json_parse_spec("payload", JsonParseOnError::Null)),
+        );
+        assert_eq!(out["payload"], Value::Null);
+    }
+
+    #[cfg(feature = "transform-json-parse")]
+    #[test]
+    fn json_parse_invalid_error_propagates() {
+        let err = super::apply_all(
+            json!({"payload": "not json"}),
+            &compiled(&json_parse_spec("payload", JsonParseOnError::Error)),
+        )
+        .expect_err("invalid JSON under on_error=error must fail");
+        assert!(matches!(err, FaucetError::Transform(_)), "{err}");
+    }
+
+    #[cfg(feature = "transform-json-parse")]
+    #[test]
+    fn json_parse_into_writes_target() {
+        let out = apply_all(
+            json!({"payload": "{\"a\":1}"}),
+            &compiled(&[RecordTransform::JsonParse {
+                fields: vec!["payload".into()],
+                on_error: JsonParseOnError::Error,
+                into: Some("parsed".into()),
+            }]),
+        );
+        assert_eq!(out["payload"], "{\"a\":1}");
+        assert_eq!(out["parsed"], json!({"a": 1}));
+    }
+
+    // ── Coalesce (#405) ──────────────────────────────────────────────────────
+
+    #[cfg(feature = "transform-coalesce")]
+    #[test]
+    fn coalesce_default_fills_null_and_absent() {
+        let spec = |field: &str| {
+            vec![RecordTransform::Coalesce {
+                field: field.to_owned(),
+                default: Some(json!("unknown")),
+                from: vec![],
+                treat_empty_string_as_null: false,
+            }]
+        };
+        // null
+        let a = apply_all(json!({"status": null}), &compiled(&spec("status")));
+        assert_eq!(a["status"], "unknown");
+        // absent
+        let b = apply_all(json!({"id": 1}), &compiled(&spec("status")));
+        assert_eq!(b["status"], "unknown");
+    }
+
+    #[cfg(feature = "transform-coalesce")]
+    #[test]
+    fn coalesce_non_null_target_untouched() {
+        let out = apply_all(
+            json!({"status": "active"}),
+            &compiled(&[RecordTransform::Coalesce {
+                field: "status".into(),
+                default: Some(json!("unknown")),
+                from: vec![],
+                treat_empty_string_as_null: false,
+            }]),
+        );
+        assert_eq!(out["status"], "active");
+    }
+
+    #[cfg(feature = "transform-coalesce")]
+    #[test]
+    fn coalesce_from_picks_first_non_null() {
+        let out = apply_all(
+            json!({"status": null, "state": null, "phase": "running"}),
+            &compiled(&[RecordTransform::Coalesce {
+                field: "status".into(),
+                default: None,
+                from: vec!["status".into(), "state".into(), "phase".into()],
+                treat_empty_string_as_null: false,
+            }]),
+        );
+        assert_eq!(out["status"], "running");
+    }
+
+    #[cfg(feature = "transform-coalesce")]
+    #[test]
+    fn coalesce_empty_string_toggle() {
+        let spec = |treat: bool| {
+            vec![RecordTransform::Coalesce {
+                field: "status".into(),
+                default: Some(json!("unknown")),
+                from: vec![],
+                treat_empty_string_as_null: treat,
+            }]
+        };
+        // Off: "" is a real value, left alone.
+        let off = apply_all(json!({"status": ""}), &compiled(&spec(false)));
+        assert_eq!(off["status"], "");
+        // On: "" counts as null and is filled.
+        let on = apply_all(json!({"status": ""}), &compiled(&spec(true)));
+        assert_eq!(on["status"], "unknown");
+    }
+
+    #[cfg(feature = "transform-coalesce")]
+    #[test]
+    fn coalesce_from_all_null_leaves_target() {
+        let out = apply_all(
+            json!({"status": null, "state": null}),
+            &compiled(&[RecordTransform::Coalesce {
+                field: "status".into(),
+                default: None,
+                from: vec!["status".into(), "state".into()],
+                treat_empty_string_as_null: false,
+            }]),
+        );
+        assert_eq!(out["status"], Value::Null);
+    }
+
+    #[cfg(feature = "transform-coalesce")]
+    #[test]
+    fn coalesce_both_default_and_from_is_config_error() {
+        let res = compile(&RecordTransform::Coalesce {
+            field: "status".into(),
+            default: Some(json!("x")),
+            from: vec!["state".into()],
+            treat_empty_string_as_null: false,
+        });
+        assert!(matches!(res, Err(FaucetError::Config(_))));
+    }
+
+    #[cfg(feature = "transform-coalesce")]
+    #[test]
+    fn coalesce_neither_default_nor_from_is_config_error() {
+        let res = compile(&RecordTransform::Coalesce {
+            field: "status".into(),
+            default: None,
+            from: vec![],
+            treat_empty_string_as_null: false,
+        });
+        assert!(matches!(res, Err(FaucetError::Config(_))));
+    }
+
+    // ── Split / Join (#406) ──────────────────────────────────────────────────
+
+    #[cfg(feature = "transform-split-join")]
+    #[test]
+    fn split_basic_no_trim() {
+        let out = apply_all(
+            json!({"tags": "a, b ,c"}),
+            &compiled(&[RecordTransform::Split {
+                field: "tags".into(),
+                delimiter: ",".into(),
+                trim: false,
+                into: None,
+            }]),
+        );
+        assert_eq!(out["tags"], json!(["a", " b ", "c"]));
+    }
+
+    #[cfg(feature = "transform-split-join")]
+    #[test]
+    fn split_with_trim_keeps_empty_segments() {
+        let out = apply_all(
+            json!({"tags": "a, ,c,"}),
+            &compiled(&[RecordTransform::Split {
+                field: "tags".into(),
+                delimiter: ",".into(),
+                trim: true,
+                into: None,
+            }]),
+        );
+        // Empty segments are kept (documented).
+        assert_eq!(out["tags"], json!(["a", "", "c", ""]));
+    }
+
+    #[cfg(feature = "transform-split-join")]
+    #[test]
+    fn split_empty_input_yields_single_empty() {
+        let out = apply_all(
+            json!({"tags": ""}),
+            &compiled(&[RecordTransform::Split {
+                field: "tags".into(),
+                delimiter: ",".into(),
+                trim: false,
+                into: None,
+            }]),
+        );
+        assert_eq!(out["tags"], json!([""]));
+    }
+
+    #[cfg(feature = "transform-split-join")]
+    #[test]
+    fn split_non_string_is_no_op() {
+        let record = json!({"tags": [1, 2]});
+        let out = apply_all(
+            record.clone(),
+            &compiled(&[RecordTransform::Split {
+                field: "tags".into(),
+                delimiter: ",".into(),
+                trim: false,
+                into: None,
+            }]),
+        );
+        assert_eq!(out, record);
+    }
+
+    #[cfg(feature = "transform-split-join")]
+    #[test]
+    fn split_into_writes_target() {
+        let out = apply_all(
+            json!({"csv": "a,b"}),
+            &compiled(&[RecordTransform::Split {
+                field: "csv".into(),
+                delimiter: ",".into(),
+                trim: false,
+                into: Some("arr".into()),
+            }]),
+        );
+        assert_eq!(out["csv"], "a,b");
+        assert_eq!(out["arr"], json!(["a", "b"]));
+    }
+
+    #[cfg(feature = "transform-split-join")]
+    #[test]
+    fn join_basic_and_non_string_elements() {
+        let out = apply_all(
+            json!({"parts": ["a", 2, true, null]}),
+            &compiled(&[RecordTransform::Join {
+                field: "parts".into(),
+                delimiter: ",".into(),
+                into: None,
+            }]),
+        );
+        // strings raw, numbers/bools as JSON scalars, null as empty.
+        assert_eq!(out["parts"], "a,2,true,");
+    }
+
+    #[cfg(feature = "transform-split-join")]
+    #[test]
+    fn join_non_array_is_no_op() {
+        let record = json!({"parts": "already a string"});
+        let out = apply_all(
+            record.clone(),
+            &compiled(&[RecordTransform::Join {
+                field: "parts".into(),
+                delimiter: ",".into(),
+                into: None,
+            }]),
+        );
+        assert_eq!(out, record);
+    }
+
+    #[cfg(feature = "transform-split-join")]
+    #[test]
+    fn split_then_join_round_trips() {
+        let out = apply_all(
+            json!({"tags": "a,b,c"}),
+            &compiled(&[
+                RecordTransform::Split {
+                    field: "tags".into(),
+                    delimiter: ",".into(),
+                    trim: false,
+                    into: None,
+                },
+                RecordTransform::Join {
+                    field: "tags".into(),
+                    delimiter: ",".into(),
+                    into: None,
+                },
+            ]),
+        );
+        assert_eq!(out["tags"], "a,b,c");
+    }
+
+    // ── ValueCase: Title / Capitalize (#407) ──────────────────────────────────
+
+    #[cfg(feature = "transform-value-case")]
+    #[test]
+    fn value_case_title() {
+        let out = apply_all(
+            json!({"city": "new york", "id": 1}),
+            &compiled(&[RecordTransform::ValueCase {
+                fields: vec!["city".into()],
+                mode: ValueCaseMode::Title,
+            }]),
+        );
+        assert_eq!(out["city"], "New York");
+        assert_eq!(out["id"], 1);
+    }
+
+    #[cfg(feature = "transform-value-case")]
+    #[test]
+    fn value_case_title_lowercases_rest_of_word() {
+        let out = apply_all(
+            json!({"s": "hELLO WORLD"}),
+            &compiled(&[RecordTransform::ValueCase {
+                fields: vec!["s".into()],
+                mode: ValueCaseMode::Title,
+            }]),
+        );
+        assert_eq!(out["s"], "Hello World");
+    }
+
+    #[cfg(feature = "transform-value-case")]
+    #[test]
+    fn value_case_capitalize() {
+        let out = apply_all(
+            json!({"s": "hELLO wORLD"}),
+            &compiled(&[RecordTransform::ValueCase {
+                fields: vec!["s".into()],
+                mode: ValueCaseMode::Capitalize,
+            }]),
+        );
+        assert_eq!(out["s"], "Hello world");
+    }
+
+    #[cfg(feature = "transform-value-case")]
+    #[test]
+    fn value_case_title_is_idempotent() {
+        let once = apply_all(
+            json!({"s": "new york"}),
+            &compiled(&[RecordTransform::ValueCase {
+                fields: vec!["s".into()],
+                mode: ValueCaseMode::Title,
+            }]),
+        );
+        let twice = apply_all(
+            once.clone(),
+            &compiled(&[RecordTransform::ValueCase {
+                fields: vec!["s".into()],
+                mode: ValueCaseMode::Title,
+            }]),
+        );
+        assert_eq!(once, twice);
+    }
+
+    #[cfg(feature = "transform-value-case")]
+    #[test]
+    fn value_case_title_non_string_no_op() {
+        let out = apply_all(
+            json!({"n": 42}),
+            &compiled(&[RecordTransform::ValueCase {
+                fields: vec!["n".into()],
+                mode: ValueCaseMode::Title,
+            }]),
+        );
+        assert_eq!(out["n"], 42);
+    }
+
+    // ── KeysCase: Dot (#408) ──────────────────────────────────────────────────
+
+    #[cfg(feature = "transform-keys-case")]
+    #[test]
+    fn keys_case_dot() {
+        let out = apply_all(
+            json!({"userId": 1, "First Name": 2, "kebab-case": 3}),
+            &compiled(&keys_case_specs(KeyCaseMode::Dot)),
+        );
+        assert_eq!(out["user.id"], 1);
+        assert_eq!(out["first.name"], 2);
+        assert_eq!(out["kebab.case"], 3);
+    }
+
+    #[cfg(feature = "transform-keys-case")]
+    #[test]
+    fn keys_case_dot_is_idempotent() {
+        let once = apply_all(
+            json!({"userId": 1}),
+            &compiled(&keys_case_specs(KeyCaseMode::Dot)),
+        );
+        let twice = apply_all(once.clone(), &compiled(&keys_case_specs(KeyCaseMode::Dot)));
+        assert_eq!(once, twice);
+        assert_eq!(twice["user.id"], 1);
+    }
+
+    #[cfg(feature = "transform-keys-case")]
+    #[test]
+    fn keys_case_dot_matches_snake_tokenization() {
+        // Dot must tokenize identically to snake/kebab — only the join differs.
+        let record = json!({"XMLHttpRequest": 1, "second name": 2});
+        let dot = apply_all(record.clone(), &compiled(&keys_case_specs(KeyCaseMode::Dot)));
+        let snake = apply_all(record, &compiled(&keys_case_specs(KeyCaseMode::Snake)));
+        // Same token boundaries → snake key with '_' replaced by '.' equals dot key.
+        let dot_keys: Vec<String> = dot.as_object().unwrap().keys().cloned().collect();
+        let snake_keys: Vec<String> = snake.as_object().unwrap().keys().cloned().collect();
+        let converted: Vec<String> = snake_keys.iter().map(|k| k.replace('_', ".")).collect();
+        assert_eq!(dot_keys, converted);
     }
 }

@@ -23,6 +23,15 @@ transform-redact = []
 transform-value-case = []
 transform-spell-symbols = []
 transform-keys-case = []
+# SHA-256 / BLAKE3 field pseudonymization (#403). Pulls the hashing + encoding
+# deps only when enabled.
+transform-hash = ["dep:sha2", "dep:blake3", "dep:base64"]
+# Parse a stringified-JSON field into a real nested value (#404). Dependency-free.
+transform-json-parse = []
+# Fill a missing/null field with a default or first-non-null fallback (#405).
+transform-coalesce = []
+# Split a delimited string into an array, and its inverse join (#406).
+transform-split-join = []
 transform-filter = []
 transform-explode = []
 transform-cdc-unwrap = []
@@ -38,6 +47,10 @@ transforms = [
     "transform-value-case",
     "transform-spell-symbols",
     "transform-keys-case",
+    "transform-hash",
+    "transform-json-parse",
+    "transform-coalesce",
+    "transform-split-join",
     "transform-filter",
     "transform-explode",
     "transform-cdc-unwrap",
@@ -120,6 +133,9 @@ zstd = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 jsonschema = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
+# BLAKE3 + base64 back the `hash` transform (feature `transform-hash`, #403).
+blake3 = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
 aes-gcm = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
 # Opt-in columnar record path (feature `arrow`). Heavy, so strictly optional.

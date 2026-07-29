@@ -64,6 +64,7 @@ impl StdoutSink {
                 Ok(bytes)
             }
             StdoutFormat::Tsv => encode_tsv(record),
+            StdoutFormat::Csv => encode_csv(record),
         }
     }
 }
@@ -91,6 +92,41 @@ fn tsv_cell(value: &Value) -> Result<String, FaucetError> {
         // Render strings without JSON quoting, but neutralise control chars
         // that would corrupt the TSV layout.
         Value::String(s) => s.replace(['\t', '\n', '\r'], " "),
+        Value::Null => String::new(),
+        Value::Bool(_) | Value::Number(_) => value.to_string(),
+        Value::Array(_) | Value::Object(_) => serde_json::to_string(value)
+            .map_err(|e| FaucetError::Sink(format!("JSON serialization failed: {e}")))?,
+    })
+}
+
+/// Encode one record as an RFC-4180 CSV line. Same column resolution as
+/// [`encode_tsv`] (keys sorted, no header row), but the `csv` crate handles
+/// quoting/escaping so values with commas, quotes, or newlines round-trip.
+/// The line terminator is `\n` to match the sink's other formats.
+fn encode_csv(record: &Value) -> Result<Vec<u8>, FaucetError> {
+    let obj = record.as_object().ok_or_else(|| {
+        FaucetError::Sink("Csv format requires each record to be a JSON object".into())
+    })?;
+    let mut keys: Vec<&String> = obj.keys().collect();
+    keys.sort();
+    let mut wtr = csv::WriterBuilder::new()
+        .terminator(csv::Terminator::Any(b'\n'))
+        .from_writer(Vec::new());
+    let cells: Vec<String> = keys
+        .iter()
+        .map(|key| csv_cell(&obj[*key]))
+        .collect::<Result<_, _>>()?;
+    wtr.write_record(&cells)
+        .map_err(|e| FaucetError::Sink(format!("CSV serialization failed: {e}")))?;
+    wtr.into_inner()
+        .map_err(|e| FaucetError::Sink(format!("CSV flush failed: {e}")))
+}
+
+/// A single CSV cell. Unlike [`tsv_cell`] we do NOT neutralise control chars —
+/// the `csv` writer quotes them per RFC-4180 instead.
+fn csv_cell(value: &Value) -> Result<String, FaucetError> {
+    Ok(match value {
+        Value::String(s) => s.clone(),
         Value::Null => String::new(),
         Value::Bool(_) | Value::Number(_) => value.to_string(),
         Value::Array(_) | Value::Object(_) => serde_json::to_string(value)
@@ -326,6 +362,54 @@ mod tests {
     #[tokio::test]
     async fn tsv_rejects_non_object_records() {
         let (sink, _capture) = sink_with(StdoutSinkConfig::new().format(StdoutFormat::Tsv));
+        let result = sink.write_batch(&[json!([1, 2, 3])]).await;
+        assert!(matches!(result, Err(FaucetError::Sink(_))));
+    }
+
+    #[tokio::test]
+    async fn csv_emits_keys_sorted_with_comma_separators() {
+        let (sink, capture) = sink_with(StdoutSinkConfig::new().format(StdoutFormat::Csv));
+        sink.write_batch(&[json!({"name": "alice", "id": 7, "tags": ["a","b"], "active": true})])
+            .await
+            .unwrap();
+        let out = capture.as_str();
+        let line = out.lines().next().unwrap();
+        // sorted keys: active, id, name, tags — nested array as compact JSON,
+        // which the csv writer quotes because it contains a comma.
+        assert_eq!(line, r#"true,7,alice,"[""a"",""b""]""#);
+    }
+
+    #[tokio::test]
+    async fn csv_quotes_commas_quotes_and_newlines() {
+        let (sink, capture) = sink_with(StdoutSinkConfig::new().format(StdoutFormat::Csv));
+        sink.write_batch(&[json!({"a": "x,y", "b": "he said \"hi\"", "c": "line1\nline2"})])
+            .await
+            .unwrap();
+        let out = capture.as_str();
+        // Round-trip through a csv reader to prove RFC-4180 validity.
+        let mut rdr = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .from_reader(out.as_bytes());
+        let rec = rdr.records().next().unwrap().unwrap();
+        assert_eq!(&rec[0], "x,y");
+        assert_eq!(&rec[1], "he said \"hi\"");
+        assert_eq!(&rec[2], "line1\nline2");
+    }
+
+    #[tokio::test]
+    async fn csv_line_terminator_is_lf_not_crlf() {
+        let (sink, capture) = sink_with(StdoutSinkConfig::new().format(StdoutFormat::Csv));
+        sink.write_batch(&[json!({"a": 1}), json!({"a": 2})])
+            .await
+            .unwrap();
+        let out = capture.as_str();
+        assert_eq!(out, "1\n2\n");
+        assert!(!out.contains('\r'));
+    }
+
+    #[tokio::test]
+    async fn csv_rejects_non_object_records() {
+        let (sink, _capture) = sink_with(StdoutSinkConfig::new().format(StdoutFormat::Csv));
         let result = sink.write_batch(&[json!([1, 2, 3])]).await;
         assert!(matches!(result, Err(FaucetError::Sink(_))));
     }

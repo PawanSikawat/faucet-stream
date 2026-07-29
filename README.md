@@ -209,7 +209,7 @@ one-block addition to your YAML:
 | **Event-driven triggers** | `faucet serve --triggers` — auto-enqueue runs on object-arrival (S3/GCS), webhook, or queue-depth (Redis/Kafka). | [triggers](https://pawansikawat.github.io/faucet-stream/reference/triggers.html) |
 | **OpenLineage emission** | Emit START/RUNNING/COMPLETE/FAIL events with schema facets and column-level lineage over HTTP / file / Kafka. | [lineage](https://pawansikawat.github.io/faucet-stream/cookbook/lineage.html) |
 | **Observability** | Automatic Prometheus metrics + `tracing` spans for every source, sink, transform, and state op — labelled by pipeline / row / connector. | [observability](cli/README.md#observability-prometheus--tracing) |
-| **Transforms** | `flatten`, `rename_keys`, `keys_case`, `select`, `drop`, `set`, `rename_field`, `cast`, `redact`, `value_case`, `spell_symbols`, `cdc_unwrap`, and `sql` (embedded DuckDB, page-level). | [transforms](https://pawansikawat.github.io/faucet-stream/cookbook/transforms.html) |
+| **Transforms** | `flatten`, `rename_keys`, `keys_case`, `select`, `drop`, `set`, `rename_field`, `cast`, `redact`, `hash`, `json_parse`, `coalesce`, `value_case`, `split`, `join`, `spell_symbols`, `cdc_unwrap`, and `sql` (embedded DuckDB, page-level). | [transforms](https://pawansikawat.github.io/faucet-stream/cookbook/transforms.html) |
 
 ## Connectors
 
@@ -446,7 +446,7 @@ dead-letter routing, quality checks, metrics) so connectors stay simple:
 %%{init: {'theme':'base','flowchart':{'curve':'basis','nodeSpacing':50,'rankSpacing':72,'padding':14},'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif','fontSize':'14px','lineColor':'#a5b4c4','clusterBkg':'#f8fafc','clusterBorder':'#e2e8f0'}}}%%
 flowchart LR
     S["<b>Source</b><br/>REST · DB · CDC<br/>Kafka · S3 · Parquet"]
-    T["<b>Transforms</b><br/>flatten · rename · keys_case<br/>select · drop · set · cast<br/>redact · value_case · spell_symbols<br/>sql (DuckDB, page-level)"]
+    T["<b>Transforms</b><br/>flatten · rename · keys_case<br/>select · drop · set · cast<br/>redact · hash · json_parse · coalesce<br/>value_case · split · join · spell_symbols<br/>sql (DuckDB, page-level)"]
     P{{"<b>Pipeline</b>"}}
     K["<b>Sink</b><br/>BigQuery · Postgres<br/>Parquet · Kafka · ..."]
     ST[("State store<br/>file · Redis · Postgres")]
@@ -580,12 +580,16 @@ Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`,
 | `full` | no | Every connector, state backend, and capability |
 | `transform-flatten` | yes | Flatten nested objects |
 | `transform-rename-keys` | yes | Regex key renaming |
-| `transform-keys-case` | yes | Re-case every key — snake / camel / pascal / kebab / screaming_snake |
+| `transform-keys-case` | yes | Re-case every key — snake / camel / pascal / kebab / screaming_snake / dot |
 | `transform-select` / `transform-drop` / `transform-set` | no | Keep / remove / add top-level fields |
 | `transform-rename-field` | no | Exact-name field rename (single or batch) |
 | `transform-cast` | no | Per-field type coercion with `on_error` policy |
 | `transform-redact` | no | Replace listed field values with a mask |
-| `transform-value-case` | no | Lowercase / uppercase / trim string field values |
+| `transform-hash` | no | Hash fields (SHA-256 / BLAKE3) into stable, join-able tokens |
+| `transform-json-parse` | no | Parse a stringified-JSON field into a nested value |
+| `transform-coalesce` | no | Fill a missing/null field from a default or first non-null key |
+| `transform-value-case` | no | Lowercase / uppercase / trim / title / capitalize string field values |
+| `transform-split-join` | no | Split a string into an array (and the inverse join) |
 | `transform-spell-symbols` | no | Spell out symbols in keys (`%` → `percent`, `#` → `number`, …) |
 | `transform-cdc-unwrap` | no | Normalize a CDC envelope into a flat row + `__op` marker (pairs with upsert sinks) |
 | `transforms` | no | All built-in transforms above |

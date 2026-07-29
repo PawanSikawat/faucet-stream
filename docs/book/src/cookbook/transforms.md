@@ -14,7 +14,7 @@ them are listed in `faucet list` and dispatchable as `type:` values.
 |---|---|---|
 | `flatten` | Collapse nested objects to a flat record | `separator` |
 | `rename_keys` | Regex rename of every key, recursively | `pattern`, `replacement` |
-| `keys_case` | Re-case every key (snake / camel / pascal / kebab / screaming_snake) | `mode` |
+| `keys_case` | Re-case every key (snake / camel / pascal / kebab / screaming_snake / dot) | `mode` |
 | `spell_symbols` | Spell out symbols in keys (`%` → `percent`, `#` → `number`, …) | `extra`, `separator` |
 | `select` | Keep only listed top-level fields | `fields: [..]` |
 | `drop` | Remove listed top-level fields | `fields: [..]` |
@@ -22,7 +22,12 @@ them are listed in `faucet list` and dispatchable as `type:` values.
 | `rename_field` | Exact-name rename (vs. regex) | `fields: {from: to, ..}` |
 | `cast` | Coerce per-field types | `fields: {name: type}`, `on_error` |
 | `redact` | Replace listed field values with a mask | `fields: [..]`, `mask` |
-| `value_case` | Lowercase / uppercase / trim string values | `fields: [..]`, `mode` |
+| `hash` | Hash fields (SHA-256 / BLAKE3) into stable, join-able tokens | `fields: [..]`, `algorithm`, `encoding`, `salt?`, `into?` |
+| `json_parse` | Parse a stringified-JSON field into a nested value | `fields: [..]`, `on_error`, `into?` |
+| `coalesce` | Fill a missing/null field from a default or first non-null key | `field`, `default` \| `from: [..]`, `treat_empty_string_as_null` |
+| `value_case` | Lowercase / uppercase / trim / title / capitalize string values | `fields: [..]`, `mode` |
+| `split` | Split a string field into an array on a delimiter | `field`, `delimiter`, `trim`, `into?` |
+| `join` | Join an array field into a string with a delimiter | `field`, `delimiter`, `into?` |
 | `sql` | Run DuckDB SQL over the whole page; records are the `batch` relation | `query`, `relations?`, `memory_limit?`, `threads?` · page-level (sees the whole batch) · needs `transform-sql` feature · [cookbook](./sql-transform.md) |
 
 The field-targeting transforms (`select`, `drop`, `set`, `rename_field`,
@@ -180,7 +185,7 @@ config reaches `faucet`.
 ```yaml
 - type: keys_case
   config:
-    mode: snake   # | camel | pascal | kebab | screaming_snake
+    mode: snake   # | camel | pascal | kebab | screaming_snake | dot
 ```
 
 The tokeniser splits each key on whitespace, `_`, `-`, dropped
@@ -188,12 +193,16 @@ punctuation, and lower→upper transitions (so `"firstName"` and
 `"first_name"` and `"first-name"` all tokenise the same), then re-joins
 in the requested style:
 
-| Input          | `snake`        | `camel`       | `pascal`     | `kebab`        | `screaming_snake` |
-|----------------|----------------|---------------|--------------|----------------|-------------------|
-| `"First Name"` | `first_name`   | `firstName`   | `FirstName`  | `first-name`   | `FIRST_NAME`      |
-| `"last-name"`  | `last_name`    | `lastName`    | `LastName`   | `last-name`    | `LAST_NAME`       |
-| `"camelCase"`  | `camel_case`   | `camelCase`   | `CamelCase`  | `camel-case`   | `CAMEL_CASE`      |
-| `"ID"`         | `id`           | `id`          | `Id`         | `id`           | `ID`              |
+| Input          | `snake`        | `camel`       | `pascal`     | `kebab`        | `screaming_snake` | `dot`          |
+|----------------|----------------|---------------|--------------|----------------|-------------------|----------------|
+| `"First Name"` | `first_name`   | `firstName`   | `FirstName`  | `first-name`   | `FIRST_NAME`      | `first.name`   |
+| `"last-name"`  | `last_name`    | `lastName`    | `LastName`   | `last-name`    | `LAST_NAME`       | `last.name`    |
+| `"camelCase"`  | `camel_case`   | `camelCase`   | `CamelCase`  | `camel-case`   | `CAMEL_CASE`      | `camel.case`   |
+| `"ID"`         | `id`           | `id`          | `Id`         | `id`           | `ID`              | `id`           |
+
+`dot` (`dot.case`) is handy for backends that expect dotted field names
+(some search / metrics systems). It tokenises identically to the other
+modes — only the join separator differs.
 
 Two distinct keys that re-case to the same name error rather than
 silently overwriting (same collision rule as `flatten` and
@@ -341,17 +350,110 @@ have the field.
 > and scopes rules per destination sink, see
 > [PII detection & masking](./masking.md).
 
+## `hash`
+
+```yaml
+- type: hash
+  config:
+    fields: [email, user_id]   # one or more fields
+    algorithm: sha256          # sha256 (default) | blake3
+    encoding: hex              # hex (default) | base64
+    salt: "${env:HASH_SALT}"   # optional; prepended before hashing
+    into: null                 # optional target key (single field only); null = in place
+```
+
+Unlike `redact` (which destroys the value), `hash` produces a **stable,
+join-able token**: the same input always maps to the same digest, so
+downstream joins still work while the raw PII never reaches a sink.
+String values are hashed over their raw UTF-8 bytes; every other JSON
+value is hashed over its canonical serialization. Missing fields are
+skipped. `into` is only valid with exactly one field (a config error
+otherwise); with multiple fields each is replaced in place. Needs the
+`transform-hash` feature.
+
+> This is pseudonymization, not a secret — an unsalted digest is
+> recomputable by anyone. For keyed, policy-driven hashing see
+> [PII detection & masking](./masking.md).
+
+## `json_parse`
+
+```yaml
+- type: json_parse
+  config:
+    fields: [payload, metadata]   # dotted keys holding JSON strings
+    on_error: keep                # keep (default) | null | error
+    into: null                    # optional target key (single field only); null = in place
+```
+
+Expands a stringified-JSON column into a real nested value the rest of
+the pipeline (and the sink) can see — pairs naturally with `flatten`
+(parse, then flatten). Values that are already objects/arrays (or any
+non-string) pass through unchanged (idempotent); missing fields are
+skipped. Parse failures follow `on_error`: `keep` leaves the string,
+`null` replaces it with `null`, `error` aborts (or routes to the DLQ). A
+1→1 transform can't drop a record, so there is no `skip_record` — chain
+a `filter` if you need to drop rows whose JSON failed. Needs the
+`transform-json-parse` feature.
+
+## `coalesce`
+
+```yaml
+- type: coalesce
+  config:
+    field: status
+    # exactly one of:
+    default: "unknown"            # a literal JSON value, OR
+    from: [status, state]         # first non-null among these keys wins
+    treat_empty_string_as_null: false
+```
+
+Fills a **missing or null** field — the "set only if absent" primitive
+that `set` (which always overwrites) can't express. Exactly one of
+`default` / `from` must be set (a config error otherwise). A present,
+non-null target is left unchanged (idempotent). With
+`treat_empty_string_as_null: true`, an empty string counts as null for
+both the target and the `from` keys. If every `from` key is null/absent
+and no `default` is given, the target is left as-is. Needs the
+`transform-coalesce` feature.
+
 ## `value_case`
 
 ```yaml
 - type: value_case
   config:
     fields: [email, username]
-    mode: lower   # | upper | trim
+    mode: lower   # | upper | trim | title | capitalize
 ```
 
 Only string field values are touched; non-string values (numbers, bools,
 nulls, nested objects) pass through unchanged.
+
+- `title` upper-cases the first letter of each **whitespace-delimited**
+  word and lower-cases the rest (`"new york"` → `"New York"`);
+  punctuation and underscores do not start a new word.
+- `capitalize` upper-cases only the first character of the whole string
+  and lower-cases the rest (`"hELLO wORLD"` → `"Hello world"`).
+
+Both use `char::to_uppercase` semantics (no locale-aware casing).
+
+## `split` / `join`
+
+```yaml
+- type: split
+  config: { field: tags, delimiter: ",", trim: true, into: null }
+- type: join
+  config: { field: tags, delimiter: ",", into: null }
+```
+
+`split` turns a delimited string into an array; `join` is its inverse.
+Both are no-ops on the wrong type (`split` on a non-string, `join` on a
+non-array) or a missing field. With `trim`, `split` whitespace-trims each
+element but **keeps empty segments**. `join` renders non-string elements
+via their JSON scalar form (strings raw, `null` as empty, everything else
+as compact JSON). An empty `delimiter` on `split` yields a single-element
+array holding the whole string (rather than splitting between every
+char). When `into` is set the result is written there, else in place.
+Needs the `transform-split-join` feature.
 
 ## Ordering rules of thumb
 
