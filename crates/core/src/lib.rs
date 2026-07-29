@@ -112,6 +112,8 @@ pub use stage::{FilterOp, FilterSpec};
 pub use stage::{TransformStage, compile_stage};
 pub use state::{FileStateStore, MemoryStateStore, StateStore};
 pub use traits::{RowOutcome, Sink, Source};
+#[cfg(feature = "transform-json-parse")]
+pub use transform::JsonParseOnError;
 #[cfg(feature = "transform-keys-case")]
 pub use transform::KeyCaseMode;
 pub use transform::RecordTransform;
@@ -119,6 +121,8 @@ pub use transform::RecordTransform;
 pub use transform::ValueCaseMode;
 #[cfg(feature = "transform-cast")]
 pub use transform::{CastOnError, CastType};
+#[cfg(feature = "transform-hash")]
+pub use transform::{HashAlgorithm, HashEncoding};
 pub use transforming_source::TransformingSource;
 pub use util::redact_uri_credentials;
 pub use verify::{IntegrityCheck, LengthCheck, VerifyingReader};

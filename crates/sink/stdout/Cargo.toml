@@ -18,6 +18,8 @@ serde_json.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["io-util", "io-std", "sync"] }
+# RFC-4180 quoting for the `csv` output format.
+csv.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "io-util", "sync"] }
