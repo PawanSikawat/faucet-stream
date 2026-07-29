@@ -761,18 +761,16 @@ fn decode<T: serde::de::DeserializeOwned>(name: &str, config: Value) -> CliResul
 /// `explode` validate their specs at compile time.
 #[cfg(feature = "transforms")]
 fn validate_stage(kind: &str, stage: &TransformStage) -> CliResult<()> {
-    faucet_core::compile_stage(stage)
-        .map(|_| ())
-        .map_err(|e| {
-            let message = match e {
-                faucet_core::FaucetError::Transform(m) | faucet_core::FaucetError::Config(m) => m,
-                other => format!("{other}"),
-            };
-            CliError::InvalidTransform {
-                name: kind.to_owned(),
-                message,
-            }
-        })
+    faucet_core::compile_stage(stage).map(|_| ()).map_err(|e| {
+        let message = match e {
+            faucet_core::FaucetError::Transform(m) | faucet_core::FaucetError::Config(m) => m,
+            other => format!("{other}"),
+        };
+        CliError::InvalidTransform {
+            name: kind.to_owned(),
+            message,
+        }
+    })
 }
 
 #[cfg(feature = "transform-sql")]

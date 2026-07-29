@@ -127,6 +127,9 @@ pub enum CastOnError {
     Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
+// Non-exhaustive so future output conventions can be added as a minor
+// (additive) release rather than a breaking one.
+#[non_exhaustive]
 pub enum KeyCaseMode {
     /// `snake_case` — words separated by `_`, all lowercase.
     Snake,
@@ -150,6 +153,9 @@ pub enum KeyCaseMode {
     Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "lowercase")]
+// Non-exhaustive so future casing modes can be added as a minor
+// (additive) release rather than a breaking one.
+#[non_exhaustive]
 pub enum ValueCaseMode {
     /// Lowercase the value.
     Lower,
@@ -248,6 +254,11 @@ pub enum JsonParseOnError {
 /// The three built-in variants are each guarded by a Cargo feature flag
 /// (all enabled by default — see module-level docs).
 /// [`RecordTransform::Custom`] is always available and accepts any closure.
+///
+/// Non-exhaustive: new built-in transforms are added as variants over time, so
+/// this enum is marked `#[non_exhaustive]` — adding a transform is an additive
+/// (minor) change, and downstream matches must include a wildcard arm.
+#[non_exhaustive]
 pub enum RecordTransform {
     /// Flatten nested JSON objects into a single-level map.
     ///
@@ -902,6 +913,10 @@ impl RecordTransform {
 /// Stored inside a source (e.g. the REST source's `RestStream`) so that regex
 /// patterns are compiled exactly once (at construction time) rather than once
 /// per record.
+///
+/// Non-exhaustive for the same reason as [`RecordTransform`]: new transforms
+/// are added additively.
+#[non_exhaustive]
 pub enum CompiledTransform {
     #[cfg(feature = "transform-flatten")]
     Flatten {
@@ -2069,7 +2084,13 @@ fn is_nullish(v: Option<&Value>, treat_empty_string_as_null: bool) -> bool {
 // ── Split / Join ────────────────────────────────────────────────────────────
 
 #[cfg(feature = "transform-split-join")]
-fn split_field(value: Value, field: &str, delimiter: &str, trim: bool, into: Option<&str>) -> Value {
+fn split_field(
+    value: Value,
+    field: &str,
+    delimiter: &str,
+    trim: bool,
+    into: Option<&str>,
+) -> Value {
     match value {
         Value::Object(mut map) => {
             let Some(Value::String(s)) = map.get(field) else {
@@ -4439,7 +4460,10 @@ mod tests {
     fn keys_case_dot_matches_snake_tokenization() {
         // Dot must tokenize identically to snake/kebab — only the join differs.
         let record = json!({"XMLHttpRequest": 1, "second name": 2});
-        let dot = apply_all(record.clone(), &compiled(&keys_case_specs(KeyCaseMode::Dot)));
+        let dot = apply_all(
+            record.clone(),
+            &compiled(&keys_case_specs(KeyCaseMode::Dot)),
+        );
         let snake = apply_all(record, &compiled(&keys_case_specs(KeyCaseMode::Snake)));
         // Same token boundaries → snake key with '_' replaced by '.' equals dot key.
         let dot_keys: Vec<String> = dot.as_object().unwrap().keys().cloned().collect();
