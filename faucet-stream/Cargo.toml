@@ -27,6 +27,10 @@ source = [
     "source-mysql",
     "source-mssql",
     "source-sqlite",
+    "source-duckdb",
+    "source-sqs",
+    "source-nats",
+    "source-sftp",
     "source-s3",
     "source-mongodb",
     "source-mongodb-cdc",
@@ -61,6 +65,10 @@ sink = [
     "sink-mysql",
     "sink-mssql",
     "sink-sqlite",
+    "sink-duckdb",
+    "sink-sqs",
+    "sink-nats",
+    "sink-sftp",
     "sink-s3",
     "sink-mongodb",
     "sink-redis",
@@ -158,6 +166,10 @@ source-postgres-cdc = ["dep:faucet-source-postgres-cdc"]
 source-mysql = ["dep:faucet-source-mysql"]
 source-mssql = ["dep:faucet-source-mssql"]
 source-sqlite = ["dep:faucet-source-sqlite"]
+source-duckdb = ["dep:faucet-source-duckdb"]
+source-sqs = ["dep:faucet-source-sqs", "dep:faucet-common-sqs"]
+source-nats = ["dep:faucet-source-nats", "dep:faucet-common-nats"]
+source-sftp = ["dep:faucet-source-sftp", "dep:faucet-common-sftp"]
 source-s3 = ["dep:faucet-source-s3"]
 source-mongodb = ["dep:faucet-source-mongodb"]
 source-mongodb-cdc = ["dep:faucet-source-mongodb-cdc"]
@@ -196,6 +208,10 @@ sink-snowflake = ["dep:faucet-sink-snowflake"]
 sink-mysql = ["dep:faucet-sink-mysql"]
 sink-mssql = ["dep:faucet-sink-mssql"]
 sink-sqlite = ["dep:faucet-sink-sqlite"]
+sink-duckdb = ["dep:faucet-sink-duckdb"]
+sink-sqs = ["dep:faucet-sink-sqs", "dep:faucet-common-sqs"]
+sink-nats = ["dep:faucet-sink-nats", "dep:faucet-common-nats"]
+sink-sftp = ["dep:faucet-sink-sftp", "dep:faucet-common-sftp"]
 
 sink-s3 = ["dep:faucet-sink-s3"]
 sink-mongodb = ["dep:faucet-sink-mongodb"]
@@ -278,6 +294,13 @@ faucet-source-postgres-cdc = { workspace = true, optional = true }
 faucet-source-mysql = { workspace = true, optional = true }
 faucet-source-mssql = { workspace = true, optional = true }
 faucet-source-sqlite = { workspace = true, optional = true }
+faucet-source-duckdb = { workspace = true, optional = true }
+faucet-source-sqs = { workspace = true, optional = true }
+faucet-common-sqs = { workspace = true, optional = true }
+faucet-source-nats = { workspace = true, optional = true }
+faucet-common-nats = { workspace = true, optional = true }
+faucet-source-sftp = { workspace = true, optional = true }
+faucet-common-sftp = { workspace = true, optional = true }
 faucet-source-s3 = { workspace = true, optional = true }
 faucet-source-mongodb = { workspace = true, optional = true }
 faucet-source-mongodb-cdc = { workspace = true, optional = true }
@@ -310,6 +333,10 @@ faucet-sink-spanner = { workspace = true, optional = true }
 faucet-sink-mysql = { workspace = true, optional = true }
 faucet-sink-mssql = { workspace = true, optional = true }
 faucet-sink-sqlite = { workspace = true, optional = true }
+faucet-sink-duckdb = { workspace = true, optional = true }
+faucet-sink-sqs = { workspace = true, optional = true }
+faucet-sink-nats = { workspace = true, optional = true }
+faucet-sink-sftp = { workspace = true, optional = true }
 
 faucet-sink-s3 = { workspace = true, optional = true }
 faucet-sink-mongodb = { workspace = true, optional = true }

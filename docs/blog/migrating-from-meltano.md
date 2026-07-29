@@ -13,8 +13,10 @@ an honest note on when you shouldn't switch.*
 Straight answer first, because it makes the rest credible.
 
 **Stay on Meltano if** your first requirement is **connector breadth** — 600+
-Singer taps vs faucet's ~49 built-in connectors. If you depend on a long-tail
-SaaS tap that faucet doesn't have, Meltano wins today, full stop.
+Singer taps vs faucet's ~58 built-in connectors. If you depend on a long-tail
+SaaS tap that faucet doesn't have, Meltano wins today, full stop. (That said, the
+experimental `singer` source lets faucet run those taps unchanged — see the
+gotcha below — so "no native connector" isn't necessarily a dealbreaker.)
 
 **Move to faucet if** you feel the cost of the Python plugin runtime and want:
 
@@ -155,8 +157,11 @@ This is a real, runnable config —
 
 - **No tap for your source?** If it's a REST or GraphQL API, the generic source
   usually covers it with `pagination` + `auth` config — you're configuring, not
-  writing a plugin. If it's a truly bespoke SaaS with no HTTP-shaped API, that's
-  the case to stay on Meltano (or file a connector request).
+  writing a plugin. If it's a truly bespoke SaaS with only a Singer tap, the
+  experimental [`singer` source](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
+  runs that tap unchanged under faucet — a zero-rewrite stepping stone (it's v0
+  and single-stream, and reintroduces the tap's Python process) while you wait
+  for, or file, a native connector request.
 - **Mappers → transforms.** Simple renames/casts/drops map to built-in
   [record transforms](https://pawansikawat.github.io/faucet-stream/cookbook/transforms.html);
   anything SQL-shaped maps to the embedded-DuckDB
@@ -175,5 +180,5 @@ faucet run cli/examples/csv_to_jsonl.yaml   # no infra needed
 ---
 
 *faucet-stream is an MIT/Apache-2.0 Rust library + CLI for moving data between
-28 sources and 21 sinks. [Docs](https://pawansikawat.github.io/faucet-stream/) ·
+<!--COUNT:sources-->37<!--/COUNT--> sources and <!--COUNT:sinks-->29<!--/COUNT--> sinks. [Docs](https://pawansikawat.github.io/faucet-stream/) ·
 [GitHub](https://github.com/PawanSikawat/faucet-stream).*

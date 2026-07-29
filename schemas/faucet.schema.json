@@ -3892,6 +3892,271 @@
         }
       }
     },
+    "source_sqs__SqsCredentials": {
+      "description": "How to authenticate with AWS SQS.\n\nSerializes as `{ type: <method>, config: { … } }` (adjacent tagging,\nsnake_case discriminators) — the consistent auth wire shape shared by\nevery faucet connector.",
+      "oneOf": [
+        {
+          "description": "The AWS SDK default provider chain: environment variables, shared\nconfig/credentials files, ECS/EKS container credentials, web-identity\ntokens (`AWS_WEB_IDENTITY_TOKEN_FILE` / EKS IRSA), and EC2 instance\nprofiles — with automatic refresh/rotation.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "default"
+            }
+          }
+        },
+        {
+          "description": "A named profile from the shared AWS config/credentials files.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "profile"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "description": "Profile name (as in `~/.aws/credentials`).",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Static access keys. Prefer `${env:…}` / secrets-manager interpolation\nover literals in config files.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "access_key"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "access_key_id": {
+                  "description": "AWS access key id.",
+                  "type": "string"
+                },
+                "secret_access_key": {
+                  "description": "AWS secret access key.",
+                  "type": "string"
+                },
+                "session_token": {
+                  "description": "Optional session token (for temporary credentials).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Assume an IAM role via STS on top of the default provider chain.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "assume_role"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "role_arn": {
+                  "description": "ARN of the role to assume.",
+                  "type": "string"
+                },
+                "session_name": {
+                  "description": "Session name recorded in CloudTrail. Defaults to `faucet-stream`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "external_id": {
+                  "description": "Optional external id for cross-account trust policies.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Web-identity federation (e.g. EKS IRSA). Equivalent to the `default`\nchain, which honors `AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN` —\nkept as an explicit variant so intent is visible in configs.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "web_identity"
+            }
+          }
+        }
+      ]
+    },
+    "source_nats__NatsAuth": {
+      "description": "NATS client authentication configuration.\n\nSerializes with an adjacent `{ \"type\": <method>, \"config\": { … } }` tag in\nsnake_case, matching every other faucet connector's auth shape.\n\nThe [`std::fmt::Debug`] implementation is hand-written so secret material\n(`token`, `password`, `nkey` seed) is never printed — only the variant name\nand non-secret fields appear.",
+      "oneOf": [
+        {
+          "description": "No authentication (anonymous connection).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "none"
+            }
+          }
+        },
+        {
+          "description": "Bearer/token authentication.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "token"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "token": {
+                  "description": "The authentication token.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Username + password authentication.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "user_password"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "username": {
+                  "description": "The username.",
+                  "type": "string"
+                },
+                "password": {
+                  "description": "The password.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "NKey (Ed25519 seed) authentication.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "n_key"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "nkey": {
+                  "description": "The NKey seed (starts with `S`).",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Credentials-file (`.creds`) authentication — a decentralized JWT +\nNKey seed bundle as produced by `nsc`.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "creds_file"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "description": "Path to the `.creds` file.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "source_sftp__HostKeyPolicy": {
+      "description": "How the server's host key is verified during the SSH handshake.\n\nDefaults to [`AcceptNew`](Self::AcceptNew). The insecure, verification-off\nmode is a distinct explicit variant so it can never be selected by\naccident.",
+      "oneOf": [
+        {
+          "description": "Reject any host key that is not already recorded in `known_hosts`.\nThe most secure policy; requires the key to be pre-provisioned.",
+          "type": "object",
+          "properties": {
+            "known_hosts_path": {
+              "description": "Path to the `known_hosts` file. `None` uses the standard\n`~/.ssh/known_hosts` location.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "mode": {
+              "type": "string",
+              "const": "strict"
+            }
+          }
+        },
+        {
+          "description": "Trust-on-first-use: accept and record a host key the first time it is\nseen (in `~/.ssh/known_hosts`), but reject a key that has *changed*\nfrom a previously recorded one. This is the default.",
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "accept_new"
+            }
+          }
+        },
+        {
+          "description": "Disable host-key verification entirely. **Insecure** — vulnerable to\nman-in-the-middle attacks. Use only against trusted networks / test\nservers.",
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "insecure"
+            }
+          }
+        }
+      ]
+    },
+    "source_sftp__SftpFormat": {
+      "description": "Format of the remote files read by the SFTP source.",
+      "oneOf": [
+        {
+          "description": "Each line in the file is a separate JSON record (the default).\nStreamed line-by-line with bounded memory.",
+          "type": "string",
+          "const": "jsonl"
+        },
+        {
+          "description": "The entire file is a JSON array of records. Buffered fully per file\n(the closing `]` is required to validate the structure), then chunked.",
+          "type": "string",
+          "const": "json_array"
+        },
+        {
+          "description": "Each file becomes a single record with `\"path\"` and `\"content\"` fields.",
+          "type": "string",
+          "const": "raw_text"
+        }
+      ]
+    },
     "source_s3__S3FileFormat": {
       "description": "Format of files stored in S3.",
       "oneOf": [
@@ -6955,6 +7220,276 @@
         }
       }
     },
+    "sink_duckdb__DuckdbColumnMapping": {
+      "description": "How to map JSON records to table columns.",
+      "oneOf": [
+        {
+          "description": "Insert each record as a single JSON text column.",
+          "type": "object",
+          "properties": {
+            "json": {
+              "type": "object",
+              "properties": {
+                "column": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "description": "Map top-level JSON keys directly to table columns. Only keys that match\nexisting columns are inserted; extra keys are ignored.",
+          "type": "string",
+          "const": "auto_map"
+        }
+      ]
+    },
+    "sink_sqs__SqsCredentials": {
+      "description": "How to authenticate with AWS SQS.\n\nSerializes as `{ type: <method>, config: { … } }` (adjacent tagging,\nsnake_case discriminators) — the consistent auth wire shape shared by\nevery faucet connector.",
+      "oneOf": [
+        {
+          "description": "The AWS SDK default provider chain: environment variables, shared\nconfig/credentials files, ECS/EKS container credentials, web-identity\ntokens (`AWS_WEB_IDENTITY_TOKEN_FILE` / EKS IRSA), and EC2 instance\nprofiles — with automatic refresh/rotation.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "default"
+            }
+          }
+        },
+        {
+          "description": "A named profile from the shared AWS config/credentials files.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "profile"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "description": "Profile name (as in `~/.aws/credentials`).",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Static access keys. Prefer `${env:…}` / secrets-manager interpolation\nover literals in config files.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "access_key"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "access_key_id": {
+                  "description": "AWS access key id.",
+                  "type": "string"
+                },
+                "secret_access_key": {
+                  "description": "AWS secret access key.",
+                  "type": "string"
+                },
+                "session_token": {
+                  "description": "Optional session token (for temporary credentials).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Assume an IAM role via STS on top of the default provider chain.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "assume_role"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "role_arn": {
+                  "description": "ARN of the role to assume.",
+                  "type": "string"
+                },
+                "session_name": {
+                  "description": "Session name recorded in CloudTrail. Defaults to `faucet-stream`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "external_id": {
+                  "description": "Optional external id for cross-account trust policies.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Web-identity federation (e.g. EKS IRSA). Equivalent to the `default`\nchain, which honors `AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN` —\nkept as an explicit variant so intent is visible in configs.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "web_identity"
+            }
+          }
+        }
+      ]
+    },
+    "sink_nats__NatsAuth": {
+      "description": "NATS client authentication configuration.\n\nSerializes with an adjacent `{ \"type\": <method>, \"config\": { … } }` tag in\nsnake_case, matching every other faucet connector's auth shape.\n\nThe [`std::fmt::Debug`] implementation is hand-written so secret material\n(`token`, `password`, `nkey` seed) is never printed — only the variant name\nand non-secret fields appear.",
+      "oneOf": [
+        {
+          "description": "No authentication (anonymous connection).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "none"
+            }
+          }
+        },
+        {
+          "description": "Bearer/token authentication.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "token"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "token": {
+                  "description": "The authentication token.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Username + password authentication.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "user_password"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "username": {
+                  "description": "The username.",
+                  "type": "string"
+                },
+                "password": {
+                  "description": "The password.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "NKey (Ed25519 seed) authentication.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "n_key"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "nkey": {
+                  "description": "The NKey seed (starts with `S`).",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "Credentials-file (`.creds`) authentication — a decentralized JWT +\nNKey seed bundle as produced by `nsc`.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "creds_file"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "description": "Path to the `.creds` file.",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "sink_sftp__HostKeyPolicy": {
+      "description": "How the server's host key is verified during the SSH handshake.\n\nDefaults to [`AcceptNew`](Self::AcceptNew). The insecure, verification-off\nmode is a distinct explicit variant so it can never be selected by\naccident.",
+      "oneOf": [
+        {
+          "description": "Reject any host key that is not already recorded in `known_hosts`.\nThe most secure policy; requires the key to be pre-provisioned.",
+          "type": "object",
+          "properties": {
+            "known_hosts_path": {
+              "description": "Path to the `known_hosts` file. `None` uses the standard\n`~/.ssh/known_hosts` location.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "mode": {
+              "type": "string",
+              "const": "strict"
+            }
+          }
+        },
+        {
+          "description": "Trust-on-first-use: accept and record a host key the first time it is\nseen (in `~/.ssh/known_hosts`), but reject a key that has *changed*\nfrom a previously recorded one. This is the default.",
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "accept_new"
+            }
+          }
+        },
+        {
+          "description": "Disable host-key verification entirely. **Insecure** — vulnerable to\nman-in-the-middle attacks. Use only against trusted networks / test\nservers.",
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "insecure"
+            }
+          }
+        }
+      ]
+    },
     "sink_s3__S3SinkFormat": {
       "description": "On-the-wire format of objects written by the S3 sink.",
       "oneOf": [
@@ -9856,6 +10391,420 @@
                   "title": "SqliteSourceConfig",
                   "description": "Configuration for the SQLite query source.",
                   "type": "object"
+                },
+                true
+              ]
+            },
+            "transforms": {
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "duckdb",
+          "properties": {
+            "type": {
+              "const": "duckdb"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "database": {
+                      "description": "Path to the DuckDB database file, or `:memory:` for an in-memory\ndatabase. A `duckdb://` / `duckdb:` scheme prefix is accepted and\nstripped.",
+                      "type": "string"
+                    },
+                    "query": {
+                      "description": "SQL query to execute.",
+                      "type": "string"
+                    },
+                    "read_only": {
+                      "description": "Open the database read-only. Defaults to `false` (read-write).\n\nSet `true` to attach to a database file another process holds open —\nDuckDB permits multiple read-only connections to one file but only a\nsingle read-write connection.",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": false
+                    },
+                    "batch_size": {
+                      "description": "Records per emitted [`StreamPage`](faucet_core::StreamPage). Rows are\ndrained from the DuckDB result and yielded whenever the buffer reaches\nthis size. Defaults to [`DEFAULT_BATCH_SIZE`].\n\n`batch_size = 0` is the \"no batching\" sentinel: the entire result set is\nemitted in a single page. Useful for small lookup tables.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    }
+                  },
+                  "title": "DuckdbSourceConfig",
+                  "description": "Configuration for the DuckDB query source.",
+                  "type": "object"
+                },
+                true
+              ]
+            },
+            "transforms": {
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "sqs",
+          "properties": {
+            "type": {
+              "const": "sqs"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "queue_url": {
+                      "description": "SQS queue URL (e.g. `https://sqs.us-east-1.amazonaws.com/1234/my-q`).",
+                      "type": "string"
+                    },
+                    "region": {
+                      "description": "AWS region. `None` uses the SDK default chain (env, profile, IMDS).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "endpoint_url": {
+                      "description": "Custom endpoint URL for LocalStack / VPC endpoints.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "credentials": {
+                      "description": "AWS credentials. Defaults to the SDK default provider chain.",
+                      "$ref": "#/$defs/source_sqs__SqsCredentials",
+                      "default": {
+                        "type": "default"
+                      }
+                    },
+                    "idle_timeout_secs": {
+                      "description": "Stop after this many seconds without a new message. At least one of\n`idle_timeout_secs` and `max_messages` must be set (mirrors the Kafka /\nKinesis sources) — a batch run must terminate.",
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint64",
+                      "minimum": 0
+                    },
+                    "max_messages": {
+                      "description": "Stop after this many messages in total.",
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0
+                    },
+                    "wait_time_seconds": {
+                      "description": "Long-poll wait per `ReceiveMessage` call, in seconds (0–20). Default 10.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "int32",
+                      "default": 10
+                    },
+                    "batch_size": {
+                      "description": "Records per emitted [`StreamPage`](faucet_core::StreamPage). `0` is the\n\"no batching\" sentinel: one page per assembled drain buffer. Default\n1000.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    }
+                  },
+                  "title": "SqsSourceConfig",
+                  "description": "Configuration for [`SqsSource`](crate::SqsSource).",
+                  "type": "object"
+                },
+                true
+              ]
+            },
+            "transforms": {
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "nats",
+          "properties": {
+            "type": {
+              "const": "nats"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "servers": {
+                      "description": "One or more NATS server URLs, e.g. `[\"nats://127.0.0.1:4222\"]`. The\nclient connects to the first reachable server and uses the rest for\nfailover.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": [
+                        "nats://127.0.0.1:4222"
+                      ]
+                    },
+                    "auth": {
+                      "description": "Authentication mode. Defaults to [`NatsAuth::None`] (anonymous).",
+                      "$ref": "#/$defs/source_nats__NatsAuth",
+                      "default": {
+                        "type": "none"
+                      }
+                    },
+                    "tls": {
+                      "description": "Require a TLS connection to the server. Defaults to `false`.",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": false
+                    },
+                    "name": {
+                      "description": "Optional client connection name (surfaced in NATS server monitoring).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "subject": {
+                      "description": "Subject to subscribe to. Supports NATS wildcards (`*` for one token,\n`>` for the remaining tokens). In JetStream mode the durable consumer's\nown filter subject governs delivery and this field is informational.",
+                      "type": "string"
+                    },
+                    "queue_group": {
+                      "description": "Optional queue group for core-NATS load-balanced subscriptions — all\nsubscribers sharing a group split the subject's messages. Ignored in\nJetStream mode.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "jetstream_stream": {
+                      "description": "JetStream stream name. When set together with\n[`jetstream_consumer`](Self::jetstream_consumer) the source pulls from a\ndurable JetStream consumer instead of a core-NATS subscription.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "jetstream_consumer": {
+                      "description": "Name of the durable JetStream (pull) consumer to bind to. Required when\n[`jetstream_stream`](Self::jetstream_stream) is set; the consumer must\nalready exist on the server.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "max_messages": {
+                      "description": "Stop after this many messages have been drained. At least one of\n`max_messages` / `idle_timeout_secs` must be set so a run terminates.",
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0
+                    },
+                    "idle_timeout_secs": {
+                      "description": "Stop after this many seconds elapse with no new message. At least one of\n`max_messages` / `idle_timeout_secs` must be set so a run terminates.",
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint64",
+                      "minimum": 0
+                    },
+                    "batch_size": {
+                      "description": "Messages per emitted [`StreamPage`](faucet_core::StreamPage). Drained\nmessages accumulate in an in-memory buffer and a page is yielded when\nthe buffer reaches this size (or when the run terminates with a partial\nbuffer). Defaults to [`DEFAULT_BATCH_SIZE`].\n\n`batch_size = 0` is the \"drain-entire-run-window\" sentinel: every\nmessage produced before the terminator fires goes into a single page.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    }
+                  },
+                  "title": "NatsSourceConfig",
+                  "description": "Configuration for [`NatsSource`](crate::NatsSource).\n\nThe [`NatsConnectionConfig`] surface (`servers` / `auth` / `tls` / `name`)\nis flattened in, so a config looks like:\n\n```yaml\nservers: [\"nats://127.0.0.1:4222\"]\nsubject: \"events.>\"\nidle_timeout_secs: 5\nbatch_size: 500\n```",
+                  "type": "object"
+                },
+                true
+              ]
+            },
+            "transforms": {
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "sftp",
+          "properties": {
+            "type": {
+              "const": "sftp"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "oneOf": [
+                    {
+                      "description": "Password authentication.",
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "password"
+                        },
+                        "config": {
+                          "type": "object",
+                          "properties": {
+                            "password": {
+                              "description": "The account password.",
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "description": "Public-key authentication with an OpenSSH/PEM private key on disk.",
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "private_key"
+                        },
+                        "config": {
+                          "type": "object",
+                          "properties": {
+                            "path": {
+                              "description": "Path to the private-key file.",
+                              "type": "string"
+                            },
+                            "passphrase": {
+                              "description": "Optional passphrase used to decrypt an encrypted private key.",
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "default": null
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "title": "SftpSourceConfig",
+                  "description": "Configuration for the SFTP source connector.",
+                  "type": "object",
+                  "properties": {
+                    "host": {
+                      "description": "Server hostname or IP address.",
+                      "type": "string"
+                    },
+                    "port": {
+                      "description": "Server port (default: 22).",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint16",
+                      "minimum": 0,
+                      "maximum": 65535,
+                      "default": 22
+                    },
+                    "username": {
+                      "description": "SSH username.",
+                      "type": "string"
+                    },
+                    "known_hosts": {
+                      "description": "Host-key verification policy (default: `accept_new`).",
+                      "$ref": "#/$defs/source_sftp__HostKeyPolicy",
+                      "default": {
+                        "mode": "accept_new"
+                      }
+                    },
+                    "path": {
+                      "description": "Remote path to read: a directory whose files are listed and streamed,\nor a single file.",
+                      "type": "string"
+                    },
+                    "glob": {
+                      "description": "Optional filename glob (`*` / `?`) applied to the basenames of files in\na directory listing. Ignored when `path` points at a single file.",
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "format": {
+                      "description": "Format of the files to read (default: `jsonl`).",
+                      "$ref": "#/$defs/source_sftp__SftpFormat",
+                      "default": "jsonl"
+                    },
+                    "batch_size": {
+                      "description": "Records per emitted [`StreamPage`](faucet_core::StreamPage). For\n`jsonl` / `raw_text`, files are decoded incrementally and a page is\nyielded whenever the buffer reaches this size (bounded memory). For\n`json_array`, each file is buffered fully, then its records are chunked\ninto pages of this size. Defaults to [`DEFAULT_BATCH_SIZE`].\n\n`batch_size = 0` is the \"no batching\" sentinel: one page is emitted per\nfile.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    }
+                  }
                 },
                 true
               ]
@@ -13286,6 +14235,368 @@
                   "title": "SqliteSinkConfig",
                   "description": "Configuration for the SQLite sink.",
                   "type": "object"
+                },
+                true
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "duckdb",
+          "properties": {
+            "type": {
+              "const": "duckdb"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "database": {
+                      "description": "Path to the DuckDB database file, or `:memory:`. A `duckdb://` /\n`duckdb:` scheme prefix is accepted and stripped. The target table must\nalready exist.",
+                      "type": "string"
+                    },
+                    "table_name": {
+                      "description": "Target table name.",
+                      "type": "string"
+                    },
+                    "column_mapping": {
+                      "description": "How to map JSON records to columns.",
+                      "$ref": "#/$defs/sink_duckdb__DuckdbColumnMapping",
+                      "default": {
+                        "json": {
+                          "column": "data"
+                        }
+                      }
+                    },
+                    "batch_size": {
+                      "description": "Maximum number of rows per multi-row INSERT. Defaults to\n[`DEFAULT_BATCH_SIZE`] (1000). `batch_size = 0` writes the entire\nupstream slice as a single multi-row INSERT (no re-chunking).",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    }
+                  },
+                  "title": "DuckdbSinkConfig",
+                  "description": "Configuration for the DuckDB sink.",
+                  "type": "object"
+                },
+                true
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "sqs",
+          "properties": {
+            "type": {
+              "const": "sqs"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "queue_url": {
+                      "description": "SQS queue URL (e.g. `https://sqs.us-east-1.amazonaws.com/1234/my-q`).",
+                      "type": "string"
+                    },
+                    "region": {
+                      "description": "AWS region. `None` uses the SDK default chain.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "endpoint_url": {
+                      "description": "Custom endpoint URL for LocalStack / VPC endpoints.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "credentials": {
+                      "description": "AWS credentials. Defaults to the SDK default provider chain.",
+                      "$ref": "#/$defs/sink_sqs__SqsCredentials",
+                      "default": {
+                        "type": "default"
+                      }
+                    },
+                    "message_group_id": {
+                      "description": "FIFO message group id, applied to every message. Required by FIFO\nqueues; omit for standard queues. Default: none.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "message_deduplication_id_field": {
+                      "description": "Record field whose (stringified) value becomes each message's\n`MessageDeduplicationId` on a FIFO queue. A record missing the field\n(or with a non-scalar value) fails per-record (DLQ-routable). Only used\nwhen set. Default: none.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "batch_size": {
+                      "description": "Max entries per `SendMessageBatch` request (1–10). Default 10.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 10
+                    },
+                    "concurrency": {
+                      "description": "Bounded concurrent in-flight `SendMessageBatch` requests. Default 4.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 4
+                    },
+                    "retry_max_attempts": {
+                      "description": "Per-record retry budget for partial failures. Default 5.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 5
+                    },
+                    "retry_initial_backoff_ms": {
+                      "description": "Initial retry backoff (milliseconds). Default 100.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint64",
+                      "minimum": 0,
+                      "default": 100
+                    },
+                    "retry_max_backoff_ms": {
+                      "description": "Backoff ceiling (milliseconds). Default 30000.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint64",
+                      "minimum": 0,
+                      "default": 30000
+                    }
+                  },
+                  "title": "SqsSinkConfig",
+                  "description": "Configuration for [`SqsSink`](crate::SqsSink).",
+                  "type": "object"
+                },
+                true
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "nats",
+          "properties": {
+            "type": {
+              "const": "nats"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "servers": {
+                      "description": "One or more NATS server URLs, e.g. `[\"nats://127.0.0.1:4222\"]`. The\nclient connects to the first reachable server and uses the rest for\nfailover.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": [
+                        "nats://127.0.0.1:4222"
+                      ]
+                    },
+                    "auth": {
+                      "description": "Authentication mode. Defaults to [`NatsAuth::None`] (anonymous).",
+                      "$ref": "#/$defs/sink_nats__NatsAuth",
+                      "default": {
+                        "type": "none"
+                      }
+                    },
+                    "tls": {
+                      "description": "Require a TLS connection to the server. Defaults to `false`.",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": false
+                    },
+                    "name": {
+                      "description": "Optional client connection name (surfaced in NATS server monitoring).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "subject": {
+                      "description": "Default subject every record is published to.",
+                      "type": "string"
+                    },
+                    "subject_field": {
+                      "description": "Optional top-level record field whose (string) value overrides\n[`subject`](Self::subject) on a per-record basis — the subject-per-record\npattern. When the field is missing or is not a string the sink errors.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "batch_size": {
+                      "description": "Records per publish batch. Records are published one NATS message each;\nafter every `batch_size` records the client is flushed so nothing is\nlost. Defaults to [`DEFAULT_BATCH_SIZE`]. `0` publishes the whole batch\nhanded by the pipeline, flushing once at the end.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    }
+                  },
+                  "title": "NatsSinkConfig",
+                  "description": "Configuration for [`NatsSink`](crate::NatsSink).\n\nThe [`NatsConnectionConfig`] surface (`servers` / `auth` / `tls` / `name`)\nis flattened in.",
+                  "type": "object"
+                },
+                true
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "sftp",
+          "properties": {
+            "type": {
+              "const": "sftp"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "oneOf": [
+                    {
+                      "description": "Password authentication.",
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "password"
+                        },
+                        "config": {
+                          "type": "object",
+                          "properties": {
+                            "password": {
+                              "description": "The account password.",
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "description": "Public-key authentication with an OpenSSH/PEM private key on disk.",
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "private_key"
+                        },
+                        "config": {
+                          "type": "object",
+                          "properties": {
+                            "path": {
+                              "description": "Path to the private-key file.",
+                              "type": "string"
+                            },
+                            "passphrase": {
+                              "description": "Optional passphrase used to decrypt an encrypted private key.",
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "default": null
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "title": "SftpSinkConfig",
+                  "description": "Configuration for the SFTP sink connector.",
+                  "type": "object",
+                  "properties": {
+                    "host": {
+                      "description": "Server hostname or IP address.",
+                      "type": "string"
+                    },
+                    "port": {
+                      "description": "Server port (default: 22).",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint16",
+                      "minimum": 0,
+                      "maximum": 65535,
+                      "default": 22
+                    },
+                    "username": {
+                      "description": "SSH username.",
+                      "type": "string"
+                    },
+                    "known_hosts": {
+                      "description": "Host-key verification policy (default: `accept_new`).",
+                      "$ref": "#/$defs/sink_sftp__HostKeyPolicy",
+                      "default": {
+                        "mode": "accept_new"
+                      }
+                    },
+                    "path": {
+                      "description": "Remote directory prefix under which JSON Lines objects are written.",
+                      "type": "string"
+                    },
+                    "file_extension": {
+                      "description": "File extension for written objects (default: `.jsonl`).",
+                      "type": "string",
+                      "default": ".jsonl"
+                    },
+                    "batch_size": {
+                      "description": "Records per written object. When a `write_batch` call hands the sink\n`N` records with `batch_size = M > 0`, the sink writes `ceil(N / M)`\nobjects. `batch_size = 0` writes whatever upstream hands it as a single\nobject. Defaults to [`DEFAULT_BATCH_SIZE`].",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    }
+                  }
                 },
                 true
               ]

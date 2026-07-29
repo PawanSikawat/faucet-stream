@@ -31,13 +31,30 @@ pipeline from Rust with typed `Source`/`Sink` traits.
 
 ## What's in the box
 
-- **49 connectors** across REST, GraphQL, gRPC, Kafka, Postgres/MySQL/SQLite,
-  Postgres CDC, S3/GCS, Parquet, MongoDB, Redis, Elasticsearch, BigQuery, and
-  Snowflake.
+- **<!--COUNT:connectors-->66<!--/COUNT--> connectors** across REST, GraphQL, gRPC, Kafka, Postgres/MySQL/SQLite,
+  Postgres/MySQL/Mongo/SQL-Server CDC, S3/GCS/Azure, Parquet/Delta/Iceberg,
+  MongoDB, Redis, Elasticsearch, BigQuery, Snowflake, Databricks, and more.
+- **Bring your existing Singer taps.** The `singer` source runs any Singer/Meltano
+  tap unchanged, so you can adopt faucet incrementally and switch to native
+  connectors where throughput matters. It's an experimental v0 bridge — single
+  stream, and a bridged tap still runs its own Python process — but it drops the
+  switching cost from *rewrite your pipeline* to *point faucet at the tap you
+  already run*.
 - **A real runtime, not just connectors:** native streaming with bounded memory,
-  incremental + resumable replication, change-data-capture, dead-letter queues,
-  automatic retries, and built-in Prometheus metrics + `tracing` spans — with
-  zero per-connector code.
+  incremental + resumable replication, change-data-capture, effectively-once
+  delivery, dead-letter queues, automatic retries, and built-in Prometheus
+  metrics + `tracing` spans — with zero per-connector code.
+- **Fast, and honest about it.** On a reproducible 1M-row CSV→JSONL move faucet
+  sustains 712k rows/s in 11.8 MiB of RAM (~96× faster, ~62× less memory than
+  Meltano, exact row parity); sink-bound moves like Postgres→Postgres narrow the
+  gap toward ~16×. The harness is `make bench` — see
+  [`BENCHMARKS.md`](https://github.com/PawanSikawat/faucet-stream/blob/main/BENCHMARKS.md)
+  for the methodology and the caveats.
+- **A connector marketplace you can trust.** Every connector is graded against the
+  [Faucet Connector Protocol](https://pawansikawat.github.io/faucet-stream/spec/faucet-connector-spec-v0.html)
+  by a conformance battery — valid config schema, bounded-memory streaming,
+  bookmark round-trip, idempotent replay, truthful capabilities, errors-not-panics
+  — that runs in CI and sets each connector's maturity tier.
 - **Config-driven *or* embeddable:** the CLI and the library are the same engine.
 - **Pay only for what you compile:** every connector is a Cargo feature.
 
@@ -66,6 +83,8 @@ already run — without standing up a platform — that's exactly what we built.
 - Docs: <https://pawansikawat.github.io/faucet-stream/>
 - Source: <https://github.com/PawanSikawat/faucet-stream>
 - Crates: <https://crates.io/crates/faucet-stream>
+- Deep dive: [Exactly-once delivery without a broker](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/blog/exactly-once-without-a-broker.md)
+- Coming from Singer/Meltano? [Migration guide](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/blog/migrating-from-meltano.md)
 
 It's pre-1.0 and moving fast. Connector requests and contributions welcome —
 there's a [contributing guide](https://github.com/PawanSikawat/faucet-stream/blob/main/CONTRIBUTING.md)

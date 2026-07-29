@@ -1,6 +1,6 @@
 # Connector catalog
 
-faucet-stream ships **33 sources** and **25 sinks**. Each is a Cargo feature
+faucet-stream ships **<!--COUNT:sources-->37<!--/COUNT--> sources** and **<!--COUNT:sinks-->29<!--/COUNT--> sinks**. Each is a Cargo feature
 (`source-<name>` / `sink-<name>`) and an independently published crate. Full API
 docs are on [docs.rs](https://docs.rs/faucet-stream).
 
@@ -34,6 +34,10 @@ Legend: ✓ supported · ✗ not applicable. Tier: T1 = passes the faucet-confor
 | Microsoft SQL Server | T1 ✅ | `source-mssql` | ✓ | ✓⁸ | ✗ | ✗ | ✓ | SQL query (tiberius), rows as JSON |
 | Microsoft SQL Server CDC | T1 ✅ | `source-mssql-cdc` | ✓ | ✓ | **✓** | ✗ | ✗ | CDC change tables (`fn_cdc_get_all_changes`), LSN bookmarks, `__op`-normalized |
 | SQLite | T1 ✅ | `source-sqlite` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL query, rows as JSON |
+| DuckDB | T2 | `source-duckdb` | ✓ | ✗ | ✗ | ✗ | ✗ | SQL query (file or `:memory:`), rows as JSON; blocking-task + channel streaming |
+| AWS SQS | T2 | `source-sqs` | ✓ | ✗ | ✗ | ✗ | ✗ | long-poll ReceiveMessage, delete-after-emit (at-least-once), idle/max-messages termination |
+| NATS | T2 | `source-nats` | ✓ | ✗ | ✗ | ✗ | ✗ | subject subscription or JetStream durable consumer; idle/max-messages termination |
+| SFTP | T2 | `source-sftp` | ✓ | ✗ | ✗ | ✗ | ✗ | list/glob a remote dir over SSH; JSONL, JSON array, raw text |
 | AWS S3 | T1 ✅ | `source-s3` | ✓⁵ | ✗ | ✗ | ✓ | ✓ | object reader: JSONL, JSON array, raw text |
 | Google Cloud Storage | T2 | `source-gcs` | ✓⁵ | ✗ | ✗ | ✓ | ✓ | object reader: JSONL, JSON array, raw text |
 | Azure Blob / ADLS Gen2 | T1 ✅ | `source-azure-blob` | ✓⁵ | ✗ | ✗ | ✓ | ✗ | object reader (object_store): JSONL, JSON array, raw text |
@@ -162,6 +166,10 @@ file/append sinks (`jsonl`, `csv`, `stdout`) it's a no-op — they write per rec
 | MySQL | T1 ✅ | `sink-mysql` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` |
 | Microsoft SQL Server | T1 ✅ | `sink-mssql` | ✓ | ✗ | **✓** | **✓** | multi-row `INSERT` (2100-param auto-split, per-row DLQ) |
 | SQLite | T1 ✅ | `sink-sqlite` | ✓ | ✗ | **✓** | **✓** | transaction-wrapped batch |
+| DuckDB | T2 | `sink-duckdb` | ✓ | ✗ | ✗ | ✗ | transaction-wrapped multi-row `INSERT` (JSON column or auto-mapped); append-only |
+| AWS SQS | T2 | `sink-sqs` | ✓ | ✗ | ✗ | ✗ | batched SendMessageBatch (10/req), per-entry partial-failure retry; FIFO group/dedup |
+| NATS | T2 | `sink-nats` | ✓ | ✗ | ✗ | ✗ | publish to a subject (optional subject-per-record), flush per batch |
+| SFTP | T2 | `sink-sftp` | ✓ | ✗ | ✗ | ✗ | JSONL files over SSH; atomic temp-then-rename upload |
 | AWS S3 | T1 ✅ | `sink-s3` | ✓ | ✓ | ✗ | ✗ | JSONL objects, parallel uploads |
 | Google Cloud Storage | T2 | `sink-gcs` | ✓ | ✓ | ✗ | ✗ | JSONL objects |
 | Azure Blob / ADLS Gen2 | T1 ✅ᵉ | `sink-azure-blob` | ✓ | ✓ | ✗ | ✗ | JSONL blobs (object_store), batch/byte rollover |

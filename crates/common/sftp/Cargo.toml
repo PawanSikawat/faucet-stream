@@ -1,0 +1,28 @@
+[package]
+name = "faucet-common-sftp"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared SFTP connection config for the faucet-stream source and sink"
+readme = "README.md"
+keywords = ["sftp", "ssh", "file", "etl", "faucet"]
+categories.workspace = true
+
+[dependencies]
+faucet-core.workspace = true
+schemars.workspace = true
+serde.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "io-util", "net"] }
+russh.workspace = true
+russh-sftp.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

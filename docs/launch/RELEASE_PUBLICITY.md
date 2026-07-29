@@ -8,7 +8,7 @@ A **repeatable, per-release** playbook so publicity is routine, not heroic. Wher
 account. Keep the copy consistent across channels: consistency compounds recognition.
 
 > **Single source of truth:** the canonical pitch and the connector count live in the root
-> [`README.md`](../../README.md) hero (currently **49 connectors — 28 sources / 21 sinks**).
+> [`README.md`](../../README.md) hero (currently **<!--COUNT:connectors-->66<!--/COUNT--> connectors — <!--COUNT:sources-->37<!--/COUNT--> sources / <!--COUNT:sinks-->29<!--/COUNT--> sinks**).
 > Copy from there; don't invent variants. If the count changed this release, update the
 > templates below in the same PR.
 
@@ -27,7 +27,7 @@ per-crate patch bump. Rule of thumb:
 - [ ] Release PR merged; crates published; the umbrella tag is live and installable
       (`cargo install faucet-cli` / the Homebrew tap / the installer script all resolve).
 - [ ] Connector count in the templates below still matches reality
-      (`ls crates/source/* crates/sink/*` → currently 28 + 21 = **49**).
+      (`ls crates/source/* crates/sink/*` → currently 33 + 25 = **58**).
 - [ ] Pull the release highlights from the per-crate `CHANGELOG.md` files (release-plz writes
       these from `feat`/`fix`/`perf` commits). Pick the 2–4 user-facing headlines.
 - [ ] The repo **social-preview image** (Settings → Social preview, 1280×640) is set so
@@ -59,14 +59,14 @@ Front-load the high-signal, low-effort channels; do the rest as time allows.
 
 ## Copy templates
 
-Reuse verbatim; swap `vX.Y.Z` and the highlights. All counts are **49**; all benchmark
+Reuse verbatim; swap `vX.Y.Z` and the highlights. All counts are **58**; all benchmark
 figures come from [`BENCHMARKS.md`](../../BENCHMARKS.md) (quote **~16×** for a realistic
 DB→DB move, **~96×** as the CSV→JSONL upper bound — never the ~96× alone).
 
 ### Elevator pitch (one-liner — use everywhere)
 
 > **faucet-stream** — the fast, config-driven way to move data in Rust. A data-movement
-> platform with 49 source and sink connectors for ETL, CDC, and streaming, run from a YAML
+> platform with <!--COUNT:connectors-->66<!--/COUNT--> source and sink connectors for ETL, CDC, and streaming, run from a YAML
 > file by a single binary or embedded as a Rust library.
 
 ### Release thread (X / Bluesky / Mastodon / LinkedIn)
@@ -83,7 +83,7 @@ DB→DB move, **~96×** as the CSV→JSONL upper bound — never the ~96× alone
 
 ### This Week in Rust
 
-> **faucet-stream vX.Y.Z** — a config-driven data-movement platform for Rust: 49 connectors,
+> **faucet-stream vX.Y.Z** — a config-driven data-movement platform for Rust: <!--COUNT:connectors-->66<!--/COUNT--> connectors,
 > a `faucet` CLI that runs pipelines from YAML, and an embeddable library, with streaming,
 > Postgres CDC, dead-letter queues, and built-in Prometheus/tracing. This release:
 > <one-line highlight>.
