@@ -267,6 +267,8 @@ jobs:
           - serve-history-postgres
           - serve-history-sqlite
           - serve-ui
+          # MCP server (CLI-only; implies serve)
+          - mcp
           # Data Movement Catalog (CLI-only; implies serve + lineage)
           - catalog
           # Event-driven triggers (CLI-only)
@@ -316,7 +318,7 @@ jobs:
           # Secrets, schedule, serve, catalog, and triggers features live in
           # faucet-cli (CLI layer), not in the faucet-stream umbrella crate.
           # Route accordingly.
-          if [[ "${{ matrix.feature }}" == secrets-* || "${{ matrix.feature }}" == "schedule" || "${{ matrix.feature }}" == serve* || "${{ matrix.feature }}" == "catalog" || "${{ matrix.feature }}" == triggers* || "${{ matrix.feature }}" == "notify" || "${{ matrix.feature }}" == "cli-dev" || "${{ matrix.feature }}" == "cli-tui" || "${{ matrix.feature }}" == "cli-progress" ]]; then
+          if [[ "${{ matrix.feature }}" == secrets-* || "${{ matrix.feature }}" == "schedule" || "${{ matrix.feature }}" == serve* || "${{ matrix.feature }}" == "mcp" || "${{ matrix.feature }}" == "catalog" || "${{ matrix.feature }}" == triggers* || "${{ matrix.feature }}" == "notify" || "${{ matrix.feature }}" == "cli-dev" || "${{ matrix.feature }}" == "cli-tui" || "${{ matrix.feature }}" == "cli-progress" ]]; then
             cargo check -p faucet-cli --no-default-features --features ${{ matrix.feature }}
           else
             cargo check -p faucet-stream --no-default-features --features ${{ matrix.feature }}

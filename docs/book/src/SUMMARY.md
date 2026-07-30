@@ -48,6 +48,7 @@
 - [Orchestration (Airflow / Dagster + dbt)](./cookbook/orchestration.md)
 - [Running faucet as a service](./cookbook/serve.md)
 - [Web console (`serve-ui`)](./cookbook/web-console.md)
+- [MCP server (agent tools)](./cookbook/mcp.md)
 - [Running a cluster](./cookbook/cluster.md)
 - [Event-driven triggers](./cookbook/triggers.md)
 - [Lineage (OpenLineage)](./cookbook/lineage.md)

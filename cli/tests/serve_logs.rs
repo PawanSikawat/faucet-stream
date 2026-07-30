@@ -39,6 +39,8 @@ fn args_on(port: u16) -> ServeArgs {
         cluster_poll_secs: 2,
         cluster_max_attempts: 3,
         triggers: None,
+        mcp: false,
+        mcp_allow_mutations: false,
     }
 }
 
@@ -47,7 +49,7 @@ async fn spawn_server(port: u16) {
     // `info` so the run-start line is captured by the SSE log layer.
     config.log_level = "info".into();
     tokio::spawn(async move {
-        let _ = faucet_cli::serve::run_server(config).await;
+        let _ = faucet_cli::serve::run_server(config, Default::default()).await;
     });
     let client = reqwest::Client::new();
     for _ in 0..100 {

@@ -31,6 +31,8 @@ fn test_config(listen: &str) -> ServeConfig {
         cluster_poll_secs: 2,
         cluster_max_attempts: 3,
         triggers: None,
+        mcp: false,
+        mcp_allow_mutations: false,
     };
     ServeConfig::from_args(args).unwrap()
 }
@@ -42,7 +44,7 @@ async fn boot() -> (String, reqwest::Client, tokio::task::JoinHandle<()>) {
     let listen = format!("127.0.0.1:{port}");
     let cfg = test_config(&listen);
     let server = tokio::spawn(async move {
-        let _ = run_server(cfg).await;
+        let _ = run_server(cfg, Default::default()).await;
     });
     let url = format!("http://{listen}");
     let client = reqwest::Client::new();

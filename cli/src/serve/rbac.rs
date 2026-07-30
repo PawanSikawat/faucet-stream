@@ -248,6 +248,10 @@ pub fn required_permission(method: &Method, matched_path: &str) -> Option<Permis
         (&Method::GET, "/v1/catalog/datasets/{id}") => Some(CatalogRead),
         (&Method::GET, "/v1/catalog/lineage") => Some(CatalogRead),
         (&Method::POST, "/v1/reload") => Some(Reload),
+        // MCP endpoint (#420): baseline access needs only a read scope (Viewer+);
+        // the mutating `run_pipeline` tool is separately gated on RunWrite inside
+        // the handler.
+        (&Method::POST, "/mcp") => Some(SchemaRead),
         _ => None,
     }
 }
@@ -274,6 +278,7 @@ pub fn audit_action(method: &Method, matched_path: &str) -> &'static str {
         (&Method::GET, "/v1/catalog/datasets/{id}") => "catalog.get",
         (&Method::GET, "/v1/catalog/lineage") => "catalog.lineage",
         (&Method::POST, "/v1/reload") => "config.reload",
+        (&Method::POST, "/mcp") => "mcp",
         _ => "unknown",
     }
 }

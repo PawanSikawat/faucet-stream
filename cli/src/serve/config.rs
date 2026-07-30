@@ -288,6 +288,8 @@ mod tests {
             cluster_poll_secs: 2,
             cluster_max_attempts: 3,
             triggers: None,
+            mcp: false,
+            mcp_allow_mutations: false,
         }
     }
 

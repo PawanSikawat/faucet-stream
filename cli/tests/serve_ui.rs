@@ -37,6 +37,8 @@ fn args(port: u16) -> ServeArgs {
         cluster_poll_secs: 2,
         cluster_max_attempts: 3,
         triggers: None,
+        mcp: false,
+        mcp_allow_mutations: false,
     }
 }
 
@@ -45,7 +47,7 @@ async fn boot(args: ServeArgs) -> (String, reqwest::Client) {
     let mut config = ServeConfig::from_args(args).unwrap();
     config.log_level = "warn".into();
     tokio::spawn(async move {
-        let _ = faucet_cli::serve::run_server(config).await;
+        let _ = faucet_cli::serve::run_server(config, Default::default()).await;
     });
     let client = reqwest::Client::new();
     let base = format!("http://127.0.0.1:{port}");

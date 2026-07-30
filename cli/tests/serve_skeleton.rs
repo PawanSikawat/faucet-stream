@@ -30,6 +30,8 @@ fn test_config(listen: &str) -> ServeConfig {
         cluster_poll_secs: 2,
         cluster_max_attempts: 3,
         triggers: None,
+        mcp: false,
+        mcp_allow_mutations: false,
     };
     ServeConfig::from_args(args).unwrap()
 }
@@ -46,7 +48,7 @@ async fn healthz_is_reachable_without_auth() {
     let listen = format!("127.0.0.1:{port}");
 
     let cfg = test_config(&listen);
-    let server = tokio::spawn(run_server(cfg));
+    let server = tokio::spawn(run_server(cfg, Default::default()));
 
     let url = format!("http://{listen}");
     let client = reqwest::Client::new();
