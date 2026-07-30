@@ -882,6 +882,93 @@ metrics (`faucet_pipeline_adaptive_batch_*`).
 
 A state-key collision among siblings sharing a parent is detected upfront and errors with both offenders named.
 
+### Topology mode — fan-out (tee), fan-in (merge), and joins
+
+For pipelines that outgrow a single source → sink line, declare an explicit
+**node graph** instead of a matrix. Set `pipeline.nodes` (a map of node id →
+node) and `pipeline.edges` (producer → consumer connections). Topology mode is
+**mutually exclusive** with `matrix:` — setting both is an error.
+
+Each node is typed by `kind`:
+
+| `kind` | in | out | fields |
+|--------|----|-----|--------|
+| `source` | 0 | 1 | `ref:` (a `pipeline.sources` template) + optional `type`/`config` overrides |
+| `transform` | 1 | 1 | `transforms:` (same list syntax as elsewhere) |
+| `tee` | 1 | N | `channel_capacity` (default 4), optional `fanout` (must equal the outgoing-edge count) |
+| `merge` | N | 1 | — |
+| `join` | 2 | 1 | see below |
+| `sink` | 1 | 0 | `ref:` (a `pipeline.sinks` template) + optional `type`/`config` overrides |
+
+```yaml
+version: 1
+name: fan_out
+pipeline:
+  sources:
+    orders: { type: csv, config: { path: ./data/orders.csv } }
+  sinks:
+    warehouse: { type: jsonl, config: { path: ./out/warehouse.jsonl } }
+    archive:   { type: jsonl, config: { path: ./out/archive.jsonl } }
+  nodes:
+    src:  { kind: source, ref: orders }
+    fan:  { kind: tee, channel_capacity: 4, fanout: 2 }
+    w1:   { kind: sink, ref: warehouse }
+    w2:   { kind: sink, ref: archive }
+  edges:
+    - { from: src, to: fan }
+    - { from: fan, to: w1 }
+    - { from: fan, to: w2 }
+```
+
+**Execution.** Nodes run concurrently, connected by bounded channels — the
+slowest sink paces its producer (backpressure). A `tee` clones each page to
+every downstream edge; a `merge` forwards pages from all inputs in arrival
+order. Sink nodes reuse the normal streaming write path, so DLQ, bookmarks, and
+metrics work unchanged (`faucet_tee_records_total`, `faucet_merge_records_total`,
+`faucet_join_*`, labelled `pipeline` + `node`).
+
+**State.** Each terminal sink owns a bookmark under `{name}::{node_id}`. On
+restart the source resumes from the **minimum** across every sink's stored
+bookmark (only when all sinks have one), so a lagging sink is never skipped —
+sinks whose bookmarks have diverged must be idempotent.
+
+**`on_error`.** `execution.on_error: stop` aborts the whole topology on the
+first node failure; `continue` lets healthy branches finish and reports the
+failures at the end.
+
+#### `join:` — enrich one stream from another by key
+
+A `join` node hash-joins two upstreams: the **build** (right) side is buffered
+into an in-memory index keyed by `build.key`, then the **probe** (left) side is
+streamed and each record enriched with the `project`ed fields of its match. The
+join's two incoming edges carry `as:` labels matching `build.edge` /
+`probe.edge`.
+
+```yaml
+  nodes:
+    enrich:
+      kind: join
+      mode: left                 # `inner` drops non-matches; `left` keeps them
+      build: { edge: customers_in, key: id }
+      probe: { edge: orders_in,    key: customer_id }
+      project:
+        - { from: tier, as: customer_tier }
+      on_missing: null           # left-mode fill when no match
+      on_duplicate: first        # or `cartesian` (one row per build match)
+      on_collision: overwrite    # or `skip` / `error`
+      key_normalize: preserve    # or `stringify` ("42" == 42)
+      max_build_records: 10000000
+  edges:
+    - { from: fetch_customers, to: enrich, as: customers_in }
+    - { from: fetch_orders,    to: enrich, as: orders_in }
+    - { from: enrich,          to: write }
+```
+
+The build side is fully materialized before probing begins, so pair a large
+dimension table with a fast local source (SQLite/Parquet) rather than a slow
+remote API. Runnable examples:
+`cli/examples/topology_{tee_users,merge_files,join_orders_countries}.yaml`.
+
 ### State stores
 
 ```yaml

@@ -1939,6 +1939,8 @@ mod tests {
                 #[cfg(feature = "masking")]
                 masking: None,
                 schema: None,
+                nodes: std::collections::HashMap::new(),
+                edges: Vec::new(),
             },
             matrix: Vec::new(),
             execution: None,

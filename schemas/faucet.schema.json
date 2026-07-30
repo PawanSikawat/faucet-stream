@@ -304,6 +304,20 @@
               "type": "null"
             }
           ]
+        },
+        "nodes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/NodeSpec"
+          },
+          "description": "Topology-mode nodes (issue #71): an explicit graph of typed nodes\n(`source` / `transform` / `tee` / `merge` / `join` / `sink`) keyed by\nnode id. When non-empty this pipeline runs in **topology mode** and the\ntop-level `matrix:` block must be empty (they are mutually exclusive).",
+          "type": "object"
+        },
+        "edges": {
+          "description": "Topology-mode edges connecting `nodes` (issue #71). Each edge names a\nproducer (`from`) and consumer (`to`); a join's incoming edges also\ncarry an `as:` label matching the join's `build`/`probe` edge names.",
+          "items": {
+            "$ref": "#/$defs/EdgeSpec"
+          },
+          "type": "array"
         }
       },
       "additionalProperties": false
@@ -16267,6 +16281,325 @@
           "additionalProperties": false
         }
       ]
+    },
+    "EdgeSpec": {
+      "additionalProperties": false,
+      "description": "A topology edge (issue #71).",
+      "properties": {
+        "as": {
+          "description": "Optional edge label (required on a join's two incoming edges).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from": {
+          "description": "Producer node id.",
+          "type": "string"
+        },
+        "to": {
+          "description": "Consumer node id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "JoinMode": {
+      "description": "Join mode — how probe records with no build match are handled.",
+      "oneOf": [
+        {
+          "const": "inner",
+          "description": "Drop probe records that have no matching build record.",
+          "type": "string"
+        },
+        {
+          "const": "left",
+          "description": "Pass probe records through even without a match, filling projected\nfields from [`JoinConfig::on_missing`].",
+          "type": "string"
+        }
+      ]
+    },
+    "JoinSide": {
+      "additionalProperties": false,
+      "description": "One side of a [`JoinSpec`]: the incoming edge label plus the dotted key path.",
+      "properties": {
+        "edge": {
+          "description": "Name of the incoming edge (matches an `edges[].as` label).",
+          "type": "string"
+        },
+        "key": {
+          "description": "Dotted path to the join key inside each record on this side.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "edge",
+        "key"
+      ],
+      "type": "object"
+    },
+    "KeyNormalize": {
+      "description": "How to normalize keys before comparison.",
+      "oneOf": [
+        {
+          "const": "preserve",
+          "description": "Compare keys as their JSON value (no coercion): `\"42\"` != `42`.",
+          "type": "string"
+        },
+        {
+          "const": "stringify",
+          "description": "Coerce scalar keys to their string form before comparison so `\"42\"`\nand `42` match.",
+          "type": "string"
+        }
+      ]
+    },
+    "NodeSpec": {
+      "description": "A single topology node (issue #71). The `kind` discriminator selects the\nnode type; the remaining fields are kind-specific.\n\n`source` / `sink` nodes pick a template with `ref:` (defaulting to\n`default`) and may override `type` / `config` inline — the same shape as a\nmatrix row's [`PartialConnector`]. `transform` carries a `transforms:`\nlist. `tee` carries `channel_capacity` + optional `fanout`. `merge` has no\nextra fields. `join` carries the hash-join configuration.",
+      "oneOf": [
+        {
+          "description": "A data source (0 in, 1 out).",
+          "properties": {
+            "config": {
+              "description": "Inline config override (deep-merged onto the resolved template)."
+            },
+            "kind": {
+              "const": "source",
+              "type": "string"
+            },
+            "ref": {
+              "description": "Template name in `pipeline.sources` (defaults to `default`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "description": "Inline connector-type override.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A data sink (1 in, 0 out).",
+          "properties": {
+            "config": {
+              "description": "Inline config override (deep-merged onto the resolved template)."
+            },
+            "kind": {
+              "const": "sink",
+              "type": "string"
+            },
+            "ref": {
+              "description": "Template name in `pipeline.sinks` (defaults to `default`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "description": "Inline connector-type override.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Transform stages applied per page (1 in, 1 out).",
+          "properties": {
+            "kind": {
+              "const": "transform",
+              "type": "string"
+            },
+            "transforms": {
+              "default": [],
+              "description": "Transform stages, in order.",
+              "items": {
+                "$ref": "#/$defs/TransformSpec"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fan-out: clone each page to every downstream edge (1 in, N out).",
+          "properties": {
+            "channel_capacity": {
+              "default": 4,
+              "description": "Bounded-channel capacity for each outgoing edge.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "fanout": {
+              "description": "Optional expected fan-out (outgoing edge count) sanity check.",
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "tee",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fan-in: forward pages from all inputs in arrival order (N in, 1 out).",
+          "properties": {
+            "kind": {
+              "const": "merge",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Hash-join two upstreams by key (2 in, 1 out).",
+          "properties": {
+            "build": {
+              "$ref": "#/$defs/JoinSide",
+              "description": "The build (right) side — fully buffered as a lookup index."
+            },
+            "key_normalize": {
+              "$ref": "#/$defs/KeyNormalize",
+              "default": "preserve",
+              "description": "Key normalization: `preserve` (no coercion) or `stringify`."
+            },
+            "kind": {
+              "const": "join",
+              "type": "string"
+            },
+            "max_build_records": {
+              "default": 10000000,
+              "description": "Safety cap on build-side records.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mode": {
+              "$ref": "#/$defs/JoinMode",
+              "default": "inner",
+              "description": "`inner` (drop non-matches) or `left` (keep non-matches)."
+            },
+            "on_collision": {
+              "$ref": "#/$defs/OnCollision",
+              "default": "overwrite",
+              "description": "Projection-collision policy: `overwrite` / `skip` / `error`."
+            },
+            "on_duplicate": {
+              "$ref": "#/$defs/OnDuplicate",
+              "default": "first",
+              "description": "Multi-match policy: `first` or `cartesian`."
+            },
+            "on_missing": {
+              "default": null,
+              "description": "Value used to fill projected fields on a `left`-mode non-match."
+            },
+            "probe": {
+              "$ref": "#/$defs/JoinSide",
+              "description": "The probe (left) side — streamed and enriched."
+            },
+            "project": {
+              "default": [],
+              "description": "Fields to copy from the matched build record onto the probe record.",
+              "items": {
+                "$ref": "#/$defs/Projection"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "build",
+            "probe"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "OnCollision": {
+      "description": "What to do when a projected `as` name collides with an existing field on\nthe probe record.",
+      "oneOf": [
+        {
+          "const": "overwrite",
+          "description": "Overwrite the probe record's field with the projected value.",
+          "type": "string"
+        },
+        {
+          "const": "skip",
+          "description": "Leave the probe record's field untouched; skip the projection.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "Fail the record with a typed error.",
+          "type": "string"
+        }
+      ]
+    },
+    "OnDuplicate": {
+      "description": "What to do when one probe key matches more than one build record.",
+      "oneOf": [
+        {
+          "const": "first",
+          "description": "Keep only the first build-side match (deterministic given build order).",
+          "type": "string"
+        },
+        {
+          "const": "cartesian",
+          "description": "Emit one enriched record per build-side match (may duplicate the probe\nrecord).",
+          "type": "string"
+        }
+      ]
+    },
+    "Projection": {
+      "description": "A single field projection: copy `from` (a dotted path into the build\nrecord) onto the probe record under the name `as_`.",
+      "properties": {
+        "as": {
+          "description": "Output field name written onto the probe (left) record.",
+          "type": "string"
+        },
+        "from": {
+          "description": "Dotted path inside each build (right) record.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "as"
+      ],
+      "type": "object"
     }
   }
 }

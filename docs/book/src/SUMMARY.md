@@ -41,6 +41,7 @@
 - [SQL transform](./cookbook/sql-transform.md)
 - [Secrets-manager interpolation](./cookbook/secrets.md)
 - [Config composition](./cookbook/composition.md)
+- [Topology mode (tee / merge / join)](./cookbook/topology.md)
 - [Adaptive batching](./cookbook/adaptive-batching.md)
 - [Throughput tuning](./cookbook/tuning.md)
 - [Scheduling](./cookbook/scheduling.md)

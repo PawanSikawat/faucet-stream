@@ -174,6 +174,26 @@ pub enum CliError {
     #[error("{count} pipeline invocation(s) failed (see logs above for details)")]
     PipelineHadFailures { count: usize },
 
+    /// Both `pipeline.nodes` (topology mode) and `matrix:` are non-empty.
+    /// They are mutually exclusive: topology mode replaces the matrix.
+    #[error(
+        "`pipeline.nodes` (topology mode) and `matrix:` are mutually exclusive — set one or the other, not both"
+    )]
+    MatrixAndNodesBothPresent,
+
+    /// A topology edge references a node id that doesn't exist in `nodes:`.
+    #[error("topology edge references unknown node '{name}' (known nodes: {})", known.join(", "))]
+    EdgeEndpointMissing { name: String, known: Vec<String> },
+
+    /// A topology graph-structure violation (arity, fan-out, join edges,
+    /// cycle, reachability) reported by the core validator.
+    #[error("invalid topology: {message}")]
+    InvalidTopology { message: String },
+
+    /// One or more topology sink nodes failed under `on_error: continue`.
+    #[error("{count} topology node(s) failed (see logs above for details)")]
+    TopologyHadFailures { count: usize },
+
     /// DLQ sink kind is not registered (not compiled in or feature disabled).
     #[error("DLQ sink kind `{kind}` is not registered (in {context})")]
     UnknownDlqSinkKind { kind: String, context: String },

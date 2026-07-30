@@ -1,0 +1,46 @@
+# Topology mode (#71): fan-in (merge).
+#
+# Two CSV sources are concatenated into one logical stream and written to a
+# single JSONL sink. A `merge` node forwards pages from all of its inputs in
+# arrival order (N in, 1 out).
+#
+#   faucet validate cli/examples/topology_merge_files.yaml
+#   faucet run      cli/examples/topology_merge_files.yaml
+version: 1
+name: topology_merge_files
+
+pipeline:
+  sources:
+    orders:
+      type: csv
+      config:
+        path: ./data/orders.csv
+    countries:
+      type: csv
+      config:
+        path: ./data/countries.csv
+  sinks:
+    combined:
+      type: jsonl
+      config:
+        path: ./out/combined.jsonl
+
+  nodes:
+    read_orders:
+      kind: source
+      ref: orders
+    read_countries:
+      kind: source
+      ref: countries
+
+    merge_all:
+      kind: merge
+
+    write_combined:
+      kind: sink
+      ref: combined
+
+  edges:
+    - { from: read_orders,    to: merge_all }
+    - { from: read_countries, to: merge_all }
+    - { from: merge_all,      to: write_combined }

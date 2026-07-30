@@ -264,6 +264,17 @@ Semantics:
 - Ordering works identically under `faucet run`, `schedule`, and `serve` —
   they all execute the same expanded plan.
 
+## `pipeline.nodes` / `pipeline.edges` (topology mode)
+
+An alternative to `matrix:` for pipelines that need fan-out, fan-in, or joins:
+declare an explicit graph of typed nodes (`source` / `transform` / `tee` /
+`merge` / `join` / `sink`) under `pipeline.nodes`, connected by
+`pipeline.edges` (`{ from, to, as? }`). Topology mode is **mutually exclusive**
+with `matrix:` — both non-empty is a load-time error. `faucet run` / `validate`
+/ `preview` all understand it. See
+[Topology mode](../cookbook/topology.md) for the full grammar, the `join:`
+node, state semantics, and runnable examples.
+
 ## Row selection
 
 Register many rows, run a few. Selection resolves **after** expansion and never

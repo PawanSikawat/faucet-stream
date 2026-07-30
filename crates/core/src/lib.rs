@@ -28,6 +28,7 @@ pub mod drift;
 pub mod encryption;
 pub mod error;
 pub mod idempotency;
+pub mod join;
 #[cfg(feature = "masking")]
 pub mod masking;
 pub mod observability;
@@ -41,6 +42,7 @@ pub mod schema;
 pub mod shard;
 pub mod stage;
 pub mod state;
+pub mod topology;
 pub mod traits;
 pub mod transform;
 pub mod transforming_source;
@@ -78,6 +80,9 @@ pub use idempotency::{
     SinkGuarantee, derive_delivery_guarantee, format_token, format_token_with_bookmark,
     parse_token, parse_token_parts, unwrap_state, wrap_state,
 };
+pub use join::{
+    HashJoin, JoinConfig, JoinMode, JoinStats, KeyNormalize, OnCollision, OnDuplicate, Projection,
+};
 #[cfg(feature = "contract")]
 pub use observability::instrumented_apply_contract;
 #[cfg(feature = "masking")]
@@ -111,6 +116,10 @@ pub use stage::{ExplodeSpec, OnMissing};
 pub use stage::{FilterOp, FilterSpec};
 pub use stage::{TransformStage, compile_stage};
 pub use state::{FileStateStore, MemoryStateStore, StateStore};
+pub use topology::{
+    Edge, JoinNode, Node, NodeKind, Topology, TopologyBuilder, TopologyOnError, TopologyOptions,
+    TopologyResult,
+};
 pub use traits::{RowOutcome, Sink, Source};
 #[cfg(feature = "transform-json-parse")]
 pub use transform::JsonParseOnError;

@@ -209,6 +209,137 @@ pub struct PipelineSpec {
     /// Schema-drift handling policy (pipeline-level; no matrix-row override in v1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<faucet_core::SchemaDriftSpec>,
+
+    /// Topology-mode nodes (issue #71): an explicit graph of typed nodes
+    /// (`source` / `transform` / `tee` / `merge` / `join` / `sink`) keyed by
+    /// node id. When non-empty this pipeline runs in **topology mode** and the
+    /// top-level `matrix:` block must be empty (they are mutually exclusive).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub nodes: HashMap<String, NodeSpec>,
+
+    /// Topology-mode edges connecting `nodes` (issue #71). Each edge names a
+    /// producer (`from`) and consumer (`to`); a join's incoming edges also
+    /// carry an `as:` label matching the join's `build`/`probe` edge names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<EdgeSpec>,
+}
+
+/// A single topology node (issue #71). The `kind` discriminator selects the
+/// node type; the remaining fields are kind-specific.
+///
+/// `source` / `sink` nodes pick a template with `ref:` (defaulting to
+/// `default`) and may override `type` / `config` inline — the same shape as a
+/// matrix row's [`PartialConnector`]. `transform` carries a `transforms:`
+/// list. `tee` carries `channel_capacity` + optional `fanout`. `merge` has no
+/// extra fields. `join` carries the hash-join configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum NodeSpec {
+    /// A data source (0 in, 1 out).
+    Source {
+        /// Template name in `pipeline.sources` (defaults to `default`).
+        #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
+        template: Option<String>,
+        /// Inline connector-type override.
+        #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        /// Inline config override (deep-merged onto the resolved template).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        config: Option<Value>,
+    },
+    /// A data sink (1 in, 0 out).
+    Sink {
+        /// Template name in `pipeline.sinks` (defaults to `default`).
+        #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
+        template: Option<String>,
+        /// Inline connector-type override.
+        #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        /// Inline config override (deep-merged onto the resolved template).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        config: Option<Value>,
+    },
+    /// Transform stages applied per page (1 in, 1 out).
+    Transform {
+        /// Transform stages, in order.
+        #[serde(default)]
+        transforms: Vec<TransformSpec>,
+    },
+    /// Fan-out: clone each page to every downstream edge (1 in, N out).
+    Tee {
+        /// Bounded-channel capacity for each outgoing edge.
+        #[serde(default = "default_channel_capacity")]
+        channel_capacity: usize,
+        /// Optional expected fan-out (outgoing edge count) sanity check.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fanout: Option<usize>,
+    },
+    /// Fan-in: forward pages from all inputs in arrival order (N in, 1 out).
+    Merge,
+    /// Hash-join two upstreams by key (2 in, 1 out).
+    Join(JoinSpec),
+}
+
+/// The `join:` node configuration (issue #72).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JoinSpec {
+    /// `inner` (drop non-matches) or `left` (keep non-matches).
+    #[serde(default)]
+    pub mode: faucet_core::JoinMode,
+    /// The build (right) side — fully buffered as a lookup index.
+    pub build: JoinSide,
+    /// The probe (left) side — streamed and enriched.
+    pub probe: JoinSide,
+    /// Fields to copy from the matched build record onto the probe record.
+    #[serde(default)]
+    pub project: Vec<faucet_core::Projection>,
+    /// Value used to fill projected fields on a `left`-mode non-match.
+    #[serde(default)]
+    pub on_missing: Value,
+    /// Multi-match policy: `first` or `cartesian`.
+    #[serde(default)]
+    pub on_duplicate: faucet_core::OnDuplicate,
+    /// Projection-collision policy: `overwrite` / `skip` / `error`.
+    #[serde(default)]
+    pub on_collision: faucet_core::OnCollision,
+    /// Key normalization: `preserve` (no coercion) or `stringify`.
+    #[serde(default)]
+    pub key_normalize: faucet_core::KeyNormalize,
+    /// Safety cap on build-side records.
+    #[serde(default = "default_max_build_records")]
+    pub max_build_records: usize,
+}
+
+/// One side of a [`JoinSpec`]: the incoming edge label plus the dotted key path.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JoinSide {
+    /// Name of the incoming edge (matches an `edges[].as` label).
+    pub edge: String,
+    /// Dotted path to the join key inside each record on this side.
+    pub key: String,
+}
+
+/// A topology edge (issue #71).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EdgeSpec {
+    /// Producer node id.
+    pub from: String,
+    /// Consumer node id.
+    pub to: String,
+    /// Optional edge label (required on a join's two incoming edges).
+    #[serde(rename = "as", default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+fn default_channel_capacity() -> usize {
+    faucet_core::topology::DEFAULT_CHANNEL_CAPACITY
+}
+
+fn default_max_build_records() -> usize {
+    faucet_core::join::DEFAULT_MAX_BUILD_RECORDS
 }
 
 /// A `{ type, config }` block, the universal shape for both sources and sinks.
