@@ -703,3 +703,11 @@ pub use faucet_lineage as lineage;
 /// attach it with [`TransformingSource`].
 #[cfg(feature = "transform-sql")]
 pub use faucet_transform_sql as transform_sql;
+
+// ── WASM transform (wasmtime) ────────────────────────────────────────────────
+/// WebAssembly-as-transform: run a user-provided sandboxed `.wasm` module once
+/// per record (issue #124). Enable the `transform-wasm` feature. The CLI wires
+/// this via the `wasm` transform; library callers build
+/// [`transform_wasm::WasmTransform`] and attach it with [`TransformingSource`].
+#[cfg(feature = "transform-wasm")]
+pub use faucet_transform_wasm as transform_wasm;

@@ -1,0 +1,16 @@
+{
+  "name": "faucet-wasm-example-assemblyscript",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Reference faucet-stream WASM transform (AssemblyScript).",
+  "type": "module",
+  "scripts": {
+    "build": "asc assembly/index.ts --outFile build/transform.wasm --optimize --exportRuntime"
+  },
+  "devDependencies": {
+    "assemblyscript": "^0.27.0"
+  },
+  "dependencies": {
+    "assemblyscript-json": "^1.1.0"
+  }
+}

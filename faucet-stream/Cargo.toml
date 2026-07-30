@@ -147,13 +147,17 @@ lineage = ["dep:faucet-lineage"]
 lineage-kafka = ["lineage", "faucet-lineage/transport-kafka"]
 ## SQL-as-transform via embedded DuckDB.
 transform-sql = ["dep:faucet-transform-sql"]
+## WebAssembly-as-transform: run a user-provided sandboxed `.wasm` module per
+## record (issue #124). Loads via wasmtime; any language that compiles to core
+## wasm can express arbitrary per-record logic.
+transform-wasm = ["dep:faucet-transform-wasm"]
 ## Encryption at rest (#207): AES-256-GCM for FileStateStore bookmarks and,
 ## when `sink-jsonl` is also enabled, per-line JSONL output (the file DLQ
 ## shape). Forwarded to `faucet-core` (and the jsonl sink via optional-dep
 ## syntax, so this flag never pulls the connector itself).
 encryption = ["faucet-core/encryption", "faucet-sink-jsonl?/encryption"]
 ## Every connector and state backend.
-full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "arrow", "quality", "quality-jsonschema", "contract", "masking", "lineage", "lineage-kafka", "transform-sql", "transform-cdc-unwrap", "encryption", "delta-s3", "delta-azure", "delta-gcs"]
+full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "arrow", "quality", "quality-jsonschema", "contract", "masking", "lineage", "lineage-kafka", "transform-sql", "transform-wasm", "transform-cdc-unwrap", "encryption", "delta-s3", "delta-azure", "delta-gcs"]
 
 ## Individual source connectors.
 source-rest = ["dep:faucet-source-rest"]
@@ -358,6 +362,7 @@ faucet-state-postgres = { workspace = true, optional = true }
 
 faucet-lineage = { workspace = true, optional = true }
 faucet-transform-sql = { workspace = true, optional = true }
+faucet-transform-wasm = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

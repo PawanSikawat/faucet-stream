@@ -260,6 +260,8 @@ jobs:
           - lineage-kafka
           # SQL transform (embedded DuckDB)
           - transform-sql
+          # WASM transform (wasmtime)
+          - transform-wasm
           # Scheduler (CLI-only)
           - schedule
           # HTTP control plane (CLI-only) + its persistent run-history backends + embedded web console

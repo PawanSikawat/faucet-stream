@@ -28,7 +28,7 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "cli-dev", "encryption", "cli-tui", "mcp", "delta-s3", "delta-azure", "delta-gcs"]
+full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "transform-wasm", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "cli-dev", "encryption", "cli-tui", "mcp", "delta-s3", "delta-azure", "delta-gcs"]
 
 # Data Movement Catalog (#279): the `catalog:` config block + post-run
 # recording (datasets, schema timelines, volume/freshness stats, lineage
@@ -311,6 +311,7 @@ transform-filter = ["faucet-core/transform-filter"]
 transform-explode = ["faucet-core/transform-explode"]
 transform-cdc-unwrap = ["faucet-core/transform-cdc-unwrap"]
 transform-sql = ["dep:faucet-transform-sql"]
+transform-wasm = ["dep:faucet-transform-wasm"]
 
 observability = [
     "faucet-core/observability-install",
@@ -427,6 +428,7 @@ faucet-state-redis = { workspace = true, optional = true }
 faucet-state-postgres = { workspace = true, optional = true }
 faucet-lineage = { workspace = true, optional = true }
 faucet-transform-sql = { workspace = true, optional = true }
+faucet-transform-wasm = { workspace = true, optional = true }
 
 clap = { version = "4", features = ["derive", "env"] }
 # Shell tab-completion (#383): static script generation + dynamic

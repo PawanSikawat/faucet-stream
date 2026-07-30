@@ -29,6 +29,7 @@ them are listed in `faucet list` and dispatchable as `type:` values.
 | `split` | Split a string field into an array on a delimiter | `field`, `delimiter`, `trim`, `into?` |
 | `join` | Join an array field into a string with a delimiter | `field`, `delimiter`, `into?` |
 | `sql` | Run DuckDB SQL over the whole page; records are the `batch` relation | `query`, `relations?`, `memory_limit?`, `threads?` · page-level (sees the whole batch) · needs `transform-sql` feature · [cookbook](./sql-transform.md) |
+| `wasm` | Run a user-provided sandboxed `.wasm` module over each record | `module`, `function?`, `memory_limit_mb?`, `fuel_limit?`, `on_error?`, `reload_on_change?` · per-record · needs `transform-wasm` feature · [cookbook](./wasm-transforms.md) |
 
 The field-targeting transforms (`select`, `drop`, `set`, `rename_field`,
 `cast`, `redact`, `value_case`) act on **top-level** fields only —
