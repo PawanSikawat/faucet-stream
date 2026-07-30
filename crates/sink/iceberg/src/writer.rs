@@ -67,7 +67,7 @@ impl TableWriter {
         compression: Compression,
         target_file_size_mb: u64,
     ) -> Result<Self, FaucetError> {
-        let loc_gen = DefaultLocationGenerator::new(table.metadata().clone())
+        let loc_gen = DefaultLocationGenerator::new(table.metadata())
             .map_err(|e| FaucetError::Sink(format!("iceberg: location generator failed: {e}")))?;
 
         // Include a per-writer UUID suffix so that each `TableWriter` instance

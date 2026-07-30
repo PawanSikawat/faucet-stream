@@ -58,15 +58,14 @@ impl StorageFactory for OpendalPropInjector {
     }
 }
 
-/// Build an S3 OpenDAL factory for the given scheme ("s3" or "s3a"), threading
-/// faucet's `catalog.properties`.
-fn cloud_factory_s3(
-    scheme: &'static str,
-    props: &HashMap<String, String>,
-) -> Arc<dyn StorageFactory> {
+/// Build an S3 OpenDAL factory, threading faucet's `catalog.properties`.
+///
+/// As of `iceberg-storage-opendal` 0.10.0 the `S3` variant accepts any
+/// S3-family URL (`s3://` / `s3a://` / `s3n://`) internally, so the scheme is
+/// no longer passed in.
+fn cloud_factory_s3(props: &HashMap<String, String>) -> Arc<dyn StorageFactory> {
     Arc::new(OpendalPropInjector::new(
         OpenDalStorageFactory::S3 {
-            configured_scheme: scheme.to_string(),
             customized_credential_load: None,
         },
         props.clone(),
@@ -93,7 +92,7 @@ pub(crate) fn select_storage_factory(
     let warehouse = inner.warehouse.as_deref().unwrap_or("");
     match warehouse_scheme(warehouse) {
         WarehouseScheme::Local => Ok(Arc::new(LocalFsStorageFactory)),
-        WarehouseScheme::S3(scheme) => Ok(cloud_factory_s3(scheme, &inner.properties)),
+        WarehouseScheme::S3(_) => Ok(cloud_factory_s3(&inner.properties)),
         WarehouseScheme::Gcs => Ok(cloud_factory_gcs(&inner.properties)),
         WarehouseScheme::Unsupported(s) => Err(FaucetError::Config(format!(
             "iceberg: warehouse scheme '{s}://' has no storage factory; supported \
@@ -147,17 +146,20 @@ mod tests {
     }
 
     #[test]
-    fn select_s3_preserves_scheme_and_threads_props() {
+    fn select_s3_family_selects_s3_factory_and_threads_props() {
+        // iceberg-storage-opendal 0.10.0's `S3` variant accepts any S3-family
+        // URL internally (no per-scheme field), so both s3:// and s3a:// map to
+        // the same S3 factory; faucet's props are still threaded through.
         let f = select_storage_factory(&inner_with_warehouse(Some("s3://bucket/wh"))).expect("ok");
         let dbg = format!("{f:?}");
-        assert!(dbg.contains("configured_scheme: \"s3\""), "got {dbg}");
+        assert!(dbg.contains("S3"), "should build an S3 factory: {dbg}");
         assert!(dbg.contains("s3.region"), "props must be threaded: {dbg}");
 
         let f_a =
             select_storage_factory(&inner_with_warehouse(Some("s3a://bucket/wh"))).expect("ok");
         assert!(
-            format!("{f_a:?}").contains("configured_scheme: \"s3a\""),
-            "s3a scheme must be preserved (Glue bug fix)"
+            format!("{f_a:?}").contains("S3"),
+            "s3a:// must also select the S3 factory"
         );
     }
 

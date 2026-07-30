@@ -455,8 +455,8 @@ fn run_executes_csv_to_jsonl_pipeline() {
         .arg(&cfg)
         .assert()
         .success()
-        .stdout(contains("wrote 2 records"))
-        .stdout(contains("1 invocation"));
+        .stderr(contains("wrote 2 records"))
+        .stderr(contains("1 invocation"));
 
     let lines: Vec<_> = fs::read_to_string(&out)
         .unwrap()
@@ -505,8 +505,8 @@ pipeline:
         .arg(&cfg)
         .assert()
         .success()
-        .stdout(contains("wrote 2 records"))
-        .stdout(contains("1 invocation"));
+        .stderr(contains("wrote 2 records"))
+        .stderr(contains("1 invocation"));
 
     // Output is unchanged: the drift policy is present but harmless.
     let lines: Vec<_> = fs::read_to_string(&out)
@@ -671,7 +671,7 @@ pipeline:
         .arg(&cfg)
         .assert()
         .success()
-        .stdout(contains("wrote 2 records"));
+        .stderr(contains("wrote 2 records"));
 
     // Both rows landed with only the in-schema `id` column; `name` was stripped.
     assert_eq!(sqlite_query(&db, "SELECT count(*) FROM t;"), "2");
@@ -1001,7 +1001,7 @@ pipeline:
         .arg("run")
         .assert()
         .success()
-        .stdout(contains("wrote 1 record"));
+        .stderr(contains("wrote 1 record"));
 
     assert!(out.exists(), "auto-discovered run should produce output");
 }
@@ -1197,7 +1197,7 @@ fn run_with_contract_quarantine_routes_breaches_to_dlq() {
         .arg(&cfg)
         .assert()
         .success()
-        .stdout(contains("wrote 1 record"));
+        .stderr(contains("wrote 1 record"));
 
     let out_body = fs::read_to_string(&out).unwrap();
     assert!(out_body.contains("\"alice\""), "{out_body}");
@@ -1246,7 +1246,7 @@ fn run_with_contract_warn_writes_everything() {
         .arg(&cfg)
         .assert()
         .success()
-        .stdout(contains("wrote 2 records"));
+        .stderr(contains("wrote 2 records"));
 
     let out_body = fs::read_to_string(&out).unwrap();
     assert!(

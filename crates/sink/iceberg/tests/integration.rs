@@ -362,3 +362,139 @@ async fn current_schema_reports_table_columns() {
     assert_eq!(props["name"]["type"], json!(["string", "null"]));
     assert_eq!(props["active"]["type"], json!(["boolean", "null"]));
 }
+
+/// #255: additive schema evolution — `evolve_schema` adds a new optional column
+/// to an existing table via iceberg-rust 0.10.0's `update_schema` action, and
+/// rejects (non-applicable) widenings.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn evolve_schema_adds_optional_column() {
+    use faucet_core::{ColumnChange, SchemaEvolution};
+
+    let dir = TempDir::new().expect("tempdir");
+    let sink = IcebergSink::new(sink_config(&dir, "evolve"))
+        .await
+        .expect("IcebergSink::new");
+
+    // Create the table with {id, name}.
+    let records: Vec<serde_json::Value> = (0u64..2)
+        .map(|i| json!({ "id": i, "name": format!("n{i}") }))
+        .collect();
+    sink.write_batch(&records).await.expect("write_batch");
+    sink.flush().await.expect("flush");
+
+    assert!(sink.supports_schema_evolution());
+
+    // Add a new nullable column `email`.
+    let evo = SchemaEvolution {
+        additions: vec![ColumnChange {
+            name: "email".to_string(),
+            from: None,
+            to: json!({ "type": ["string", "null"] }),
+        }],
+        widenings: vec![],
+        relax_nullability: vec![],
+    };
+    sink.evolve_schema(&evo)
+        .await
+        .expect("evolve_schema add column");
+
+    // The destination schema now includes the new column.
+    let schema = sink
+        .current_schema()
+        .await
+        .expect("current_schema")
+        .expect("schema Some");
+    let props = schema["properties"].as_object().expect("properties");
+    assert!(
+        props.contains_key("email"),
+        "new column must appear: {schema}"
+    );
+    assert_eq!(props["email"]["type"], json!(["string", "null"]));
+
+    // A widening is not applicable via iceberg-rust 0.10.0 → typed error.
+    let widen = SchemaEvolution {
+        additions: vec![],
+        widenings: vec![ColumnChange {
+            name: "id".to_string(),
+            from: Some(json!({ "type": "integer" })),
+            to: json!({ "type": "number" }),
+        }],
+        relax_nullability: vec![],
+    };
+    let err = sink.evolve_schema(&widen).await.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("additive schema evolution supports new columns only"),
+        "got {err}"
+    );
+}
+
+/// #255: `evolve_schema` is a no-op (Ok) when there are no additions, and when
+/// the target table does not exist yet — covering both early-return branches.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn evolve_schema_noop_branches() {
+    use faucet_core::{ColumnChange, SchemaEvolution};
+
+    let dir = TempDir::new().expect("tempdir");
+    let sink = IcebergSink::new(sink_config(&dir, "evolve_noop"))
+        .await
+        .expect("IcebergSink::new");
+
+    // Empty evolution → Ok without touching the catalog (no additions).
+    sink.evolve_schema(&SchemaEvolution::default())
+        .await
+        .expect("empty evolution is a no-op");
+
+    // Additions requested but the table does not exist yet → inert Ok (the
+    // create path lays down the full schema on first write).
+    let evo = SchemaEvolution {
+        additions: vec![ColumnChange {
+            name: "email".to_string(),
+            from: None,
+            to: json!({ "type": ["string", "null"] }),
+        }],
+        widenings: vec![],
+        relax_nullability: vec![],
+    };
+    sink.evolve_schema(&evo)
+        .await
+        .expect("evolve against an absent table is inert");
+}
+
+/// #255: adding a column whose name already exists is rejected by
+/// `update_schema` — exercises `evolve_schema`'s error path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn evolve_schema_duplicate_column_errors() {
+    use faucet_core::{ColumnChange, SchemaEvolution};
+
+    let dir = TempDir::new().expect("tempdir");
+    let sink = IcebergSink::new(sink_config(&dir, "evolve_dup"))
+        .await
+        .expect("IcebergSink::new");
+
+    // Create the table with {id, name}.
+    sink.write_batch(&[json!({ "id": 1u64, "name": "a" })])
+        .await
+        .expect("write_batch");
+    sink.flush().await.expect("flush");
+
+    // Try to add a column that already exists.
+    let evo = SchemaEvolution {
+        additions: vec![ColumnChange {
+            name: "name".to_string(),
+            from: None,
+            to: json!({ "type": ["string", "null"] }),
+        }],
+        widenings: vec![],
+        relax_nullability: vec![],
+    };
+    let err = sink.evolve_schema(&evo).await.unwrap_err();
+    assert!(
+        matches!(err, faucet_core::FaucetError::Sink(_)),
+        "duplicate-column evolution must fail with a Sink error: {err}"
+    );
+    assert!(
+        err.to_string().contains("schema evolution failed"),
+        "got {err}"
+    );
+}

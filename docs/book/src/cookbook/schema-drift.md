@@ -130,15 +130,16 @@ Not every sink can evolve, and a schemaless sink has no schema to diverge from.
 | `bigquery` | ✅ | ✅ |
 | `elasticsearch` | ✅ | ✅ (add fields only) |
 | `spanner` | ✅ | ✅ (add + NOT NULL relax; no base-type widening) |
-| `iceberg` | ✅ | ❌ detect-only |
+| `iceberg` | ✅ | ✅ (add columns only) |
 | `jsonl`, `csv`, `stdout`, `mongodb`, `redis`, `http`, `kafka`, `s3`, `gcs`, `snowflake`, `parquet` | — (inert) | — |
 
-- **Evolvable** (seven sinks): postgres, mysql, mssql, sqlite, bigquery,
-  elasticsearch, spanner. They implement in-place additive DDL.
-- **Iceberg** reports its current schema so detection modes work, but **cannot
-  `evolve`** — schema evolution is blocked on upstream `iceberg-rust 0.9.1`
-  (issue #255). `on_drift: evolve` against iceberg is rejected at config-load
-  time with a "blocked on upstream" message.
+- **Evolvable** (eight sinks): postgres, mysql, mssql, sqlite, bigquery,
+  elasticsearch, spanner, iceberg. They implement in-place additive DDL.
+- **Iceberg** adds new columns via iceberg-rust 0.10.0's `update_schema`
+  action (issue #255). It is **additive-only**: `update_schema` exposes
+  `add_column` but no in-place type promotion or nullability relaxation, so a
+  drift that needs a *widening* (base-type change) or nullability relaxation is
+  rejected with a typed error rather than silently ignored.
 - **Schemaless sinks** report no destination schema, so *any* `schema:` policy is
   **inert** against them (a one-shot log notes this). `on_drift: evolve` against
   a schemaless sink is rejected at config-load (there is nothing to evolve).

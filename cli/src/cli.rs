@@ -813,9 +813,10 @@ pub struct RunArgs {
     #[arg(long)]
     pub quiet: bool,
 
-    /// Format for the end-of-run summary printed to stdout: `text` (default,
-    /// human), `json` (a single machine-readable document), or `ndjson` (one
-    /// JSON object per matrix row). With `json`/`ndjson`, stdout carries only
+    /// Format for the end-of-run summary: `text` (default, human — written to
+    /// **stderr** so stdout stays clean for the sink), `json` (a single
+    /// machine-readable document on **stdout**), or `ndjson` (one JSON object
+    /// per matrix row on **stdout**). With `json`/`ndjson`, stdout carries only
     /// the summary — logs stay on stderr — so `faucet run` is scriptable.
     #[arg(long, value_enum, default_value_t = RunOutput::Text)]
     pub output: RunOutput,

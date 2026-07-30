@@ -815,7 +815,8 @@ pub const IDEMPOTENT_SINK_KINDS: &[&str] = &[
 
 /// Sink kinds that can apply additive/widening DDL via `Sink::evolve_schema`.
 /// Mirrors each sink's `supports_schema_evolution()` override. Iceberg is
-/// intentionally excluded — iceberg-rust 0.9.1 exposes no schema-evolution API (#255).
+/// additive-only (new columns) via iceberg-rust 0.10.0's `update_schema`
+/// action (#255).
 pub const SCHEMA_EVOLUTION_SINK_KINDS: &[&str] = &[
     "postgres",
     "mysql",
@@ -824,6 +825,7 @@ pub const SCHEMA_EVOLUTION_SINK_KINDS: &[&str] = &[
     "bigquery",
     "elasticsearch",
     "spanner",
+    "iceberg",
 ];
 
 /// Sink kinds that support `write_mode: upsert|delete`. Mirrors each sink's
@@ -1943,7 +1945,7 @@ mod tests {
         assert!(sink_supports_schema_evolution("sqlite"));
         assert!(sink_supports_schema_evolution("bigquery"));
         assert!(sink_supports_schema_evolution("elasticsearch"));
-        assert!(!sink_supports_schema_evolution("iceberg"));
+        assert!(sink_supports_schema_evolution("iceberg"));
         assert!(!sink_supports_schema_evolution("jsonl"));
         assert!(!sink_supports_schema_evolution("kafka"));
     }
