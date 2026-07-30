@@ -88,6 +88,13 @@ fn every_example_loads_and_expands() {
                 continue;
             }
         };
+        // Topology-mode examples (`pipeline.nodes`) are not matrix rows, so
+        // `expand` (matrix-only) does not apply. The parse above already
+        // validated their structure; graph validation is covered by
+        // `topology_end_to_end.rs`.
+        if !cfg.pipeline.nodes.is_empty() {
+            continue;
+        }
         if let Err(e) = expand(&cfg) {
             failures.push(format!("expand {}: {e}", path.display()));
         }

@@ -54,6 +54,7 @@ pub mod select;
 pub mod serve;
 pub mod sla;
 pub mod state;
+pub mod topology;
 pub mod transforms;
 #[cfg(feature = "cli-tui")]
 pub mod tui;

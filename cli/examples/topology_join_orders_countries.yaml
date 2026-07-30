@@ -1,0 +1,63 @@
+# Topology mode (#71) + cross-source join (#72).
+#
+# Enrich each order with its country name by joining `orders.country_code`
+# against `countries.code`. The `join` node buffers the build (right) side —
+# `countries` — into an in-memory hash index, then streams the probe (left)
+# side — `orders` — enriching each record with the projected fields.
+#
+#   faucet validate cli/examples/topology_join_orders_countries.yaml
+#   faucet run      cli/examples/topology_join_orders_countries.yaml
+#
+# The join's two incoming edges carry `as:` labels that match its
+# `build.edge` / `probe.edge` names.
+version: 1
+name: topology_join_orders_countries
+
+pipeline:
+  sources:
+    orders:
+      type: csv
+      config:
+        path: ./data/orders.csv
+    countries:
+      type: csv
+      config:
+        path: ./data/countries.csv
+  sinks:
+    enriched:
+      type: jsonl
+      config:
+        path: ./out/orders_enriched.jsonl
+
+  nodes:
+    read_orders:
+      kind: source
+      ref: orders
+    read_countries:
+      kind: source
+      ref: countries
+
+    enrich:
+      kind: join
+      mode: left                 # keep orders even when no country matches
+      build:
+        edge: countries_in       # right side — buffered as the lookup index
+        key: code
+      probe:
+        edge: orders_in          # left side — streamed
+        key: country_code
+      project:
+        - { from: country, as: country_name }
+      on_missing: "UNKNOWN"       # left-mode fill when no match
+      on_duplicate: first
+      on_collision: overwrite
+      key_normalize: preserve
+
+    write_enriched:
+      kind: sink
+      ref: enriched
+
+  edges:
+    - { from: read_countries, to: enrich, as: countries_in }
+    - { from: read_orders,    to: enrich, as: orders_in }
+    - { from: enrich,         to: write_enriched }

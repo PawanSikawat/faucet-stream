@@ -328,6 +328,9 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
             #[cfg(feature = "masking")]
             masking: None,
             schema: None,
+            // Pure-env mode does not assemble a topology graph.
+            nodes: std::collections::HashMap::new(),
+            edges: Vec::new(),
         },
         matrix: Vec::new(),
         execution: None,

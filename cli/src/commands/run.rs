@@ -145,6 +145,23 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
     });
 
     let auth = crate::auth_catalog::build_auth_catalog(cfg.auth.as_ref())?;
+
+    // Topology mode (#71/#72): an explicit `pipeline.nodes` graph replaces the
+    // matrix entirely. Run it directly and report through the same summary
+    // surfaces (`--output text|json|ndjson`), then return.
+    if crate::topology::is_topology(&cfg) {
+        let started_at = Utc::now();
+        let summary = crate::topology::run_topology(&cfg, &auth, None).await?;
+        let finished_at = Utc::now();
+        return finish_topology_run(
+            &pipeline_name,
+            started_at,
+            finished_at,
+            &summary,
+            args.output,
+        );
+    }
+
     #[cfg(feature = "lineage")]
     let lineage = crate::lineage_glue::build_emitter(cfg.lineage.as_ref())
         .map_err(|e| CliError::Config(format!("lineage: {e}")))?;
@@ -405,6 +422,64 @@ pub(crate) fn summary_document(
         totals,
         rows,
     }
+}
+
+/// Report a topology-mode run through the same `--output` surfaces as a matrix
+/// run, then map any node failures to the process exit code (#71/#72).
+fn finish_topology_run(
+    pipeline_name: &str,
+    started_at: DateTime<Utc>,
+    finished_at: DateTime<Utc>,
+    summary: &RunSummary,
+    output: RunOutput,
+) -> CliResult<()> {
+    let total_written: usize = summary.invocations.iter().map(|i| i.records_written).sum();
+    let failed = summary.failure_count();
+    let success = summary.invocations.len() - failed;
+
+    tracing::info!(
+        pipeline = %pipeline_name,
+        nodes = summary.invocations.len(),
+        succeeded = success,
+        failed,
+        records_written = total_written,
+        "topology completed"
+    );
+
+    match output {
+        RunOutput::Text => println!(
+            "{}: {} sink node{}, {} ok, {} failed, wrote {} record{}",
+            pipeline_name,
+            summary.invocations.len(),
+            if summary.invocations.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            success,
+            failed,
+            total_written,
+            if total_written == 1 { "" } else { "s" }
+        ),
+        RunOutput::Json => {
+            let doc = summary_document(pipeline_name, started_at, finished_at, summary);
+            let rendered = serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_string());
+            println!("{}", crate::secrets::registry::redact(&rendered));
+        }
+        RunOutput::Ndjson => {
+            for row in summary_rows(summary) {
+                let line = serde_json::to_string(&row).unwrap_or_else(|_| "{}".to_string());
+                println!("{}", crate::secrets::registry::redact(&line));
+            }
+        }
+    }
+
+    faucet_core::shutdown_otel();
+
+    if summary.had_failures() {
+        return Err(CliError::TopologyHadFailures { count: failed });
+    }
+    Ok(())
 }
 
 #[cfg(test)]

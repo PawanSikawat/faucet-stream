@@ -30,6 +30,12 @@ pub async fn run(args: PreviewArgs) -> CliResult<()> {
     };
     let cfg = PipelineConfig::from_path_async(&path, args.profile.as_deref()).await?;
     let auth = crate::auth_catalog::build_auth_catalog(cfg.auth.as_ref())?;
+
+    // Topology mode (#71/#72): preview the source side of each source node.
+    if crate::topology::is_topology(&cfg) {
+        return crate::topology::preview(&cfg, &auth, args.limit).await;
+    }
+
     let nodes = expand(&cfg)?;
     // Apply runtime row selection so `preview` previews the first root of the
     // selected run set (#370/#371/#376/#377).

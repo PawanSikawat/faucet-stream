@@ -47,6 +47,24 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         }
         cfg
     };
+    // Topology mode (#71/#72): build + validate the node graph instead of the
+    // matrix. `build_topology` runs the core structural validator (arity,
+    // fan-out, join edges, cycle, reachability).
+    if crate::topology::is_topology(&cfg) {
+        let auth = crate::auth_catalog::build_auth_catalog(cfg.auth.as_ref())?;
+        let topo = crate::topology::build_topology(&cfg, &auth).await?;
+        println!(
+            "topology '{}': {} node(s), {} edge(s) — valid",
+            cfg.name.as_deref().unwrap_or("unnamed"),
+            topo.nodes().len(),
+            topo.edges().len()
+        );
+        for n in topo.nodes() {
+            println!("  - {} ({})", n.id, n.kind.kind_str());
+        }
+        return Ok(());
+    }
+
     let nodes = expand(&cfg)?;
 
     // Validate the replication block (snapshot source / CDC source / state) so

@@ -1,0 +1,67 @@
+# Topology mode (#71): fan-out (tee).
+#
+# One CSV source is fetched ONCE, keys are snake-cased, and the same records
+# are routed to three sinks in the same process — no refetch, no divergence.
+#
+#   faucet validate cli/examples/topology_tee_users.yaml
+#   faucet run      cli/examples/topology_tee_users.yaml
+#
+# `pipeline.nodes` + `edges` replace the matrix: each node is typed by `kind`
+# and edges connect producers to consumers. A `tee` node clones every page to
+# each of its outgoing edges; the slowest sink paces the source (backpressure).
+version: 1
+name: topology_tee_users
+
+pipeline:
+  # Named templates the nodes reference via `ref:`.
+  sources:
+    orders:
+      type: csv
+      config:
+        path: ./data/orders.csv
+  sinks:
+    archive:
+      type: jsonl
+      config:
+        path: ./out/orders_archive.jsonl
+    warehouse:
+      type: jsonl
+      config:
+        path: ./out/orders_warehouse.jsonl
+    audit:
+      type: stdout
+      config:
+        format: json_lines
+
+  nodes:
+    fetch_orders:
+      kind: source
+      ref: orders
+
+    normalize:
+      kind: transform
+      transforms:
+        - type: keys_case
+          config: { mode: snake }
+
+    tee_orders:
+      kind: tee
+      channel_capacity: 4
+      fanout: 3
+
+    write_archive:
+      kind: sink
+      ref: archive
+    write_warehouse:
+      kind: sink
+      ref: warehouse
+    write_audit:
+      kind: sink
+      ref: audit
+
+  edges:
+    - { from: fetch_orders, to: normalize }
+    - { from: normalize,    to: tee_orders }
+    - { from: tee_orders,   to: write_archive }
+    - { from: tee_orders,   to: write_warehouse }
+    - { from: tee_orders,   to: write_audit }
