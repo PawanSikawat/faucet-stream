@@ -10,6 +10,16 @@
      intentionally NOT duplicated here so there is exactly one to rewrite. -->
 <meta name="theme-color" content="#14b8a6" />
 
+<!-- Favicon / touch icon at stable, absolute paths. mdBook also emits its own
+     content-hashed `theme/favicon.{svg,png}` <link>s, but those relative,
+     SVG-first tags are frequently ignored by link-preview crawlers / bookmark
+     cards (which then fall back to a generic globe) and by clients that only
+     accept a PNG or an apple-touch-icon. These copies live in `src/assets/`
+     (copied verbatim, un-hashed) so the URLs stay predictable. -->
+<link rel="icon" type="image/svg+xml" href="https://pawansikawat.github.io/faucet-stream/assets/favicon.svg" />
+<link rel="icon" type="image/png" sizes="256x256" href="https://pawansikawat.github.io/faucet-stream/assets/favicon.png" />
+<link rel="apple-touch-icon" href="https://pawansikawat.github.io/faucet-stream/assets/favicon.png" />
+
 <!-- Open Graph -->
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="faucet-stream" />
