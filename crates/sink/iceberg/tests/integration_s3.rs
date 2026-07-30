@@ -96,7 +96,6 @@ impl StorageFactory for S3PropFactory {
         let mut merged = self.props.clone();
         merged.extend(config.props().iter().map(|(k, v)| (k.clone(), v.clone())));
         OpenDalStorageFactory::S3 {
-            configured_scheme: "s3".to_string(),
             customized_credential_load: None,
         }
         .build(&StorageConfig::from_props(merged))
