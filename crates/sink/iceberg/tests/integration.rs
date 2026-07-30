@@ -460,3 +460,41 @@ async fn evolve_schema_noop_branches() {
         .await
         .expect("evolve against an absent table is inert");
 }
+
+/// #255: adding a column whose name already exists is rejected by
+/// `update_schema` — exercises `evolve_schema`'s error path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn evolve_schema_duplicate_column_errors() {
+    use faucet_core::{ColumnChange, SchemaEvolution};
+
+    let dir = TempDir::new().expect("tempdir");
+    let sink = IcebergSink::new(sink_config(&dir, "evolve_dup"))
+        .await
+        .expect("IcebergSink::new");
+
+    // Create the table with {id, name}.
+    sink.write_batch(&[json!({ "id": 1u64, "name": "a" })])
+        .await
+        .expect("write_batch");
+    sink.flush().await.expect("flush");
+
+    // Try to add a column that already exists.
+    let evo = SchemaEvolution {
+        additions: vec![ColumnChange {
+            name: "name".to_string(),
+            from: None,
+            to: json!({ "type": ["string", "null"] }),
+        }],
+        widenings: vec![],
+        relax_nullability: vec![],
+    };
+    let err = sink.evolve_schema(&evo).await.unwrap_err();
+    assert!(
+        matches!(err, faucet_core::FaucetError::Sink(_)),
+        "duplicate-column evolution must fail with a Sink error: {err}"
+    );
+    assert!(
+        err.to_string().contains("schema evolution failed"),
+        "got {err}"
+    );
+}

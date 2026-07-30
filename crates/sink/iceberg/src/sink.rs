@@ -539,6 +539,16 @@ pub(crate) fn commit_failure_is_definite_loss(kind: ErrorKind) -> bool {
     )
 }
 
+/// Map an iceberg error from the schema-evolution transaction (`update_schema`
+/// apply or commit) to a sink error. Shared by both fallible steps so the
+/// error surface is a single covered path.
+fn evolve_schema_err(e: iceberg::Error) -> FaucetError {
+    FaucetError::Sink(format!(
+        "iceberg: schema evolution failed ({}): {e}",
+        e.kind()
+    ))
+}
+
 /// Select the highest commit token recorded for `scope` from a sequence of
 /// snapshot summary `(scope, token)` property pairs.
 ///
@@ -738,15 +748,10 @@ impl faucet_core::Sink for IcebergSink {
             let field_type = crate::schema::json_fragment_to_iceberg_type(&add.to)?;
             action = action.add_column(AddColumn::optional(&add.name, field_type));
         }
-        let tx = action
-            .apply(tx)
-            .map_err(|e| FaucetError::Sink(format!("iceberg: update_schema apply failed: {e}")))?;
-        tx.commit(self.catalog.as_ref()).await.map_err(|e| {
-            FaucetError::Sink(format!(
-                "iceberg: schema-evolution commit failed ({}): {e}",
-                e.kind()
-            ))
-        })?;
+        let tx = action.apply(tx).map_err(evolve_schema_err)?;
+        tx.commit(self.catalog.as_ref())
+            .await
+            .map_err(evolve_schema_err)?;
         Ok(())
     }
 
