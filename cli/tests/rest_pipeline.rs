@@ -71,7 +71,7 @@ pipeline:
         .arg(&cfg)
         .assert()
         .success()
-        .stdout(contains("wrote 2 records"));
+        .stderr(contains("wrote 2 records"));
 
     let body = fs::read_to_string(&out).unwrap();
     assert_eq!(body.lines().count(), 2);

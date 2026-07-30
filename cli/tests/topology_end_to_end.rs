@@ -83,7 +83,7 @@ pipeline:
         .arg(&cfg)
         .assert()
         .success()
-        .stdout(contains("2 sink node"));
+        .stderr(contains("2 sink node"));
 
     assert_eq!(fs::read_to_string(&a).unwrap().lines().count(), 4);
     assert_eq!(fs::read_to_string(&b).unwrap().lines().count(), 4);

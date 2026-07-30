@@ -56,7 +56,7 @@ use faucet_core::FaucetError;
 use iceberg::io::FileIO;
 use iceberg::spec::{DataFile, Transform, UnboundPartitionSpec};
 use iceberg::table::Table;
-use iceberg::transaction::{ApplyTransactionAction, Transaction};
+use iceberg::transaction::{AddColumn, ApplyTransactionAction, Transaction};
 use iceberg::{Catalog, ErrorKind, NamespaceIdent, TableCreation, TableIdent};
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -684,13 +684,6 @@ impl faucet_core::Sink for IcebergSink {
     /// surfaces as `Err`. On success the table's `current_schema()` is converted
     /// to Arrow (via `iceberg_to_arrow_schema`) and then to the JSON shape.
     ///
-    /// Schema *evolution* is intentionally NOT implemented for this sink:
-    /// `supports_schema_evolution` stays `false` (trait default) and
-    /// `evolve_schema` keeps the trait's typed "unsupported" error. iceberg-rust
-    /// 0.9.1 (pinned in this crate) exposes no schema-evolution transaction API
-    /// (no `UpdateSchema` / `add_column` / type-promotion — only `fast_append`),
-    /// so evolution is blocked upstream. Tracked in issue #255; the CLI rejects
-    /// `on_drift: evolve` against iceberg at config-load.
     async fn current_schema(&self) -> Result<Option<Value>, FaucetError> {
         let table = match self.load_table_readonly().await? {
             Some(t) => t,
@@ -698,6 +691,63 @@ impl faucet_core::Sink for IcebergSink {
         };
         let arrow_schema = iceberg_to_arrow_schema(table.metadata().current_schema())?;
         Ok(Some(arrow_to_json_schema(&arrow_schema)))
+    }
+
+    /// Additive schema evolution (#255). iceberg-rust 0.10.0 exposes a
+    /// `Transaction::update_schema` action with `add_column`, so `on_drift:
+    /// evolve` can add new (optional) columns to the destination table.
+    fn supports_schema_evolution(&self) -> bool {
+        true
+    }
+
+    /// Apply an additive schema evolution by adding each new column as an
+    /// **optional** field in a single `update_schema` transaction commit.
+    ///
+    /// iceberg-rust 0.10.0's `UpdateSchemaAction` exposes `add_column` /
+    /// `delete_column` but **no** in-place type-promotion or nullability
+    /// relaxation, so `widenings` / `relax_nullability` are not applicable yet
+    /// and are rejected with a typed error rather than silently ignored (which
+    /// would leave the table unable to accept the widened data). Row-level
+    /// overwrite/upsert remain separately blocked upstream (#179 / #225).
+    async fn evolve_schema(
+        &self,
+        evolution: &faucet_core::SchemaEvolution,
+    ) -> Result<(), FaucetError> {
+        if !evolution.widenings.is_empty() || !evolution.relax_nullability.is_empty() {
+            return Err(FaucetError::Sink(format!(
+                "iceberg: additive schema evolution supports new columns only in iceberg-rust \
+                 0.10.0 (no in-place type promotion or nullability relaxation); requested \
+                 {} widening(s) + {} nullability relaxation(s)",
+                evolution.widenings.len(),
+                evolution.relax_nullability.len()
+            )));
+        }
+        if evolution.additions.is_empty() {
+            return Ok(());
+        }
+        // The table must exist to evolve it; if absent (e.g. a race with table
+        // creation), stay inert — the create path lays down the full schema.
+        let table = match self.load_table_readonly().await? {
+            Some(t) => t,
+            None => return Ok(()),
+        };
+
+        let tx = Transaction::new(&table);
+        let mut action = tx.update_schema();
+        for add in &evolution.additions {
+            let field_type = crate::schema::json_fragment_to_iceberg_type(&add.to)?;
+            action = action.add_column(AddColumn::optional(&add.name, field_type));
+        }
+        let tx = action
+            .apply(tx)
+            .map_err(|e| FaucetError::Sink(format!("iceberg: update_schema apply failed: {e}")))?;
+        tx.commit(self.catalog.as_ref()).await.map_err(|e| {
+            FaucetError::Sink(format!(
+                "iceberg: schema-evolution commit failed ({}): {e}",
+                e.kind()
+            ))
+        })?;
+        Ok(())
     }
 
     fn supports_idempotent_writes(&self) -> bool {

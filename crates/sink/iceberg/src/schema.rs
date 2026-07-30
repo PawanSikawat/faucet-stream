@@ -2,9 +2,10 @@
 //!
 //! ## Arrow version note
 //!
-//! This crate pins **arrow 57** (iceberg-rust 0.9.1's arrow dependency), NOT the
-//! workspace's arrow 58. The two versions never exchange Arrow types across a
-//! crate boundary — the pipeline hands the sink `serde_json::Value` records only.
+//! This crate uses **arrow 58**, matching both iceberg-rust 0.10.0 and the
+//! workspace — so there is no longer a dual-arrow pin (it was 57 under
+//! iceberg-rust 0.9.1). The pipeline still hands the sink `serde_json::Value`
+//! records only.
 //!
 //! ## Function overview
 //!
@@ -23,9 +24,37 @@ use arrow::record_batch::RecordBatch;
 use arrow_json::ReaderBuilder;
 use arrow_json::reader::infer_json_schema_from_iterator;
 use faucet_core::FaucetError;
+use iceberg::spec::{PrimitiveType, Type};
 use serde_json::Value;
 
 // ── Public API ────────────────────────────────────────────────────────────────
+
+/// Map a faucet JSON-Schema type fragment (as produced by `infer_schema`, e.g.
+/// `{"type":"integer"}` or `{"type":["string","null"]}`) to an Iceberg
+/// primitive [`Type`], for additive schema evolution (#255). Only the scalar
+/// types faucet infers are supported; `object` / `array` / unknown fragments
+/// error rather than guess a nested Iceberg type.
+pub(crate) fn json_fragment_to_iceberg_type(fragment: &Value) -> Result<Type, FaucetError> {
+    let base = match fragment.get("type") {
+        Some(Value::String(s)) => Some(s.as_str()),
+        // A nullable union like `["integer","null"]` — take the non-null member.
+        Some(Value::Array(arr)) => arr.iter().filter_map(|v| v.as_str()).find(|s| *s != "null"),
+        _ => None,
+    };
+    let prim = match base {
+        Some("string") => PrimitiveType::String,
+        Some("integer") => PrimitiveType::Long,
+        Some("number") => PrimitiveType::Double,
+        Some("boolean") => PrimitiveType::Boolean,
+        other => {
+            return Err(FaucetError::Sink(format!(
+                "iceberg: cannot add a column of JSON-Schema type {other:?} — additive schema \
+                 evolution supports string / integer / number / boolean columns"
+            )));
+        }
+    };
+    Ok(Type::Primitive(prim))
+}
 
 /// Infer an Arrow schema from up to `sample` JSON records.
 ///
@@ -199,6 +228,48 @@ mod tests {
     use super::*;
     use arrow::datatypes::DataType;
     use serde_json::json;
+
+    // ── json_fragment_to_iceberg_type (additive schema evolution, #255) ─────────
+
+    fn prim(frag: serde_json::Value) -> PrimitiveType {
+        match json_fragment_to_iceberg_type(&frag).unwrap() {
+            Type::Primitive(p) => p,
+            other => panic!("expected primitive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_fragment_maps_scalar_types() {
+        assert_eq!(prim(json!({"type": "string"})), PrimitiveType::String);
+        assert_eq!(prim(json!({"type": "integer"})), PrimitiveType::Long);
+        assert_eq!(prim(json!({"type": "number"})), PrimitiveType::Double);
+        assert_eq!(prim(json!({"type": "boolean"})), PrimitiveType::Boolean);
+    }
+
+    #[test]
+    fn json_fragment_unwraps_nullable_union() {
+        assert_eq!(
+            prim(json!({"type": ["integer", "null"]})),
+            PrimitiveType::Long
+        );
+        assert_eq!(
+            prim(json!({"type": ["null", "string"]})),
+            PrimitiveType::String
+        );
+    }
+
+    #[test]
+    fn json_fragment_rejects_unsupported_types() {
+        for frag in [
+            json!({"type": "object"}),
+            json!({"type": "array"}),
+            json!({"type": "null"}),
+            json!({}),
+        ] {
+            let err = json_fragment_to_iceberg_type(&frag).unwrap_err();
+            assert!(matches!(err, FaucetError::Sink(_)), "{frag}: {err:?}");
+        }
+    }
 
     // ── infer_arrow_schema ────────────────────────────────────────────────────
 

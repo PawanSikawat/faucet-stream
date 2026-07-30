@@ -293,7 +293,10 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
     // emit a machine-readable summary and keep stdout otherwise clean so
     // `faucet run` is scriptable in CI / cron / Slack (#390). Logs are on stderr.
     match args.output {
-        RunOutput::Text => println!(
+        // Human status → stderr, so stdout belongs exclusively to the sink /
+        // the machine-readable json|ndjson contract (#424). Piping a
+        // stdout-sink run stays clean.
+        RunOutput::Text => eprintln!(
             "{}: {} invocation{}, {} ok, {} failed, wrote {} record{}",
             pipeline_name,
             summary.invocations.len(),
@@ -447,7 +450,8 @@ fn finish_topology_run(
     );
 
     match output {
-        RunOutput::Text => println!(
+        // Human status → stderr; stdout stays clean for the sink / json|ndjson (#424).
+        RunOutput::Text => eprintln!(
             "{}: {} sink node{}, {} ok, {} failed, wrote {} record{}",
             pipeline_name,
             summary.invocations.len(),
