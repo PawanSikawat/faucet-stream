@@ -154,7 +154,25 @@ jobs:
         # Explicitly target the embedded-console tests with serve-ui so the
         # feature-gated #![cfg(feature = "serve-ui")] gate is exercised and
         # the OpenAPI two-way sync test runs against the console-enabled router.
-        run: cargo test -p faucet-cli --features serve-ui --test serve_ui --test serve_openapi
+        #
+        # Retry like the workspace step above: the final link of these large
+        # test binaries intermittently dies with `collect2: ld terminated with
+        # signal 7 [Bus error]` on the hosted runner (a transient linker mmap
+        # fault under memory pressure, not a code defect — disk has ~115 GB
+        # free at this point). A re-link on a fresh attempt succeeds.
+        run: |
+          for attempt in 1 2 3; do
+            echo "::group::serve-ui tests (attempt $attempt)"
+            if cargo test -p faucet-cli --features serve-ui --test serve_ui --test serve_openapi; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "::warning::serve-ui isolation tests failed on attempt $attempt (often a transient ld bus error at link); retrying in 20s"
+            sleep 20
+          done
+          echo "::error::serve-ui isolation tests failed after 3 attempts"
+          exit 1
 
   # Verify each feature compiles in isolation (catches accidental cross-feature deps)
   feature-check:
