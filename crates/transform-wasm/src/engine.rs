@@ -11,7 +11,9 @@ use crate::metrics;
 use faucet_core::FaucetError;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime};
-use wasmtime::{Caller, Config, Engine, Extern, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder};
+use wasmtime::{
+    Caller, Config, Engine, Extern, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder,
+};
 
 /// Per-store host state: the memory limiter and a monotonic epoch for the
 /// `now_ns` host import.
@@ -51,9 +53,8 @@ impl WasmEngine {
 
         let mut config = Config::new();
         config.consume_fuel(true);
-        let engine = Engine::new(&config).map_err(|e| {
-            FaucetError::Config(format!("wasm transform: engine init failed: {e}"))
-        })?;
+        let engine = Engine::new(&config)
+            .map_err(|e| FaucetError::Config(format!("wasm transform: engine init failed: {e}")))?;
 
         let compile_start = Instant::now();
         let module = Module::new(&engine, &bytes).map_err(|e| {

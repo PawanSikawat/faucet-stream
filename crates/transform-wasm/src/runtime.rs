@@ -330,7 +330,10 @@ mod tests {
 
     /// Compile a transform from WAT with an optional config tweak. Returns the
     /// transform plus the backing temp file (keep it alive for the test).
-    fn build(wat: &str, tweak: impl FnOnce(&mut WasmTransformConfig)) -> (WasmTransform, NamedTempFile) {
+    fn build(
+        wat: &str,
+        tweak: impl FnOnce(&mut WasmTransformConfig),
+    ) -> (WasmTransform, NamedTempFile) {
         let f = write_wasm(wat);
         let mut c = cfg(f.path());
         tweak(&mut c);
@@ -437,7 +440,10 @@ mod tests {
     #[test]
     fn out_of_bounds_output_is_an_error() {
         let (t, _f) = build(&bad_ptr_wat(), |c| c.on_error = WasmOnError::Skip);
-        assert_eq!(t.run_page(vec![json!({"a": 1})]).unwrap(), Vec::<Value>::new());
+        assert_eq!(
+            t.run_page(vec![json!({"a": 1})]).unwrap(),
+            Vec::<Value>::new()
+        );
     }
 
     #[test]
@@ -549,13 +555,19 @@ mod tests {
     #[test]
     fn alloc_trap_is_an_error() {
         let (t, _f) = build(alloc_trap_wat(), |c| c.on_error = WasmOnError::Skip);
-        assert_eq!(t.run_page(vec![json!({"a": 1})]).unwrap(), Vec::<Value>::new());
+        assert_eq!(
+            t.run_page(vec![json!({"a": 1})]).unwrap(),
+            Vec::<Value>::new()
+        );
     }
 
     #[test]
     fn bad_alloc_pointer_fails_input_write() {
         let (t, _f) = build(bad_alloc_ptr_wat(), |c| c.on_error = WasmOnError::Skip);
-        assert_eq!(t.run_page(vec![json!({"a": 1})]).unwrap(), Vec::<Value>::new());
+        assert_eq!(
+            t.run_page(vec![json!({"a": 1})]).unwrap(),
+            Vec::<Value>::new()
+        );
     }
 
     #[test]

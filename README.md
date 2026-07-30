@@ -486,7 +486,7 @@ flowchart LR
     class K sink
 ```
 
-faucet-stream is a Cargo workspace with **<!--COUNT:crates-->91<!--/COUNT--> crates** — <!--COUNT:sources-->37<!--/COUNT--> sources, <!--COUNT:sinks-->29<!--/COUNT--> sinks, <!--COUNT:common-->16<!--/COUNT--> shared
+faucet-stream is a Cargo workspace with **<!--COUNT:crates-->92<!--/COUNT--> crates** — <!--COUNT:sources-->37<!--/COUNT--> sources, <!--COUNT:sinks-->29<!--/COUNT--> sinks, <!--COUNT:common-->16<!--/COUNT--> shared
 connector libraries, the shared auth-provider library, 2 state-store backends, the lineage
 crate, the SQL transform crate, the conformance test battery, the shared core, the umbrella
 crate, and the CLI binary. See
@@ -853,7 +853,7 @@ and the runnable [`cli/examples/custom-cli/`](cli/examples/custom-cli/main.rs).
 ## Project structure
 
 ```
-Cargo.toml                    — workspace manifest (<!--COUNT:crates-->91<!--/COUNT--> crates)
+Cargo.toml                    — workspace manifest (<!--COUNT:crates-->92<!--/COUNT--> crates)
 crates/
   core/                       — faucet-core: shared types, traits, pipeline, transforms, config
   auth/                       — faucet-auth: shared OAuth2 / token-endpoint providers

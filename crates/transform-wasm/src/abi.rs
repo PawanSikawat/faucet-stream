@@ -63,10 +63,7 @@ mod tests {
     fn classify_other_is_emit() {
         assert_eq!(
             classify((1024u64 << 32) | 42),
-            RawOutcome::Emit {
-                ptr: 1024,
-                len: 42
-            }
+            RawOutcome::Emit { ptr: 1024, len: 42 }
         );
     }
 
@@ -74,9 +71,6 @@ mod tests {
     fn classify_zero_len_nonzero_ptr_is_emit_empty() {
         // ptr set, len 0 → a legitimate empty-output emit (not the DROP
         // sentinel, which requires the whole word to be zero).
-        assert_eq!(
-            classify(64u64 << 32),
-            RawOutcome::Emit { ptr: 64, len: 0 }
-        );
+        assert_eq!(classify(64u64 << 32), RawOutcome::Emit { ptr: 64, len: 0 });
     }
 }

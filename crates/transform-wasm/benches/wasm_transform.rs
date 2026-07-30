@@ -4,7 +4,7 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use faucet_core::stage::{CompiledStage, apply_stages_to_page, compile_stage};
-use faucet_transform_wasm::{WasmTransform, WasmTransformConfig, WasmOnError};
+use faucet_transform_wasm::{WasmOnError, WasmTransform, WasmTransformConfig};
 use serde_json::{Value, json};
 use std::hint::black_box;
 use std::io::Write;

@@ -66,8 +66,12 @@ impl WasmInstance {
         let free = instance
             .get_typed_func::<(i32, i32), ()>(&mut store, "free")
             .ok();
-        let error_ptr = instance.get_typed_func::<(), i32>(&mut store, "error_ptr").ok();
-        let error_len = instance.get_typed_func::<(), i32>(&mut store, "error_len").ok();
+        let error_ptr = instance
+            .get_typed_func::<(), i32>(&mut store, "error_ptr")
+            .ok();
+        let error_len = instance
+            .get_typed_func::<(), i32>(&mut store, "error_len")
+            .ok();
         Ok(Self {
             store,
             memory,
@@ -196,8 +200,9 @@ impl WasmInstance {
                 "wasm transform: module error: {}",
                 String::from_utf8_lossy(slice)
             ),
-            None => "wasm transform: module signalled an error (error pointer out of bounds)"
-                .to_owned(),
+            None => {
+                "wasm transform: module signalled an error (error pointer out of bounds)".to_owned()
+            }
         }
     }
 

@@ -113,10 +113,15 @@ mod tests {
 
     #[test]
     fn rejects_unknown_on_error() {
-        let err =
-            serde_json::from_value::<WasmTransformConfig>(json!({"module": "t.wasm", "on_error": "explode"}))
-                .unwrap_err();
-        assert!(err.to_string().to_lowercase().contains("on_error") || err.to_string().contains("explode"), "{err}");
+        let err = serde_json::from_value::<WasmTransformConfig>(
+            json!({"module": "t.wasm", "on_error": "explode"}),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("on_error")
+                || err.to_string().contains("explode"),
+            "{err}"
+        );
     }
 
     #[test]

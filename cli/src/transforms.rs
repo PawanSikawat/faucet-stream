@@ -598,17 +598,18 @@ fn registry() -> Vec<TransformDef> {
             schema_fn: || schema_wasm(),
             compile_fn: |kind, config| {
                 let cfg: faucet_transform_wasm::WasmTransformConfig = decode_wasm(kind, config)?;
-                let transform = faucet_transform_wasm::WasmTransform::compile(&cfg).map_err(|e| {
-                    let message = match &e {
-                        faucet_core::FaucetError::Transform(m)
-                        | faucet_core::FaucetError::Config(m) => m.clone(),
-                        other => format!("{other}"),
-                    };
-                    CliError::InvalidTransform {
-                        name: kind.to_owned(),
-                        message,
-                    }
-                })?;
+                let transform =
+                    faucet_transform_wasm::WasmTransform::compile(&cfg).map_err(|e| {
+                        let message = match &e {
+                            faucet_core::FaucetError::Transform(m)
+                            | faucet_core::FaucetError::Config(m) => m.clone(),
+                            other => format!("{other}"),
+                        };
+                        CliError::InvalidTransform {
+                            name: kind.to_owned(),
+                            message,
+                        }
+                    })?;
                 Ok(transform.into_page_stage())
             },
         });
