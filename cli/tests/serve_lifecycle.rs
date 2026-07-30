@@ -42,6 +42,8 @@ fn args_on(port: u16, token: Option<&str>) -> ServeArgs {
         cluster_poll_secs: 2,
         cluster_max_attempts: 3,
         triggers: None,
+        mcp: false,
+        mcp_allow_mutations: false,
     }
 }
 
@@ -49,7 +51,7 @@ async fn spawn_server(port: u16, token: Option<&str>) {
     let mut config = ServeConfig::from_args(args_on(port, token)).unwrap();
     config.log_level = "warn".into();
     tokio::spawn(async move {
-        let _ = faucet_cli::serve::run_server(config).await;
+        let _ = faucet_cli::serve::run_server(config, Default::default()).await;
     });
     let client = reqwest::Client::new();
     for _ in 0..100 {
@@ -358,7 +360,7 @@ async fn cancel_of_queued_run_transitions_to_cancelled() {
     .unwrap();
     config.log_level = "warn".into();
     tokio::spawn(async move {
-        let _ = faucet_cli::serve::run_server(config).await;
+        let _ = faucet_cli::serve::run_server(config, Default::default()).await;
     });
     let client = reqwest::Client::new();
     for _ in 0..100 {

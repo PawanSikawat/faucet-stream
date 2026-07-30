@@ -28,7 +28,7 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "cli-dev", "encryption", "cli-tui", "delta-s3", "delta-azure", "delta-gcs"]
+full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "cli-dev", "encryption", "cli-tui", "mcp", "delta-s3", "delta-azure", "delta-gcs"]
 
 # Data Movement Catalog (#279): the `catalog:` config block + post-run
 # recording (datasets, schema timelines, volume/freshness stats, lineage
@@ -335,6 +335,13 @@ serve-history-sqlite = ["serve", "dep:sqlx"]
 # Embedded web console (single-page UI) served by `faucet serve` at `/`.
 # Vanilla assets embedded via rust-embed; no JS build step. Implies `serve`.
 serve-ui = ["serve", "dep:rust-embed"]
+
+# MCP (Model Context Protocol) server (#420): a `faucet mcp` stdio subcommand
+# and a `/mcp` route on `faucet serve --mcp`, exposing faucet's introspection
+# surfaces (list/schema/scaffold/validate/preview) — plus a gated `run_pipeline`
+# — as agent tool calls. Hand-rolled JSON-RPC 2.0 over serde_json (no new dep
+# tree); implies `serve` so the HTTP transport + its auth/RBAC/audit are present.
+mcp = ["serve", "tokio/io-std", "tokio/io-util"]
 
 # Event-driven pipeline triggers for `faucet serve` (#196). Base = framework +
 # webhook trigger (reuses serve's axum). Per-backend sub-features add the polling

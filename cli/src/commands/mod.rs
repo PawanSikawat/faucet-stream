@@ -22,6 +22,8 @@ pub mod install;
 pub mod list;
 #[cfg(feature = "masking")]
 pub mod masking;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 pub mod migrate;
 pub mod new;
 #[cfg(feature = "notify")]

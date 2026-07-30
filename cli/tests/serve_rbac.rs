@@ -49,6 +49,8 @@ fn args_with_auth_config(port: u16, auth_config: std::path::PathBuf) -> ServeArg
         cluster_poll_secs: 2,
         cluster_max_attempts: 3,
         triggers: None,
+        mcp: false,
+        mcp_allow_mutations: false,
     }
 }
 
@@ -61,7 +63,7 @@ async fn spawn_rbac_server(port: u16) -> tempfile::TempDir {
     let mut config = ServeConfig::from_args(args_with_auth_config(port, auth_path)).unwrap();
     config.log_level = "warn".into();
     tokio::spawn(async move {
-        let _ = faucet_cli::serve::run_server(config).await;
+        let _ = faucet_cli::serve::run_server(config, Default::default()).await;
     });
     let client = reqwest::Client::new();
     for _ in 0..100 {

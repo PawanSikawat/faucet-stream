@@ -34,6 +34,8 @@ pub mod lineage_glue;
 /// sampler), compiled when either live-view feature is on.
 #[cfg(any(feature = "cli-tui", feature = "cli-progress"))]
 pub mod livemetrics;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 pub mod merge;
 #[cfg(feature = "notify")]
 pub mod notify;
@@ -111,14 +113,24 @@ pub fn run_main(registry: PluginRegistry) -> std::process::ExitCode {
     let is_tui = matches!(&cli.command, Command::Run(a) if tui::is_tui_session(a.tui));
     #[cfg(not(feature = "cli-tui"))]
     let is_tui = false;
+    // `faucet mcp` (stdio) writes JSON-RPC on stdout, so its logs must go to
+    // stderr — never the default subscriber.
+    #[cfg(feature = "mcp")]
+    let is_mcp = matches!(cli.command, Command::Mcp(_));
+    #[cfg(not(feature = "mcp"))]
+    let is_mcp = false;
     // `serve` installs its own (redacting, run-scoped) subscriber; every other
     // command uses the plain redacting fmt subscriber.
-    if !is_serve && !is_tui {
+    if !is_serve && !is_tui && !is_mcp {
         install_tracing(&cli.log_level);
     }
     #[cfg(feature = "cli-tui")]
     if is_tui {
         tui::install_tui_tracing(&cli.log_level);
+    }
+    #[cfg(feature = "mcp")]
+    if is_mcp {
+        mcp::install_stderr_tracing(&cli.log_level);
     }
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -183,6 +195,8 @@ pub async fn run_command(cli: Cli) -> CliResult<()> {
         Command::Schedule(args) => commands::schedule::run(args).await,
         #[cfg(feature = "serve")]
         Command::Serve(args) => commands::serve::run(args, serve_log_level).await,
+        #[cfg(feature = "mcp")]
+        Command::Mcp(args) => commands::mcp::run(args).await,
         #[cfg(feature = "notify")]
         Command::Notify(args) => commands::notify::run(args).await,
         #[cfg(feature = "catalog")]

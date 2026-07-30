@@ -131,6 +131,10 @@ pub enum Command {
     /// Run a long-running HTTP control plane (submit / poll / cancel pipeline runs).
     #[cfg(feature = "serve")]
     Serve(ServeArgs),
+    /// Run an MCP (Model Context Protocol) server over stdio, exposing faucet's
+    /// introspection surfaces as agent tool calls (for Claude Desktop / Code).
+    #[cfg(feature = "mcp")]
+    Mcp(McpArgs),
     /// Send a synthetic notification through a config's `notifications:` rules
     /// to validate channel setup end-to-end (no pipeline runs).
     #[cfg(feature = "notify")]
@@ -720,6 +724,35 @@ pub struct ServeArgs {
     /// the `triggers` feature. See `faucet schema triggers`.
     #[arg(long)]
     pub triggers: Option<std::path::PathBuf>,
+    /// Mount the MCP (Model Context Protocol) endpoint at `/mcp`, exposing
+    /// faucet as agent tool calls. Effective only in a build with the `mcp`
+    /// feature; the endpoint inherits serve's bearer-auth + RBAC + audit.
+    #[arg(long)]
+    pub mcp: bool,
+    /// Allow the MCP endpoint's *mutating* tools (`run_pipeline`). Off by
+    /// default: only read-only tools are exposed. A caller still needs the
+    /// `RunWrite` RBAC scope. Only meaningful together with `--mcp`.
+    #[arg(long)]
+    pub mcp_allow_mutations: bool,
+}
+
+/// `faucet mcp` arguments — run an MCP server over stdio (#420).
+#[cfg(feature = "mcp")]
+#[derive(Debug, Clone, Parser)]
+pub struct McpArgs {
+    /// Allow mutating tools (`run_pipeline`). Off by default — only read-only
+    /// tools (list / schema / scaffold / validate / preview) are exposed.
+    /// stdio is local-trust: there is no bearer/RBAC layer, so enable this only
+    /// for a trusted local agent.
+    #[arg(long)]
+    pub allow_mutations: bool,
+    /// Optional `.env` file to load before starting (for `${env:…}` in configs
+    /// passed to `validate`/`preview`/`run_pipeline`).
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<std::path::PathBuf>,
+    /// Skip auto-loading `.env` from cwd at startup.
+    #[arg(long)]
+    pub no_env_file: bool,
 }
 
 /// `faucet run` arguments.

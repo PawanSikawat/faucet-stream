@@ -155,11 +155,13 @@ async fn every_documented_route_is_wired_on_the_live_server() {
         cluster_poll_secs: 2,
         cluster_max_attempts: 3,
         triggers: None,
+        mcp: false,
+        mcp_allow_mutations: false,
     };
     let mut config = ServeConfig::from_args(args).unwrap();
     config.log_level = "warn".into();
     tokio::spawn(async move {
-        let _ = faucet_cli::serve::run_server(config).await;
+        let _ = faucet_cli::serve::run_server(config, Default::default()).await;
     });
 
     let client = reqwest::Client::new();

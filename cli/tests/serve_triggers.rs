@@ -406,11 +406,13 @@ async fn spawn_serve_with_triggers(
         cluster_poll_secs: 2,
         cluster_max_attempts: 3,
         triggers: Some(triggers_path.to_path_buf()),
+        mcp: false,
+        mcp_allow_mutations: false,
     };
     let mut config = ServeConfig::from_args(args).unwrap();
     config.log_level = "warn".into();
     tokio::spawn(async move {
-        let _ = faucet_cli::serve::run_server(config).await;
+        let _ = faucet_cli::serve::run_server(config, Default::default()).await;
     });
     let base = format!("http://127.0.0.1:{port}");
     let client = reqwest::Client::new();

@@ -13,6 +13,8 @@ pub mod history;
 pub mod idempotency;
 pub mod load;
 pub mod logs;
+#[cfg(feature = "mcp")]
+pub mod mcp_route;
 pub mod metrics;
 pub mod observability;
 pub mod rbac;
@@ -29,7 +31,19 @@ pub use config::ServeConfig;
 
 use crate::error::CliResult;
 
+/// MCP endpoint settings for `faucet serve --mcp` (#420). Threaded to
+/// [`server::build_router`] so the `/mcp` route mounts only on opt-in. Kept
+/// separate from [`ServeConfig`] so the many `ServeConfig` test builders are
+/// untouched. `Default` = disabled.
+#[derive(Debug, Clone, Default)]
+pub struct McpServeSettings {
+    /// Mount the `/mcp` route.
+    pub enabled: bool,
+    /// Expose the mutating MCP tools (still gated by the caller's RBAC scope).
+    pub allow_mutations: bool,
+}
+
 /// Boot the HTTP control plane and serve until SIGTERM/SIGINT.
-pub async fn run_server(config: ServeConfig) -> CliResult<()> {
-    server::serve(config).await
+pub async fn run_server(config: ServeConfig, mcp: McpServeSettings) -> CliResult<()> {
+    server::serve(config, mcp).await
 }

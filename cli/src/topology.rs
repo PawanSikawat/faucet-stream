@@ -188,10 +188,14 @@ pub async fn build_topology(cfg: &PipelineConfig, auth: &AuthCatalog) -> CliResu
     })
 }
 
-/// Preview topology mode: build each `source` node and print the first
-/// `limit` records per source to stdout as JSON Lines (source side only —
-/// downstream nodes are not run, mirroring matrix-mode `faucet preview`).
-pub async fn preview(cfg: &PipelineConfig, auth: &AuthCatalog, limit: usize) -> CliResult<()> {
+/// Collect a bounded preview of each `source` node's records (source side
+/// only; downstream nodes are not run). Returns `(node_id, records)` per
+/// source node, in sorted node-id order.
+pub async fn preview_records(
+    cfg: &PipelineConfig,
+    auth: &AuthCatalog,
+    limit: usize,
+) -> CliResult<Vec<(String, Vec<Value>)>> {
     if !cfg.matrix.is_empty() {
         return Err(CliError::MatrixAndNodesBothPresent);
     }
@@ -199,7 +203,7 @@ pub async fn preview(cfg: &PipelineConfig, auth: &AuthCatalog, limit: usize) -> 
     let mut ids: Vec<&String> = spec.nodes.keys().collect();
     ids.sort();
 
-    let mut previewed = false;
+    let mut out = Vec::new();
     for id in ids {
         if let NodeSpec::Source {
             template,
@@ -217,20 +221,50 @@ pub async fn preview(cfg: &PipelineConfig, auth: &AuthCatalog, limit: usize) -> 
                 "source",
             )?;
             let source = build_source(&k, c, auth, None).await?;
-            tracing::info!(node = %id, "previewing source node");
             let records = source.fetch_all().await?;
-            for rec in records.into_iter().take(limit) {
-                println!("{}", serde_json::to_string(&rec).unwrap_or_default());
-            }
-            previewed = true;
+            out.push((
+                id.clone(),
+                records.into_iter().take(limit).collect::<Vec<_>>(),
+            ));
         }
     }
-    if !previewed {
+    if out.is_empty() {
         return Err(CliError::InvalidTopology {
             message: "no source nodes to preview".to_string(),
         });
     }
+    Ok(out)
+}
+
+/// Preview topology mode: build each `source` node and print the first
+/// `limit` records per source to stdout as JSON Lines.
+pub async fn preview(cfg: &PipelineConfig, auth: &AuthCatalog, limit: usize) -> CliResult<()> {
+    for (id, records) in preview_records(cfg, auth, limit).await? {
+        tracing::info!(node = %id, "previewing source node");
+        for rec in records {
+            println!("{}", serde_json::to_string(&rec).unwrap_or_default());
+        }
+    }
     Ok(())
+}
+
+/// Preview topology sources into a JSON string (for the MCP `preview` tool).
+pub async fn preview_to_string(
+    cfg: &PipelineConfig,
+    auth: &AuthCatalog,
+    limit: usize,
+) -> CliResult<String> {
+    let sources = preview_records(cfg, auth, limit).await?;
+    let doc: Vec<Value> = sources
+        .into_iter()
+        .map(|(id, records)| {
+            serde_json::json!({ "node": id, "count": records.len(), "records": records })
+        })
+        .collect();
+    Ok(
+        serde_json::to_string_pretty(&serde_json::json!({ "sources": doc }))
+            .unwrap_or_else(|_| "[]".to_string()),
+    )
 }
 
 /// Build and run the topology, returning a [`RunSummary`] shaped like a matrix

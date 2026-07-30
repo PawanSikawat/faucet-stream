@@ -17,7 +17,11 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 
 /// Build the full router: unauthenticated probes + the bearer-guarded `/v1` API.
-pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
+pub fn build_router(
+    state: ServerState,
+    config: &ServeConfig,
+    #[cfg_attr(not(feature = "mcp"), allow(unused_variables))] mcp: &crate::serve::McpServeSettings,
+) -> Router {
     let public = Router::new()
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
@@ -56,6 +60,18 @@ pub fn build_router(state: ServerState, config: &ServeConfig) -> Router {
             .route("/v1/catalog/datasets/{id}", get(catalog::get_dataset))
             .route("/v1/catalog/lineage", get(catalog::lineage));
     }
+    // MCP endpoint (#420): mounted only with `--mcp`. Placed on `api` so it
+    // inherits the bearer-auth + RBAC route-layer below; the per-request
+    // mutation gate additionally requires the caller's `RunWrite` scope.
+    #[cfg(feature = "mcp")]
+    if mcp.enabled {
+        api = api
+            .route("/mcp", post(crate::serve::mcp_route::handle))
+            .layer(axum::Extension(crate::serve::mcp_route::McpRouteFlags {
+                allow_mutations: mcp.allow_mutations,
+            }));
+    }
+
     let api = api.route_layer(axum::middleware::from_fn_with_state(
         state.clone(),
         auth::require_auth,
@@ -271,7 +287,7 @@ pub(crate) async fn lease_loop(state: ServerState, period: Duration, shutdown: C
 
 /// Boot the server: install observability, build state + router, bind, serve
 /// until SIGTERM/SIGINT, then drain in-flight runs up to the grace window.
-pub async fn serve(config: ServeConfig) -> CliResult<()> {
+pub async fn serve(config: ServeConfig, mcp: crate::serve::McpServeSettings) -> CliResult<()> {
     let (prom, log_hub) = crate::serve::observability::install(&config.log_level);
     crate::serve::metrics::set_cluster_enabled(config.cluster.enabled);
 
@@ -356,7 +372,7 @@ pub async fn serve(config: ServeConfig) -> CliResult<()> {
         #[cfg(feature = "triggers")]
         triggers_handle,
     );
-    let app = build_router(state.clone(), &config);
+    let app = build_router(state.clone(), &config, &mcp);
 
     let listener = tokio::net::TcpListener::bind(config.listen)
         .await

@@ -410,6 +410,31 @@ regardless of `--no-ui`.
 See the [web console guide](https://pawansikawat.github.io/faucet-stream/cookbook/web-console.html)
 for the full walkthrough.
 
+### `faucet mcp` / `faucet serve --mcp`
+
+Expose faucet as an **MCP (Model Context Protocol) server** so an LLM agent can
+discover connectors, read config schemas, scaffold + validate + preview a
+pipeline, and — behind an explicit opt-in — run one. Requires a build with the
+`mcp` feature (included in `full`).
+
+- **stdio** — `faucet mcp` (add `--allow-mutations` to expose `run_pipeline`).
+  Newline-delimited JSON-RPC 2.0 on stdin/stdout; logs go to stderr. For local
+  agents (Claude Desktop / Code):
+
+  ```json
+  { "mcpServers": { "faucet": { "command": "faucet", "args": ["mcp"] } } }
+  ```
+
+- **HTTP** — `faucet serve --mcp` mounts a `/mcp` route that inherits serve's
+  bearer-auth + RBAC + audit. Add `--mcp-allow-mutations` for the mutating tool
+  (a caller still needs the `RunWrite` scope).
+
+Tools: `list_connectors`, `get_connector_schema`, `scaffold_config`,
+`validate_config`, `preview` (read-only, ≤100 rows), and the gated
+`run_pipeline` (`dry_run: true` validates + previews only). Secret material is
+redacted from all tool output. See the
+[MCP guide](https://pawansikawat.github.io/faucet-stream/cookbook/mcp.html).
+
 ### `faucet completions`
 
 `faucet completions <shell>` prints a static tab-completion script for `bash`,
