@@ -428,3 +428,35 @@ async fn evolve_schema_adds_optional_column() {
         "got {err}"
     );
 }
+
+/// #255: `evolve_schema` is a no-op (Ok) when there are no additions, and when
+/// the target table does not exist yet — covering both early-return branches.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn evolve_schema_noop_branches() {
+    use faucet_core::{ColumnChange, SchemaEvolution};
+
+    let dir = TempDir::new().expect("tempdir");
+    let sink = IcebergSink::new(sink_config(&dir, "evolve_noop"))
+        .await
+        .expect("IcebergSink::new");
+
+    // Empty evolution → Ok without touching the catalog (no additions).
+    sink.evolve_schema(&SchemaEvolution::default())
+        .await
+        .expect("empty evolution is a no-op");
+
+    // Additions requested but the table does not exist yet → inert Ok (the
+    // create path lays down the full schema on first write).
+    let evo = SchemaEvolution {
+        additions: vec![ColumnChange {
+            name: "email".to_string(),
+            from: None,
+            to: json!({ "type": ["string", "null"] }),
+        }],
+        widenings: vec![],
+        relax_nullability: vec![],
+    };
+    sink.evolve_schema(&evo)
+        .await
+        .expect("evolve against an absent table is inert");
+}
