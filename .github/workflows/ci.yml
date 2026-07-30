@@ -95,6 +95,16 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    # Drop debug info for this job. The all-features workspace binary plus the
+    # serve-ui isolation test binaries are enormous; with full DWARF the final
+    # `ld` intermittently dies with `signal 7 [Bus error]` (an out-of-memory
+    # linker mmap fault — the runner has ~115 GB free disk but limited RAM).
+    # debuginfo=0 shrinks the object files and link memory sharply; test
+    # pass/fail and panic file:line are unaffected (only symbolized backtraces
+    # are lost). Coverage (which needs debug info) runs in a separate job.
+    env:
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
       - name: Free runner disk space
@@ -154,25 +164,7 @@ jobs:
         # Explicitly target the embedded-console tests with serve-ui so the
         # feature-gated #![cfg(feature = "serve-ui")] gate is exercised and
         # the OpenAPI two-way sync test runs against the console-enabled router.
-        #
-        # Retry like the workspace step above: the final link of these large
-        # test binaries intermittently dies with `collect2: ld terminated with
-        # signal 7 [Bus error]` on the hosted runner (a transient linker mmap
-        # fault under memory pressure, not a code defect — disk has ~115 GB
-        # free at this point). A re-link on a fresh attempt succeeds.
-        run: |
-          for attempt in 1 2 3; do
-            echo "::group::serve-ui tests (attempt $attempt)"
-            if cargo test -p faucet-cli --features serve-ui --test serve_ui --test serve_openapi; then
-              echo "::endgroup::"
-              exit 0
-            fi
-            echo "::endgroup::"
-            echo "::warning::serve-ui isolation tests failed on attempt $attempt (often a transient ld bus error at link); retrying in 20s"
-            sleep 20
-          done
-          echo "::error::serve-ui isolation tests failed after 3 attempts"
-          exit 1
+        run: cargo test -p faucet-cli --features serve-ui --test serve_ui --test serve_openapi
 
   # Verify each feature compiles in isolation (catches accidental cross-feature deps)
   feature-check:
