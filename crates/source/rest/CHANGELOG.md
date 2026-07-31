@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.4.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-source-rest-v1.3.1...faucet-source-rest-v1.4.0) - 2026-07-31
+
+### Bug Fixes
+
+- Keep transform additions a minor release — pin touched crates to 1.x
+
+### Features
+
+- *(transforms)* [**breaking**] Hash / json_parse / coalesce / split / join, value_case title+capitalize, keys_case dot, stdout csv (#403–#409) — faucet-core 2.0.0 ([#418](https://github.com/PawanSikawat/faucet-stream/pull/418))
+
 ## [1.3.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-source-rest-v1.3.0...faucet-source-rest-v1.3.1) - 2026-07-24
 
 ### Miscellaneous
