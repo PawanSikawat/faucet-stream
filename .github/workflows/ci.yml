@@ -95,6 +95,16 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    # Drop debug info for this job. The all-features workspace binary plus the
+    # serve-ui isolation test binaries are enormous; with full DWARF the final
+    # `ld` intermittently dies with `signal 7 [Bus error]` (an out-of-memory
+    # linker mmap fault — the runner has ~115 GB free disk but limited RAM).
+    # debuginfo=0 shrinks the object files and link memory sharply; test
+    # pass/fail and panic file:line are unaffected (only symbolized backtraces
+    # are lost). Coverage (which needs debug info) runs in a separate job.
+    env:
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
       - name: Free runner disk space
@@ -260,6 +270,8 @@ jobs:
           - lineage-kafka
           # SQL transform (embedded DuckDB)
           - transform-sql
+          # WASM transform (wasmtime)
+          - transform-wasm
           # Scheduler (CLI-only)
           - schedule
           # HTTP control plane (CLI-only) + its persistent run-history backends + embedded web console

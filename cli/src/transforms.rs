@@ -590,6 +590,30 @@ fn registry() -> Vec<TransformDef> {
             },
         });
     }
+    #[cfg(feature = "transform-wasm")]
+    {
+        defs.push(TransformDef {
+            kind: "wasm",
+            description: "Run a user-provided sandboxed .wasm module over each record (wasmtime).",
+            schema_fn: || schema_wasm(),
+            compile_fn: |kind, config| {
+                let cfg: faucet_transform_wasm::WasmTransformConfig = decode_wasm(kind, config)?;
+                let transform =
+                    faucet_transform_wasm::WasmTransform::compile(&cfg).map_err(|e| {
+                        let message = match &e {
+                            faucet_core::FaucetError::Transform(m)
+                            | faucet_core::FaucetError::Config(m) => m.clone(),
+                            other => format!("{other}"),
+                        };
+                        CliError::InvalidTransform {
+                            name: kind.to_owned(),
+                            message,
+                        }
+                    })?;
+                Ok(transform.into_page_stage())
+            },
+        });
+    }
     #[cfg(feature = "transform-cdc-unwrap")]
     {
         defs.push(TransformDef {
@@ -783,6 +807,22 @@ fn schema_sql() -> Value {
 
 #[cfg(feature = "transform-sql")]
 fn decode_sql(kind: &str, config: Value) -> CliResult<faucet_transform_sql::SqlTransformConfig> {
+    serde_json::from_value(config).map_err(|e| CliError::InvalidTransform {
+        name: kind.to_owned(),
+        message: e.to_string(),
+    })
+}
+
+#[cfg(feature = "transform-wasm")]
+fn schema_wasm() -> Value {
+    serde_json::to_value(faucet_core::schema_for!(
+        faucet_transform_wasm::WasmTransformConfig
+    ))
+    .unwrap_or(Value::Null)
+}
+
+#[cfg(feature = "transform-wasm")]
+fn decode_wasm(kind: &str, config: Value) -> CliResult<faucet_transform_wasm::WasmTransformConfig> {
     serde_json::from_value(config).map_err(|e| CliError::InvalidTransform {
         name: kind.to_owned(),
         message: e.to_string(),
@@ -1359,6 +1399,44 @@ mod tests {
     fn sql_schema_and_listing_present() {
         assert!(transform_schema("sql").is_ok());
         assert!(available_transforms().contains(&"sql"));
+    }
+
+    #[cfg(feature = "transform-wasm")]
+    #[test]
+    fn wasm_schema_and_listing_present() {
+        assert!(transform_schema("wasm").is_ok());
+        assert!(available_transforms().contains(&"wasm"));
+    }
+
+    #[cfg(feature = "transform-wasm")]
+    #[test]
+    fn wasm_missing_module_field_is_invalid_transform() {
+        let specs = vec![TransformSpec {
+            kind: "wasm".into(),
+            config: json!({}),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        match err {
+            CliError::InvalidTransform { name, .. } => assert_eq!(name, "wasm"),
+            other => panic!("expected InvalidTransform, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "transform-wasm")]
+    #[test]
+    fn wasm_nonexistent_module_is_invalid_transform() {
+        let specs = vec![TransformSpec {
+            kind: "wasm".into(),
+            config: json!({"module": "/no/such/path/mod.wasm"}),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        match err {
+            CliError::InvalidTransform { name, message } => {
+                assert_eq!(name, "wasm");
+                assert!(message.contains("cannot read module"), "{message}");
+            }
+            other => panic!("expected InvalidTransform, got {other:?}"),
+        }
     }
 
     #[cfg(feature = "transform-cdc-unwrap")]

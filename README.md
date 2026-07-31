@@ -213,7 +213,7 @@ one-block addition to your YAML:
 | **Event-driven triggers** | `faucet serve --triggers` — auto-enqueue runs on object-arrival (S3/GCS), webhook, or queue-depth (Redis/Kafka). | [triggers](https://pawansikawat.github.io/faucet-stream/reference/triggers.html) |
 | **OpenLineage emission** | Emit START/RUNNING/COMPLETE/FAIL events with schema facets and column-level lineage over HTTP / file / Kafka. | [lineage](https://pawansikawat.github.io/faucet-stream/cookbook/lineage.html) |
 | **Observability** | Automatic Prometheus metrics + `tracing` spans for every source, sink, transform, and state op — labelled by pipeline / row / connector. | [observability](cli/README.md#observability-prometheus--tracing) |
-| **Transforms** | `flatten`, `rename_keys`, `keys_case`, `select`, `drop`, `set`, `rename_field`, `cast`, `redact`, `hash`, `json_parse`, `coalesce`, `value_case`, `split`, `join`, `spell_symbols`, `cdc_unwrap`, and `sql` (embedded DuckDB, page-level). | [transforms](https://pawansikawat.github.io/faucet-stream/cookbook/transforms.html) |
+| **Transforms** | `flatten`, `rename_keys`, `keys_case`, `select`, `drop`, `set`, `rename_field`, `cast`, `redact`, `hash`, `json_parse`, `coalesce`, `value_case`, `split`, `join`, `spell_symbols`, `cdc_unwrap`, `sql` (embedded DuckDB, page-level), and `wasm` (custom code in any language, per-record, sandboxed). | [transforms](https://pawansikawat.github.io/faucet-stream/cookbook/transforms.html) |
 
 ## Connectors
 
@@ -349,6 +349,7 @@ wired into the battery (see the support-tiers note above).
 | [`faucet-state-postgres`](crates/state/postgres) | PostgreSQL-backed `StateStore` for persistent bookmarks |
 | [`faucet-lineage`](crates/lineage) | OpenLineage event emission — HTTP/file/Kafka transports, schema facets, column-lineage analysis |
 | [`faucet-transform-sql`](crates/transform-sql) | Embedded DuckDB SQL transform — run DuckDB SQL over each page (`batch` relation) |
+| [`faucet-transform-wasm`](crates/transform-wasm) | WebAssembly transform — run a user-provided sandboxed `.wasm` module per record (wasmtime) |
 | [`faucet-stream`](faucet-stream) | Umbrella crate — feature-gated re-exports of all connectors and state backends |
 | [`faucet-cli`](cli) | `faucet` binary — YAML/JSON config-driven pipeline runner (`run`, `validate`, `schema`, `list`, `preview`, `init`, `doctor`, `test`, `schedule`, `serve`) |
 
@@ -485,7 +486,7 @@ flowchart LR
     class K sink
 ```
 
-faucet-stream is a Cargo workspace with **<!--COUNT:crates-->91<!--/COUNT--> crates** — <!--COUNT:sources-->37<!--/COUNT--> sources, <!--COUNT:sinks-->29<!--/COUNT--> sinks, <!--COUNT:common-->16<!--/COUNT--> shared
+faucet-stream is a Cargo workspace with **<!--COUNT:crates-->92<!--/COUNT--> crates** — <!--COUNT:sources-->37<!--/COUNT--> sources, <!--COUNT:sinks-->29<!--/COUNT--> sinks, <!--COUNT:common-->16<!--/COUNT--> shared
 connector libraries, the shared auth-provider library, 2 state-store backends, the lineage
 crate, the SQL transform crate, the conformance test battery, the shared core, the umbrella
 crate, and the CLI binary. See
@@ -615,6 +616,7 @@ Default features: `source-rest`, `transform-flatten`, `transform-rename-keys`,
 | `transform-cdc-unwrap` | no | Normalize a CDC envelope into a flat row + `__op` marker (pairs with upsert sinks) |
 | `transforms` | no | All built-in transforms above |
 | `transform-sql` | no | Embedded DuckDB SQL transform — run DuckDB SQL over each page (`batch` relation; `batch_size: 0` for global aggregation) |
+| `transform-wasm` | no | WebAssembly transform — run a user-provided sandboxed `.wasm` module (wasmtime) per record; custom logic in any language that compiles to wasm |
 | `compression` | no | gzip / zstd read+write on JSONL/CSV/S3/GCS source and sink connectors |
 | `encryption` | no | Encryption at rest (AES-256-GCM) for `file` state-store bookmarks and per-line JSONL/DLQ output |
 | `cli-tui` | no | Live terminal UI for `faucet run --tui` — per-invocation throughput, errors, DLQ, bookmark age |
@@ -851,7 +853,7 @@ and the runnable [`cli/examples/custom-cli/`](cli/examples/custom-cli/main.rs).
 ## Project structure
 
 ```
-Cargo.toml                    — workspace manifest (<!--COUNT:crates-->91<!--/COUNT--> crates)
+Cargo.toml                    — workspace manifest (<!--COUNT:crates-->92<!--/COUNT--> crates)
 crates/
   core/                       — faucet-core: shared types, traits, pipeline, transforms, config
   auth/                       — faucet-auth: shared OAuth2 / token-endpoint providers
@@ -861,6 +863,7 @@ crates/
   state/                      — Redis- and Postgres-backed StateStore backends
   lineage/                    — faucet-lineage: OpenLineage event emission
   transform-sql/              — faucet-transform-sql: embedded DuckDB SQL transform
+  transform-wasm/             — faucet-transform-wasm: WebAssembly (wasmtime) per-record transform
 faucet-stream/                — umbrella crate with feature-gated re-exports
 cli/                          — faucet-cli: `faucet` binary, YAML/JSON pipeline runner
   examples/                   — ready-to-run pipeline YAMLs

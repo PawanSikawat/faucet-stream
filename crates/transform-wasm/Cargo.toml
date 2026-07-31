@@ -1,0 +1,33 @@
+[package]
+name = "faucet-transform-wasm"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/faucet-transform-wasm"
+categories.workspace = true
+keywords = ["wasm", "wasmtime", "transform", "pipeline", "etl"]
+description = "WebAssembly-as-transform for faucet-stream — run a user-provided sandboxed .wasm module over each record."
+
+[dependencies]
+faucet-core.workspace = true
+wasmtime.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+schemars.workspace = true
+tracing.workspace = true
+metrics.workspace = true
+
+[dev-dependencies]
+wat.workspace = true
+criterion.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "wasm_transform"
+harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -39,6 +39,7 @@
 - [Compression](./cookbook/compression.md)
 - [Record transforms](./cookbook/transforms.md)
 - [SQL transform](./cookbook/sql-transform.md)
+- [WASM transform (custom code)](./cookbook/wasm-transforms.md)
 - [Secrets-manager interpolation](./cookbook/secrets.md)
 - [Config composition](./cookbook/composition.md)
 - [Topology mode (tee / merge / join)](./cookbook/topology.md)

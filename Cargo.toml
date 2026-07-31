@@ -5,6 +5,7 @@ members = [
     "crates/auth",
     "crates/lineage",
     "crates/transform-sql",
+    "crates/transform-wasm",
     "crates/common/bigquery",
     "crates/common/elasticsearch",
     "crates/common/gcs",
@@ -95,6 +96,12 @@ members = [
     "faucet-stream",
     "cli",
 ]
+# The reference WASM transform modules target `wasm32-unknown-unknown` with
+# their own release profile and are built out-of-band (see their README); they
+# must not join the host workspace build (CI has no wasm target).
+exclude = [
+    "examples/wasm-transforms/rust",
+]
 
 [workspace.package]
 edition = "2024"
@@ -180,6 +187,7 @@ faucet-state-redis = { path = "crates/state/redis", version = "1.0.7" }
 faucet-state-postgres = { path = "crates/state/postgres", version = "1.2.1" }
 faucet-cli = { path = "cli", version = "1.7.0" }
 faucet-transform-sql = { path = "crates/transform-sql", version = "1.1.0" }
+faucet-transform-wasm = { path = "crates/transform-wasm", version = "1.0.0" }
 faucet-common-redshift = { path = "crates/common/redshift", version = "1.0.0" }
 faucet-source-redshift = { path = "crates/source/redshift", version = "1.0.0" }
 faucet-sink-redshift = { path = "crates/sink/redshift", version = "1.0.0" }
@@ -338,6 +346,13 @@ flate2 = "1"
 zstd = "0.13"
 glob = "0.3"
 duckdb = "1.10503"
+# WebAssembly runtime for the `wasm` transform (issue #124). Lean embedding:
+# JIT via Cranelift + the runtime, on std platforms (native signal traps). We
+# drive core-wasm modules only — no component model, async, cache, or GC.
+wasmtime = { version = "47", default-features = false, features = ["cranelift", "runtime", "std"] }
+# WAT → wasm assembler, used to build tiny fixture modules in `transform-wasm`
+# tests without a wasm toolchain on the CI runner.
+wat = "1"
 tempfile = "3"
 # Live terminal UI for `faucet run --tui` (#203, CLI-only `cli-tui` feature).
 # Default features include the crossterm backend.
