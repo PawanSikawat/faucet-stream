@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.6.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.5.0...faucet-stream-v1.6.0) - 2026-07-31
+
+### Bug Fixes
+
+- Keep transform additions a minor release — pin touched crates to 1.x
+
+### Documentation
+
+- Single source of truth for connector/crate counts
+- *(gtm)* Elevate Singer on-ramp, fix conformance + connector-count drift
+- *(readme)* Keep downloads badge link on faucet-stream
+- *(readme)* Point downloads badge at faucet-core
+
+### Features
+
+- *(transform-wasm)* Add WebAssembly (wasmtime) per-record transform ([#124](https://github.com/PawanSikawat/faucet-stream/pull/124)) ([#426](https://github.com/PawanSikawat/faucet-stream/pull/426))
+- *(transforms)* [**breaking**] Hash / json_parse / coalesce / split / join, value_case title+capitalize, keys_case dot, stdout csv (#403–#409) — faucet-core 2.0.0 ([#418](https://github.com/PawanSikawat/faucet-stream/pull/418))
+- *(connectors)* Add DuckDB, SQS, NATS, SFTP connector pairs + Airtable REST recipe
+
+### Testing
+
+- *(conformance)* Wire the battery into delta/clickhouse/pubsub/azure-blob; fix databricks tier (#396, #397)
+
 ## [1.5.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.4.0...faucet-stream-v1.5.0) - 2026-07-24
 
 ### Documentation
