@@ -53,7 +53,19 @@ reference.
 
 ## Image size / build-time note
 
-`docker build .` with no `SOURCES`/`SINKS` builds **every** connector, including
-bundled DuckDB (C++) and librdkafka — a large, slow build (~20–40 min, ~300 MB).
-Naming a subset with `SOURCES`/`SINKS` skips those native deps and yields a
-small, fast image. Prefer named profiles for production.
+The image is **multi-stage**: a `builder` stage compiles the binary and a
+separate `runtime` stage (debian-slim, ~74 MB base) ships *only* the stripped
+`faucet` binary — the Rust toolchain, source, and `target/` never reach the
+final image. The binary is `strip`-ped in the builder, which removes 50–150 MB
+of debug symbols from a full build.
+
+`docker build .` with no `SOURCES`/`SINKS` still builds **every** connector,
+including bundled DuckDB (C++) and librdkafka — a large, slow build (~20–40 min).
+Naming a subset with `SOURCES`/`SINKS` skips those native deps and yields a much
+smaller, faster image. Prefer named profiles for production.
+
+For an even smaller runtime you can swap debian-slim for a distroless base — but
+distroless has **no shell**, which disables the Helm `connectors.verify`
+initContainer (it runs `/bin/sh`). If you go distroless, set
+`connectors.verify.enabled=false`. Ask if you want a `runtime-distroless` build
+target wired up.
