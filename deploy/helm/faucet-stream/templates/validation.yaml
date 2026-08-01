@@ -1,0 +1,17 @@
+{{- /* Fail fast on inconsistent value combinations. Renders no objects. */ -}}
+{{- $hasConfig := or .Values.pipelineConfig.create .Values.pipelineConfig.existingConfigMap -}}
+{{- if and .Values.job.enabled (not $hasConfig) -}}
+{{- fail "job.enabled=true requires a pipeline config: set pipelineConfig.create=true with pipelineConfig.content, or pipelineConfig.existingConfigMap." -}}
+{{- end -}}
+{{- if and .Values.cronjob.enabled (not $hasConfig) -}}
+{{- fail "cronjob.enabled=true requires a pipeline config: set pipelineConfig.create=true with pipelineConfig.content, or pipelineConfig.existingConfigMap." -}}
+{{- end -}}
+{{- if and .Values.serve.enabled (not (or (eq .Values.serve.auth.mode "token") (eq .Values.serve.auth.mode "none") (eq .Values.serve.auth.mode "rbac"))) -}}
+{{- fail (printf "serve.auth.mode must be one of token|none|rbac (got %q)." .Values.serve.auth.mode) -}}
+{{- end -}}
+{{- if and .Values.serve.enabled (eq .Values.serve.auth.mode "rbac") (not .Values.serve.auth.rbacConfig) (not .Values.serve.auth.existingSecret) -}}
+{{- fail "serve.auth.mode=rbac requires serve.auth.rbacConfig (inline principals) or serve.auth.existingSecret." -}}
+{{- end -}}
+{{- if and .Values.serve.enabled .Values.serve.cluster.enabled (eq .Values.serve.history.backend "memory") -}}
+{{- fail "serve.cluster.enabled=true requires a persistent history backend: set serve.history.backend to sqlite or postgres." -}}
+{{- end -}}

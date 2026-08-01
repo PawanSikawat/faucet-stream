@@ -1,0 +1,53 @@
+faucet-stream {{ .Chart.AppVersion }} deployed as release "{{ .Release.Name }}".
+
+Image: {{ include "faucet-stream.image" . }}
+{{- if or .Values.connectors.sources .Values.connectors.sinks }}
+Declared connectors: sources=[{{ join ", " .Values.connectors.sources }}] sinks=[{{ join ", " .Values.connectors.sinks }}]
+{{- if .Values.connectors.verify.enabled }}
+  (verified at startup by the verify-connectors initContainer)
+{{- end }}
+{{- end }}
+
+{{ if .Values.serve.enabled -}}
+── Control plane (serve) ──────────────────────────────────────────────
+Service: {{ include "faucet-stream.fullname" . }}:{{ .Values.service.port }} ({{ .Values.service.type }})
+
+Port-forward and probe it:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "faucet-stream.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl -s localhost:{{ .Values.service.port }}/healthz && echo OK
+  curl -s localhost:{{ .Values.service.port }}/metrics | head
+
+{{- if eq .Values.serve.auth.mode "token" }}
+
+Auth: bearer token. Read it with:
+  kubectl -n {{ .Release.Namespace }} get secret {{ .Values.serve.auth.existingSecret | default (include "faucet-stream.authSecretName" .) }} -o jsonpath='{.data.{{ .Values.serve.auth.existingSecretKey }}}' | base64 -d; echo
+
+Submit a run:
+  TOKEN=$(kubectl -n {{ .Release.Namespace }} get secret {{ .Values.serve.auth.existingSecret | default (include "faucet-stream.authSecretName" .) }} -o jsonpath='{.data.{{ .Values.serve.auth.existingSecretKey }}}' | base64 -d)
+  curl -sX POST localhost:{{ .Values.service.port }}/v1/runs -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/yaml' --data-binary @pipeline.yaml
+{{- else if eq .Values.serve.auth.mode "none" }}
+
+Auth: DISABLED (--no-auth). Do not expose this Service outside the cluster.
+{{- else }}
+
+Auth: RBAC. Principals are defined in the mounted auth config.
+{{- end }}
+{{- if .Values.serve.ui.enabled }}
+
+Web console: open http://localhost:{{ .Values.service.port }}/ after port-forwarding.
+{{- end }}
+{{- end }}
+
+{{ if .Values.cronjob.enabled -}}
+── Scheduled pipeline (CronJob) ───────────────────────────────────────
+Schedule: {{ .Values.cronjob.schedule }}{{ with .Values.cronjob.timeZone }} ({{ . }}){{ end }}
+Trigger one now:
+  kubectl -n {{ .Release.Namespace }} create job --from=cronjob/{{ include "faucet-stream.fullname" . }}-cron manual-$(date +%s)
+{{- end }}
+
+{{ if .Values.job.enabled -}}
+── One-shot pipeline (Job) ────────────────────────────────────────────
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/component=run -f
+{{- end }}
+
+Docs: https://pawansikawat.github.io/faucet-stream/  •  chart README: deploy/helm/faucet-stream/README.md

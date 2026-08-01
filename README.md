@@ -870,9 +870,12 @@ cli/                          — faucet-cli: `faucet` binary, YAML/JSON pipelin
   tests/                      — assert_cmd + wiremock integration tests
 examples/                     — repo-level examples: docker-compose infra stack + run index
   orchestration/              — ELT recipe: faucet (EL) + dbt (T) + Airflow/Dagster
-scripts/                      — helper scripts (try-local.sh interactive demo, cleanup-artifacts.sh)
+Dockerfile                    — multi-stage image build (name-based connector selection)
+deploy/                       — container + Kubernetes assets
+  helm/faucet-stream/         — Helm chart (serve Deployment and/or run Job/CronJob)
+scripts/                      — helper scripts (try-local.sh, build-image.sh, cleanup-artifacts.sh)
 docs/book/                    — mdBook documentation site (source under docs/book/src)
-.github/workflows/            — ci.yml, release-plz.yml, docs.yml (mdBook → GitHub Pages)
+.github/workflows/            — ci.yml, release-plz.yml, docs.yml, docker-images.yml
 .github/assets/               — brand assets: logo, wordmark, social-preview banner, favicon
 ```
 

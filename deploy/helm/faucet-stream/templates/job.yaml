@@ -1,0 +1,91 @@
+{{- if .Values.job.enabled -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "faucet-stream.fullname" . }}-run
+  labels:
+    {{- include "faucet-stream.labels" . | nindent 4 }}
+    app.kubernetes.io/component: run
+  {{- if .Values.job.helmHook }}
+  annotations:
+    helm.sh/hook: {{ .Values.job.helmHook }}
+    helm.sh/hook-delete-policy: before-hook-creation
+  {{- end }}
+spec:
+  backoffLimit: {{ .Values.job.backoffLimit }}
+  {{- if .Values.job.ttlSecondsAfterFinished }}
+  ttlSecondsAfterFinished: {{ .Values.job.ttlSecondsAfterFinished }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "faucet-stream.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: run
+      {{- with .Values.job.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      restartPolicy: {{ .Values.job.restartPolicy }}
+      serviceAccountName: {{ include "faucet-stream.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- $verify := include "faucet-stream.verifyInitContainer" . }}
+      {{- if trim $verify }}
+      initContainers:
+        {{- $verify | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: run
+          image: {{ include "faucet-stream.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - run
+            - {{ include "faucet-stream.configFilePath" . }}
+            {{- with .Values.job.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            {{- include "faucet-stream.env" . | nindent 12 }}
+          {{- $envFrom := include "faucet-stream.envFrom" . }}
+          {{- if trim $envFrom }}
+          envFrom:
+            {{- $envFrom | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.job.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: scratch
+              mountPath: {{ .Values.serve.persistence.mountPath | trimSuffix "/" }}
+            - name: tmp
+              mountPath: /tmp
+            - name: pipeline-config
+              mountPath: {{ .Values.pipelineConfig.mountPath }}
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: scratch
+          emptyDir: {}
+        - name: pipeline-config
+          configMap:
+            name: {{ include "faucet-stream.configMapName" . }}
+      {{- with .Values.job.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.job.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.job.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

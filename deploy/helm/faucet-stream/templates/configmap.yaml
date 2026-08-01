@@ -1,0 +1,11 @@
+{{- if and .Values.pipelineConfig.create (not .Values.pipelineConfig.existingConfigMap) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "faucet-stream.configMapName" . }}
+  labels:
+    {{- include "faucet-stream.labels" . | nindent 4 }}
+data:
+  {{ .Values.pipelineConfig.fileName }}: |
+    {{- tpl (.Values.pipelineConfig.content | toString) . | nindent 4 }}
+{{- end -}}

@@ -1,0 +1,23 @@
+{{- if .Values.serve.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "faucet-stream.fullname" . }}
+  labels:
+    {{- include "faucet-stream.labels" . | nindent 4 }}
+    app.kubernetes.io/component: serve
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "faucet-stream.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: serve
+{{- end }}

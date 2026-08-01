@@ -1,0 +1,192 @@
+# faucet-stream Helm chart
+
+Deploy [faucet-stream](https://github.com/PawanSikawat/faucet-stream) on Kubernetes:
+
+- **`faucet serve`** — the long-running HTTP control plane (Deployment + Service + probes, optional Ingress / HPA / PDB / ServiceMonitor).
+- **`faucet run`** — one-shot pipelines (Job) and scheduled pipelines (CronJob).
+
+All three are toggleable; enable what you need.
+
+```bash
+helm install faucet ./deploy/helm/faucet-stream \
+  --set image.repository=ghcr.io/you/faucet-stream \
+  --set image.tag=full
+```
+
+---
+
+## ⚠️ Connectors are compile-time — read this first
+
+A faucet **source/sink is a Rust feature compiled into the image.** A running
+container cannot gain a connector it wasn't built with, and **no `values.yaml`
+setting can add one** — Helm deploys an already-built image, it doesn't compile.
+
+This chart handles that with **declare-and-verify**:
+
+```yaml
+connectors:
+  sources: [rest, postgres, s3]
+  sinks:   [bigquery, jsonl, stdout]
+  verify:
+    enabled: true      # initContainer runs `faucet schema source|sink <name>`
+```
+
+When `verify.enabled`, an initContainer checks every declared connector against
+the image and **refuses to start the pod** if one is missing — turning a silent
+runtime *"unknown connector type"* into a clear boot-time failure that names the
+image and the missing feature.
+
+To actually *change* which connectors exist, build a different image. The
+Dockerfile takes name-based build args:
+
+```bash
+# Lean, named "analytics" profile — only these connectors (skips DuckDB/Kafka natives)
+scripts/build-image.sh -t ghcr.io/you/faucet-stream:analytics \
+  -s rest,postgres,s3 -k bigquery,snowflake,jsonl
+
+# Complete image — every first-party connector + serve
+scripts/build-image.sh -t ghcr.io/you/faucet-stream:full
+```
+
+The recommended workflow is **B: named per-profile images** — publish a few
+tagged images (`:core`, `:analytics`, `:cdc`, …) from CI, then point
+`image.tag` at the one your deployment needs and let `connectors:` enforce it.
+See `.github/workflows/docker-images.yml` for the matrix.
+
+---
+
+## Deployment shapes
+
+### 1. Control plane (`serve`)
+
+Long-running HTTP API. Submit pipelines with `POST /v1/runs`; probe with
+`/healthz`, `/readyz`, `/metrics`.
+
+```yaml
+serve:
+  enabled: true
+  replicaCount: 2
+  auth:
+    mode: token           # token | none | rbac
+  history:
+    backend: postgres     # memory | sqlite | postgres
+    url: postgres://faucet:pass@pg:5432/faucet
+```
+
+- **Auth**: `token` (bearer; the chart mints a stable random token into a Secret,
+  or use `auth.token` / `auth.existingSecret`), `none` (`--no-auth`, never expose
+  externally), or `rbac` (inline `auth.rbacConfig` principals → mounted file).
+- **History**: `memory` (ephemeral), `sqlite` (needs `persistence.enabled` for
+  durability), or `postgres` (required for `cluster.enabled` multi-instance
+  failover).
+- **Reusable pipeline definition**: set `pipelineConfig` and it's passed as the
+  serve `--default-config` — a workspace default merged under every submitted
+  run, so clients only POST overrides. (faucet has no HTTP "register template"
+  endpoint; this is the closest equivalent.)
+
+### 2. One-shot pipeline (`job`)
+
+```yaml
+job:
+  enabled: true
+pipelineConfig:
+  create: true
+  content: |
+    version: 1
+    name: nightly-load
+    pipeline:
+      source: { type: postgres, config: { ... } }
+      sink:   { type: bigquery, config: { ... } }
+```
+
+### 3. Scheduled pipeline (`cronjob`)
+
+```yaml
+cronjob:
+  enabled: true
+  schedule: "0 * * * *"
+  timeZone: Etc/UTC
+pipelineConfig:
+  create: true
+  content: |
+    version: 1
+    # ...
+```
+
+`job`/`cronjob` require a `pipelineConfig` (inline `content` or
+`existingConfigMap`); the chart fails the render otherwise.
+
+---
+
+## Credentials
+
+Connector secrets (DB passwords, cloud keys) are passed as env, never baked into
+the image or config:
+
+```yaml
+# Chart-managed Secret (referenced automatically in every pod's envFrom):
+secret:
+  create: true
+  data:
+    PGPASSWORD: "s3cr3t"
+
+# …or reference your own:
+envFrom:
+  - secretRef:
+      name: my-existing-credentials
+```
+
+Reference them in the pipeline config with faucet's `${env:VAR}` interpolation.
+
+---
+
+## Security defaults
+
+Pods run **non-root (uid 65532), read-only root filesystem, all capabilities
+dropped, seccomp RuntimeDefault**. A writable `emptyDir` (or PVC when
+`serve.persistence.enabled`) is mounted at `/var/lib/faucet`, plus `/tmp`.
+Override via `podSecurityContext` / `securityContext`.
+
+---
+
+## Observability
+
+- `/metrics` (Prometheus, unauthenticated) is always served. Enable scraping
+  with `serviceMonitor.enabled=true` (Prometheus Operator) or annotate the
+  Service yourself.
+- `/healthz` (liveness) and `/readyz` (readiness) back the probes.
+
+---
+
+## Values reference
+
+See [`values.yaml`](./values.yaml) — every key is commented. Common ones:
+
+| Key | Default | Purpose |
+|---|---|---|
+| `image.repository` / `image.tag` | `ghcr.io/pawansikawat/faucet-stream` / appVersion | image to run |
+| `connectors.sources` / `.sinks` | `[]` | declared connectors (verified at boot) |
+| `connectors.verify.enabled` | `true` | fail pod start if a declared connector is absent |
+| `serve.enabled` | `true` | deploy the control plane |
+| `serve.auth.mode` | `token` | `token` \| `none` \| `rbac` |
+| `serve.history.backend` | `memory` | `memory` \| `sqlite` \| `postgres` |
+| `serve.autoscaling.enabled` | `false` | HPA on the Deployment |
+| `serve.persistence.enabled` | `false` | PVC for sqlite history / bookmarks |
+| `job.enabled` | `false` | one-shot `faucet run` |
+| `cronjob.enabled` | `false` | scheduled `faucet run` |
+| `cronjob.schedule` | `0 * * * *` | cron expression |
+| `pipelineConfig.create` | `false` | render pipeline config into a ConfigMap |
+| `serviceMonitor.enabled` | `false` | Prometheus Operator scrape |
+| `ingress.enabled` | `false` | expose serve via Ingress |
+
+---
+
+## Uninstall
+
+```bash
+helm uninstall faucet
+```
+
+The history PVC (`serve.persistence`) and a generated auth-token Secret carry
+`helm.sh/resource-policy: keep` and survive uninstall — delete them manually if
+you want a clean slate.

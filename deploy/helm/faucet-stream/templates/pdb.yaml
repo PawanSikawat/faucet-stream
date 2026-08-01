@@ -1,0 +1,18 @@
+{{- if and .Values.serve.enabled .Values.serve.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "faucet-stream.fullname" . }}
+  labels:
+    {{- include "faucet-stream.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.serve.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ .Values.serve.podDisruptionBudget.maxUnavailable }}
+  {{- else }}
+  minAvailable: {{ .Values.serve.podDisruptionBudget.minAvailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "faucet-stream.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: serve
+{{- end }}
