@@ -1,0 +1,23 @@
+apiVersion: v2
+name: faucet-stream
+description: >-
+  faucet-stream — a config-driven data-movement platform. Deploys the `faucet`
+  HTTP control plane (serve) as a Deployment, and/or one-shot (Job) and
+  scheduled (CronJob) `faucet run` pipelines.
+type: application
+# Chart version — bump on chart changes (SemVer).
+version: 0.1.0
+# The faucet-cli / image version this chart tracks. Overridable via image.tag.
+appVersion: "1.7.0"
+home: https://pawansikawat.github.io/faucet-stream/
+sources:
+  - https://github.com/PawanSikawat/faucet-stream
+keywords:
+  - etl
+  - data-pipeline
+  - data-movement
+  - cdc
+  - streaming
+maintainers:
+  - name: PawanSikawat
+    url: https://github.com/PawanSikawat

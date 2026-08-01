@@ -1,0 +1,20 @@
+{{- if and .Values.serve.enabled .Values.serve.persistence.enabled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "faucet-stream.fullname" . }}-data
+  labels:
+    {{- include "faucet-stream.labels" . | nindent 4 }}
+  annotations:
+    # Keep run-history / bookmarks across a helm uninstall.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    {{- toYaml .Values.serve.persistence.accessModes | nindent 4 }}
+  {{- if .Values.serve.persistence.storageClass }}
+  storageClassName: {{ .Values.serve.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.serve.persistence.size }}
+{{- end }}

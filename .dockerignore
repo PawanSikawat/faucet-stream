@@ -1,0 +1,29 @@
+# Keep the build context small + the image reproducible. The builder needs the
+# Cargo workspace sources + Cargo.lock; nothing else.
+/target
+**/target
+/doc
+/docs/book/book
+faucet-demo
+benchmarks/**/target
+
+# VCS / CI / editor cruft
+.git
+.github
+.gitignore
+.trunk
+.pre-commit-config.yaml
+*.log
+
+# The image we're building + local compose state
+Dockerfile
+.dockerignore
+deploy
+examples/docker-compose.yml
+
+# Local env / secrets must never leak into an image layer
+.env
+.env.*
+**/.env
+*.pem
+*.key

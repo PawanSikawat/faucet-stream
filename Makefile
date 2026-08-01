@@ -9,7 +9,13 @@ FAUCET_DEMO := cargo run -q -p faucet-cli --no-default-features --features "$(DE
 
 .DEFAULT_GOAL := help
 
-.PHONY: help demo infra-up infra-down infra-logs infra-ps bench bench-smoke bench-postgres bench-build
+.PHONY: help demo infra-up infra-down infra-logs infra-ps bench bench-smoke bench-postgres bench-build \
+        image image-lean helm-lint helm-template
+
+# --- container image (name-based connector selection; see Dockerfile header) ---
+IMAGE_TAG    ?= faucet:local
+IMAGE_SOURCES ?=
+IMAGE_SINKS   ?=
 
 help: ## List available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | \
@@ -33,6 +39,18 @@ bench-smoke: bench-build ## Fast benchmark validation (100k rows)
 
 bench-postgres: bench-build ## Run all scenarios incl. Postgres->Postgres (sink-bound); needs Docker
 	scripts/run-bench.sh --postgres
+
+image: ## Build the full container image (all connectors). Override IMAGE_TAG=...
+	scripts/build-image.sh -t "$(IMAGE_TAG)"
+
+image-lean: ## Build a lean image. e.g. make image-lean IMAGE_SOURCES=rest,postgres IMAGE_SINKS=s3,jsonl
+	scripts/build-image.sh -t "$(IMAGE_TAG)" -s "$(IMAGE_SOURCES)" -k "$(IMAGE_SINKS)"
+
+helm-lint: ## Lint the Helm chart
+	helm lint deploy/helm/faucet-stream
+
+helm-template: ## Render the Helm chart to stdout with default values
+	helm template faucet deploy/helm/faucet-stream
 
 infra-up: ## Start the local example stack (Postgres, MySQL, Kafka, Redis, Mongo, ES, MinIO)
 	$(COMPOSE) up -d

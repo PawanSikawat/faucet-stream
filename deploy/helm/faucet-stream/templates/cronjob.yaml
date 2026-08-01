@@ -1,0 +1,96 @@
+{{- if .Values.cronjob.enabled -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "faucet-stream.fullname" . }}-cron
+  labels:
+    {{- include "faucet-stream.labels" . | nindent 4 }}
+    app.kubernetes.io/component: run
+spec:
+  schedule: {{ .Values.cronjob.schedule | quote }}
+  {{- with .Values.cronjob.timeZone }}
+  timeZone: {{ . | quote }}
+  {{- end }}
+  concurrencyPolicy: {{ .Values.cronjob.concurrencyPolicy }}
+  {{- with .Values.cronjob.startingDeadlineSeconds }}
+  startingDeadlineSeconds: {{ . }}
+  {{- end }}
+  successfulJobsHistoryLimit: {{ .Values.cronjob.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.cronjob.failedJobsHistoryLimit }}
+  suspend: {{ .Values.cronjob.suspend }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.cronjob.backoffLimit }}
+      template:
+        metadata:
+          labels:
+            {{- include "faucet-stream.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: run
+          {{- with .Values.cronjob.podAnnotations }}
+          annotations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        spec:
+          restartPolicy: {{ .Values.cronjob.restartPolicy }}
+          serviceAccountName: {{ include "faucet-stream.serviceAccountName" . }}
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          {{- $verify := include "faucet-stream.verifyInitContainer" . }}
+          {{- if trim $verify }}
+          initContainers:
+            {{- $verify | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: run
+              image: {{ include "faucet-stream.image" . }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              args:
+                - run
+                - {{ include "faucet-stream.configFilePath" . }}
+                {{- with .Values.cronjob.extraArgs }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+              env:
+                {{- include "faucet-stream.env" . | nindent 16 }}
+              {{- $envFrom := include "faucet-stream.envFrom" . }}
+              {{- if trim $envFrom }}
+              envFrom:
+                {{- $envFrom | nindent 16 }}
+              {{- end }}
+              resources:
+                {{- toYaml .Values.cronjob.resources | nindent 16 }}
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              volumeMounts:
+                - name: scratch
+                  mountPath: {{ .Values.serve.persistence.mountPath | trimSuffix "/" }}
+                - name: tmp
+                  mountPath: /tmp
+                - name: pipeline-config
+                  mountPath: {{ .Values.pipelineConfig.mountPath }}
+                  readOnly: true
+          volumes:
+            - name: tmp
+              emptyDir: {}
+            - name: scratch
+              emptyDir: {}
+            - name: pipeline-config
+              configMap:
+                name: {{ include "faucet-stream.configMapName" . }}
+          {{- with .Values.cronjob.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.cronjob.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.cronjob.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

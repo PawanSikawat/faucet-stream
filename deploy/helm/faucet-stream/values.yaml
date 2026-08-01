@@ -1,0 +1,270 @@
+# Default values for the faucet-stream chart.
+# See deploy/helm/faucet-stream/README.md for the full guide.
+
+# -----------------------------------------------------------------------------
+# Image
+# -----------------------------------------------------------------------------
+# NOTE: connectors are COMPILE-TIME features. The image tag you pick already
+# fixes which sources/sinks exist. The `connectors:` block below only *declares
+# and verifies* that intent — it cannot enable a connector that wasn't built in.
+image:
+  repository: ghcr.io/pawansikawat/faucet-stream
+  # Defaults to Chart.appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# -----------------------------------------------------------------------------
+# Declare-and-verify: which connectors/features this deployment expects to exist
+# in the image. If verify.enabled, an initContainer runs `faucet schema
+# source|sink <name>` for each and refuses to start the pod when any is missing
+# — turning a silent runtime "unknown connector type" into a clear boot failure.
+# -----------------------------------------------------------------------------
+connectors:
+  sources: []   # e.g. [rest, postgres, s3]
+  sinks: []     # e.g. [bigquery, jsonl, stdout]
+  verify:
+    enabled: true
+
+# -----------------------------------------------------------------------------
+# Service account
+# -----------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+# -----------------------------------------------------------------------------
+# Pod-level security (applied to serve Deployment, Job, and CronJob pods)
+# -----------------------------------------------------------------------------
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+# -----------------------------------------------------------------------------
+# Extra env / envFrom shared by every faucet pod (serve, job, cronjob).
+# Use for connector credentials, e.g. via a Secret referenced in envFrom.
+# -----------------------------------------------------------------------------
+env: []
+# - name: FAUCET_LOG
+#   value: info
+envFrom: []
+# - secretRef:
+#     name: my-connector-credentials
+
+# Optional chart-managed Secret (stringData). Referenced automatically in
+# every pod's envFrom when create=true.
+secret:
+  create: false
+  # name: ""     # defaults to <release>-faucet-stream-env
+  data: {}
+  #   PGPASSWORD: "s3cr3t"
+  #   GOOGLE_APPLICATION_CREDENTIALS_JSON: "..."
+
+# -----------------------------------------------------------------------------
+# Pipeline config (a `faucet` YAML/JSON). Mounted read-only at
+# pipelineConfig.mountPath. Used by Job/CronJob, and optionally as the serve
+# workspace default-config.
+# -----------------------------------------------------------------------------
+pipelineConfig:
+  # Render a ConfigMap from `content` below.
+  create: false
+  # Or reference an existing ConfigMap (takes precedence over create).
+  existingConfigMap: ""
+  fileName: pipeline.yaml
+  mountPath: /etc/faucet
+  content: ""
+  #   version: 1
+  #   name: my-pipeline
+  #   pipeline:
+  #     source: { type: rest, config: { ... } }
+  #     sink:   { type: jsonl, config: { path: /var/lib/faucet/out.jsonl } }
+
+# =============================================================================
+# serve — long-running HTTP control plane (Deployment)
+# =============================================================================
+serve:
+  enabled: true
+  replicaCount: 1
+
+  # Auth for /v1/* : "token" | "none" | "rbac"
+  auth:
+    mode: token
+    # mode=token: provide a token, or point at an existing Secret key. If both
+    # are empty and mode=token, the chart generates a random token on first
+    # install (kept stable across upgrades) and stores it in a Secret.
+    token: ""
+    existingSecret: ""
+    existingSecretKey: FAUCET_SERVE_AUTH_TOKEN
+    # mode=rbac: inline RBAC principals (rendered to a Secret + mounted), or
+    # reference an existing file via existingSecret/Key.
+    rbacConfig: {}
+    #   principals:
+    #     - { name: ci,    token: "...", role: operator }
+    #     - { name: admin, token: "...", role: admin }
+
+  # Run-history backend: "memory" | "sqlite" | "postgres"
+  history:
+    backend: memory
+    # sqlite: path on a mounted volume (see persistence). postgres: DSN or
+    # leave url empty and set it via env (FAUCET-style ${env:...} not applied
+    # here — pass a literal or use existingSecret env).
+    url: ""
+
+  # Enable the embedded web console (image must include the serve-ui feature).
+  ui:
+    enabled: true
+
+  # Multi-instance clustered execution (requires history.backend != memory).
+  cluster:
+    enabled: false
+
+  # Extra raw args appended to `faucet serve`.
+  extraArgs: []
+  # - --cors-origin=https://app.example.com
+  # - --max-concurrent-runs=8
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+  # A writable scratch dir (root fs is read-only). Also backs sqlite history
+  # when persistence.enabled=false (emptyDir) — use persistence for durability.
+  persistence:
+    enabled: false
+    size: 1Gi
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+    mountPath: /var/lib/faucet
+
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+  # Graceful drain: serve handles SIGTERM (--shutdown-grace-secs, default 60).
+  terminationGracePeriodSeconds: 65
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: null
+
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+    # maxUnavailable: ""
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: faucet.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: faucet-tls
+  #    hosts: [faucet.example.com]
+
+# Prometheus Operator ServiceMonitor for the unauthenticated /metrics endpoint.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+  relabelings: []
+  metricRelabelings: []
+
+# =============================================================================
+# job — one-shot `faucet run <config>`
+# =============================================================================
+job:
+  enabled: false
+  # Uses pipelineConfig (ConfigMap) mounted at pipelineConfig.mountPath.
+  # Extra args appended after `run <config>`.
+  extraArgs: []
+  backoffLimit: 3
+  # Delete the Job object this long after completion (requires TTL controller).
+  ttlSecondsAfterFinished: 3600
+  restartPolicy: Never
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  # Re-run on every `helm upgrade` (Jobs are immutable). "" disables the hook.
+  helmHook: ""   # e.g. post-install,post-upgrade
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# =============================================================================
+# cronjob — scheduled `faucet run <config>`
+# =============================================================================
+cronjob:
+  enabled: false
+  schedule: "0 * * * *"
+  timeZone: ""             # e.g. "Etc/UTC" (k8s >= 1.27)
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  suspend: false
+  backoffLimit: 3
+  restartPolicy: Never
+  extraArgs: []
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}

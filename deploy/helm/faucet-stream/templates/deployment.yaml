@@ -1,0 +1,165 @@
+{{- if .Values.serve.enabled -}}
+{{- $mountPath := .Values.serve.persistence.mountPath | trimSuffix "/" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "faucet-stream.fullname" . }}
+  labels:
+    {{- include "faucet-stream.labels" . | nindent 4 }}
+    app.kubernetes.io/component: serve
+spec:
+  {{- if not .Values.serve.autoscaling.enabled }}
+  replicas: {{ .Values.serve.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "faucet-stream.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: serve
+  template:
+    metadata:
+      labels:
+        {{- include "faucet-stream.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: serve
+        {{- with .Values.serve.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- if .Values.pipelineConfig.create }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if .Values.secret.create }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret-env.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.serve.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "faucet-stream.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.serve.terminationGracePeriodSeconds }}
+      {{- $verify := include "faucet-stream.verifyInitContainer" . }}
+      {{- if trim $verify }}
+      initContainers:
+        {{- $verify | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: serve
+          image: {{ include "faucet-stream.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - serve
+            - --listen=0.0.0.0:8080
+            {{- if eq .Values.serve.auth.mode "none" }}
+            - --no-auth
+            {{- else if eq .Values.serve.auth.mode "rbac" }}
+            {{- if .Values.serve.auth.existingSecret }}
+            - --auth-config=/etc/faucet-auth/{{ .Values.serve.auth.existingSecretKey }}
+            {{- else }}
+            - --auth-config=/etc/faucet-auth/rbac.yaml
+            {{- end }}
+            {{- end }}
+            {{- if ne .Values.serve.history.backend "memory" }}
+            {{- $histUrl := .Values.serve.history.url }}
+            {{- if and (eq .Values.serve.history.backend "sqlite") (not $histUrl) }}
+            {{- $histUrl = printf "sqlite://%s/history.db" $mountPath }}
+            {{- end }}
+            {{- if $histUrl }}
+            - --history={{ $histUrl }}
+            {{- end }}
+            {{- end }}
+            {{- if not .Values.serve.ui.enabled }}
+            - --no-ui
+            {{- end }}
+            {{- if .Values.serve.cluster.enabled }}
+            - --cluster
+            {{- end }}
+            {{- if .Values.pipelineConfig.create }}
+            - --default-config={{ include "faucet-stream.configFilePath" . }}
+            {{- end }}
+            {{- with .Values.serve.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            {{- if eq .Values.serve.auth.mode "token" }}
+            - name: FAUCET_SERVE_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.serve.auth.existingSecret | default (include "faucet-stream.authSecretName" .) }}
+                  key: {{ .Values.serve.auth.existingSecretKey }}
+            {{- end }}
+            {{- include "faucet-stream.env" . | nindent 12 }}
+          {{- $envFrom := include "faucet-stream.envFrom" . }}
+          {{- if trim $envFrom }}
+          envFrom:
+            {{- $envFrom | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.serve.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.serve.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.serve.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: scratch
+              mountPath: {{ $mountPath }}
+            - name: tmp
+              mountPath: /tmp
+            {{- if or .Values.pipelineConfig.create .Values.pipelineConfig.existingConfigMap }}
+            - name: pipeline-config
+              mountPath: {{ .Values.pipelineConfig.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- if eq .Values.serve.auth.mode "rbac" }}
+            - name: rbac-auth
+              mountPath: /etc/faucet-auth
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.serve.persistence.enabled }}
+        - name: scratch
+          persistentVolumeClaim:
+            claimName: {{ include "faucet-stream.fullname" . }}-data
+        {{- else }}
+        - name: scratch
+          emptyDir: {}
+        {{- end }}
+        {{- if or .Values.pipelineConfig.create .Values.pipelineConfig.existingConfigMap }}
+        - name: pipeline-config
+          configMap:
+            name: {{ include "faucet-stream.configMapName" . }}
+        {{- end }}
+        {{- if eq .Values.serve.auth.mode "rbac" }}
+        - name: rbac-auth
+          secret:
+            secretName: {{ .Values.serve.auth.existingSecret | default (include "faucet-stream.authSecretName" .) }}
+        {{- end }}
+      {{- with .Values.serve.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.serve.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.serve.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.serve.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

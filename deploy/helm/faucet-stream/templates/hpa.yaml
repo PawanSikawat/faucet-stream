@@ -1,0 +1,32 @@
+{{- if and .Values.serve.enabled .Values.serve.autoscaling.enabled -}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "faucet-stream.fullname" . }}
+  labels:
+    {{- include "faucet-stream.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "faucet-stream.fullname" . }}
+  minReplicas: {{ .Values.serve.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.serve.autoscaling.maxReplicas }}
+  metrics:
+    {{- if .Values.serve.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.serve.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.serve.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.serve.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- end }}
+{{- end }}
