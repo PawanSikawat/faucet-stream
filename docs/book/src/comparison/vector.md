@@ -50,4 +50,4 @@ They coexist cleanly in one stack: **Vector** ships your logs/metrics/traces to 
 
 - **[Choosing a connector](../reference/choosing.md)** — confirm your sources and sinks are covered.
 - **[Try it in 60 seconds](../getting-started/try-it-locally.md)** — no infrastructure needed.
-- **[Benchmarks](https://github.com/PawanSikawat/faucet-stream/blob/main/BENCHMARKS.md)** — full methodology and honest caveats.
+- **[Benchmarks](https://github.com/faucet-hq/faucet-stream/blob/main/BENCHMARKS.md)** — full methodology and honest caveats.

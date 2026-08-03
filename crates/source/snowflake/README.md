@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-snowflake.svg)](https://crates.io/crates/faucet-source-snowflake)
 [![Docs.rs](https://docs.rs/faucet-source-snowflake/badge.svg)](https://docs.rs/faucet-source-snowflake)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-snowflake.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-snowflake.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-snowflake.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-snowflake.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-**Snowflake** query source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Executes a SQL statement against Snowflake's [SQL REST API](https://docs.snowflake.com/en/developer-guide/sql-api/intro) (`POST /api/v2/statements`), decodes each row into a typed `serde_json::Value`, and streams the result set back partition-by-partition so peak memory stays bounded no matter how large the result is.
+**Snowflake** query source for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Executes a SQL statement against Snowflake's [SQL REST API](https://docs.snowflake.com/en/developer-guide/sql-api/intro) (`POST /api/v2/statements`), decodes each row into a typed `serde_json::Value`, and streams the result set back partition-by-partition so peak memory stays bounded no matter how large the result is.
 
 Reach for it when you want to pull tables, aggregates, or ad-hoc query results out of Snowflake and land them in any faucet-stream sink — a file, a database, a warehouse, a queue — with one declarative config and no glue code. It talks to Snowflake over HTTPS only, so there is no driver, no ODBC, and no native dependency to build.
 
@@ -291,9 +291,9 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 ## See also
 
-- [Connector reference & capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
-- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html) — shared `auth:` catalog and the `{ type, config }` shape
-- [Secrets interpolation](https://pawansikawat.github.io/faucet-stream/cookbook/secrets.html) — `${env:…}` / `${file:…}` / `${secret:…}`
+- [Connector reference & capability matrix](https://faucet-hq.github.io/faucet-stream/reference/connectors.html)
+- [Authentication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/auth.html) — shared `auth:` catalog and the `{ type, config }` shape
+- [Secrets interpolation](https://faucet-hq.github.io/faucet-stream/cookbook/secrets.html) — `${env:…}` / `${file:…}` / `${secret:…}`
 - [`faucet-common-snowflake`](https://crates.io/crates/faucet-common-snowflake) — the shared `SnowflakeAuth` enum and header helpers
 - [`faucet-sink-snowflake`](https://crates.io/crates/faucet-sink-snowflake) — write rows back to Snowflake
 

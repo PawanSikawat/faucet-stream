@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-mssql.svg)](https://crates.io/crates/faucet-sink-mssql)
 [![Docs.rs](https://docs.rs/faucet-sink-mssql/badge.svg)](https://docs.rs/faucet-sink-mssql)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-mssql.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-mssql.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-mssql.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-mssql.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Microsoft **SQL Server** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes records via parameterized multi-row `INSERT`s — either auto-mapped to same-named table columns or serialized into a single JSON column — built on [`tiberius`](https://crates.io/crates/tiberius) + [`bb8-tiberius`](https://crates.io/crates/bb8-tiberius) with a pooled, statement-timeout-aware connection.
+Microsoft **SQL Server** sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Writes records via parameterized multi-row `INSERT`s — either auto-mapped to same-named table columns or serialized into a single JSON column — built on [`tiberius`](https://crates.io/crates/tiberius) + [`bb8-tiberius`](https://crates.io/crates/bb8-tiberius) with a pooled, statement-timeout-aware connection.
 
 Reach for it when you want to land records from any faucet-stream source into SQL Server or Azure SQL with one declarative config: multi-row INSERTs auto-split to stay under SQL Server's 2100-parameter ceiling, batches commit atomically inside a transaction, per-row failures are isolated for dead-letter routing, and `upsert`/`delete` write modes plus effectively-once delivery are available for keyed mirrors.
 
@@ -210,7 +210,7 @@ In addition to the default append, the sink can **upsert** (insert-or-update by 
 
 A row missing or null in a key column fails with a clear `mssql upsert: …` error. With a `dlq:` block configured, the good rows still apply (upserts + deletes) and only the missing/null-key rows are routed to the DLQ per-row; without a DLQ the whole batch fails. Upserts and deletes for a batch always run inside a single `BEGIN TRAN` / `COMMIT TRAN`.
 
-See the [upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) for the full write-mode model.
+See the [upsert cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html) for the full write-mode model.
 
 ## Dead-letter queue (partial failures)
 
@@ -249,7 +249,7 @@ pipeline:
 delivery: exactly_once
 ```
 
-See the [effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for the full rationale and supported source/sink set.
+See the [effectively-once delivery cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for the full rationale and supported source/sink set.
 
 ## Schema evolution
 
@@ -261,7 +261,7 @@ Under `on_drift: evolve`, `MssqlSink::evolve_schema()` applies additive DDL:
 - **Lossless widenings** (e.g. integer → number) → `ALTER COLUMN` to the wider type — gated on `allow_type_widening`.
 - **Nullability relaxations** → `ALTER COLUMN … NULL`. MSSQL's `ALTER COLUMN` requires the full type spec, so the column is re-emitted at its widened base type keyword (e.g. `INT` → `BIGINT`). This is a minor, always-lossless type canonicalization — the column ends up nullable at the same or a wider type.
 
-After an evolution the cached AutoColumns set is dropped so the next write re-discovers any newly-added column. Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/schema-drift.html).
+After an evolution the cached AutoColumns set is dropped so the next write re-discovers any newly-added column. Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/schema-drift.html).
 
 ## Config loading & schema
 
@@ -339,10 +339,10 @@ This crate has no optional Cargo features of its own; enable it in the CLI / umb
 
 ## See also
 
-- [Sinks reference & capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
-- [Upsert / write modes cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html)
-- [State & effectively-once cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html)
-- [Dead-letter queue cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html)
+- [Sinks reference & capability matrix](https://faucet-hq.github.io/faucet-stream/reference/connectors.html)
+- [Upsert / write modes cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html)
+- [State & effectively-once cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html)
+- [Dead-letter queue cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/dlq.html)
 - [`faucet-common-mssql`](https://crates.io/crates/faucet-common-mssql) — shared connection/TLS config
 - [`faucet-source-mssql`](https://crates.io/crates/faucet-source-mssql) — the matching SQL Server source
 - [`faucet-sink-postgres`](https://crates.io/crates/faucet-sink-postgres) · [`faucet-sink-mysql`](https://crates.io/crates/faucet-sink-mysql) · [`faucet-sink-sqlite`](https://crates.io/crates/faucet-sink-sqlite) — sibling SQL sinks

@@ -1,7 +1,7 @@
 # faucet-source-kinesis
 
 AWS Kinesis Data Streams **source** connector for
-[faucet-stream](https://github.com/PawanSikawat/faucet-stream): consumes
+[faucet-stream](https://github.com/faucet-hq/faucet-stream): consumes
 records from every (or selected) shard with bounded per-shard concurrency,
 resumable per-shard sequence-number checkpoints, throttle-aware backoff, and
 the standard `idle_termination_secs` / `max_messages` termination knobs

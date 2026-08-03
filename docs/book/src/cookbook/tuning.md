@@ -6,7 +6,7 @@ work through these levers in order — the first two are faucet config, the
 rest are destination-side decisions faucet deliberately never makes for you.
 
 Benchmarked context for what these levers buy is in
-[BENCHMARKS.md](https://github.com/PawanSikawat/faucet-stream/blob/main/BENCHMARKS.md)
+[BENCHMARKS.md](https://github.com/faucet-hq/faucet-stream/blob/main/BENCHMARKS.md)
 (Scenario C is the sink-bound case this page mostly talks about).
 
 ## 1. `batch_size` — the universal knob
@@ -47,7 +47,7 @@ faster** than multi-row `INSERT` at the destination. Semantics are unchanged
 - `delivery: exactly_once` always stays on the `INSERT` transaction path so
   the watermark commits atomically with the page.
 
-See the [postgres sink README](https://github.com/PawanSikawat/faucet-stream/tree/main/crates/sink/postgres#bulk-load-write_method-copy)
+See the [postgres sink README](https://github.com/faucet-hq/faucet-stream/tree/main/crates/sink/postgres#bulk-load-write_method-copy)
 for details.
 
 ## 3. Destination-side knobs (your call, not faucet's)
@@ -84,4 +84,4 @@ make bench-postgres   # adds the Docker Postgres scenarios (B & C)
 ```
 
 The harness methodology and current numbers live in
-[BENCHMARKS.md](https://github.com/PawanSikawat/faucet-stream/blob/main/BENCHMARKS.md).
+[BENCHMARKS.md](https://github.com/faucet-hq/faucet-stream/blob/main/BENCHMARKS.md).

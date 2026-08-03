@@ -1,6 +1,6 @@
 # Try it locally (interactive demo)
 
-The repo ships a single script — [`scripts/try-local.sh`](https://github.com/PawanSikawat/faucet-stream/blob/main/scripts/try-local.sh) —
+The repo ships a single script — [`scripts/try-local.sh`](https://github.com/faucet-hq/faucet-stream/blob/main/scripts/try-local.sh) —
 that builds the `faucet` CLI, generates a throwaway demo workspace, exercises a
 broad slice of the toolkit against **file-only connectors (no Docker, no cloud,
 no databases)**, and then leaves the [web console](../cookbook/web-console.md)

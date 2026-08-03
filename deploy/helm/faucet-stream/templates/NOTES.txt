@@ -50,4 +50,4 @@ Trigger one now:
   kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/component=run -f
 {{- end }}
 
-Docs: https://pawansikawat.github.io/faucet-stream/  •  chart README: deploy/helm/faucet-stream/README.md
+Docs: https://faucet-hq.github.io/faucet-stream/  •  chart README: deploy/helm/faucet-stream/README.md

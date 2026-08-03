@@ -15,7 +15,7 @@ faucet schema config > faucet.schema.json
 
 A prebuilt, comprehensive copy (generated under `--all-features`) is also
 committed to the repository at
-[`schemas/faucet.schema.json`](https://github.com/PawanSikawat/faucet-stream/blob/main/schemas/faucet.schema.json).
+[`schemas/faucet.schema.json`](https://github.com/faucet-hq/faucet-stream/blob/main/schemas/faucet.schema.json).
 
 ## VS Code (YAML extension)
 

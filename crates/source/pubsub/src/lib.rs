@@ -3,7 +3,7 @@
 //! # faucet-source-pubsub
 //!
 //! Google Cloud Pub/Sub source connector for
-//! [faucet-stream](https://github.com/PawanSikawat/faucet-stream): streaming
+//! [faucet-stream](https://github.com/faucet-hq/faucet-stream): streaming
 //! pull from a subscription, per-message record assembly with a configurable
 //! `value_format` (json / string / bytes) and an attribute map surfaced under
 //! a configurable key, and the standard `idle_termination_secs` /

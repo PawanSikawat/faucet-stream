@@ -7,7 +7,7 @@
 //! v1; `upsert` and `delete` deserialise successfully but are rejected by
 //! [`IcebergSink::new`](crate::sink::IcebergSink::new) with a typed
 //! `FaucetError::Config`. Equality-delete upsert is tracked in
-//! [#179](https://github.com/PawanSikawat/faucet-stream/issues/179) and is
+//! [#179](https://github.com/faucet-hq/faucet-stream/issues/179) and is
 //! blocked on upstream iceberg-rust adding a replace/overwrite transaction action.
 
 use std::collections::HashMap;

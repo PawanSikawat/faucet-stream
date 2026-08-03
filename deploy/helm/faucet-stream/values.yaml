@@ -8,7 +8,7 @@
 # fixes which sources/sinks exist. The `connectors:` block below only *declares
 # and verifies* that intent — it cannot enable a connector that wasn't built in.
 image:
-  repository: ghcr.io/pawansikawat/faucet-stream
+  repository: ghcr.io/faucet-hq/faucet-stream
   # Defaults to Chart.appVersion when empty.
   tag: ""
   pullPolicy: IfNotPresent

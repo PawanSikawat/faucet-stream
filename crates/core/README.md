@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-core.svg)](https://crates.io/crates/faucet-core)
 [![Docs.rs](https://docs.rs/faucet-core/badge.svg)](https://docs.rs/faucet-core)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-core.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-core.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-core.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-core.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-The foundation crate for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem — the shared traits, pipeline orchestration, error type, transforms, state stores, and reliability machinery that every source and sink connector builds on.
+The foundation crate for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem — the shared traits, pipeline orchestration, error type, transforms, state stores, and reliability machinery that every source and sink connector builds on.
 
 **If you are building a custom connector, this is the only dependency you need.** `faucet-core` re-exports `async-trait`, `serde_json`, `schemars`, and `CancellationToken`, so a third-party `faucet-source-*` / `faucet-sink-*` crate can implement the `Source` / `Sink` traits without pulling those in directly. The traits are object-safe (`Box<dyn Source>` / `Box<dyn Sink>` work), and `Pipeline` is generic over any source + sink combination — so anything you write here drops straight into the `faucet` CLI and the umbrella crate.
 
@@ -564,11 +564,11 @@ Defaults: `transform-flatten`, `transform-rename-keys`, `transform-keys-case`.
 
 ## See also
 
-- **Concepts & library guide:** <https://pawansikawat.github.io/faucet-stream/getting-started/concepts.html> · <https://pawansikawat.github.io/faucet-stream/tutorials/library.html>
-- **Transforms cookbook:** <https://pawansikawat.github.io/faucet-stream/cookbook/transforms.html>
-- **State & effectively-once:** <https://pawansikawat.github.io/faucet-stream/cookbook/state.html>
-- **Upsert / write modes:** <https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html>
-- **Quality checks & DLQ:** <https://pawansikawat.github.io/faucet-stream/reference/config.html>
+- **Concepts & library guide:** <https://faucet-hq.github.io/faucet-stream/getting-started/concepts.html> · <https://faucet-hq.github.io/faucet-stream/tutorials/library.html>
+- **Transforms cookbook:** <https://faucet-hq.github.io/faucet-stream/cookbook/transforms.html>
+- **State & effectively-once:** <https://faucet-hq.github.io/faucet-stream/cookbook/state.html>
+- **Upsert / write modes:** <https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html>
+- **Quality checks & DLQ:** <https://faucet-hq.github.io/faucet-stream/reference/config.html>
 - **Related crates:** [`faucet-auth`](https://crates.io/crates/faucet-auth) (shared auth providers) · [`faucet-state-redis`](https://crates.io/crates/faucet-state-redis) / [`faucet-state-postgres`](https://crates.io/crates/faucet-state-postgres) (state backends) · [`faucet-stream`](https://crates.io/crates/faucet-stream) (umbrella) · [`faucet-cli`](https://crates.io/crates/faucet-cli) (the `faucet` binary)
 
 ## License

@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Question or idea
-    url: https://github.com/PawanSikawat/faucet-stream/discussions
+    url: https://github.com/faucet-hq/faucet-stream/discussions
     about: Ask a question or float an idea in Discussions before filing an issue.
   - name: Report a security vulnerability
-    url: https://github.com/PawanSikawat/faucet-stream/security/advisories/new
+    url: https://github.com/faucet-hq/faucet-stream/security/advisories/new
     about: Please report vulnerabilities privately — see SECURITY.md. Do not open a public issue.

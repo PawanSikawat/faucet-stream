@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-lineage.svg)](https://crates.io/crates/faucet-lineage)
 [![Docs.rs](https://docs.rs/faucet-lineage/badge.svg)](https://docs.rs/faucet-lineage)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-lineage.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-lineage.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-lineage.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-lineage.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-[OpenLineage](https://openlineage.io/) event emission for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Every pipeline run emits OpenLineage `RunEvent`s describing the job, the run, its input/output datasets, their inferred schemas, and column-level lineage — to an HTTP endpoint (e.g. [Marquez](https://marquezproject.ai/)), a local JSON Lines file, or a Kafka topic.
+[OpenLineage](https://openlineage.io/) event emission for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Every pipeline run emits OpenLineage `RunEvent`s describing the job, the run, its input/output datasets, their inferred schemas, and column-level lineage — to an HTTP endpoint (e.g. [Marquez](https://marquezproject.ai/)), a local JSON Lines file, or a Kafka topic.
 
 Reach for it when you want your faucet-stream pipelines to show up in a lineage / data-catalog tool automatically — no per-connector instrumentation, no code in your data path. The `faucet` CLI wires it from a single top-level `lineage:` block; the types here are also usable directly by library callers via [`LineageEmitter`].
 
@@ -75,7 +75,7 @@ pipeline:
 faucet run pipeline.yaml
 ```
 
-A full end-to-end example lives at [`cli/examples/postgres_to_bigquery_with_lineage.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/postgres_to_bigquery_with_lineage.yaml).
+A full end-to-end example lives at [`cli/examples/postgres_to_bigquery_with_lineage.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/postgres_to_bigquery_with_lineage.yaml).
 
 ## OpenLineage event types
 
@@ -336,8 +336,8 @@ In the CLI these surface as the `lineage` (HTTP + file) and `lineage-kafka` (add
 
 ## See also
 
-- [Lineage cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/lineage.html) — end-to-end walkthrough.
-- [Config reference](https://pawansikawat.github.io/faucet-stream/reference/config.html) — the full `lineage:` grammar.
+- [Lineage cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/lineage.html) — end-to-end walkthrough.
+- [Config reference](https://faucet-hq.github.io/faucet-stream/reference/config.html) — the full `lineage:` grammar.
 - [OpenLineage](https://openlineage.io/) · [Marquez](https://marquezproject.ai/) — the spec and a reference backend.
 
 ## License

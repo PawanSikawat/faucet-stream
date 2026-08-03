@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-kafka.svg)](https://crates.io/crates/faucet-sink-kafka)
 [![Docs.rs](https://docs.rs/faucet-sink-kafka/badge.svg)](https://docs.rs/faucet-sink-kafka)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-kafka.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-kafka.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-kafka.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-kafka.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Apache **Kafka** producer sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Publishes each record to one or more Kafka topics over [`rdkafka`](https://crates.io/crates/rdkafka)'s `FutureProducer`, with an idempotent producer, configurable compression, per-record topic/key/partition/header routing, and `QueueFull` retry.
+Apache **Kafka** producer sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Publishes each record to one or more Kafka topics over [`rdkafka`](https://crates.io/crates/rdkafka)'s `FutureProducer`, with an idempotent producer, configurable compression, per-record topic/key/partition/header routing, and `QueueFull` retry.
 
 Reach for it when you want to land any faucet-stream source — a REST API, a database, a CDC stream, a file — onto Kafka with one declarative config and no glue code. Sends inside each batch fly concurrently through a `FuturesUnordered` window, so a single pipeline saturates the producer instead of round-tripping one message at a time.
 
@@ -154,7 +154,7 @@ For `from_path`, the path must resolve to a non-empty string for **every** recor
 | `raw_string` | — | Write the record's string representation as UTF-8 bytes. |
 | `bytes` | — | Expect a base64-encoded string; decode and write the raw bytes. |
 | `confluent_avro` | `schema-registry` | Confluent wire-format Avro (`[0x00][be u32 schema_id][Avro]`). Subject `{topic}-value`. |
-| `confluent_protobuf` | `schema-registry` | Present for API symmetry; v1 returns `FaucetError::Config` on encode (full descriptor support tracked in [#44](https://github.com/PawanSikawat/faucet-stream/issues/44)). |
+| `confluent_protobuf` | `schema-registry` | Present for API symmetry; v1 returns `FaucetError::Config` on encode (full descriptor support tracked in [#44](https://github.com/faucet-hq/faucet-stream/issues/44)). |
 | `confluent_json_schema` | `schema-registry` | Confluent wire-format JSON (`[0x00][be u32 schema_id][JSON]`). |
 
 The three Confluent formats need the `schema-registry` feature (CLI: `kafka-schema-registry`) and a `schema_registry` block. On the **sink** side you must also supply the schema text to register and encode against — `value_schema` for the value, `key_schema` for the key — or the config is rejected at load time. See the [`faucet-common-kafka` README](https://crates.io/crates/faucet-common-kafka) for `SchemaRegistryConfig` options.
@@ -345,7 +345,7 @@ pipeline:
       path: ./.faucet-state/pg_cdc_to_kafka_eo
 ```
 
-The four new config fields ([`transactional_id_prefix`](#effectively-once), `commit_token_topic`, `commit_token_topic_partitions`, `commit_token_topic_replication`) tune the transactional id namespace and the side-topic. See the [effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for the cross-connector picture, and the runnable [`cli/examples/postgres_cdc_to_kafka_exactly_once.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/postgres_cdc_to_kafka_exactly_once.yaml).
+The four new config fields ([`transactional_id_prefix`](#effectively-once), `commit_token_topic`, `commit_token_topic_partitions`, `commit_token_topic_replication`) tune the transactional id namespace and the side-topic. See the [effectively-once delivery cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for the cross-connector picture, and the runnable [`cli/examples/postgres_cdc_to_kafka_exactly_once.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/postgres_cdc_to_kafka_exactly_once.yaml).
 
 ## Config loading & schema
 
@@ -429,9 +429,9 @@ In a full pipeline, wire the sink into `faucet_core::Pipeline` (or `run_stream`)
 
 - [`faucet-source-kafka`](https://crates.io/crates/faucet-source-kafka) — consume records from Kafka topics.
 - [`faucet-common-kafka`](https://crates.io/crates/faucet-common-kafka) — shared auth modes, value formats, schema-registry client, and policy enums.
-- [Connectors reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix.
-- [Configuration reference](https://pawansikawat.github.io/faucet-stream/reference/config.html) — the full pipeline-config grammar.
-- A complete working example: [`cli/examples/rest_to_kafka.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/rest_to_kafka.yaml).
+- [Connectors reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — capability matrix.
+- [Configuration reference](https://faucet-hq.github.io/faucet-stream/reference/config.html) — the full pipeline-config grammar.
+- A complete working example: [`cli/examples/rest_to_kafka.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/rest_to_kafka.yaml).
 
 ## License
 

@@ -10,7 +10,7 @@ Different layer, honest trade-offs:
 - **Breadth:** Meltano (600+ Singer taps) and Airbyte (350+) have far larger
   connector catalogs today, and will for a long time. If you need a connector
   faucet doesn't ship and can't quickly write, use them — faucet even
-  [bridges to Singer taps](https://pawansikawat.github.io/faucet-stream/) (v0,
+  [bridges to Singer taps](https://faucet-hq.github.io/faucet-stream/) (v0,
   experimental) so you can run an existing tap through faucet.
 - **Throughput & footprint:** on single-machine batch throughput faucet is
   roughly **1–2 orders of magnitude** faster than a Python Singer runtime with a
@@ -29,7 +29,7 @@ and every crate is `1.0.0`+. Maturity varies **by connector**, and we make that
 explicit: **Tier-1 / conformant** connectors pass the
 [`faucet-conformance`](../../crates/conformance) battery in CI; **Tier-2**
 connectors have their own integration tests but aren't conformance-certified yet
-(see the [connector matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)).
+(see the [connector matrix](https://faucet-hq.github.io/faucet-stream/reference/connectors.html)).
 Pick the tier that matches your risk tolerance, pin versions, and — please —
 [reproduce the benchmark](../../BENCHMARKS.md) on your hardware before relying on
 the numbers.
@@ -49,12 +49,12 @@ the numbers.
 It is **not** distributed-consensus exactly-once — there is no cross-system
 two-phase commit or consensus protocol. `faucet validate` prints which mechanism
 each pipeline row actually gets. Full detail:
-[delivery guarantees](https://pawansikawat.github.io/faucet-stream/cookbook/state.html).
+[delivery guarantees](https://faucet-hq.github.io/faucet-stream/cookbook/state.html).
 
 ## Can I write my own connector?
 
 Yes — that's the point of the marketplace design. `faucet-core` is the only
 required dependency. Read the [FCP spec](../spec/faucet-connector-spec-v0.md) and
-the [authoring guide](https://pawansikawat.github.io/faucet-stream/extending/authoring-connectors.html),
+the [authoring guide](https://faucet-hq.github.io/faucet-stream/extending/authoring-connectors.html),
 scaffold with `faucet new connector`, and add a `tests/conformance.rs` to reach
 Tier-1. There's an "add a connector" issue template to claim one.

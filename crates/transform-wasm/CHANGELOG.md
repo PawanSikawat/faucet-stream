@@ -6,8 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
-## [1.0.0](https://github.com/PawanSikawat/faucet-stream/releases/tag/faucet-transform-wasm-v1.0.0) - 2026-07-31
+## [1.0.0](https://github.com/faucet-hq/faucet-stream/releases/tag/faucet-transform-wasm-v1.0.0) - 2026-07-31
 
 ### Features
 
-- *(transform-wasm)* Add WebAssembly (wasmtime) per-record transform ([#124](https://github.com/PawanSikawat/faucet-stream/pull/124)) ([#426](https://github.com/PawanSikawat/faucet-stream/pull/426))
+- *(transform-wasm)* Add WebAssembly (wasmtime) per-record transform ([#124](https://github.com/faucet-hq/faucet-stream/pull/124)) ([#426](https://github.com/faucet-hq/faucet-stream/pull/426))

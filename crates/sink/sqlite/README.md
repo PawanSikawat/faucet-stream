@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-sqlite.svg)](https://crates.io/crates/faucet-sink-sqlite)
 [![Docs.rs](https://docs.rs/faucet-sink-sqlite/badge.svg)](https://docs.rs/faucet-sink-sqlite)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-sqlite.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-sqlite.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-sqlite.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-sqlite.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-**SQLite** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records into a SQLite table — either as serialized JSON text in a single column, or with top-level JSON keys auto-mapped to real table columns.
+**SQLite** sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Writes JSON records into a SQLite table — either as serialized JSON text in a single column, or with top-level JSON keys auto-mapped to real table columns.
 
 Reach for it when you want a zero-dependency, embedded landing table on local disk (or in memory) — a fast, transactional destination for events, change-data-capture mirrors, dev/test fixtures, or any pipeline that just needs a queryable file. The whole batch commits atomically inside a `BEGIN`/`COMMIT` transaction, so a partial write never leaves the table half-populated.
 
@@ -232,7 +232,7 @@ pipeline:
 delivery: exactly_once
 ```
 
-See the [Effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for full rationale and the supported source/sink set.
+See the [Effectively-once delivery cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for full rationale and the supported source/sink set.
 
 ## Schema evolution
 
@@ -244,11 +244,11 @@ Under `on_drift: evolve`, `SqliteSink::evolve_schema()` is **add-column only**, 
 - **Type widenings are a no-op** — under SQLite's dynamic typing a column already accepts a value of any type, so there is nothing to alter (logged once at `debug`).
 - **Nullability relaxations are a no-op** — SQLite cannot drop a `NOT NULL` constraint in place (it would require a full table rebuild, out of scope here); the column is left as-is (logged once at `debug`).
 
-Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/schema-drift.html).
+Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/schema-drift.html).
 
 ## Dead-letter queue
 
-The sink reports per-row outcomes via `write_batch_partial`, so when a `dlq:` block is configured, rows that fail (e.g. a missing/null key column in upsert/delete mode) are wrapped in a DLQ envelope and routed to the configured DLQ sink while the rest of the batch still commits. Without a DLQ, a failing row fails the whole batch. See the [DLQ cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html).
+The sink reports per-row outcomes via `write_batch_partial`, so when a `dlq:` block is configured, rows that fail (e.g. a missing/null key column in upsert/delete mode) are wrapped in a DLQ envelope and routed to the configured DLQ sink while the rest of the batch still commits. Without a DLQ, a failing row fails the whole batch. See the [DLQ cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/dlq.html).
 
 ## Config loading & schema introspection
 
@@ -360,10 +360,10 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 ## See also
 
-- [Choosing a connector](https://pawansikawat.github.io/faucet-stream/reference/choosing.html)
-- [Connector capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
-- [Upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html)
-- [State & effectively-once cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html)
+- [Choosing a connector](https://faucet-hq.github.io/faucet-stream/reference/choosing.html)
+- [Connector capability matrix](https://faucet-hq.github.io/faucet-stream/reference/connectors.html)
+- [Upsert cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html)
+- [State & effectively-once cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html)
 - [`faucet-source-sqlite`](https://crates.io/crates/faucet-source-sqlite) — the matching SQLite query source.
 - [`faucet-sink-postgres`](https://crates.io/crates/faucet-sink-postgres) / [`faucet-sink-mysql`](https://crates.io/crates/faucet-sink-mysql) — server-database sinks with the same write-mode surface.
 

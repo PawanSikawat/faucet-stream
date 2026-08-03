@@ -74,5 +74,5 @@ have it scored like a built-in.
 
 - [`faucet conformance`](./cli.md#conformance) — the command
 - [Connector catalog](./connectors.md) — per-connector capability matrix
-- [API stability policy](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/stability.md)
+- [API stability policy](https://github.com/faucet-hq/faucet-stream/blob/main/docs/stability.md)
 - [Authoring connectors](../extending/authoring-connectors.md)

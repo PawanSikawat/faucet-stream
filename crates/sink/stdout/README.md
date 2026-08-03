@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-stdout.svg)](https://crates.io/crates/faucet-sink-stdout)
 [![Docs.rs](https://docs.rs/faucet-sink-stdout/badge.svg)](https://docs.rs/faucet-sink-stdout)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-stdout.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-stdout.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-stdout.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-stdout.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Standard-stream (**stdout / stderr**) sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes each record to a standard stream in one of four formats — compact JSON Lines, pretty-printed JSON, tab-separated values, or RFC-4180 CSV.
+Standard-stream (**stdout / stderr**) sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Writes each record to a standard stream in one of four formats — compact JSON Lines, pretty-printed JSON, tab-separated values, or RFC-4180 CSV.
 
 Reach for it whenever you want to *see* what a pipeline produces: debugging a new source, eyeballing the shape of records before wiring up a real destination, building a quick demo, sampling the first few rows with `faucet preview`, or piping records into another shell tool (`jq`, `head`, `grep`, `column`). It's the zero-setup sink — no credentials, no connection, no files — so it's almost always the first sink you point a new source at.
 
@@ -216,8 +216,8 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 ## See also
 
-- [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — the full connector capability matrix.
-- [CLI reference](https://pawansikawat.github.io/faucet-stream/reference/cli.html) — `faucet run`, `faucet preview`, `faucet schema`.
+- [Sinks reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — the full connector capability matrix.
+- [CLI reference](https://faucet-hq.github.io/faucet-stream/reference/cli.html) — `faucet run`, `faucet preview`, `faucet schema`.
 - [`faucet-sink-jsonl`](https://crates.io/crates/faucet-sink-jsonl) — write the same JSON Lines to a file instead of a stream.
 - [`faucet-sink-csv`](https://crates.io/crates/faucet-sink-csv) — TSV/CSV to a file with full quoting.
 - [`faucet-core`](https://crates.io/crates/faucet-core) — the `Sink` trait this connector implements.

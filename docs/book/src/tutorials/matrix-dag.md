@@ -93,7 +93,7 @@ behavior.
 
 For many heterogeneous rows, define reusable source/sink templates under
 `pipeline.sources` / `pipeline.sinks` and a top-level `vars:` block, then select
-them per row with `ref:`. See [`cli/README.md`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/README.md)
+them per row with `ref:`. See [`cli/README.md`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/README.md)
 for the full grammar.
 
 ## Error handling

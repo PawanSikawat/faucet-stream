@@ -26,7 +26,7 @@ scaffold sets up.
 
 To make your published connector usable from a `faucet.yaml` config (not just
 from Rust), see
-[Custom binaries with third-party connectors](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/README.md#custom-binaries-with-third-party-connectors).
+[Custom binaries with third-party connectors](https://github.com/faucet-hq/faucet-stream/blob/main/cli/README.md#custom-binaries-with-third-party-connectors).
 
 ## The traits
 

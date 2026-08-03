@@ -525,9 +525,9 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
 /// configured (feature `arrow`, RFC 0002 / #375).
 ///
 /// Mirrors the checkpoint ordering of the `Value` path exactly —
-/// `write_batch_columnar` → `flush` → persist bookmark ([ADR 0002](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/adr/0002-checkpoint-ordering.md)) —
+/// `write_batch_columnar` → `flush` → persist bookmark ([ADR 0002](https://github.com/faucet-hq/faucet-stream/blob/main/docs/adr/0002-checkpoint-ordering.md)) —
 /// with cooperative, flush-completing cancellation at the page boundary
-/// ([ADR 0011](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/adr/0011-cooperative-cancellation.md)).
+/// ([ADR 0011](https://github.com/faucet-hq/faucet-stream/blob/main/docs/adr/0011-cooperative-cancellation.md)).
 /// Emits the source/sink record counters; the richer per-page histograms of the
 /// `Value` path are not layered on this loop yet.
 #[cfg(feature = "arrow")]

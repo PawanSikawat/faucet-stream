@@ -9,10 +9,10 @@ connector, streams with bounded memory, resumes safely, and reports its
 capabilities honestly.
 
 > **The contract is executable.** Everything normative below is checked by the
-> reusable [`faucet-conformance`](https://github.com/PawanSikawat/faucet-stream/tree/main/crates/conformance)
+> reusable [`faucet-conformance`](https://github.com/faucet-hq/faucet-stream/tree/main/crates/conformance)
 > battery. A connector is **Tier-1 / conformant** exactly when it invokes and
 > passes that battery in CI — there is no separate certification. See
-> [Authoring a connector](https://pawansikawat.github.io/faucet-stream/extending/authoring-connectors.html).
+> [Authoring a connector](https://faucet-hq.github.io/faucet-stream/extending/authoring-connectors.html).
 
 ---
 
@@ -158,7 +158,7 @@ serialize with the project-wide adjacently-tagged shape
 ## 7. Conformance (normative)
 
 A connector claims **Tier-1 / conformant** by adding a `tests/conformance.rs`
-that invokes the applicable [`faucet-conformance`](https://github.com/PawanSikawat/faucet-stream/tree/main/crates/conformance)
+that invokes the applicable [`faucet-conformance`](https://github.com/faucet-hq/faucet-stream/tree/main/crates/conformance)
 checks against the real connector and passing them in CI:
 
 | # | Check | Applies to |

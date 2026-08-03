@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-bigquery.svg)](https://crates.io/crates/faucet-sink-bigquery)
 [![Docs.rs](https://docs.rs/faucet-sink-bigquery/badge.svg)](https://docs.rs/faucet-sink-bigquery)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-bigquery.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-bigquery.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-bigquery.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-bigquery.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Google **BigQuery** streaming-insert sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records to a BigQuery table via the [`tabledata.insertAll`](https://cloud.google.com/bigquery/docs/reference/rest/v2/tabledata/insertAll) streaming API, automatically re-chunking each batch to stay within BigQuery's per-request limits.
+Google **BigQuery** streaming-insert sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Writes JSON records to a BigQuery table via the [`tabledata.insertAll`](https://cloud.google.com/bigquery/docs/reference/rest/v2/tabledata/insertAll) streaming API, automatically re-chunking each batch to stay within BigQuery's per-request limits.
 
 Reach for it when you want to land events, CDC streams, or query results into a BigQuery table from any faucet-stream source with one declarative config — and, when you need it, full **upsert/delete** mirroring and **effectively-once** delivery on top of the same connector.
 
@@ -259,7 +259,7 @@ pipeline:
 delivery: exactly_once
 ```
 
-See the [Effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for full rationale and the supported source/sink set.
+See the [Effectively-once delivery cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for full rationale and the supported source/sink set.
 
 ## Schema evolution
 
@@ -271,7 +271,7 @@ Under `on_drift: evolve`, `BigQuerySink::evolve_schema()` applies `ALTER TABLE` 
 - **Lossless widenings** (e.g. integer → number) → `ALTER COLUMN <col> SET DATA TYPE <type>` — gated on `allow_type_widening`.
 - **Nullability relaxations** → `ALTER COLUMN <col> DROP NOT NULL`.
 
-The cached schema is invalidated afterwards so the next page (and the next effectively-once / upsert page) reads the evolved table. Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/schema-drift.html).
+The cached schema is invalidated afterwards so the next page (and the next effectively-once / upsert page) reads the evolved table. Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/schema-drift.html).
 
 ## Dead-letter queue
 
@@ -397,9 +397,9 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 ## See also
 
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix.
-- [Effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery).
-- [Upsert / write-modes cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html).
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — capability matrix.
+- [Effectively-once delivery cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery).
+- [Upsert / write-modes cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html).
 - [`faucet-source-bigquery`](https://crates.io/crates/faucet-source-bigquery) — the matching BigQuery query source.
 - [`faucet-common-bigquery`](https://crates.io/crates/faucet-common-bigquery) — shared `BigQueryCredentials` + client builder.
 

@@ -136,8 +136,8 @@ bounded-memory streaming loop, but there are two ways it gets there:
   memory is the full result set because the fetch buffered it first.
 
 A connector author gets the buffered path for free and opts into native streaming only
-where the primitive supports it — see [ADR 0001](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/adr/0001-stream-pages.md)
-and the [stream-pages architecture note](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/stream-pages.md).
+where the primitive supports it — see [ADR 0001](https://github.com/faucet-hq/faucet-stream/blob/main/docs/adr/0001-stream-pages.md)
+and the [stream-pages architecture note](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/stream-pages.md).
 
 **Sources that override `stream_pages` for native streaming:** `rest`, `graphql`,
 `xml`, `postgres`, `postgres-cdc`, `mysql`, `mysql-cdc`, `mssql`, `mssql-cdc`, `sqlite`,

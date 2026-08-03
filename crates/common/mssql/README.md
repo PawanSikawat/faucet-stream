@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-common-mssql.svg)](https://crates.io/crates/faucet-common-mssql)
 [![Docs.rs](https://docs.rs/faucet-common-mssql/badge.svg)](https://docs.rs/faucet-common-mssql)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-common-mssql.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-common-mssql.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-common-mssql.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-common-mssql.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Shared connection, TLS, and pooling types for the Microsoft SQL Server **source** and **sink** connectors. Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+Shared connection, TLS, and pooling types for the Microsoft SQL Server **source** and **sink** connectors. Part of the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem.
 
 This is an internal building block. It holds the configuration the MSSQL [source](https://crates.io/crates/faucet-source-mssql) and [sink](https://crates.io/crates/faucet-sink-mssql) must agree on — how to parse a connection target, apply TLS, and build a [`tiberius`](https://crates.io/crates/tiberius) + [`bb8`](https://crates.io/crates/bb8) connection pool — so both connectors behave identically instead of duplicating the logic. End users configure MSSQL through the source/sink crates, which re-export these types; you only depend on this crate directly if you are building your own MSSQL connector.
 
@@ -127,7 +127,7 @@ None. This crate has no optional features — it is pure config + pool plumbing 
 - [`faucet-source-mssql`](https://crates.io/crates/faucet-source-mssql) — the MSSQL query source.
 - [`faucet-sink-mssql`](https://crates.io/crates/faucet-sink-mssql) — the MSSQL sink.
 - [`faucet-core`](https://crates.io/crates/faucet-core) — traits, `FaucetError`, and the pipeline runtime.
-- [faucet-stream documentation](https://pawansikawat.github.io/faucet-stream/) — connector reference and cookbook.
+- [faucet-stream documentation](https://faucet-hq.github.io/faucet-stream/) — connector reference and cookbook.
 
 ## License
 

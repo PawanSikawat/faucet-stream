@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-mongodb.svg)](https://crates.io/crates/faucet-sink-mongodb)
 [![Docs.rs](https://docs.rs/faucet-sink-mongodb/badge.svg)](https://docs.rs/faucet-sink-mongodb)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-mongodb.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-mongodb.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-mongodb.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-mongodb.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-**MongoDB** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records into a MongoDB collection — appending with batched `insert_many`, or keeping a collection in sync with a changing source via `upsert` / `delete`. With `delivery: exactly_once` (replica set required) it commits each page and a watermark in one multi-document transaction.
+**MongoDB** sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Writes JSON records into a MongoDB collection — appending with batched `insert_many`, or keeping a collection in sync with a changing source via `upsert` / `delete`. With `delivery: exactly_once` (replica set required) it commits each page and a watermark in one multi-document transaction.
 
 Reach for it when you want to land any faucet-stream source — a REST API, a database, a CDC stream, a file — into MongoDB with one declarative config and no glue code. Each record is converted to a BSON document; the client connection is established once and reused across every write.
 
@@ -204,11 +204,11 @@ pipeline:
 delivery: exactly_once
 ```
 
-`delivery: exactly_once` and `write_mode: upsert` compose — the planned upserts/deletes and the watermark upsert commit in the same transaction, as in the example above. See the [effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery).
+`delivery: exactly_once` and `write_mode: upsert` compose — the planned upserts/deletes and the watermark upsert commit in the same transaction, as in the example above. See the [effectively-once delivery cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery).
 
 ## Dead-letter queue
 
-The sink overrides `write_batch_partial`, so a `dlq:` block in the pipeline config catches per-row failures (missing/null-key rows in `upsert` / `delete` mode) and routes them to the dead-letter sink while the rest of the page commits. Without a DLQ, a row-level failure aborts the batch. See the [DLQ cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html).
+The sink overrides `write_batch_partial`, so a `dlq:` block in the pipeline config catches per-row failures (missing/null-key rows in `upsert` / `delete` mode) and routes them to the dead-letter sink while the rest of the page commits. Without a DLQ, a row-level failure aborts the batch. See the [DLQ cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/dlq.html).
 
 ## Config loading & schema
 
@@ -316,9 +316,9 @@ This crate has no optional features of its own; enable it in the CLI / umbrella 
 
 ## See also
 
-- [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix across all connectors.
-- [Write modes / upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) — the shared upsert layer.
-- [Dead-letter queue cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html) — routing failed rows.
+- [Sinks reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — capability matrix across all connectors.
+- [Write modes / upsert cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html) — the shared upsert layer.
+- [Dead-letter queue cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/dlq.html) — routing failed rows.
 - [`faucet-source-mongodb`](https://crates.io/crates/faucet-source-mongodb) — the MongoDB source (`find()` with filter / projection / sort).
 - [`faucet-source-mongodb-cdc`](https://crates.io/crates/faucet-source-mongodb-cdc) — MongoDB Change Streams CDC source; the natural upstream for an upsert mirror.
 

@@ -45,7 +45,7 @@ execution:
 
 ### Full example
 
-The [`postgres_to_bigquery_adaptive.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/postgres_to_bigquery_adaptive.yaml)
+The [`postgres_to_bigquery_adaptive.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/postgres_to_bigquery_adaptive.yaml)
 example pairs a PostgreSQL source with a BigQuery sink and a JSONL DLQ:
 
 ```yaml

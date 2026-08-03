@@ -9,8 +9,8 @@ body:
         way to contribute. This template tracks that work end-to-end.
 
         **Read first:**
-        - [Faucet Connector Protocol (FCP v0)](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/spec/faucet-connector-spec-v0.md) — the contract.
-        - [Authoring a connector](https://pawansikawat.github.io/faucet-stream/extending/authoring-connectors.html) — the walkthrough, incl. self-certifying with the conformance battery.
+        - [Faucet Connector Protocol (FCP v0)](https://github.com/faucet-hq/faucet-stream/blob/main/docs/spec/faucet-connector-spec-v0.md) — the contract.
+        - [Authoring a connector](https://faucet-hq.github.io/faucet-stream/extending/authoring-connectors.html) — the walkthrough, incl. self-certifying with the conformance battery.
         - `faucet-core` is the only required dependency; scaffold with `faucet new connector`.
   - type: input
     id: system

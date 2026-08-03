@@ -57,4 +57,4 @@ the [metrics](./observability.md) to find the bottleneck.
 ## Where do I report a bug or request a connector?
 
 Open an issue at
-[github.com/PawanSikawat/faucet-stream/issues](https://github.com/PawanSikawat/faucet-stream/issues).
+[github.com/faucet-hq/faucet-stream/issues](https://github.com/faucet-hq/faucet-stream/issues).

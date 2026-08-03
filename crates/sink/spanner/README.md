@@ -1,6 +1,6 @@
 # faucet-sink-spanner
 
-Google Cloud Spanner sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+Google Cloud Spanner sink connector for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem.
 
 Writes JSON records to a Spanner table as batched **mutations** — `Insert` for append, Spanner's native `InsertOrUpdate` for `write_mode: upsert`, and `Delete` mutations for delete mode — one atomic commit per chunk. Supports exactly-once delivery (`delivery: exactly_once`) via a `faucet_commit_token` watermark row committed in the same read-write transaction as the page, and additive schema evolution through the database-admin DDL API.
 

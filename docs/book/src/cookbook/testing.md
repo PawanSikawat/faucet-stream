@@ -160,7 +160,7 @@ jobs:
 ## Complete example
 
 A runnable pipeline + spec pair ships in
-[`cli/examples/tests/`](https://github.com/PawanSikawat/faucet-stream/tree/main/cli/examples/tests)
+[`cli/examples/tests/`](https://github.com/faucet-hq/faucet-stream/tree/main/cli/examples/tests)
 — quality quarantine, contract breach, fixture files, subset/unordered
 matching, and an inline case with a pinned clock:
 

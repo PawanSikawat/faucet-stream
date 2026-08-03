@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-kafka.svg)](https://crates.io/crates/faucet-source-kafka)
 [![Docs.rs](https://docs.rs/faucet-source-kafka/badge.svg)](https://docs.rs/faucet-source-kafka)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-kafka.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-kafka.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-kafka.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-kafka.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Apache **Kafka** consumer source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Subscribes to one or more topics, drains messages until a `max_messages` count or an `idle_timeout` window fires, and emits each Kafka message as a structured JSON record. Built on [`rdkafka`](https://crates.io/crates/rdkafka) (librdkafka bindings) — one of the fastest Kafka clients available.
+Apache **Kafka** consumer source for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Subscribes to one or more topics, drains messages until a `max_messages` count or an `idle_timeout` window fires, and emits each Kafka message as a structured JSON record. Built on [`rdkafka`](https://crates.io/crates/rdkafka) (librdkafka bindings) — one of the fastest Kafka clients available.
 
 Reach for it when you want to land a Kafka topic into any faucet-stream sink — a file, a database, a warehouse, object storage — with one declarative config, durable offset resume, and no glue code. Offsets are tracked through any `faucet-core` `StateStore`, so a pipeline resumes exactly where the last run stopped, without re-reading or skipping records.
 
@@ -159,7 +159,7 @@ Configured via `value_format` (and optionally `key_format`); all use a `type` di
 | `raw_string` | Decode value bytes as a UTF-8 string into `value`. | base |
 | `bytes` | Pass bytes through as a **base64-encoded string** in `value`; no parsing. | base |
 | `confluent_avro` | Confluent wire-format Avro: `[0x00][schema_id 4B][Avro binary]`. | `schema-registry` |
-| `confluent_protobuf` | Confluent wire-format Protobuf. v1 returns an error — descriptor support tracked in [#44](https://github.com/PawanSikawat/faucet-stream/issues/44). | `schema-registry` |
+| `confluent_protobuf` | Confluent wire-format Protobuf. v1 returns an error — descriptor support tracked in [#44](https://github.com/faucet-hq/faucet-stream/issues/44). | `schema-registry` |
 | `confluent_json_schema` | Confluent wire-format JSON: `[0x00][schema_id 4B][JSON bytes]`; optional validation. | `schema-registry` |
 
 The three Confluent formats take a `schema_registry` block (URL, optional basic auth, cache capacity, request timeout) — see the [`faucet-common-kafka`](https://crates.io/crates/faucet-common-kafka) README for the full `SchemaRegistryConfig`.
@@ -353,19 +353,19 @@ pipeline:
 
 In plain (non-member) mode the source never commits consumer-group offsets, so
 the broker's group position can never run ahead of the durable bookmark. See
-the [state cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery)
+the [state cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery)
 for the full mechanism.
 
 ## Clustered consumption (Mode B, native consumer groups)
 
-Under `faucet serve --cluster`, a top-level `shard: { count: N }` block distributes one Kafka pipeline across N cluster workers using **Kafka's native consumer-group assignment** ([#261](https://github.com/PawanSikawat/faucet-stream/issues/261)) — each shard is a *membership slot* (one more consumer sharing the config's `group_id`), not a data slice. The broker assigns the topic's partitions across the members and rebalances onto survivors when a worker dies; the requested member count is capped at the subscription's total partition count.
+Under `faucet serve --cluster`, a top-level `shard: { count: N }` block distributes one Kafka pipeline across N cluster workers using **Kafka's native consumer-group assignment** ([#261](https://github.com/faucet-hq/faucet-stream/issues/261)) — each shard is a *membership slot* (one more consumer sharing the config's `group_id`), not a data slice. The broker assigns the topic's partitions across the members and rebalances onto survivors when a worker dies; the requested member count is capped at the subscription's total partition count.
 
 In member mode (i.e. only when a cluster coordinator applies a shard — a plain `faucet run` is unchanged) the source additionally:
 
 - **commits offsets to the consumer group at durable page boundaries** — after the pipeline has written a page to the sink and persisted its bookmark, plus a synchronous commit at stream end — so a partition that migrates to another member resumes from the last durable position instead of `auto_offset_reset`;
 - **defers bookmark seeks to the group's committed offsets** whenever those are ahead (another member may have durably advanced a partition past this member's bookmark); a bookmark *ahead* of the committed offset — the durable-write→commit crash window — still wins.
 
-The boundary on membership change is **at-least-once**: a crash between a durable page and its commit makes the partition's next owner re-read that page. Pair with an upsert-mode or otherwise idempotent sink. Note `max_messages` applies per member (N members consume up to N × `max_messages` total); `idle_timeout` is the natural terminator for shared consumption. See the [cluster cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html) for the full Mode B walkthrough.
+The boundary on membership change is **at-least-once**: a crash between a durable page and its commit makes the partition's next owner re-read that page. Pair with an upsert-mode or otherwise idempotent sink. Note `max_messages` applies per member (N members consume up to N × `max_messages` total); `idle_timeout` is the natural terminator for shared consumption. See the [cluster cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/cluster.html) for the full Mode B walkthrough.
 
 ## Config loading & schema introspection
 
@@ -377,7 +377,7 @@ faucet validate pipeline.yaml
 faucet preview pipeline.yaml --limit 5   # consume a few messages and print to stdout
 ```
 
-A complete working example ships at [`cli/examples/kafka_to_jsonl.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/kafka_to_jsonl.yaml).
+A complete working example ships at [`cli/examples/kafka_to_jsonl.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/kafka_to_jsonl.yaml).
 
 ## Library usage
 
@@ -444,14 +444,14 @@ In the CLI / umbrella, enable the connector with `source-kafka`, and the registr
 | `Source` error / connection refused / timeout | Broker unreachable or wrong `brokers`. `faucet doctor` runs a non-consuming metadata probe to validate connectivity + auth without reading messages. |
 | SASL / SSL handshake failure | Wrong `auth` type or credentials, or a `key_path` / `cert_path` / `ca_path` that doesn't exist (paths are validated at config time). Confirm the broker's `security.protocol` matches. |
 | Messages fail to decode | The `value_format` doesn't match the wire data (e.g. `json` against Avro). Match the producer's format; use `on_decode_error: skip` to drop bad messages instead of aborting. |
-| `confluent_protobuf` returns an error | Protobuf decoding is not yet implemented (issue [#44](https://github.com/PawanSikawat/faucet-stream/issues/44)). Use `confluent_avro` / `confluent_json_schema`, or decode raw `bytes` and parse downstream. |
+| `confluent_protobuf` returns an error | Protobuf decoding is not yet implemented (issue [#44](https://github.com/faucet-hq/faucet-stream/issues/44)). Use `confluent_avro` / `confluent_json_schema`, or decode raw `bytes` and parse downstream. |
 | Confluent format rejected as unknown `type` | Build with the `schema-registry` feature (CLI: `kafka-schema-registry`). |
 | Throughput lower than expected | Partition the topic and run multiple instances with the same `group_id`, and/or tune `fetch.max.bytes` / `max.partition.fetch.bytes` via `extra_client_config`. |
 
 ## See also
 
-- [Kafka source reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix.
-- [State & resume cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) — bookmarks and delivery semantics.
+- [Kafka source reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — capability matrix.
+- [State & resume cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html) — bookmarks and delivery semantics.
 - [`faucet-sink-kafka`](https://crates.io/crates/faucet-sink-kafka) — produce records to Kafka topics.
 - [`faucet-common-kafka`](https://crates.io/crates/faucet-common-kafka) — shared auth modes, value formats, Schema Registry client, and policy enums.
 

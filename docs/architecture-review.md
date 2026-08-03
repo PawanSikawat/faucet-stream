@@ -127,7 +127,7 @@ limitation. Where a risk already has a mitigation planned, the relevant
 ## Maintenance risks
 
 - **Solo-owner bus factor.** The repository is maintained by a single owner (the
-  `PawanSikawat` account self-merges under branch protection with
+  `faucet-hq` account self-merges under branch protection with
   `enforce_admins: false`). The documentation effort this review is part of
   directly mitigates the knowledge-concentration risk.
 - **Docs-sync burden.** Adding a connector requires touching features in three

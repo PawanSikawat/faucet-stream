@@ -2,8 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-cli.svg)](https://crates.io/crates/faucet-cli)
 [![Docs.rs](https://docs.rs/faucet-cli/badge.svg)](https://docs.rs/faucet-cli)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-cli.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-cli.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-cli.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-cli.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
 `faucet` — config-driven runner for [`faucet-stream`](https://crates.io/crates/faucet-stream) pipelines.
 
@@ -129,7 +129,7 @@ tests:
       # match: subset                             # expected records name only the fields they assert
 ```
 
-Failures print a structured path diff (`records[0].amount: expected 9.5, got 3.0`); the **exit code** is the failed-case count clamped to 255. The `schema:` (drift) block is inert offline; referenced configs load without contacting secrets managers (pass `--resolve-secrets` to opt in). A runnable example lives in [`examples/tests/`](examples/tests/); the [testing cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/testing.html) has the full walkthrough and CI recipe.
+Failures print a structured path diff (`records[0].amount: expected 9.5, got 3.0`); the **exit code** is the failed-case count clamped to 255. The `schema:` (drift) block is inert offline; referenced configs load without contacting secrets managers (pass `--resolve-secrets` to opt in). A runnable example lives in [`examples/tests/`](examples/tests/); the [testing cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/testing.html) has the full walkthrough and CI recipe.
 
 Flags:
 
@@ -267,7 +267,7 @@ Auth is mandatory: without `--auth-token`/`FAUCET_SERVE_AUTH_TOKEN` **and** with
 | `--default-config <path>` | Workspace defaults merged **under** every submitted run. |
 | `--cors-origin <o>` | Allow-list a browser origin (repeatable; CORS off by default). |
 | `--lease-ttl-secs <n>` | Run-ownership lease TTL (default `30`). Set above your worst-case GC/IO stall to avoid false-reclaim of paused instances. |
-| `--cluster` | Enable clustered execution: all instances sharing the same `--history` DB pull-balance `pending` runs and provide crash-failover. Requires a persistent `--history` backend. See the [cluster cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html). |
+| `--cluster` | Enable clustered execution: all instances sharing the same `--history` DB pull-balance `pending` runs and provide crash-failover. Requires a persistent `--history` backend. See the [cluster cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/cluster.html). |
 | `--cluster-poll-secs <n>` | Claim-loop poll interval in seconds (default `2`). Also the maximum cross-instance cancel propagation lag. |
 | `--cluster-max-attempts <n>` | Maximum attempts per run (including crash-failovers) before it is poisoned as `failed` (default `3`). |
 | `--triggers <path>` | Path to a triggers file (YAML) defining event-driven watchers. Requires the `triggers` Cargo feature. See [Event-driven triggers](#event-driven-triggers-triggers). |
@@ -333,8 +333,8 @@ Each trigger emits `faucet_serve_triggers_fired_total{trigger,type}`,
 `faucet_serve_trigger_healthy{trigger,type}`, and related Prometheus metrics.
 `GET /readyz` includes a `triggers` array showing per-watcher health.
 
-See the [triggers cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/triggers.html)
-for detailed walkthroughs and the [triggers reference](https://pawansikawat.github.io/faucet-stream/reference/triggers.html)
+See the [triggers cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/triggers.html)
+for detailed walkthroughs and the [triggers reference](https://faucet-hq.github.io/faucet-stream/reference/triggers.html)
 for the full field reference.
 
 Requires the `triggers` feature family (included in `full`):
@@ -368,7 +368,7 @@ faucet serve --cluster \
              --listen 0.0.0.0:8081
 ```
 
-See the [cluster cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html)
+See the [cluster cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/cluster.html)
 for the full lifecycle, delivery guarantees, and Kubernetes deployment notes.
 
 Submit a run:
@@ -379,7 +379,7 @@ curl -XPOST localhost:8080/v1/runs -H "Authorization: Bearer s3cret" \
   -d '{"config":"version: 1\npipeline:\n  source: {type: csv, config: {path: in.csv}}\n  sink: {type: jsonl, config: {path: out.jsonl}}\n","name":"adhoc","idempotency_key":"k1"}'
 ```
 
-> ⚠️ **Security:** `serve` executes arbitrary client-supplied configs with the server's identity — secrets, files, and network egress (SSRF). Run single-tenant, authenticated, behind egress controls; terminate TLS at a proxy. See the [serve cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/serve.html) and [HTTP API reference](https://pawansikawat.github.io/faucet-stream/reference/http-api.html).
+> ⚠️ **Security:** `serve` executes arbitrary client-supplied configs with the server's identity — secrets, files, and network egress (SSRF). Run single-tenant, authenticated, behind egress controls; terminate TLS at a proxy. See the [serve cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/serve.html) and [HTTP API reference](https://faucet-hq.github.io/faucet-stream/reference/http-api.html).
 
 Requires the `serve` Cargo feature (included in `full`):
 
@@ -407,7 +407,7 @@ catalog), `GET /v1/schemas/{kind}/{name}` (one JSON Schema), and `POST /v1/docto
 (validate + probe a config without running it). These endpoints are available
 regardless of `--no-ui`.
 
-See the [web console guide](https://pawansikawat.github.io/faucet-stream/cookbook/web-console.html)
+See the [web console guide](https://faucet-hq.github.io/faucet-stream/cookbook/web-console.html)
 for the full walkthrough.
 
 ### `faucet mcp` / `faucet serve --mcp`
@@ -433,7 +433,7 @@ Tools: `list_connectors`, `get_connector_schema`, `scaffold_config`,
 `validate_config`, `preview` (read-only, ≤100 rows), and the gated
 `run_pipeline` (`dry_run: true` validates + previews only). Secret material is
 redacted from all tool output. See the
-[MCP guide](https://pawansikawat.github.io/faucet-stream/cookbook/mcp.html).
+[MCP guide](https://faucet-hq.github.io/faucet-stream/cookbook/mcp.html).
 
 ### `faucet completions`
 
@@ -599,7 +599,7 @@ configs read from disk (`run`/`validate`/`preview`/`doctor`/`schedule`), **not**
 to configs submitted to `faucet serve` over HTTP (a submitted body is a single
 self-contained document with no filesystem access). See
 [`examples/compose/`](examples/compose/) for an end-to-end example, and the
-[docs-site composition cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/composition.html)
+[docs-site composition cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/composition.html)
 for the full walkthrough.
 
 ## Config shape
@@ -613,7 +613,7 @@ pipeline:
     type: rest
     config:
       base_url: https://api.github.com
-      path: /repos/PawanSikawat/faucet-stream/issues
+      path: /repos/faucet-hq/faucet-stream/issues
       method: GET
       auth:
         type: ApiKey
@@ -896,7 +896,7 @@ execution:
   controller reslices pages it already received — it cannot buffer across pages.
   Raise the source `batch_size` to allow bigger write batches.
 
-See the [Adaptive batching cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/adaptive-batching.html)
+See the [Adaptive batching cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/adaptive-batching.html)
 for the full field reference, AIMD trajectory example, and the four Prometheus
 metrics (`faucet_pipeline_adaptive_batch_*`).
 
@@ -1064,7 +1064,7 @@ pipeline:
 Inspect or publish it with `faucet contract <config> [--export
 contract|json-schema|openlineage]`; `faucet schema contract` prints the
 block's JSON Schema. Full model:
-[Data contracts](https://pawansikawat.github.io/faucet-stream/cookbook/contracts.html).
+[Data contracts](https://faucet-hq.github.io/faucet-stream/cookbook/contracts.html).
 
 ### `sla:` (optional)
 
@@ -1085,7 +1085,7 @@ sla:
 ```
 
 `faucet schema sla` prints the block's JSON Schema. Full model:
-[SLA monitoring](https://pawansikawat.github.io/faucet-stream/cookbook/sla.html).
+[SLA monitoring](https://faucet-hq.github.io/faucet-stream/cookbook/sla.html).
 
 ### `catalog:` (optional)
 
@@ -1108,7 +1108,7 @@ catalog:
 Browse with `faucet catalog datasets|show|lineage`, `GET /v1/catalog/*` on
 `faucet serve`, or the web console's Datasets / Lineage views.
 `faucet schema catalog` prints the block's JSON Schema. Full model:
-[Data Movement Catalog](https://pawansikawat.github.io/faucet-stream/cookbook/catalog.html).
+[Data Movement Catalog](https://faucet-hq.github.io/faucet-stream/cookbook/catalog.html).
 
 ### Transforms
 
@@ -1218,7 +1218,7 @@ transforms, state, dlq, and matrix rows. They are **not** resolved in the
 top-level `auth:` catalog or `vars:` block. Put secrets in a connector's inline
 `auth:` config instead of the shared catalog until this is lifted.
 
-See the [docs-site secrets cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/secrets.html)
+See the [docs-site secrets cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/secrets.html)
 for full examples and details.
 
 ## Running from environment variables (`--from-env`)
@@ -1258,7 +1258,7 @@ Tagged-enum config fields (`auth`, `pagination`, `replication_method`, `column_m
 ```bash
 FAUCET_SOURCE=rest \
 FAUCET_SOURCE_REST_BASE_URL=https://api.github.com \
-FAUCET_SOURCE_REST_PATH=/repos/PawanSikawat/faucet-stream/issues \
+FAUCET_SOURCE_REST_PATH=/repos/faucet-hq/faucet-stream/issues \
 FAUCET_SOURCE_REST_AUTH_JSON='{"type":"Bearer","token":"ghp_xxx"}' \
 FAUCET_SOURCE_REST_PAGINATION_JSON='{"type":"LinkHeader"}' \
 FAUCET_SINK=jsonl \
@@ -1422,8 +1422,8 @@ A complete, runnable example lives in
 
 - [`faucet-stream`](https://crates.io/crates/faucet-stream) — the umbrella library this CLI is built on.
 - [`faucet-core`](https://crates.io/crates/faucet-core) — shared traits, pipeline orchestration, and error types.
-- [Documentation site](https://pawansikawat.github.io/faucet-stream/) — guides, the connector capability matrix, and the config-file grammar reference.
-- [GitHub repository](https://github.com/PawanSikawat/faucet-stream) — source, examples (`cli/examples/`), and issue tracker.
+- [Documentation site](https://faucet-hq.github.io/faucet-stream/) — guides, the connector capability matrix, and the config-file grammar reference.
+- [GitHub repository](https://github.com/faucet-hq/faucet-stream) — source, examples (`cli/examples/`), and issue tracker.
 
 ## License
 

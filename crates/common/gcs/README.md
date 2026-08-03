@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-common-gcs.svg)](https://crates.io/crates/faucet-common-gcs)
 [![Docs.rs](https://docs.rs/faucet-common-gcs/badge.svg)](https://docs.rs/faucet-common-gcs)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-common-gcs.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-common-gcs.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-common-gcs.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-common-gcs.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Shared Google Cloud Storage credentials and client construction for the GCS source and sink connectors. Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+Shared Google Cloud Storage credentials and client construction for the GCS source and sink connectors. Part of the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem.
 
 This is a small **internal/shared** crate: it holds the one credential enum and the async client builders that both [`faucet-source-gcs`](https://crates.io/crates/faucet-source-gcs) and [`faucet-sink-gcs`](https://crates.io/crates/faucet-sink-gcs) need, so the two crates accept exactly the same `credentials:` shape and build their GCS clients the same way. It is built on the official [`google-cloud-storage`](https://crates.io/crates/google-cloud-storage) SDK and [`google-cloud-auth`](https://crates.io/crates/google-cloud-auth).
 
@@ -102,7 +102,7 @@ credentials:
 ## See also
 
 - [`faucet-source-gcs`](https://crates.io/crates/faucet-source-gcs) and [`faucet-sink-gcs`](https://crates.io/crates/faucet-sink-gcs) — the connectors that consume these types.
-- [faucet-stream documentation](https://pawansikawat.github.io/faucet-stream/) — connector reference and cookbook.
+- [faucet-stream documentation](https://faucet-hq.github.io/faucet-stream/) — connector reference and cookbook.
 
 ## License
 

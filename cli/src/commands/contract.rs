@@ -10,7 +10,7 @@ use faucet_core::contract::{CompiledContract, ContractSpec, to_json_schema, to_o
 
 /// Producer identifier embedded in the OpenLineage export.
 const PRODUCER: &str = concat!(
-    "https://github.com/PawanSikawat/faucet-stream/tree/v",
+    "https://github.com/faucet-hq/faucet-stream/tree/v",
     env!("CARGO_PKG_VERSION")
 );
 

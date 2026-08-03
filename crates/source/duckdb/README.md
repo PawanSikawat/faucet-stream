@@ -1,6 +1,6 @@
 # faucet-source-duckdb
 
-DuckDB query source connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream)
+DuckDB query source connector for the [faucet-stream](https://github.com/faucet-hq/faucet-stream)
 data-movement platform. Opens a DuckDB database (a file, or in-memory), runs a
 configured SQL query, and streams rows as JSON with bounded memory.
 

@@ -1,7 +1,7 @@
 # faucet-conformance
 
 A reusable connector **conformance test battery** for the
-[faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Any
+[faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Any
 `faucet-source-*` / `faucet-sink-*` crate calls it from its own `tests/` to
 prove it upholds the connector contract.
 

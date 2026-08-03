@@ -1,7 +1,7 @@
 # faucet-common-spanner
 
 Shared configuration and conversion types for the
-[faucet-stream](https://github.com/PawanSikawat/faucet-stream) Google Cloud
+[faucet-stream](https://github.com/faucet-hq/faucet-stream) Google Cloud
 Spanner connectors — [`faucet-source-spanner`](https://crates.io/crates/faucet-source-spanner)
 and [`faucet-sink-spanner`](https://crates.io/crates/faucet-sink-spanner).
 

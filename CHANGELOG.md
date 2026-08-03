@@ -52,162 +52,162 @@ independently).
   to 5,000-row batches; Meltano's opt-in `use_copy` COPY path noted as left off),
   so the sink-bound gap cannot be read as a Meltano batch misconfiguration.
 
-## `faucet-cli` — [1.1.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-cli-v1.0.1...faucet-cli-v1.1.0) - 2026-06-12
+## `faucet-cli` — [1.1.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-cli-v1.0.1...faucet-cli-v1.1.0) - 2026-06-12
 
 ### Bug Fixes
 
-- *(serve)* Retry transient run-history connect before degrading ([#236](https://github.com/PawanSikawat/faucet-stream/pull/236))
+- *(serve)* Retry transient run-history connect before degrading ([#236](https://github.com/faucet-hq/faucet-stream/pull/236))
 - *(lineage)* Standard { type, config } shape for transport + auth
 
 ### CI & Build
 
-- Migrate to Rust 1.96 ([#175](https://github.com/PawanSikawat/faucet-stream/pull/175))
+- Migrate to Rust 1.96 ([#175](https://github.com/faucet-hq/faucet-stream/pull/175))
 
 ### Features
 
-- *(serve)* Event-driven pipeline triggers (object-arrival / webhook / queue-depth) ([#196](https://github.com/PawanSikawat/faucet-stream/pull/196))
-- *(cli)* Config composition — extends / profiles / !include ([#231](https://github.com/PawanSikawat/faucet-stream/pull/231))
-- *(serve)* Distributed / clustered execution (Mode A) ([#197](https://github.com/PawanSikawat/faucet-stream/pull/197))
-- *(bigquery-sink)* Exactly-once delivery via MERGE transaction ([#215](https://github.com/PawanSikawat/faucet-stream/pull/215))
-- Unified write_mode upsert/delete (merge by key) across SQL/Mongo/ES sinks ([#226](https://github.com/PawanSikawat/faucet-stream/pull/226))
-- Exactly-once / idempotent delivery mode ([#217](https://github.com/PawanSikawat/faucet-stream/pull/217))
-- *(serve)* Embedded web console (serve-ui) ([#214](https://github.com/PawanSikawat/faucet-stream/pull/214))
-- *(transform-sql)* SQL-as-transform via embedded DuckDB ([#129](https://github.com/PawanSikawat/faucet-stream/pull/129))
-- OpenLineage event emission for pipeline runs ([#123](https://github.com/PawanSikawat/faucet-stream/pull/123))
-- Add Apache Iceberg sink connector (append-only) ([#180](https://github.com/PawanSikawat/faucet-stream/pull/180))
-- Add MySQL binlog (CDC) source connector ([#178](https://github.com/PawanSikawat/faucet-stream/pull/178))
-- Add MongoDB Change Streams (CDC) source connector ([#176](https://github.com/PawanSikawat/faucet-stream/pull/176))
+- *(serve)* Event-driven pipeline triggers (object-arrival / webhook / queue-depth) ([#196](https://github.com/faucet-hq/faucet-stream/pull/196))
+- *(cli)* Config composition — extends / profiles / !include ([#231](https://github.com/faucet-hq/faucet-stream/pull/231))
+- *(serve)* Distributed / clustered execution (Mode A) ([#197](https://github.com/faucet-hq/faucet-stream/pull/197))
+- *(bigquery-sink)* Exactly-once delivery via MERGE transaction ([#215](https://github.com/faucet-hq/faucet-stream/pull/215))
+- Unified write_mode upsert/delete (merge by key) across SQL/Mongo/ES sinks ([#226](https://github.com/faucet-hq/faucet-stream/pull/226))
+- Exactly-once / idempotent delivery mode ([#217](https://github.com/faucet-hq/faucet-stream/pull/217))
+- *(serve)* Embedded web console (serve-ui) ([#214](https://github.com/faucet-hq/faucet-stream/pull/214))
+- *(transform-sql)* SQL-as-transform via embedded DuckDB ([#129](https://github.com/faucet-hq/faucet-stream/pull/129))
+- OpenLineage event emission for pipeline runs ([#123](https://github.com/faucet-hq/faucet-stream/pull/123))
+- Add Apache Iceberg sink connector (append-only) ([#180](https://github.com/faucet-hq/faucet-stream/pull/180))
+- Add MySQL binlog (CDC) source connector ([#178](https://github.com/faucet-hq/faucet-stream/pull/178))
+- Add MongoDB Change Streams (CDC) source connector ([#176](https://github.com/faucet-hq/faucet-stream/pull/176))
 
 ### Miscellaneous
 
-- Release ([#177](https://github.com/PawanSikawat/faucet-stream/pull/177))
+- Release ([#177](https://github.com/faucet-hq/faucet-stream/pull/177))
 
 ### Performance
 
-- *(cli)* Bound matrix fan-out memory by projecting captured parent records ([#186](https://github.com/PawanSikawat/faucet-stream/pull/186))
+- *(cli)* Bound matrix fan-out memory by projecting captured parent records ([#186](https://github.com/faucet-hq/faucet-stream/pull/186))
 
 ### Testing
 
-- Raise workspace coverage to ~94% ([#222](https://github.com/PawanSikawat/faucet-stream/pull/222))
+- Raise workspace coverage to ~94% ([#222](https://github.com/faucet-hq/faucet-stream/pull/222))
 
-## `faucet-stream` — [1.1.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.0.2...faucet-stream-v1.1.0) - 2026-06-12
+## `faucet-stream` — [1.1.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-stream-v1.0.2...faucet-stream-v1.1.0) - 2026-06-12
 
 ### Bug Fixes
 
-- *(serve)* Retry transient run-history connect before degrading ([#236](https://github.com/PawanSikawat/faucet-stream/pull/236))
+- *(serve)* Retry transient run-history connect before degrading ([#236](https://github.com/faucet-hq/faucet-stream/pull/236))
 
 ### Features
 
-- *(serve)* Event-driven pipeline triggers (object-arrival / webhook / queue-depth) ([#196](https://github.com/PawanSikawat/faucet-stream/pull/196))
-- Unified write_mode upsert/delete (merge by key) across SQL/Mongo/ES sinks ([#226](https://github.com/PawanSikawat/faucet-stream/pull/226))
-- *(serve)* Embedded web console (serve-ui) ([#214](https://github.com/PawanSikawat/faucet-stream/pull/214))
-- *(transform-sql)* SQL-as-transform via embedded DuckDB ([#129](https://github.com/PawanSikawat/faucet-stream/pull/129))
-- OpenLineage event emission for pipeline runs ([#123](https://github.com/PawanSikawat/faucet-stream/pull/123))
-- Add Apache Iceberg sink connector (append-only) ([#180](https://github.com/PawanSikawat/faucet-stream/pull/180))
-- Add MySQL binlog (CDC) source connector ([#178](https://github.com/PawanSikawat/faucet-stream/pull/178))
-- Add MongoDB Change Streams (CDC) source connector ([#176](https://github.com/PawanSikawat/faucet-stream/pull/176))
+- *(serve)* Event-driven pipeline triggers (object-arrival / webhook / queue-depth) ([#196](https://github.com/faucet-hq/faucet-stream/pull/196))
+- Unified write_mode upsert/delete (merge by key) across SQL/Mongo/ES sinks ([#226](https://github.com/faucet-hq/faucet-stream/pull/226))
+- *(serve)* Embedded web console (serve-ui) ([#214](https://github.com/faucet-hq/faucet-stream/pull/214))
+- *(transform-sql)* SQL-as-transform via embedded DuckDB ([#129](https://github.com/faucet-hq/faucet-stream/pull/129))
+- OpenLineage event emission for pipeline runs ([#123](https://github.com/faucet-hq/faucet-stream/pull/123))
+- Add Apache Iceberg sink connector (append-only) ([#180](https://github.com/faucet-hq/faucet-stream/pull/180))
+- Add MySQL binlog (CDC) source connector ([#178](https://github.com/faucet-hq/faucet-stream/pull/178))
+- Add MongoDB Change Streams (CDC) source connector ([#176](https://github.com/faucet-hq/faucet-stream/pull/176))
 
 ### Miscellaneous
 
-- Release ([#177](https://github.com/PawanSikawat/faucet-stream/pull/177))
+- Release ([#177](https://github.com/faucet-hq/faucet-stream/pull/177))
 
-## `faucet-sink-iceberg` — [1.0.0](https://github.com/PawanSikawat/faucet-stream/releases/tag/faucet-sink-iceberg-v1.0.0) - 2026-06-12
-
-### Features
-
-- Unified write_mode upsert/delete (merge by key) across SQL/Mongo/ES sinks ([#226](https://github.com/PawanSikawat/faucet-stream/pull/226))
-- Exactly-once / idempotent delivery mode ([#217](https://github.com/PawanSikawat/faucet-stream/pull/217))
-- *(iceberg)* Cloud-warehouse (S3/GCS) storage for SQL/Glue/HMS catalogs ([#185](https://github.com/PawanSikawat/faucet-stream/pull/185))
-- OpenLineage event emission for pipeline runs ([#123](https://github.com/PawanSikawat/faucet-stream/pull/123))
-- Add Apache Iceberg sink connector (append-only) ([#180](https://github.com/PawanSikawat/faucet-stream/pull/180))
-
-## `faucet-sink-parquet` — [1.1.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-sink-parquet-v1.0.1...faucet-sink-parquet-v1.1.0) - 2026-06-12
+## `faucet-sink-iceberg` — [1.0.0](https://github.com/faucet-hq/faucet-stream/releases/tag/faucet-sink-iceberg-v1.0.0) - 2026-06-12
 
 ### Features
 
-- OpenLineage event emission for pipeline runs ([#123](https://github.com/PawanSikawat/faucet-stream/pull/123))
+- Unified write_mode upsert/delete (merge by key) across SQL/Mongo/ES sinks ([#226](https://github.com/faucet-hq/faucet-stream/pull/226))
+- Exactly-once / idempotent delivery mode ([#217](https://github.com/faucet-hq/faucet-stream/pull/217))
+- *(iceberg)* Cloud-warehouse (S3/GCS) storage for SQL/Glue/HMS catalogs ([#185](https://github.com/faucet-hq/faucet-stream/pull/185))
+- OpenLineage event emission for pipeline runs ([#123](https://github.com/faucet-hq/faucet-stream/pull/123))
+- Add Apache Iceberg sink connector (append-only) ([#180](https://github.com/faucet-hq/faucet-stream/pull/180))
+
+## `faucet-sink-parquet` — [1.1.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-sink-parquet-v1.0.1...faucet-sink-parquet-v1.1.0) - 2026-06-12
+
+### Features
+
+- OpenLineage event emission for pipeline runs ([#123](https://github.com/faucet-hq/faucet-stream/pull/123))
 
 ### Miscellaneous
 
-- Release ([#177](https://github.com/PawanSikawat/faucet-stream/pull/177))
+- Release ([#177](https://github.com/faucet-hq/faucet-stream/pull/177))
 
 ### Testing
 
-- Raise workspace coverage to ~94% ([#222](https://github.com/PawanSikawat/faucet-stream/pull/222))
+- Raise workspace coverage to ~94% ([#222](https://github.com/faucet-hq/faucet-stream/pull/222))
 
-## `faucet-state-postgres` — [1.0.2](https://github.com/PawanSikawat/faucet-stream/compare/faucet-state-postgres-v1.0.1...faucet-state-postgres-v1.0.2) - 2026-06-12
-
-### Miscellaneous
-
-- Updated the following local packages: faucet-core
-
-## `faucet-state-redis` — [1.0.2](https://github.com/PawanSikawat/faucet-stream/compare/faucet-state-redis-v1.0.1...faucet-state-redis-v1.0.2) - 2026-06-12
+## `faucet-state-postgres` — [1.0.2](https://github.com/faucet-hq/faucet-stream/compare/faucet-state-postgres-v1.0.1...faucet-state-postgres-v1.0.2) - 2026-06-12
 
 ### Miscellaneous
 
 - Updated the following local packages: faucet-core
 
-## `faucet-common-mssql` — [1.0.2](https://github.com/PawanSikawat/faucet-stream/compare/faucet-common-mssql-v1.0.1...faucet-common-mssql-v1.0.2) - 2026-06-12
+## `faucet-state-redis` — [1.0.2](https://github.com/faucet-hq/faucet-stream/compare/faucet-state-redis-v1.0.1...faucet-state-redis-v1.0.2) - 2026-06-12
 
 ### Miscellaneous
 
 - Updated the following local packages: faucet-core
 
-## `faucet-common-snowflake` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-common-snowflake-v1.0.0...faucet-common-snowflake-v1.0.1) - 2026-06-12
+## `faucet-common-mssql` — [1.0.2](https://github.com/faucet-hq/faucet-stream/compare/faucet-common-mssql-v1.0.1...faucet-common-mssql-v1.0.2) - 2026-06-12
 
 ### Miscellaneous
 
 - Updated the following local packages: faucet-core
 
-## `faucet-common-kafka` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-common-kafka-v1.0.0...faucet-common-kafka-v1.0.1) - 2026-06-12
+## `faucet-common-snowflake` — [1.0.1](https://github.com/faucet-hq/faucet-stream/compare/faucet-common-snowflake-v1.0.0...faucet-common-snowflake-v1.0.1) - 2026-06-12
 
 ### Miscellaneous
 
 - Updated the following local packages: faucet-core
 
-## `faucet-common-gcs` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-common-gcs-v1.0.0...faucet-common-gcs-v1.0.1) - 2026-06-12
+## `faucet-common-kafka` — [1.0.1](https://github.com/faucet-hq/faucet-stream/compare/faucet-common-kafka-v1.0.0...faucet-common-kafka-v1.0.1) - 2026-06-12
 
 ### Miscellaneous
 
 - Updated the following local packages: faucet-core
 
-## `faucet-common-elasticsearch` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-common-elasticsearch-v1.0.0...faucet-common-elasticsearch-v1.0.1) - 2026-06-12
+## `faucet-common-gcs` — [1.0.1](https://github.com/faucet-hq/faucet-stream/compare/faucet-common-gcs-v1.0.0...faucet-common-gcs-v1.0.1) - 2026-06-12
 
 ### Miscellaneous
 
 - Updated the following local packages: faucet-core
 
-## `faucet-common-bigquery` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-common-bigquery-v1.0.0...faucet-common-bigquery-v1.0.1) - 2026-06-12
+## `faucet-common-elasticsearch` — [1.0.1](https://github.com/faucet-hq/faucet-stream/compare/faucet-common-elasticsearch-v1.0.0...faucet-common-elasticsearch-v1.0.1) - 2026-06-12
 
 ### Miscellaneous
 
 - Updated the following local packages: faucet-core
 
-## `faucet-auth` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-auth-v1.0.0...faucet-auth-v1.0.1) - 2026-06-12
+## `faucet-common-bigquery` — [1.0.1](https://github.com/faucet-hq/faucet-stream/compare/faucet-common-bigquery-v1.0.0...faucet-common-bigquery-v1.0.1) - 2026-06-12
 
 ### Miscellaneous
 
 - Updated the following local packages: faucet-core
 
-## `faucet-stream` — [1.0.2](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.0.1...faucet-stream-v1.0.2) - 2026-06-02
+## `faucet-auth` — [1.0.1](https://github.com/faucet-hq/faucet-stream/compare/faucet-auth-v1.0.0...faucet-auth-v1.0.1) - 2026-06-12
+
+### Miscellaneous
+
+- Updated the following local packages: faucet-core
+
+## `faucet-stream` — [1.0.2](https://github.com/faucet-hq/faucet-stream/compare/faucet-stream-v1.0.1...faucet-stream-v1.0.2) - 2026-06-02
 
 ### Bug Fixes
 
 - Absolute PNG banner for crates.io README hero + Codecov upload token
 
-## `faucet-cli` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-cli-v1.0.0...faucet-cli-v1.0.1) - 2026-06-02
+## `faucet-cli` — [1.0.1](https://github.com/faucet-hq/faucet-stream/compare/faucet-cli-v1.0.0...faucet-cli-v1.0.1) - 2026-06-02
 
 ### Miscellaneous
 
 - Updated the following local packages: faucet-source-kafka, faucet-source-gcs, faucet-source-elasticsearch, faucet-sink-gcs, faucet-sink-elasticsearch, faucet-sink-kafka, faucet-source-mssql, faucet-sink-mssql
 
-## `faucet-sink-mssql` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-sink-mssql-v1.0.0...faucet-sink-mssql-v1.0.1) - 2026-06-02
+## `faucet-sink-mssql` — [1.0.1](https://github.com/faucet-hq/faucet-stream/compare/faucet-sink-mssql-v1.0.0...faucet-sink-mssql-v1.0.1) - 2026-06-02
 
 ### Miscellaneous
 
 - Updated the following local packages: faucet-common-mssql
 
-## `faucet-source-mssql` — [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-source-mssql-v1.0.0...faucet-source-mssql-v1.0.1) - 2026-06-02
+## `faucet-source-mssql` — [1.0.1](https://github.com/faucet-hq/faucet-stream/compare/faucet-source-mssql-v1.0.0...faucet-source-mssql-v1.0.1) - 2026-06-02
 
 ### Miscellaneous
 

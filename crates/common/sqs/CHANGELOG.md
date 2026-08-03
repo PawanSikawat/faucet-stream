@@ -12,4 +12,4 @@ independently).
 ### Features
 
 - Initial release: shared `SqsCredentials` auth enum + `build_client` helper for
-  the AWS SQS source and sink connectors ([#412](https://github.com/PawanSikawat/faucet-stream/issues/412)).
+  the AWS SQS source and sink connectors ([#412](https://github.com/faucet-hq/faucet-stream/issues/412)).

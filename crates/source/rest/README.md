@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-rest.svg)](https://crates.io/crates/faucet-source-rest)
 [![Docs.rs](https://docs.rs/faucet-source-rest/badge.svg)](https://docs.rs/faucet-source-rest)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-rest.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-rest.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-rest.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-rest.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-A declarative, config-driven **REST API source** with pluggable authentication, six pagination styles, schema inference, and incremental replication. Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+A declarative, config-driven **REST API source** with pluggable authentication, six pagination styles, schema inference, and incremental replication. Part of the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem.
 
 This is the flagship faucet-stream source: point it at any JSON-over-HTTP API, describe how to authenticate and paginate, and it streams every record page-by-page into any faucet-stream sink — with retries, `Retry-After` honouring, loop detection, and resumable bookmarks — all from one YAML config and no glue code.
 
@@ -49,7 +49,7 @@ pipeline:
     type: rest
     config:
       base_url: https://api.github.com
-      path: /repos/PawanSikawat/faucet-stream/issues
+      path: /repos/faucet-hq/faucet-stream/issues
       method: GET
       auth:
         type: bearer
@@ -106,7 +106,7 @@ A **`204 No Content`** response — or any `2xx` with an empty/whitespace-only b
 
 #### Unified `resilience:` policy
 
-When driven by the CLI, a pipeline-level [`resilience:`](https://pawansikawat.github.io/faucet-stream/cookbook/resilience.html) block can inject one shared retry policy into this source. **Legacy fields win when set explicitly:** if you set `max_retries` or `retry_backoff` to anything other than their defaults (`3` / `1`), the per-connector value is used and the injected policy is ignored for that field — an explicit setting is never silently overridden. Otherwise the injected policy applies.
+When driven by the CLI, a pipeline-level [`resilience:`](https://faucet-hq.github.io/faucet-stream/cookbook/resilience.html) block can inject one shared retry policy into this source. **Legacy fields win when set explicitly:** if you set `max_retries` or `retry_backoff` to anything other than their defaults (`3` / `1`), the per-connector value is used and the injected policy is ignored for that field — an explicit setting is never silently overridden. Otherwise the injected policy applies.
 
 Because the REST source keeps its own `429`/`Retry-After`-aware retry runner, it honors **only** the injected policy's `max_attempts` (→ `max_retries`) and `base` (→ `retry_backoff`). The policy's `retry_on`, `max` (per-sleep cap), and `jitter` fields are **inert on REST** — they are honored on the `xml`/`graphql` sources and on every sink-side write.
 
@@ -339,7 +339,7 @@ Example `.env`:
 
 ```env
 REST_BASE_URL=https://api.github.com
-REST_PATH=/repos/PawanSikawat/faucet-stream/issues
+REST_PATH=/repos/faucet-hq/faucet-stream/issues
 REST_METHOD=GET
 REST_MAX_PAGES=10
 REST_TIMEOUT=30
@@ -434,11 +434,11 @@ Attach transforms by wrapping the source with [`faucet_core::TransformingSource`
 
 ## See also
 
-- [Connector catalog & capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
-- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html)
-- [Pagination cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/pagination.html)
-- [Resumable state & bookmarks](https://pawansikawat.github.io/faucet-stream/cookbook/state.html)
-- [Config-file grammar](https://pawansikawat.github.io/faucet-stream/reference/config.html)
+- [Connector catalog & capability matrix](https://faucet-hq.github.io/faucet-stream/reference/connectors.html)
+- [Authentication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/auth.html)
+- [Pagination cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/pagination.html)
+- [Resumable state & bookmarks](https://faucet-hq.github.io/faucet-stream/cookbook/state.html)
+- [Config-file grammar](https://faucet-hq.github.io/faucet-stream/reference/config.html)
 - Related crates: [`faucet-source-graphql`](https://crates.io/crates/faucet-source-graphql), [`faucet-source-xml`](https://crates.io/crates/faucet-source-xml), [`faucet-sink-http`](https://crates.io/crates/faucet-sink-http), [`faucet-auth`](https://crates.io/crates/faucet-auth).
 
 ## License

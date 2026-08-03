@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-mysql.svg)](https://crates.io/crates/faucet-sink-mysql)
 [![Docs.rs](https://docs.rs/faucet-sink-mysql/badge.svg)](https://docs.rs/faucet-sink-mysql)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-mysql.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-mysql.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-mysql.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-mysql.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-**MySQL** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records to a MySQL (or MariaDB) table using a pooled `sqlx` connection and efficient multi-row `INSERT` statements with backtick-quoted identifiers.
+**MySQL** sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Writes JSON records to a MySQL (or MariaDB) table using a pooled `sqlx` connection and efficient multi-row `INSERT` statements with backtick-quoted identifiers.
 
 Reach for it when you want to land any faucet-stream source — a REST API, a CSV file, a CDC stream, a queue — into MySQL with one declarative config and no glue code. Store records as opaque JSON blobs, or map their keys straight onto real table columns; mirror a source table with `write_mode: upsert`; or run end-to-end effectively-once from a CDC source.
 
@@ -216,7 +216,7 @@ pipeline:
 - Upserts and deletes within a page are applied inside **one transaction** — they commit atomically or not at all.
 - The `delete_marker` field is stripped from upsert records before writing.
 
-Pair `write_mode: upsert` with the [`cdc_unwrap`](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) transform to mirror a CDC source into MySQL. See the [upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html).
+Pair `write_mode: upsert` with the [`cdc_unwrap`](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html) transform to mirror a CDC source into MySQL. See the [upsert cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html).
 
 ## Effectively-once delivery
 
@@ -246,7 +246,7 @@ pipeline:
 delivery: exactly_once
 ```
 
-See the [effectively-once cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for the full rationale and the supported source/sink set.
+See the [effectively-once cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for the full rationale and the supported source/sink set.
 
 ## Schema evolution
 
@@ -258,7 +258,7 @@ Under `on_drift: evolve`, `MysqlSink::evolve_schema()` applies additive DDL:
 - **Lossless widenings** (e.g. integer → number) → `MODIFY COLUMN` — gated on `allow_type_widening`; re-running the same `MODIFY` is a no-op.
 - **Nullability relaxations** → the column is re-emitted at its current mapped type with an explicit `NULL` (`MODIFY COLUMN`).
 
-Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/schema-drift.html).
+Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/schema-drift.html).
 
 ## Dead-letter queue
 
@@ -364,9 +364,9 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 ## See also
 
-- [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix.
-- [Upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) — write modes & `cdc_unwrap`.
-- [State & effectively-once cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) — resumable and effectively-once runs.
+- [Sinks reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — capability matrix.
+- [Upsert cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html) — write modes & `cdc_unwrap`.
+- [State & effectively-once cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html) — resumable and effectively-once runs.
 - [`faucet-source-mysql`](https://crates.io/crates/faucet-source-mysql) · [`faucet-source-mysql-cdc`](https://crates.io/crates/faucet-source-mysql-cdc) — the MySQL query and CDC sources.
 
 ## License

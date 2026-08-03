@@ -2,11 +2,11 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-common-kafka.svg)](https://crates.io/crates/faucet-common-kafka)
 [![Docs.rs](https://docs.rs/faucet-common-kafka/badge.svg)](https://docs.rs/faucet-common-kafka)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-common-kafka.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-common-kafka.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-common-kafka.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-common-kafka.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
 Shared configuration types for the Kafka source and sink connectors. Part of the
-[faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+[faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem.
 
 This crate holds the wire-format config that `faucet-source-kafka` and `faucet-sink-kafka`
 have in common — authentication, value formats, compression, and the Confluent Schema
@@ -152,8 +152,8 @@ connector READMEs for full pipeline examples.
 
 - [faucet-source-kafka](https://crates.io/crates/faucet-source-kafka) — Kafka consumer source
 - [faucet-sink-kafka](https://crates.io/crates/faucet-sink-kafka) — Kafka producer sink
-- [Connectors reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
-- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html)
+- [Connectors reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html)
+- [Authentication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/auth.html)
 
 ---
 

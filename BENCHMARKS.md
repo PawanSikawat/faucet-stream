@@ -197,7 +197,7 @@ machine-load drift.)
 > so it is not expected to move materially. Re-measuring needs Docker + a Meltano
 > venv on the bench host: run `scripts/run-bench.sh --postgres --rows 1000000` and
 > refresh this table + `benchmarks/results/results_pg_1m.md` when that environment
-> is available (tracked in [#336](https://github.com/PawanSikawat/faucet-stream/issues/336)).
+> is available (tracked in [#336](https://github.com/faucet-hq/faucet-stream/issues/336)).
 
 This is the whole point of the scenario: **the gap
 collapses from ~96× to ~16× as the workload moves from parse-bound to

@@ -15,4 +15,4 @@ independently).
   / ≤256 KiB per request), bounded request concurrency, per-entry
   partial-failure retry, optional FIFO `message_group_id` /
   `message_deduplication_id`, and DLQ-routable per-record outcomes. Conformance
-  battery wired ([#412](https://github.com/PawanSikawat/faucet-stream/issues/412)).
+  battery wired ([#412](https://github.com/faucet-hq/faucet-stream/issues/412)).

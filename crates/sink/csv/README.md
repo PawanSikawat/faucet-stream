@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-csv.svg)](https://crates.io/crates/faucet-sink-csv)
 [![Docs.rs](https://docs.rs/faucet-sink-csv/badge.svg)](https://docs.rs/faucet-sink-csv)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-csv.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-csv.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-csv.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-csv.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-CSV / TSV file sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records to a delimited text file — comma, tab, semicolon, pipe, or any other single-byte delimiter — with an optional header row and RFC 4180 quoting handled automatically.
+CSV / TSV file sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Writes JSON records to a delimited text file — comma, tab, semicolon, pipe, or any other single-byte delimiter — with an optional header row and RFC 4180 quoting handled automatically.
 
 Reach for it whenever the destination is a spreadsheet, a BI import, a data-exchange handoff, or anything that consumes plain delimited text. All file I/O runs inside `tokio::task::spawn_blocking` and flows through a buffered `csv::Writer`, so it stays off the async runtime and doesn't bottleneck on per-record syscalls.
 
@@ -302,9 +302,9 @@ Enable the connector itself in the CLI / umbrella via the `sink-csv` feature.
 
 ## See also
 
-- [Connectors reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — the full connector capability matrix.
-- [Compression cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/compression.html) — gzip / zstd across file sinks.
-- [CLI reference](https://pawansikawat.github.io/faucet-stream/reference/cli.html) — `faucet run`, `faucet schema`, `faucet doctor`.
+- [Connectors reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — the full connector capability matrix.
+- [Compression cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/compression.html) — gzip / zstd across file sinks.
+- [CLI reference](https://faucet-hq.github.io/faucet-stream/reference/cli.html) — `faucet run`, `faucet schema`, `faucet doctor`.
 - [`faucet-sink-jsonl`](https://crates.io/crates/faucet-sink-jsonl) — write JSON Lines to a file instead of delimited text.
 - [`faucet-sink-stdout`](https://crates.io/crates/faucet-sink-stdout) — TSV/JSON to a standard stream for debugging and piping.
 - [`faucet-source-csv`](https://crates.io/crates/faucet-source-csv) — read CSV files as a pipeline source.

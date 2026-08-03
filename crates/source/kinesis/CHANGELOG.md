@@ -6,17 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
-## [1.0.1](https://github.com/PawanSikawat/faucet-stream/compare/faucet-source-kinesis-v1.0.0...faucet-source-kinesis-v1.0.1) - 2026-07-24
+## [1.0.1](https://github.com/faucet-hq/faucet-stream/compare/faucet-source-kinesis-v1.0.0...faucet-source-kinesis-v1.0.1) - 2026-07-24
 
 ### Miscellaneous
 
 - Updated the following local packages: faucet-core, faucet-common-kinesis
 
-## [1.0.0](https://github.com/PawanSikawat/faucet-stream/releases/tag/faucet-source-kinesis-v1.0.0) - 2026-07-17
+## [1.0.0](https://github.com/faucet-hq/faucet-stream/releases/tag/faucet-source-kinesis-v1.0.0) - 2026-07-17
 
 ### Bug Fixes
 
-- Resolve #321 critical/high audit findings (exactly-once, cluster, transform-sql, compression) ([#322](https://github.com/PawanSikawat/faucet-stream/pull/322))
+- Resolve #321 critical/high audit findings (exactly-once, cluster, transform-sql, compression) ([#322](https://github.com/faucet-hq/faucet-stream/pull/322))
 
 ### Features
 
@@ -24,4 +24,4 @@ independently).
 
 ### Testing
 
-- *(conformance)* Promote connectors to Tier-1 with the full conformance battery ([#311](https://github.com/PawanSikawat/faucet-stream/pull/311))
+- *(conformance)* Promote connectors to Tier-1 with the full conformance battery ([#311](https://github.com/faucet-hq/faucet-stream/pull/311))

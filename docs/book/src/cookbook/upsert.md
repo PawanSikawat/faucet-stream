@@ -96,7 +96,7 @@ single row and stamps an `__op` marker (`"u"` for insert/update, `"d"` for
 delete). The sink's `delete_marker` then routes the `"d"` rows to deletes.
 
 This is the shipped example
-[`cli/examples/postgres_cdc_to_postgres_upsert.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/postgres_cdc_to_postgres_upsert.yaml):
+[`cli/examples/postgres_cdc_to_postgres_upsert.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/postgres_cdc_to_postgres_upsert.yaml):
 
 ```yaml
 version: 1

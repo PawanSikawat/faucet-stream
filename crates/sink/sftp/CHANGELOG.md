@@ -14,4 +14,4 @@ independently).
 - Initial release: SFTP sink connector — writes records to an SFTP server as
   JSON Lines objects under a remote directory. Atomic writes (upload to a
   temporary name, then rename into place), append-only, lazy connect with a
-  reused session, conformance battery wired ([#410](https://github.com/PawanSikawat/faucet-stream/issues/410)).
+  reused session, conformance battery wired ([#410](https://github.com/faucet-hq/faucet-stream/issues/410)).

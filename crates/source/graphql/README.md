@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-graphql.svg)](https://crates.io/crates/faucet-source-graphql)
 [![Docs.rs](https://docs.rs/faucet-source-graphql/badge.svg)](https://docs.rs/faucet-source-graphql)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-graphql.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-graphql.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-graphql.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-graphql.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Config-driven **GraphQL API** source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Executes a GraphQL query against any endpoint, follows Relay-style cursor pagination, extracts records with a JSONPath expression, and streams them page-by-page into any faucet-stream sink — a file, a database, a warehouse, a queue — with one declarative config and no glue code.
+Config-driven **GraphQL API** source for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Executes a GraphQL query against any endpoint, follows Relay-style cursor pagination, extracts records with a JSONPath expression, and streams them page-by-page into any faucet-stream sink — a file, a database, a warehouse, a queue — with one declarative config and no glue code.
 
 Reach for it when you want to pull a paginated GraphQL collection (users, repositories, orders, issues…) out of a SaaS API or your own service. Pages are emitted as they arrive, so peak memory stays bounded no matter how many pages the query walks, and transient HTTP failures are retried automatically.
 
@@ -298,7 +298,7 @@ To share one token across many sources, build a provider and inject it with `Gra
 
 1. `new()` builds the `reqwest::Client` **once** and reuses it for every request.
 2. Each request merges static `variables`, the current cursor (into `cursor_variable`), the page-size value (into `page_size_variable`, unless `batch_size = 0`), and any parent-record context values into the GraphQL variables map.
-3. The POST is retried up to 3 times with exponential backoff + jitter (500 ms base) on retriable HTTP failures. When driven by the CLI, a pipeline-level [`resilience:`](https://pawansikawat.github.io/faucet-stream/cookbook/resilience.html) block replaces these built-in retry defaults with one shared policy — GraphQL honors the policy's `max_attempts`, `base`, `max`, `jitter`, and `retry_on` in full.
+3. The POST is retried up to 3 times with exponential backoff + jitter (500 ms base) on retriable HTTP failures. When driven by the CLI, a pipeline-level [`resilience:`](https://faucet-hq.github.io/faucet-stream/cookbook/resilience.html) block replaces these built-in retry defaults with one shared policy — GraphQL honors the policy's `max_attempts`, `base`, `max`, `jitter`, and `retry_on` in full.
 4. `records_path` extracts the record array via JSONPath; the page is yielded immediately.
 5. Pagination advances by reading `hasNextPage` / `endCursor`, stopping on a false flag, an absent or repeated cursor (loop guard), or `max_pages`.
 
@@ -325,9 +325,9 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 ## See also
 
-- [Pagination guide](https://pawansikawat.github.io/faucet-stream/cookbook/pagination.html) — cursor pagination across connectors.
-- [Authentication guide](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html) — inline auth and the shared `auth:` catalog.
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix.
+- [Pagination guide](https://faucet-hq.github.io/faucet-stream/cookbook/pagination.html) — cursor pagination across connectors.
+- [Authentication guide](https://faucet-hq.github.io/faucet-stream/cookbook/auth.html) — inline auth and the shared `auth:` catalog.
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — capability matrix.
 - [`faucet-source-rest`](https://crates.io/crates/faucet-source-rest) — the REST sibling source with broader pagination styles.
 - [`faucet-auth`](https://crates.io/crates/faucet-auth) — shared OAuth2 / token-endpoint providers.
 

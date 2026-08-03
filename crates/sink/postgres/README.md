@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-postgres.svg)](https://crates.io/crates/faucet-sink-postgres)
 [![Docs.rs](https://docs.rs/faucet-sink-postgres/badge.svg)](https://docs.rs/faucet-sink-postgres)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-postgres.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-postgres.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-postgres.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-postgres.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-PostgreSQL **sink** connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records to a Postgres table over a pooled `sqlx` connection, batching them into multi-row `INSERT` statements for high throughput.
+PostgreSQL **sink** connector for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Writes JSON records to a Postgres table over a pooled `sqlx` connection, batching them into multi-row `INSERT` statements for high throughput.
 
 Reach for it whenever you want to land a faucet-stream source — a REST API, a CDC stream, a file, a queue — into Postgres with one declarative config and no glue code. Store records verbatim as a single `jsonb` column for schemaless ingestion, or map JSON keys straight onto typed table columns. With `write_mode: upsert` and a CDC source it becomes a live mirror; with `delivery: exactly_once` it commits records and a watermark in one transaction.
 
@@ -248,7 +248,7 @@ flips them silently:
   index maintenance frequently dominates bulk-insert cost; one bulk rebuild
   is much cheaper than a million incremental updates.
 
-See the [throughput tuning guide](https://pawansikawat.github.io/faucet-stream/cookbook/tuning.html)
+See the [throughput tuning guide](https://faucet-hq.github.io/faucet-stream/cookbook/tuning.html)
 for the full decision table.
 
 ## Write modes (upsert / delete)
@@ -266,7 +266,7 @@ Semantics:
 - **`write_mode: delete`** routes every record to a delete by key.
 - A record missing a key column (or with a `null` key value) fails with a typed `Sink` error. When a `dlq:` block is configured the good rows are still written (upserts + deletes applied) and only the missing/null-key rows are routed to the DLQ per-row; without a DLQ the whole batch fails.
 
-The `cdc_unwrap` transform pairs naturally with upsert — it normalizes a CDC envelope into a flat row plus a `__op` marker (`"u"`/`"d"`) that the `delete_marker` matches. See the [upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html).
+The `cdc_unwrap` transform pairs naturally with upsert — it normalizes a CDC envelope into a flat row plus a `__op` marker (`"u"`/`"d"`) that the `delete_marker` matches. See the [upsert cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html).
 
 ## Effectively-once delivery
 
@@ -299,7 +299,7 @@ pipeline:
 delivery: exactly_once
 ```
 
-`delivery: exactly_once` and `write_mode: upsert` compose — the upsert and the commit-token UPSERT commit in the same transaction. See the [effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery).
+`delivery: exactly_once` and `write_mode: upsert` compose — the upsert and the commit-token UPSERT commit in the same transaction. See the [effectively-once delivery cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery).
 
 ## Schema evolution
 
@@ -311,11 +311,11 @@ Under `on_drift: evolve`, `PostgresSink::evolve_schema()` applies additive DDL i
 - **Lossless widenings** (e.g. integer → number) → `ALTER COLUMN … TYPE` — gated on `allow_type_widening`.
 - **Nullability relaxations** (a previously `NOT NULL` column absent from the page) → `ALTER COLUMN … DROP NOT NULL`.
 
-Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/schema-drift.html).
+Incompatible changes (narrowing / type swaps) are never auto-applied — they are routed by `on_incompatible` (`fail` or `quarantine`). See the [schema-drift cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/schema-drift.html).
 
 ## Dead-letter queue
 
-The sink overrides `Sink::write_batch_partial`, so when a `dlq:` block is configured the router gets per-row outcomes: good rows commit and only the failing rows (e.g. missing/null key columns under `write_mode: upsert`/`delete`) are wrapped in a DLQ envelope and routed to the DLQ sink — the batch is not aborted. Without a DLQ, a row failure fails the whole batch. See the [DLQ cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html).
+The sink overrides `Sink::write_batch_partial`, so when a `dlq:` block is configured the router gets per-row outcomes: good rows commit and only the failing rows (e.g. missing/null key columns under `write_mode: upsert`/`delete`) are wrapped in a DLQ envelope and routed to the DLQ sink — the batch is not aborted. Without a DLQ, a row failure fails the whole batch. See the [DLQ cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/dlq.html).
 
 ## Config loading & schema introspection
 
@@ -422,10 +422,10 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 ## See also
 
-- [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix across all connectors.
-- [Upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) — write modes and CDC mirroring.
-- [Effectively-once delivery](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) — state, watermarks, supported source/sink set.
-- [Dead-letter queue cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html) — routing bad rows.
+- [Sinks reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — capability matrix across all connectors.
+- [Upsert cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html) — write modes and CDC mirroring.
+- [Effectively-once delivery](https://faucet-hq.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) — state, watermarks, supported source/sink set.
+- [Dead-letter queue cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/dlq.html) — routing bad rows.
 - [`faucet-source-postgres`](https://crates.io/crates/faucet-source-postgres) — the matching query source.
 - [`faucet-source-postgres-cdc`](https://crates.io/crates/faucet-source-postgres-cdc) — the CDC source that pairs with upsert/effectively-once.
 

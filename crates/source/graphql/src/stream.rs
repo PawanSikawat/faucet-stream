@@ -332,7 +332,7 @@ impl GraphqlStream {
     ///
     /// Bookmarks are always `None` — the GraphQL source has no
     /// incremental-replication mode today. The
-    /// [`bookmark_emitted`-style trailing-checkpoint](https://github.com/PawanSikawat/faucet-stream/commit/e6fdca5)
+    /// [`bookmark_emitted`-style trailing-checkpoint](https://github.com/faucet-hq/faucet-stream/commit/e6fdca5)
     /// guard from the REST source is preserved structurally so any future
     /// incremental mode picks it up without re-deriving the pattern.
     fn stream_pages_inner(

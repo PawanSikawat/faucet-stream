@@ -2,11 +2,11 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-common-elasticsearch.svg)](https://crates.io/crates/faucet-common-elasticsearch)
 [![Docs.rs](https://docs.rs/faucet-common-elasticsearch/badge.svg)](https://docs.rs/faucet-common-elasticsearch)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-common-elasticsearch.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-common-elasticsearch.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-common-elasticsearch.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-common-elasticsearch.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
 Shared configuration types for the Elasticsearch source and sink connectors. Part of the
-[faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+[faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem.
 
 This crate exists so that `faucet-source-elasticsearch` and `faucet-sink-elasticsearch` describe
 authentication exactly the same way — one `ElasticsearchAuth` enum, one wire shape, one

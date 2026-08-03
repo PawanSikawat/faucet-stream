@@ -3,7 +3,7 @@
 `faucet serve` exposes a JSON REST control plane for submitting, polling,
 listing, cancelling, and streaming the logs of pipeline runs, plus
 unauthenticated health and Prometheus endpoints. A machine-readable
-[`docs/openapi.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/openapi.yaml)
+[`docs/openapi.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/docs/openapi.yaml)
 spec ships alongside this page and is kept in sync with the router by a CI test.
 
 See the [serve cookbook](../cookbook/serve.md) for a guided quickstart, the

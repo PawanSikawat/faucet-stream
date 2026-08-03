@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-s3.svg)](https://crates.io/crates/faucet-source-s3)
 [![Docs.rs](https://docs.rs/faucet-source-s3/badge.svg)](https://docs.rs/faucet-source-s3)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-s3.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-s3.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-s3.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-s3.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-An **AWS S3** source that lists objects under a prefix and parses them as JSON Lines, a JSON array, or raw text. Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+An **AWS S3** source that lists objects under a prefix and parses them as JSON Lines, a JSON array, or raw text. Part of the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem.
 
 Built on the official `aws-sdk-s3` client (built once, reused across every read) with concurrent object fetches via `buffer_unordered`, it pulls a whole bucket prefix into any faucet-stream sink as fast as the storage and your parallelism allow. Point it at MinIO / LocalStack / Cloudflare R2 with a custom `endpoint_url`, and let the standard AWS credential chain handle auth.
 
@@ -394,12 +394,12 @@ Enable the connector itself in the CLI/umbrella via the `source-s3` feature.
 
 ## See also
 
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [Compression cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/compression.html)
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) · [Compression cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/compression.html)
 - Related crates: [faucet-sink-s3](https://crates.io/crates/faucet-sink-s3) · [faucet-source-gcs](https://crates.io/crates/faucet-source-gcs) · [faucet-source-parquet](https://crates.io/crates/faucet-source-parquet)
 
 ## Sharded execution (cluster Mode B)
 
-Under [`faucet serve --cluster`](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html),
+Under [`faucet serve --cluster`](https://faucet-hq.github.io/faucet-stream/cookbook/cluster.html),
 a top-level `shard: { count: N }` block splits this source across cluster
 workers **automatically — no connector config needed**. Each worker reads the
 objects whose key hashes to its shard index (stable FNV-1a modulo `count`),

@@ -13,7 +13,7 @@
 ## Where faucet-stream is different
 
 - **Nothing to operate.** `brew install`, run a YAML file, done. No control-plane deployment, no container registry per connector, no orchestrator to keep alive. A pipeline is a process that starts, moves data, and exits.
-- **Footprint & throughput.** A native Rust binary streams with bounded memory (a 1M-row move in **11.8 MiB**); there's no container-per-connector overhead or JSON hand-off between processes. See the [benchmarks](https://github.com/PawanSikawat/faucet-stream/blob/main/BENCHMARKS.md).
+- **Footprint & throughput.** A native Rust binary streams with bounded memory (a 1M-row move in **11.8 MiB**); there's no container-per-connector overhead or JSON hand-off between processes. See the [benchmarks](https://github.com/faucet-hq/faucet-stream/blob/main/BENCHMARKS.md).
 - **Governance in-path.** Quality checks, versioned contracts, **PII masking before any sink sees a row**, schema-drift policy, OpenLineage lineage + catalog, and SLAs are native — not a separate enterprise tier.
 - **Embeddable.** Compile the engine into your own Rust service via typed traits; Airbyte is a platform you call, not a library you link.
 
@@ -47,4 +47,4 @@
 
 - **[Try it in 60 seconds](../getting-started/try-it-locally.md)** — a no-infrastructure local demo (no Docker).
 - **[Connector catalog](../reference/connectors.md)** — check coverage first.
-- **[Benchmarks](https://github.com/PawanSikawat/faucet-stream/blob/main/BENCHMARKS.md)** — methodology and honest caveats.
+- **[Benchmarks](https://github.com/faucet-hq/faucet-stream/blob/main/BENCHMARKS.md)** — methodology and honest caveats.

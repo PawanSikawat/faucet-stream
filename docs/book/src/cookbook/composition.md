@@ -16,7 +16,7 @@ interpolation runs):
 | `!include path` | Substitute a **YAML fragment** at any node (YAML only). |
 
 This walkthrough uses the files shipped under
-[`cli/examples/compose/`](https://github.com/PawanSikawat/faucet-stream/tree/main/cli/examples/compose).
+[`cli/examples/compose/`](https://github.com/faucet-hq/faucet-stream/tree/main/cli/examples/compose).
 
 ## A worked dev / staging / prod setup
 

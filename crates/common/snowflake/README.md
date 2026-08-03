@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-common-snowflake.svg)](https://crates.io/crates/faucet-common-snowflake)
 [![Docs.rs](https://docs.rs/faucet-common-snowflake/badge.svg)](https://docs.rs/faucet-common-snowflake)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-common-snowflake.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-common-snowflake.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-common-snowflake.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-common-snowflake.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Shared Snowflake authentication types and SQL REST API header helpers. Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+Shared Snowflake authentication types and SQL REST API header helpers. Part of the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem.
 
 This is an internal building block: it holds the one piece of configuration the Snowflake **source** and **sink** must agree on — how a request authenticates against the Snowflake SQL REST API — so both connectors mint identical `Authorization` / `X-Snowflake-Authorization-Token-Type` headers from one place instead of duplicating the JWT logic.
 
@@ -95,8 +95,8 @@ let resp = client
 ## See also
 
 - [Snowflake source crate](https://crates.io/crates/faucet-source-snowflake) · [Snowflake sink crate](https://crates.io/crates/faucet-sink-snowflake)
-- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html)
-- [Configuration reference](https://pawansikawat.github.io/faucet-stream/reference/config.html)
+- [Authentication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/auth.html)
+- [Configuration reference](https://faucet-hq.github.io/faucet-stream/reference/config.html)
 
 ## License
 

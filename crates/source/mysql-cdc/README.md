@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-mysql-cdc.svg)](https://crates.io/crates/faucet-source-mysql-cdc)
 [![Docs.rs](https://docs.rs/faucet-source-mysql-cdc/badge.svg)](https://docs.rs/faucet-source-mysql-cdc)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-mysql-cdc.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-mysql-cdc.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-mysql-cdc.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-mysql-cdc.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-MySQL **Change Data Capture (CDC)** source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Tails the MySQL binary log via row-based replication and emits every `INSERT` / `UPDATE` / `DELETE` (and optionally DDL) as a structured JSON change event.
+MySQL **Change Data Capture (CDC)** source for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Tails the MySQL binary log via row-based replication and emits every `INSERT` / `UPDATE` / `DELETE` (and optionally DDL) as a structured JSON change event.
 
 Reach for it when you want to mirror a MySQL database into a warehouse, lake, queue, or search index in near-real-time — without polling, without modifying the source schema, and without dropping a single committed row. Bookmarks are persisted as binlog `{ file, pos }` coordinates, so a restarted pipeline resumes from the exact position it left off: no gap, no duplicate.
 
@@ -356,13 +356,13 @@ pipeline:
       connection_url: postgres://app:app@localhost:5432/mirror
 ```
 
-To build a true table mirror (rather than an append-only change log), pair the `cdc_unwrap` transform with a `write_mode: upsert` sink — see the [upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html).
+To build a true table mirror (rather than an append-only change log), pair the `cdc_unwrap` transform with a `write_mode: upsert` sink — see the [upsert cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html).
 
 ## Snapshot → CDC handoff
 
 This source implements `capture_resume_position()`, which reads the server's **current binlog coordinates** (`{ file, pos }`) as a resume bookmark — without consuming any changes. The `faucet replicate` command uses it to anchor the binlog stream at-or-before a bulk snapshot of the table, so the combined snapshot + CDC result is a gap-free, duplicate-free mirror when paired with a `write_mode: upsert` sink.
 
-There is no slot to pin; binlog retention is **time-based**, so keep your binlog retention window comfortably larger than the expected snapshot duration. If the captured position is purged before CDC starts, the stream errors that its start position is unavailable. See the [replication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/replication.html) for the full handoff model.
+There is no slot to pin; binlog retention is **time-based**, so keep your binlog retention window comfortably larger than the expected snapshot duration. If the captured position is purged before CDC starts, the stream errors that its start position is unavailable. See the [replication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/replication.html) for the full handoff model.
 
 ## Config loading & schema
 
@@ -434,7 +434,7 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 ## See also
 
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [CDC / state cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) · [Upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) · [Replication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/replication.html)
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) · [CDC / state cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html) · [Upsert cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html) · [Replication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/replication.html)
 - [faucet-source-mysql](https://crates.io/crates/faucet-source-mysql) — query-mode MySQL source (snapshots via SQL)
 - [faucet-source-postgres-cdc](https://crates.io/crates/faucet-source-postgres-cdc) · [faucet-source-mongodb-cdc](https://crates.io/crates/faucet-source-mongodb-cdc) — sibling CDC sources
 - [faucet-state-redis](https://crates.io/crates/faucet-state-redis) · [faucet-state-postgres](https://crates.io/crates/faucet-state-postgres) — durable bookmark stores

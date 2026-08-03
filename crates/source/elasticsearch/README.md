@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-elasticsearch.svg)](https://crates.io/crates/faucet-source-elasticsearch)
 [![Docs.rs](https://docs.rs/faucet-source-elasticsearch/badge.svg)](https://docs.rs/faucet-source-elasticsearch)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-elasticsearch.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-elasticsearch.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-elasticsearch.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-elasticsearch.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-An **Elasticsearch** search source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Runs a query-DSL search against an index, walks the result set page-by-page via the [scroll API](https://www.elastic.co/guide/en/elasticsearch/reference/current/scroll-api.html), emits each hit's `_source` as a `serde_json::Value`, and streams pages straight into any faucet-stream sink so memory stays bounded no matter how many documents match.
+An **Elasticsearch** search source for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Runs a query-DSL search against an index, walks the result set page-by-page via the [scroll API](https://www.elastic.co/guide/en/elasticsearch/reference/current/scroll-api.html), emits each hit's `_source` as a `serde_json::Value`, and streams pages straight into any faucet-stream sink so memory stays bounded no matter how many documents match.
 
 Reach for it when you need to export logs, metrics, orders, or any indexed documents out of Elasticsearch — for backup, reindexing, analytics offload, or feeding a database/warehouse/queue — with one declarative config and no glue code.
 
@@ -329,9 +329,9 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 ## See also
 
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — the full capability matrix.
-- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html) — inline vs shared providers.
-- [Configuration grammar](https://pawansikawat.github.io/faucet-stream/reference/config.html) — the YAML/JSON config shape.
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — the full capability matrix.
+- [Authentication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/auth.html) — inline vs shared providers.
+- [Configuration grammar](https://faucet-hq.github.io/faucet-stream/reference/config.html) — the YAML/JSON config shape.
 - [`faucet-sink-elasticsearch`](https://crates.io/crates/faucet-sink-elasticsearch) — the matching bulk-index sink.
 - [`faucet-common-elasticsearch`](https://crates.io/crates/faucet-common-elasticsearch) — the shared `ElasticsearchAuth` enum.
 

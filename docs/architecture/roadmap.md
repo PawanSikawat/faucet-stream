@@ -4,7 +4,7 @@
 
 This page tracks where the *architecture* is heading. It is deliberately narrow:
 connector coverage and product features live in the roadmap epic
-([#38](https://github.com/PawanSikawat/faucet-stream/issues/38)) and the
+([#38](https://github.com/faucet-hq/faucet-stream/issues/38)) and the
 [community roadmap](../community/roadmap.md); this page is about the shape of the
 core, the SDK, and the record model. The repository-wide phased view is in
 [docs/roadmap.md](../roadmap.md).

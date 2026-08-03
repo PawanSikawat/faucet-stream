@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-csv.svg)](https://crates.io/crates/faucet-source-csv)
 [![Docs.rs](https://docs.rs/faucet-source-csv/badge.svg)](https://docs.rs/faucet-source-csv)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-csv.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-csv.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-csv.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-csv.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-A **CSV file source** that reads delimited text files and yields each row as a `serde_json::Value` object. Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+A **CSV file source** that reads delimited text files and yields each row as a `serde_json::Value` object. Part of the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem.
 
 Built on the streaming RFC-4180 `csv-async` reader so the file is consumed lazily, line by line, instead of being slurped into memory — a multi-gigabyte export streams through with memory bounded by `batch_size`, not file size. Reach for it to load CSV/TSV/pipe-delimited exports, spreadsheet dumps, or legacy flat files into any faucet-stream sink.
 
@@ -280,7 +280,7 @@ The connector itself is enabled in the CLI/umbrella via the `source-csv` feature
 
 ## See also
 
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [Compression cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/compression.html) · [Transforms cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/transforms.html)
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) · [Compression cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/compression.html) · [Transforms cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/transforms.html)
 - Related crates: [faucet-sink-csv](https://crates.io/crates/faucet-sink-csv) · [faucet-source-parquet](https://crates.io/crates/faucet-source-parquet) · [faucet-source-s3](https://crates.io/crates/faucet-source-s3)
 
 ## License

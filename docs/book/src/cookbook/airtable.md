@@ -3,7 +3,7 @@
 Airtable's REST API is a plain bearer-authenticated, offset-token-paginated
 JSON API, so faucet's generic [`rest` source](../reference/connectors.md) covers
 it end-to-end — **no dedicated connector crate is required** (issue
-[#414](https://github.com/PawanSikawat/faucet-stream/issues/414)).
+[#414](https://github.com/faucet-hq/faucet-stream/issues/414)).
 
 ## How it maps onto the `rest` source
 
@@ -23,7 +23,7 @@ into dotted top-level keys (`fields.Name`, …).
 ## Runnable recipe
 
 A complete, runnable config lives at
-[`cli/examples/airtable_to_jsonl.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/airtable_to_jsonl.yaml):
+[`cli/examples/airtable_to_jsonl.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/airtable_to_jsonl.yaml):
 
 ```yaml
 version: 1

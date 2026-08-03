@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-elasticsearch.svg)](https://crates.io/crates/faucet-sink-elasticsearch)
 [![Docs.rs](https://docs.rs/faucet-sink-elasticsearch/badge.svg)](https://docs.rs/faucet-sink-elasticsearch)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-elasticsearch.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-elasticsearch.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-elasticsearch.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-elasticsearch.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-**Elasticsearch** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Indexes JSON records into an Elasticsearch index via the bulk API (`POST /_bulk`, NDJSON body), re-chunking each page into payloads that land in Elasticsearch's per-request sweet spot.
+**Elasticsearch** sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Indexes JSON records into an Elasticsearch index via the bulk API (`POST /_bulk`, NDJSON body), re-chunking each page into payloads that land in Elasticsearch's per-request sweet spot.
 
 Reach for it when you want to land any faucet-stream source — a database, a queue, a file, a REST API — into Elasticsearch for search and analytics, with one declarative config and no glue code. The `_bulk` `index` action is an idempotent overwrite by `_id`, so the same sink does append, upsert, and delete just by switching `write_mode`.
 
@@ -226,11 +226,11 @@ Under `on_drift: evolve`, `ElasticsearchSink::evolve_schema()` is **add-fields o
 - **New fields** → `PUT /<index>/_mapping` adding the field mappings.
 - **Type widenings and nullability relaxations are no-ops** — Elasticsearch cannot change an existing field's mapping type or nullability in place (a one-shot `debug` log notes this).
 
-Because ES cannot retype an existing field, any change to an existing field's type is classified as **incompatible** and routed by `on_incompatible` (`fail` or `quarantine`) rather than applied. See the [schema-drift cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/schema-drift.html).
+Because ES cannot retype an existing field, any change to an existing field's type is classified as **incompatible** and routed by `on_incompatible` (`fail` or `quarantine`) rather than applied. See the [schema-drift cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/schema-drift.html).
 
 ## Dead-letter queue
 
-This sink overrides `Sink::write_batch_partial` to surface per-row failures from Elasticsearch's `_bulk` response items. Configure a DLQ at the pipeline level (see [cli/README.md — `dlq:`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/README.md)) and only the documents Elasticsearch actually rejected are routed there — already-indexed items stay in the main sink with no duplicates. This is why the bulk API's best-effort, partial-success behaviour doesn't double-write rows into the DLQ.
+This sink overrides `Sink::write_batch_partial` to surface per-row failures from Elasticsearch's `_bulk` response items. Configure a DLQ at the pipeline level (see [cli/README.md — `dlq:`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/README.md)) and only the documents Elasticsearch actually rejected are routed there — already-indexed items stay in the main sink with no duplicates. This is why the bulk API's best-effort, partial-success behaviour doesn't double-write rows into the DLQ.
 
 > **Not effectively-once.** Elasticsearch does not commit a faucet commit token transactionally, so this sink does not support `delivery: exactly_once`. For idempotent re-sends use `write_mode: upsert` (or a stable `id_field` in append mode).
 
@@ -330,10 +330,10 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 ## See also
 
-- [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix.
-- [Upsert & write modes cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html).
-- [Dead-letter queue cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html).
-- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html).
+- [Sinks reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — capability matrix.
+- [Upsert & write modes cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html).
+- [Dead-letter queue cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/dlq.html).
+- [Authentication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/auth.html).
 - [`faucet-source-elasticsearch`](https://crates.io/crates/faucet-source-elasticsearch) — the Elasticsearch source (search/scroll API).
 
 ## License

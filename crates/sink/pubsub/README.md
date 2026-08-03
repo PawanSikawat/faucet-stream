@@ -1,7 +1,7 @@
 # faucet-sink-pubsub
 
 Google Cloud Pub/Sub **sink** connector for
-[faucet-stream](https://github.com/PawanSikawat/faucet-stream). Publishes each
+[faucet-stream](https://github.com/faucet-hq/faucet-stream). Publishes each
 record as a Pub/Sub message with a configurable encoding, optional ordering
 key, bounded concurrency, and per-message partial-failure routing to a DLQ.
 

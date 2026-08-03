@@ -3,7 +3,7 @@
 //! # faucet-sink-kinesis
 //!
 //! AWS Kinesis Data Streams sink connector for
-//! [faucet-stream](https://github.com/PawanSikawat/faucet-stream): batched
+//! [faucet-stream](https://github.com/faucet-hq/faucet-stream): batched
 //! `PutRecords` writes with configurable partition-key derivation, bounded
 //! concurrent in-flight requests, per-entry partial-failure retry, and
 //! DLQ-routable per-record outcomes.

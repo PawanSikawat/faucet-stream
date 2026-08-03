@@ -13,4 +13,4 @@ independently).
 
 - Initial release: shared NATS configuration types for the source and sink
   connectors — `NatsAuth` (secret-safe `Debug`), `NatsConnectionConfig`, and
-  the `connect` client builder ([#411](https://github.com/PawanSikawat/faucet-stream/issues/411)).
+  the `connect` client builder ([#411](https://github.com/faucet-hq/faucet-stream/issues/411)).

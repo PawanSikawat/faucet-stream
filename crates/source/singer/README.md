@@ -4,7 +4,7 @@
 > fixed, but breadth of testing and upstream-drift tracking are not guaranteed.
 
 A [Singer](https://www.singer.io/) tap bridge source for
-[faucet-stream](https://github.com/PawanSikawat/faucet-stream). It runs an
+[faucet-stream](https://github.com/faucet-hq/faucet-stream). It runs an
 existing Singer **tap** executable and adapts its stdout message stream into
 faucet records — so any of the hundreds of community taps can feed a faucet
 pipeline.
@@ -78,7 +78,7 @@ pipeline:
       stream: issues
       tap_config:
         access_token: ${env:GITHUB_TOKEN}
-        repository: PawanSikawat/faucet-stream
+        repository: faucet-hq/faucet-stream
   sink:
     type: jsonl
     config:

@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-gcs.svg)](https://crates.io/crates/faucet-source-gcs)
 [![Docs.rs](https://docs.rs/faucet-source-gcs/badge.svg)](https://docs.rs/faucet-source-gcs)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-gcs.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-gcs.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-gcs.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-gcs.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Google **Cloud Storage** source connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Lists objects in a bucket (with an optional prefix) or reads an explicit list of object keys, fetches each one over the official [`google-cloud-storage`](https://crates.io/crates/google-cloud-storage) SDK, and parses it as **JSON Lines**, **JSON Array**, or **raw text** — yielding records as `serde_json::Value`.
+Google **Cloud Storage** source connector for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Lists objects in a bucket (with an optional prefix) or reads an explicit list of object keys, fetches each one over the official [`google-cloud-storage`](https://crates.io/crates/google-cloud-storage) SDK, and parses it as **JSON Lines**, **JSON Array**, or **raw text** — yielding records as `serde_json::Value`.
 
 Reach for it when your data already lives in GCS — event exports, log dumps, analytics extracts, daily snapshots — and you want to move it into any faucet-stream sink (a database, a warehouse, a queue, a file) with one declarative config and no glue code. Objects are read concurrently and JSONL/raw-text bodies stream line-by-line, so a multi-gigabyte export lands without buffering the whole bucket in memory.
 
@@ -360,16 +360,16 @@ Enable the connector itself in the CLI/umbrella via the `source-gcs` feature.
 
 ## See also
 
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — the full source/sink capability matrix.
-- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html) — shared auth providers and the `{type, config}` shape.
-- [Compression cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/compression.html) — gzip/zstd across file connectors.
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — the full source/sink capability matrix.
+- [Authentication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/auth.html) — shared auth providers and the `{type, config}` shape.
+- [Compression cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/compression.html) — gzip/zstd across file connectors.
 - [`faucet-sink-gcs`](https://crates.io/crates/faucet-sink-gcs) — the matching GCS sink.
 - [`faucet-source-s3`](https://crates.io/crates/faucet-source-s3) — the AWS S3 equivalent with the same format semantics.
 - [`faucet-common-gcs`](https://crates.io/crates/faucet-common-gcs) — the shared credentials enum and client builders.
 
 ## Sharded execution (cluster Mode B)
 
-Under [`faucet serve --cluster`](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html),
+Under [`faucet serve --cluster`](https://faucet-hq.github.io/faucet-stream/cookbook/cluster.html),
 a top-level `shard: { count: N }` block splits this source across cluster
 workers **automatically — no connector config needed**. Each worker reads the
 objects whose key hashes to its shard index (stable FNV-1a modulo `count`),

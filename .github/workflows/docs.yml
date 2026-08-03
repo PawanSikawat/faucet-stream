@@ -61,7 +61,7 @@ jobs:
         # the built HTML so search engines can crawl every page. Uses the full
         # Pages origin (site-url in book.toml is only a path prefix).
         env:
-          BASE_URL: "https://pawansikawat.github.io/faucet-stream"
+          BASE_URL: "https://faucet-hq.github.io/faucet-stream"
         run: |
           cd docs/book/book
           {

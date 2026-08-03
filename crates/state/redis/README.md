@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-state-redis.svg)](https://crates.io/crates/faucet-state-redis)
 [![Docs.rs](https://docs.rs/faucet-state-redis/badge.svg)](https://docs.rs/faucet-state-redis)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-state-redis.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-state-redis.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-state-redis.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-state-redis.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Redis-backed [`StateStore`](https://docs.rs/faucet-core/latest/faucet_core/state/trait.StateStore.html) for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Persists incremental-replication bookmarks in Redis so a pipeline can resume exactly where it left off after a crash, restart, or scheduled invocation.
+Redis-backed [`StateStore`](https://docs.rs/faucet-core/latest/faucet_core/state/trait.StateStore.html) for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Persists incremental-replication bookmarks in Redis so a pipeline can resume exactly where it left off after a crash, restart, or scheduled invocation.
 
 ## Why durable state
 
@@ -147,10 +147,10 @@ This crate has no optional features of its own. Enable it in the CLI or the `fau
 
 ## See also
 
-- [State & resume cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) — bookmarks, resume semantics, and choosing a backend.
+- [State & resume cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html) — bookmarks, resume semantics, and choosing a backend.
 - [`faucet-core`](https://crates.io/crates/faucet-core) — the `StateStore` trait this crate implements, plus the built-in `memory` and `file` backends.
 - [`faucet-state-postgres`](https://crates.io/crates/faucet-state-postgres) — the PostgreSQL-backed sibling backend.
-- [faucet-stream on GitHub](https://github.com/PawanSikawat/faucet-stream) — the full ecosystem.
+- [faucet-stream on GitHub](https://github.com/faucet-hq/faucet-stream) — the full ecosystem.
 
 ## License
 

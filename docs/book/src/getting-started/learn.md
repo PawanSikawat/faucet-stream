@@ -186,7 +186,7 @@ one ordering.
 
 - **Run a real pipeline:** [Your first pipeline](./first-pipeline.md).
 - **The concepts, precisely:** [Core concepts](./concepts.md).
-- **The full story with diagrams and code:** the [beginner guide on GitHub](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/learn.md).
+- **The full story with diagrams and code:** the [beginner guide on GitHub](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/learn.md).
 - **Flip this page to 🏛 Architect reference** for the condensed deep view.
 
 </div>
@@ -198,7 +198,7 @@ one ordering.
 faucet-core is a **lean library**: it knows how to move one source to one sink and
 checkpoint safely. All orchestration (matrix DAGs, scheduling, the HTTP control
 plane, clustering) is CLI-layer code built on top. The full reference lives in the
-repository under [`docs/architecture/`](https://github.com/PawanSikawat/faucet-stream/tree/main/docs/architecture); this is the condensed view.
+repository under [`docs/architecture/`](https://github.com/faucet-hq/faucet-stream/tree/main/docs/architecture); this is the condensed view.
 
 ### How a run is assembled
 
@@ -210,7 +210,7 @@ flowchart LR
 `expand` is where a config becomes runnable and where the **load-time gates** run
 (exactly-once, write-mode × sink, quarantine-requires-DLQ) — an impossible
 topology fails `faucet validate` before any record moves. Deep dive:
-[execution model](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/execution.md).
+[execution model](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/execution.md).
 
 ### The pipeline loop
 
@@ -227,8 +227,8 @@ flowchart LR
 - **DLQ:** `write_batch_partial` routes per-row failures aside → flush → persist.
 
 Deep dive:
-[pipeline engine](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/pipeline.md),
-[stream pages](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/stream-pages.md).
+[pipeline engine](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/pipeline.md),
+[stream pages](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/stream-pages.md).
 
 ### The load-bearing invariant
 
@@ -237,8 +237,8 @@ Deep dive:
 
 The state store is therefore never ahead of the sink, so recovery can only ever
 replay attempted work — never skip it. Deep dive:
-[design invariants](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/invariants.md),
-[recovery](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/recovery.md).
+[design invariants](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/invariants.md),
+[recovery](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/recovery.md).
 
 ### Delivery guarantees
 
@@ -253,24 +253,24 @@ replay attempted work — never skip it. Deep dive:
 A non-idempotent `write_batch` is retried **only** when the sink advertises
 idempotence — otherwise a lost response could silently duplicate every row. Deep
 dive:
-[retries](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/retries.md),
-[resilience](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/resilience.md).
+[retries](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/retries.md),
+[resilience](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/resilience.md).
 
 ### The subsystems
 
 | Area | Reference |
 |---|---|
-| Connector SDK (`Source`/`Sink` traits) | [connector-sdk](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/connector-sdk.md) |
-| State & bookmarks | [state-management](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/state-management.md) |
-| Batching & adaptive control | [batching](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/batching.md) |
-| Schema / quality / contracts / masking | [schema](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/schema.md) |
-| Observability | [observability](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/observability.md) |
-| Security model | [security](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/security.md) |
-| Performance & extensibility | [performance](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/performance.md) · [extensibility](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/architecture/extensibility.md) |
+| Connector SDK (`Source`/`Sink` traits) | [connector-sdk](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/connector-sdk.md) |
+| State & bookmarks | [state-management](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/state-management.md) |
+| Batching & adaptive control | [batching](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/batching.md) |
+| Schema / quality / contracts / masking | [schema](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/schema.md) |
+| Observability | [observability](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/observability.md) |
+| Security model | [security](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/security.md) |
+| Performance & extensibility | [performance](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/performance.md) · [extensibility](https://github.com/faucet-hq/faucet-stream/blob/main/docs/architecture/extensibility.md) |
 
 Decision history lives in the
-[ADRs](https://github.com/PawanSikawat/faucet-stream/tree/main/docs/adr); proposals
-in the [RFCs](https://github.com/PawanSikawat/faucet-stream/tree/main/rfcs).
+[ADRs](https://github.com/faucet-hq/faucet-stream/tree/main/docs/adr); proposals
+in the [RFCs](https://github.com/faucet-hq/faucet-stream/tree/main/rfcs).
 
 **Flip this page to 🎓 Beginner's guide** if you'd like the same story from zero.
 

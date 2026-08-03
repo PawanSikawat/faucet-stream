@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-grpc.svg)](https://crates.io/crates/faucet-source-grpc)
 [![Docs.rs](https://docs.rs/faucet-source-grpc/badge.svg)](https://docs.rs/faucet-source-grpc)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-grpc.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-grpc.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-grpc.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-grpc.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Config-driven **gRPC** source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. It calls any gRPC service **dynamically** via protobuf reflection (`prost-reflect`) — no generated client code, no per-service Rust — using a compiled `FileDescriptorSet` to encode the request and decode each response into a typed `serde_json::Value`.
+Config-driven **gRPC** source for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. It calls any gRPC service **dynamically** via protobuf reflection (`prost-reflect`) — no generated client code, no per-service Rust — using a compiled `FileDescriptorSet` to encode the request and decode each response into a typed `serde_json::Value`.
 
 Reach for it when you need to pull data out of an internal gRPC API — a list/get RPC for a one-shot snapshot, or a server-streaming RPC for a long-lived event/change/log feed — and land it in any faucet-stream sink with one declarative config.
 
@@ -372,9 +372,9 @@ This crate has no optional features of its own. Enable it in the CLI/umbrella vi
 
 ## See also
 
-- [Choosing a connector](https://pawansikawat.github.io/faucet-stream/reference/choosing.html)
-- [Connector capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
-- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html)
+- [Choosing a connector](https://faucet-hq.github.io/faucet-stream/reference/choosing.html)
+- [Connector capability matrix](https://faucet-hq.github.io/faucet-stream/reference/connectors.html)
+- [Authentication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/auth.html)
 - [`faucet-sink-http`](https://crates.io/crates/faucet-sink-http) · [`faucet-source-rest`](https://crates.io/crates/faucet-source-rest) · [`faucet-source-graphql`](https://crates.io/crates/faucet-source-graphql)
 
 ## License

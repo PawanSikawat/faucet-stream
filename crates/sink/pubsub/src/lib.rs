@@ -3,7 +3,7 @@
 //! # faucet-sink-pubsub
 //!
 //! Google Cloud Pub/Sub sink connector for
-//! [faucet-stream](https://github.com/PawanSikawat/faucet-stream): batched
+//! [faucet-stream](https://github.com/faucet-hq/faucet-stream): batched
 //! `publish` to a topic with a configurable `value_format` (json / string /
 //! bytes), optional per-message `ordering_key` (field or dot-path) that
 //! enables message ordering, bounded publish concurrency, and per-message
