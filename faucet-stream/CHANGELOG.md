@@ -6,13 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
-## [1.7.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.6.0...faucet-stream-v1.7.0) - 2026-08-01
+## [1.7.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-stream-v1.6.0...faucet-stream-v1.7.0) - 2026-08-01
 
 ### Features
 
-- *(deploy)* Dockerfile + Helm chart for container/Kubernetes deployment ([#439](https://github.com/PawanSikawat/faucet-stream/pull/439))
+- *(deploy)* Dockerfile + Helm chart for container/Kubernetes deployment ([#439](https://github.com/faucet-hq/faucet-stream/pull/439))
 
-## [1.6.0](https://github.com/PawanSikawat/faucet-stream/compare/faucet-stream-v1.5.0...faucet-stream-v1.6.0) - 2026-07-31
+## [1.6.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-stream-v1.5.0...faucet-stream-v1.6.0) - 2026-07-31
 
 ### Bug Fixes
 
