@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-xml.svg)](https://crates.io/crates/faucet-source-xml)
 [![Docs.rs](https://docs.rs/faucet-source-xml/badge.svg)](https://docs.rs/faucet-source-xml)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-xml.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-xml.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-xml.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-xml.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-A config-driven **XML / SOAP API source** for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. It fetches an XML (or SOAP) HTTP endpoint, converts the response to JSON, pulls the repeating record element out by a dot-separated element path, and streams the records page-by-page into any faucet-stream sink — a file, a database, a warehouse, a queue — with one declarative config and no glue code.
+A config-driven **XML / SOAP API source** for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. It fetches an XML (or SOAP) HTTP endpoint, converts the response to JSON, pulls the repeating record element out by a dot-separated element path, and streams the records page-by-page into any faucet-stream sink — a file, a database, a warehouse, a queue — with one declarative config and no glue code.
 
 Reach for it when the upstream system only speaks XML or SOAP: legacy enterprise web services, RSS/Atom-style feeds, government data portals, or any HTTP endpoint that returns `application/xml`. The parser is event-driven (streaming `quick-xml`), so peak memory stays bounded by `batch_size` even for large documents.
 
@@ -228,7 +228,7 @@ pipeline:
       batch_size: 1000
 ```
 
-Runnable copies of the last two shapes live in [`cli/examples/xml_to_mongodb.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/xml_to_mongodb.yaml) and [`cli/examples/xml_to_s3.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/xml_to_s3.yaml).
+Runnable copies of the last two shapes live in [`cli/examples/xml_to_mongodb.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/xml_to_mongodb.yaml) and [`cli/examples/xml_to_s3.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/xml_to_s3.yaml).
 
 ## Pagination
 
@@ -292,7 +292,7 @@ To wire it into a pipeline, hand the `XmlStream` to `faucet_core::Pipeline` (bat
 ## How it works
 
 1. `new()` builds the `reqwest` client **once** and stores it on the struct.
-2. Each page issues one request (`base_url + path` with `query_params` + the pagination param), retried up to **3 times** with exponential backoff (base 500 ms) on transient failures via `faucet_core::execute_with_retry`. Non-cloneable request bodies are not retried (surfaced as `FaucetError::Source`). When driven by the CLI, a pipeline-level [`resilience:`](https://pawansikawat.github.io/faucet-stream/cookbook/resilience.html) block replaces these built-in retry defaults with one shared policy — XML honors the policy's `max_attempts`, `base`, `max`, `jitter`, and `retry_on` in full.
+2. Each page issues one request (`base_url + path` with `query_params` + the pagination param), retried up to **3 times** with exponential backoff (base 500 ms) on transient failures via `faucet_core::execute_with_retry`. Non-cloneable request bodies are not retried (surfaced as `FaucetError::Source`). When driven by the CLI, a pipeline-level [`resilience:`](https://faucet-hq.github.io/faucet-stream/cookbook/resilience.html) block replaces these built-in retry defaults with one shared policy — XML honors the policy's `max_attempts`, `base`, `max`, `jitter`, and `retry_on` in full.
 3. The response is converted XML → JSON and `records_element_path` is walked to find the repeating element.
 4. Records are buffered and yielded as `StreamPage`s of `batch_size`; pagination advances until the stop condition or `max_pages`.
 
@@ -319,9 +319,9 @@ This crate has no optional features of its own. Enable it in the CLI / umbrella 
 
 ## See also
 
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix.
-- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html) — inline vs shared `auth:` providers.
-- [Pagination cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/pagination.html).
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — capability matrix.
+- [Authentication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/auth.html) — inline vs shared `auth:` providers.
+- [Pagination cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/pagination.html).
 - [`faucet-source-rest`](https://crates.io/crates/faucet-source-rest) — the JSON/REST sibling source.
 - [`faucet-source-graphql`](https://crates.io/crates/faucet-source-graphql) — GraphQL source.
 

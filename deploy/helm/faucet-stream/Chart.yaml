@@ -9,9 +9,9 @@ type: application
 version: 0.1.0
 # The faucet-cli / image version this chart tracks. Overridable via image.tag.
 appVersion: "1.7.0"
-home: https://pawansikawat.github.io/faucet-stream/
+home: https://faucet-hq.github.io/faucet-stream/
 sources:
-  - https://github.com/PawanSikawat/faucet-stream
+  - https://github.com/faucet-hq/faucet-stream
 keywords:
   - etl
   - data-pipeline
@@ -19,5 +19,5 @@ keywords:
   - cdc
   - streaming
 maintainers:
-  - name: PawanSikawat
-    url: https://github.com/PawanSikawat
+  - name: faucet-hq
+    url: https://github.com/faucet-hq

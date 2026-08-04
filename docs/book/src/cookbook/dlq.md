@@ -189,5 +189,5 @@ The same `encryption` block also seals `file` state-store bookmarks — see
 [State & resumability](./state.md#encryption-at-rest-file-backend).
 
 > The full design is in
-> [`docs/superpowers/specs/2026-05-24-dlq-design.md`](https://github.com/PawanSikawat/faucet-stream/blob/main/docs)
+> [`docs/superpowers/specs/2026-05-24-dlq-design.md`](https://github.com/faucet-hq/faucet-stream/blob/main/docs)
 > and the `faucet_core::dlq` module on docs.rs.

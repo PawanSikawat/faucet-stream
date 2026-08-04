@@ -151,7 +151,7 @@ so a hung run can't wedge shutdown.
 Pass `--default-config <file>` to merge shared settings **under** every submitted
 run (submitted values win; objects merge, scalars/arrays replace). Pin `state:`,
 `execution:`, and the `auth:` catalog once instead of repeating them per request.
-See [`cli/examples/serve_minimal.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/serve_minimal.yaml).
+See [`cli/examples/serve_minimal.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/serve_minimal.yaml).
 
 > **Cardinality:** a config's `name:` field drives the metric `pipeline` label and
 > the state-key prefix. Use a **stable** `name:` per logical pipeline — never an

@@ -87,8 +87,8 @@ FROM debian:${DEBIAN_RELEASE}-slim AS runtime
 
 LABEL org.opencontainers.image.title="faucet-stream" \
       org.opencontainers.image.description="Config-driven data-movement platform (faucet CLI + serve control plane)" \
-      org.opencontainers.image.source="https://github.com/PawanSikawat/faucet-stream" \
-      org.opencontainers.image.url="https://pawansikawat.github.io/faucet-stream/" \
+      org.opencontainers.image.source="https://github.com/faucet-hq/faucet-stream" \
+      org.opencontainers.image.url="https://faucet-hq.github.io/faucet-stream/" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0"
 
 # Runtime shared libs the connectors dlopen/link against (TLS, SASL for Kafka).

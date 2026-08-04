@@ -1,6 +1,6 @@
 # faucet-sink-duckdb
 
-DuckDB sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream)
+DuckDB sink connector for the [faucet-stream](https://github.com/faucet-hq/faucet-stream)
 data-movement platform. Writes JSON records to a DuckDB table using either a
 single JSON text column or dynamic column mapping. Each batch is one
 `BEGIN`/`COMMIT` transaction of `batch_size`-row multi-row `INSERT`s, rolled

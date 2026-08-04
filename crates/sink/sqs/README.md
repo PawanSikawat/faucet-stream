@@ -1,7 +1,7 @@
 # faucet-sink-sqs
 
 AWS SQS **sink** connector for
-[faucet-stream](https://github.com/PawanSikawat/faucet-stream): batched
+[faucet-stream](https://github.com/faucet-hq/faucet-stream): batched
 `SendMessageBatch` writes with bounded request concurrency, per-entry
 partial-failure retry, and optional FIFO routing.
 

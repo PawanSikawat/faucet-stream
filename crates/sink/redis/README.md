@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-redis.svg)](https://crates.io/crates/faucet-sink-redis)
 [![Docs.rs](https://docs.rs/faucet-sink-redis/badge.svg)](https://docs.rs/faucet-sink-redis)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-redis.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-redis.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-redis.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-redis.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-**Redis** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records into Redis lists (`RPUSH`), streams (`XADD`), or individual keys (`SET`), batching each page of records into a single pipelined round-trip.
+**Redis** sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Writes JSON records into Redis lists (`RPUSH`), streams (`XADD`), or individual keys (`SET`), batching each page of records into a single pipelined round-trip.
 
 Reach for it when you want to land pipeline output in Redis as a work queue, an event stream for consumers, or a cache/lookup table — with one declarative config and no glue code. Redis pipelining keeps the write path fast: every chunk of records ships as one network round-trip over a connection that's opened once and reused. With `delivery: exactly_once` it commits each page's records and a watermark in one atomic `MULTI`/`EXEC` transaction.
 
@@ -224,7 +224,7 @@ pipeline:
 delivery: exactly_once
 ```
 
-Note the usual Redis caveat: `List` and `Stream` modes append, so a page that was *fully* committed is never re-applied — but downstream consumers should still treat entry IDs as the identity of a stream record. See the [effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery).
+Note the usual Redis caveat: `List` and `Stream` modes append, so a page that was *fully* committed is never re-applied — but downstream consumers should still treat entry IDs as the identity of a stream record. See the [effectively-once delivery cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery).
 
 ## Config loading & schema
 
@@ -341,9 +341,9 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 ## See also
 
-- [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix across all connectors.
-- [Configuration grammar](https://pawansikawat.github.io/faucet-stream/reference/config.html) — the full pipeline config shape.
-- [State & resumability cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html).
+- [Sinks reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — capability matrix across all connectors.
+- [Configuration grammar](https://faucet-hq.github.io/faucet-stream/reference/config.html) — the full pipeline config shape.
+- [State & resumability cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html).
 - [`faucet-source-redis`](https://crates.io/crates/faucet-source-redis) — the Redis **source** (streams, lists, key patterns).
 - [`faucet-core`](https://crates.io/crates/faucet-core) — traits, pipeline, and error types.
 

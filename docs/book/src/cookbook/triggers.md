@@ -10,7 +10,7 @@ This cookbook walks through three trigger types with worked examples. See the
 `${trigger.*}` token table, idempotency-key shapes, and metrics.
 
 All examples use the file at
-[`cli/examples/triggers/triggers.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/triggers/triggers.yaml).
+[`cli/examples/triggers/triggers.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/triggers/triggers.yaml).
 
 ## Walkthrough 1 — S3 object arrival → load pipeline
 

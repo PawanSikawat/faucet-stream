@@ -1,7 +1,7 @@
 # faucet-source-pubsub
 
 Google Cloud Pub/Sub **source** connector for
-[faucet-stream](https://github.com/PawanSikawat/faucet-stream). Streams
+[faucet-stream](https://github.com/faucet-hq/faucet-stream). Streams
 messages from a subscription, emits one record per message, and acks messages
 only once the pipeline has durably written them.
 

@@ -3,7 +3,7 @@
 //! # faucet-sink-sqs
 //!
 //! AWS SQS sink connector for
-//! [faucet-stream](https://github.com/PawanSikawat/faucet-stream): batched
+//! [faucet-stream](https://github.com/faucet-hq/faucet-stream): batched
 //! `SendMessageBatch` writes (≤10 entries / ≤256 KiB per request), bounded
 //! concurrent in-flight requests, per-entry partial-failure retry, optional
 //! FIFO `message_group_id` / `message_deduplication_id`, and DLQ-routable

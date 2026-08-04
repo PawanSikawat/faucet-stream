@@ -13,4 +13,4 @@ independently).
 
 - Initial release: DuckDB query source — opens a DuckDB file or in-memory
   database, runs a configured SQL query, and streams rows as JSON with
-  bounded memory. Conformance battery wired ([#413](https://github.com/PawanSikawat/faucet-stream/issues/413)).
+  bounded memory. Conformance battery wired ([#413](https://github.com/faucet-hq/faucet-stream/issues/413)).

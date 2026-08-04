@@ -14,8 +14,8 @@ site-url = "/faucet-stream/"
 # docs sites.)
 default-theme = "light"
 preferred-dark-theme = "navy"
-git-repository-url = "https://github.com/PawanSikawat/faucet-stream"
-edit-url-template = "https://github.com/PawanSikawat/faucet-stream/edit/main/docs/book/{path}"
+git-repository-url = "https://github.com/faucet-hq/faucet-stream"
+edit-url-template = "https://github.com/faucet-hq/faucet-stream/edit/main/docs/book/{path}"
 no-section-label = false
 # custom.css   — site-wide visual polish (brand accent, typography, callouts,
 #                tables, landing hero). Native additional-css; no preprocessor.

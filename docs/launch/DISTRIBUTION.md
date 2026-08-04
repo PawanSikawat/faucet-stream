@@ -42,7 +42,7 @@ the root [`README.md`](../../README.md) hero verbatim across all of these.
 | [awesome-etl](https://github.com/pawl/awesome-etl) | ⏳ Deferred | Self-submissions need real third-party traction or the PR is closed; no Rust section (ask before adding one). Revisit once there's adoption signal. |
 | awesome-cdc | ❌ Skip | No maintained canonical list exists (the only candidate repo is dead). |
 
-*(Deferral status is also tracked on issue [#314](https://github.com/PawanSikawat/faucet-stream/issues/314).)*
+*(Deferral status is also tracked on issue [#314](https://github.com/faucet-hq/faucet-stream/issues/314).)*
 
 ### Newsletters
 
@@ -68,7 +68,7 @@ Schedule Tue–Thu; prep the hunter, gallery images, and a strong first comment 
   transform). Each doubles as SEO and proof of depth.
 - **Migration guides** (highest-intent) — Singer/Meltano → faucet-stream, Airbyte →
   faucet-stream, "replacing a pile of Python cron scripts." The docs-site
-  [comparison pages](https://pawansikawat.github.io/faucet-stream/comparison/index.html) are
+  [comparison pages](https://faucet-hq.github.io/faucet-stream/comparison/index.html) are
   the on-site anchor for these.
 - **"Build X in 10 minutes" tutorials** — REST → BigQuery, Postgres CDC → Kafka, S3 →
   Parquet. Cross-post to dev.to / Hashnode / Medium / lobste.rs.
@@ -80,5 +80,5 @@ and issues in related repos (Airbyte/CDC/dbt threads) where a link genuinely hel
 
 ---
 
-*Grounded in issue [#314](https://github.com/PawanSikawat/faucet-stream/issues/314) (WS-11 of
+*Grounded in issue [#314](https://github.com/faucet-hq/faucet-stream/issues/314) (WS-11 of
 the adoption epic). Keep the awesome-list status table current as PRs merge and traction lands.*

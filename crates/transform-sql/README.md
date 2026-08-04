@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-transform-sql.svg)](https://crates.io/crates/faucet-transform-sql)
 [![Docs.rs](https://docs.rs/faucet-transform-sql/badge.svg)](https://docs.rs/faucet-transform-sql)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-transform-sql.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-transform-sql.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-transform-sql.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-transform-sql.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-SQL-as-transform for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem — run [DuckDB](https://duckdb.org/) SQL over each pipeline page. The page's records are exposed as the relation `batch`; the query's result set replaces the page.
+SQL-as-transform for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem — run [DuckDB](https://duckdb.org/) SQL over each pipeline page. The page's records are exposed as the relation `batch`; the query's result set replaces the page.
 
 Reach for it when you need to filter, reshape, aggregate, or join your in-flight data with the full power of an analytical SQL engine, inline in the pipeline, without standing up a separate warehouse step. DuckDB is embedded (bundled at build time) and vectorized, so the transform is fast and self-contained — no external database, no network hop.
 
@@ -396,8 +396,8 @@ cargo add faucet-stream --features full
 
 ## See also
 
-- [SQL transform cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/transforms.html) — the transforms model and worked examples.
-- [Transforms reference](https://pawansikawat.github.io/faucet-stream/reference/config.html) — the full `transforms:` grammar and layering rules.
+- [SQL transform cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/transforms.html) — the transforms model and worked examples.
+- [Transforms reference](https://faucet-hq.github.io/faucet-stream/reference/config.html) — the full `transforms:` grammar and layering rules.
 - [`faucet-core`](https://crates.io/crates/faucet-core) — the `TransformStage` / `TransformingSource` types this transform plugs into.
 - [`faucet-stream`](https://crates.io/crates/faucet-stream) — the umbrella crate that exposes the `transform-sql` feature.
 - [DuckDB SQL documentation](https://duckdb.org/docs/sql/introduction) — the dialect available inside the `query`.

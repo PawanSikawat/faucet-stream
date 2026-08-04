@@ -2,12 +2,12 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-mysql.svg)](https://crates.io/crates/faucet-source-mysql)
 [![Docs.rs](https://docs.rs/faucet-source-mysql/badge.svg)](https://docs.rs/faucet-source-mysql)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-mysql.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-mysql.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-mysql.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-mysql.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
 A **MySQL query source** that runs a SQL query and streams the rows out as `serde_json::Value` records.
 
-Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+Part of the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem.
 
 Built on `sqlx` with a pooled, async connection and a true row cursor (`Query::fetch`) — rows are decoded and handed to the sink as they arrive off the wire, so client-side memory stays bounded by `batch_size` no matter how large the result set is. Reach for it to pull tables, filtered extracts, or analytics queries out of MySQL / MariaDB into any faucet-stream sink, or to fan a query out per parent record in a matrix pipeline.
 
@@ -77,7 +77,7 @@ There is no separate `auth` block — credentials live in `connection_url` (and 
 
 ### Filtered extract into Postgres
 
-Reuses [`cli/examples/mysql_to_postgres.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/mysql_to_postgres.yaml):
+Reuses [`cli/examples/mysql_to_postgres.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/mysql_to_postgres.yaml):
 
 ```yaml
 version: 1
@@ -343,12 +343,12 @@ This crate has no optional Cargo features of its own. Enable it in the CLI / umb
 
 ## See also
 
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [Config grammar](https://pawansikawat.github.io/faucet-stream/reference/config.html) · [CLI reference](https://pawansikawat.github.io/faucet-stream/reference/cli.html)
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) · [Config grammar](https://faucet-hq.github.io/faucet-stream/reference/config.html) · [CLI reference](https://faucet-hq.github.io/faucet-stream/reference/cli.html)
 - Related crates: [faucet-source-mysql-cdc](https://crates.io/crates/faucet-source-mysql-cdc) · [faucet-sink-mysql](https://crates.io/crates/faucet-sink-mysql) · [faucet-source-postgres](https://crates.io/crates/faucet-source-postgres)
 
 ## Sharded execution (cluster Mode B)
 
-Under [`faucet serve --cluster`](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html),
+Under [`faucet serve --cluster`](https://faucet-hq.github.io/faucet-stream/cookbook/cluster.html),
 a top-level `shard: { count: N }` block splits this source into contiguous
 primary-key ranges that different cluster workers process concurrently. Opt in
 by naming an integer-typed key column:

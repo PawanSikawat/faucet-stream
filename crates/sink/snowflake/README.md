@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-snowflake.svg)](https://crates.io/crates/faucet-sink-snowflake)
 [![Docs.rs](https://docs.rs/faucet-sink-snowflake/badge.svg)](https://docs.rs/faucet-sink-snowflake)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-snowflake.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-snowflake.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-snowflake.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-snowflake.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-**Snowflake** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records to a Snowflake table over the [Snowflake SQL REST API](https://docs.snowflake.com/en/developer-guide/sql-api/index) — no driver, no ODBC, no client library, just HTTPS.
+**Snowflake** sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Writes JSON records to a Snowflake table over the [Snowflake SQL REST API](https://docs.snowflake.com/en/developer-guide/sql-api/index) — no driver, no ODBC, no client library, just HTTPS.
 
 Reach for it when you want to land records from any faucet-stream source — a REST API, a database, a file, a queue — into Snowflake with one declarative config. Each batch is parsed and inserted in a single `PARSE_JSON` + `FLATTEN` statement, and the JSON array travels as a bound `TEXT` parameter (`PARSE_JSON(?)`) rather than interpolated into SQL, so quote characters in your data are safe and cannot inject SQL.
 
@@ -238,7 +238,7 @@ pipeline:
 delivery: exactly_once
 ```
 
-See the [effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery).
+See the [effectively-once delivery cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery).
 
 ## Config loading & schema
 
@@ -334,9 +334,9 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 - [Snowflake source](https://crates.io/crates/faucet-source-snowflake) — query Snowflake via the same SQL REST API.
 - [faucet-common-snowflake](https://crates.io/crates/faucet-common-snowflake) — the shared `SnowflakeAuth` enum and auth helpers.
-- [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix across all connectors.
-- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html) — the shared `auth:` provider catalog.
-- [Secrets cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/secrets.html) — injecting the PEM / token from a secrets manager.
+- [Sinks reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — capability matrix across all connectors.
+- [Authentication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/auth.html) — the shared `auth:` provider catalog.
+- [Secrets cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/secrets.html) — injecting the PEM / token from a secrets manager.
 
 ## License
 

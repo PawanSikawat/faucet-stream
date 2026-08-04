@@ -2,7 +2,7 @@
 
 *Running Meltano today, or evaluating it? Here's an honest, specific comparison — no strawmen.*
 
-> Reflects each tool as of **2026-07**. Meltano is actively developed; check [meltano.com](https://meltano.com/) for its current state, and hold us to [our benchmarks](https://github.com/PawanSikawat/faucet-stream/blob/main/BENCHMARKS.md).
+> Reflects each tool as of **2026-07**. Meltano is actively developed; check [meltano.com](https://meltano.com/) for its current state, and hold us to [our benchmarks](https://github.com/faucet-hq/faucet-stream/blob/main/BENCHMARKS.md).
 
 ## The short version
 
@@ -14,7 +14,7 @@ Move to faucet-stream when **throughput, operational simplicity, or in-flight go
 
 ## Where faucet-stream is different
 
-- **Speed you can measure.** On a reproducible 1M-row CSV→JSONL move, faucet does **712k rows/s in 11.8 MiB** vs Meltano's **7.4k rows/s in 724 MiB** — **~96× faster, ~62× less memory**, output identical row-for-row. Sink-bound moves (e.g. Postgres→Postgres) narrow the gap — the [benchmarks](https://github.com/PawanSikawat/faucet-stream/blob/main/BENCHMARKS.md) show that scenario too, honestly. The difference is structural: no per-row Python overhead, native streaming with bounded memory.
+- **Speed you can measure.** On a reproducible 1M-row CSV→JSONL move, faucet does **712k rows/s in 11.8 MiB** vs Meltano's **7.4k rows/s in 724 MiB** — **~96× faster, ~62× less memory**, output identical row-for-row. Sink-bound moves (e.g. Postgres→Postgres) narrow the gap — the [benchmarks](https://github.com/faucet-hq/faucet-stream/blob/main/BENCHMARKS.md) show that scenario too, honestly. The difference is structural: no per-row Python overhead, native streaming with bounded memory.
 - **No Python runtime.** faucet is a single static binary — `brew install`, drop it on a box, done. No virtualenv, no plugin resolution, no Python-version matrix to keep green in CI and prod.
 - **Governance in the movement path, not bolted on.** Data-quality checks, versioned **data contracts**, **PII masking** (applied *before* any sink sees a row), schema-drift policy, column-level **lineage** (OpenLineage) + a data-movement catalog, and freshness/volume **SLAs** are native and zero-config. In the Singer world these are separate concerns you assemble (mappers, dbt tests, external tooling).
 - **Effectively-once delivery.** Per-page commit tokens commit atomically with the data, so a resumed run drops duplicates — across **11 sinks** (SQL, Kafka, Iceberg, BigQuery, Snowflake, Spanner, MongoDB, Redis), plus a keyed-upsert path on any source into an upsert-capable sink.
@@ -56,11 +56,11 @@ The mental model maps cleanly:
 | stream maps / mappers | `transforms:` (incl. the `sql` transform) |
 
 For a full step-by-step walkthrough with before/after configs, see the
-[**Migrating from Meltano/Singer** guide](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/blog/migrating-from-meltano.md).
+[**Migrating from Meltano/Singer** guide](https://github.com/faucet-hq/faucet-stream/blob/main/docs/blog/migrating-from-meltano.md).
 Then start from [your first pipeline](../getting-started/first-pipeline.md) and the [connector catalog](../reference/connectors.md).
 
 ## See for yourself
 
-- **[Benchmarks (vs Meltano)](./benchmarks.md)** — the numbers charted per scenario, with full methodology and honest caveats ([raw source](https://github.com/PawanSikawat/faucet-stream/blob/main/BENCHMARKS.md)).
+- **[Benchmarks (vs Meltano)](./benchmarks.md)** — the numbers charted per scenario, with full methodology and honest caveats ([raw source](https://github.com/faucet-hq/faucet-stream/blob/main/BENCHMARKS.md)).
 - **[Try it in 60 seconds](../getting-started/try-it-locally.md)** — no infrastructure needed.
 - **[Choosing a connector](../reference/choosing.md)** — confirm your sources and sinks are covered.

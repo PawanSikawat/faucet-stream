@@ -14,4 +14,4 @@ independently).
 - Initial release: SFTP source connector — lists a remote directory (or reads a
   single file) over SFTP and streams the files as JSON Lines, JSON arrays, or
   raw text with bounded memory. Filename glob filter, lazy connect, conformance
-  battery wired ([#410](https://github.com/PawanSikawat/faucet-stream/issues/410)).
+  battery wired ([#410](https://github.com/faucet-hq/faucet-stream/issues/410)).

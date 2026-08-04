@@ -3,7 +3,7 @@
 //! # faucet-source-sqs
 //!
 //! AWS SQS source connector for
-//! [faucet-stream](https://github.com/PawanSikawat/faucet-stream): long-polls
+//! [faucet-stream](https://github.com/faucet-hq/faucet-stream): long-polls
 //! `ReceiveMessage`, buffers up to `batch_size` messages, and emits them as
 //! pages with bounded memory. Each page's receipt handles are deleted right
 //! before the page is yielded, and a run terminates on `idle_timeout_secs`

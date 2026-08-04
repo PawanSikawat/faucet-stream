@@ -6,13 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
-## [1.0.0](https://github.com/PawanSikawat/faucet-stream/releases/tag/faucet-source-mssql-cdc-v1.0.0) - 2026-07-24
+## [1.0.0](https://github.com/faucet-hq/faucet-stream/releases/tag/faucet-source-mssql-cdc-v1.0.0) - 2026-07-24
 
 ### Bug Fixes
 
-- *(ci)* Unblock main — ignore heavy mssql-cdc Docker tests, un-ignore tracked CI scripts ([#368](https://github.com/PawanSikawat/faucet-stream/pull/368))
+- *(ci)* Unblock main — ignore heavy mssql-cdc Docker tests, un-ignore tracked CI scripts ([#368](https://github.com/faucet-hq/faucet-stream/pull/368))
 
 ### Features
 
-- *(cli)* Surface connector conformance maturity tiers ([#330](https://github.com/PawanSikawat/faucet-stream/pull/330)) ([#367](https://github.com/PawanSikawat/faucet-stream/pull/367))
-- *(connectors)* Redshift, Pub/Sub, ClickHouse, Azure Blob, and SQL Server CDC ([#362](https://github.com/PawanSikawat/faucet-stream/pull/362))
+- *(cli)* Surface connector conformance maturity tiers ([#330](https://github.com/faucet-hq/faucet-stream/pull/330)) ([#367](https://github.com/faucet-hq/faucet-stream/pull/367))
+- *(connectors)* Redshift, Pub/Sub, ClickHouse, Azure Blob, and SQL Server CDC ([#362](https://github.com/faucet-hq/faucet-stream/pull/362))

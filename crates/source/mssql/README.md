@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-mssql.svg)](https://crates.io/crates/faucet-source-mssql)
 [![Docs.rs](https://docs.rs/faucet-source-mssql/badge.svg)](https://docs.rs/faucet-source-mssql)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-mssql.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-mssql.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-mssql.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-mssql.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Microsoft **SQL Server** query source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Runs a parameterized T-SQL statement over a pooled [`tiberius`](https://crates.io/crates/tiberius) connection, decodes each row into a typed `serde_json::Value`, and streams the result set back page-by-page so memory stays bounded regardless of how many rows the query returns.
+Microsoft **SQL Server** query source for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Runs a parameterized T-SQL statement over a pooled [`tiberius`](https://crates.io/crates/tiberius) connection, decodes each row into a typed `serde_json::Value`, and streams the result set back page-by-page so memory stays bounded regardless of how many rows the query returns.
 
 Reach for it when you want to pull tables, views, or ad-hoc query results out of SQL Server (or Azure SQL) and land them in any faucet-stream sink — a file, another database, a warehouse, a queue — with one declarative config and no glue code. Built-in incremental replication lets repeat runs pick up only the rows that changed since last time.
 
@@ -317,15 +317,15 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 ## See also
 
-- [SQL Server connector docs](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
-- [State & incremental replication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html)
-- [Configuration grammar reference](https://pawansikawat.github.io/faucet-stream/reference/config.html)
+- [SQL Server connector docs](https://faucet-hq.github.io/faucet-stream/reference/connectors.html)
+- [State & incremental replication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html)
+- [Configuration grammar reference](https://faucet-hq.github.io/faucet-stream/reference/config.html)
 - [`faucet-common-mssql`](https://crates.io/crates/faucet-common-mssql) — shared connection/TLS/pool types.
 - [`faucet-sink-mssql`](https://crates.io/crates/faucet-sink-mssql) — the matching SQL Server sink.
 
 ## Sharded execution (cluster Mode B)
 
-Under [`faucet serve --cluster`](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html),
+Under [`faucet serve --cluster`](https://faucet-hq.github.io/faucet-stream/cookbook/cluster.html),
 a top-level `shard: { count: N }` block splits this source into contiguous
 primary-key ranges that different cluster workers process concurrently. Opt in
 by naming an integer-typed key column:

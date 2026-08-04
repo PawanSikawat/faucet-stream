@@ -58,7 +58,7 @@ query connector for the bulk read, the `-cdc` connector for the stream — and t
 share the destination `sink` and the pipeline-level `transforms`.
 
 This is the shipped example
-[`cli/examples/postgres_replicate_snapshot_cdc.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/postgres_replicate_snapshot_cdc.yaml):
+[`cli/examples/postgres_replicate_snapshot_cdc.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/postgres_replicate_snapshot_cdc.yaml):
 
 ```yaml
 # Mirror public.orders → public.orders_mirror: bulk snapshot, then CDC.

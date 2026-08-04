@@ -15,4 +15,4 @@ independently).
   `*`/`>` wildcards and optional queue groups) or pulls from a durable
   JetStream consumer, drains with `max_messages` / `idle_timeout_secs`
   termination, and streams payloads as JSON with bounded memory. Conformance
-  battery wired ([#411](https://github.com/PawanSikawat/faucet-stream/issues/411)).
+  battery wired ([#411](https://github.com/faucet-hq/faucet-stream/issues/411)).

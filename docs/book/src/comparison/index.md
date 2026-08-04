@@ -2,7 +2,7 @@
 
 *An honest look at where faucet-stream fits among data-movement tools — including where the others are the better choice.*
 
-> Reflects the general shape of each tool as of **2026-07**. These ecosystems move fast — check each project for current details, and hold faucet to [its published benchmarks](https://github.com/PawanSikawat/faucet-stream/blob/main/BENCHMARKS.md).
+> Reflects the general shape of each tool as of **2026-07**. These ecosystems move fast — check each project for current details, and hold faucet to [its published benchmarks](https://github.com/faucet-hq/faucet-stream/blob/main/BENCHMARKS.md).
 
 There are many good data-movement tools. faucet-stream's niche is a specific one: **a single fast native binary *and* an embeddable Rust library** — config-driven, with no Python runtime, no platform to operate, and **data governance built into the movement path**.
 
@@ -43,5 +43,5 @@ You'd reach for faucet-stream when **throughput, operational simplicity, or in-f
 ## See for yourself
 
 - **[Try it in 60 seconds](../getting-started/try-it-locally.md)** — a no-infrastructure local demo.
-- **[Benchmarks](https://github.com/PawanSikawat/faucet-stream/blob/main/BENCHMARKS.md)** — methodology, the sink-bound scenario, and honest caveats.
+- **[Benchmarks](https://github.com/faucet-hq/faucet-stream/blob/main/BENCHMARKS.md)** — methodology, the sink-bound scenario, and honest caveats.
 - **[Connector catalog](../reference/connectors.md)** — check your sources and sinks.

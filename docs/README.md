@@ -7,7 +7,7 @@ different readers:
 
 | Body | Audience | Location |
 |------|----------|----------|
-| **User guide (mdBook)** | *Users* running pipelines — installation, tutorials, cookbook, connector catalog, CLI/config reference. | [`book/`](./book/) → published at <https://pawansikawat.github.io/faucet-stream/> |
+| **User guide (mdBook)** | *Users* running pipelines — installation, tutorials, cookbook, connector catalog, CLI/config reference. | [`book/`](./book/) → published at <https://faucet-hq.github.io/faucet-stream/> |
 | **Engineering documentation** | *Maintainers and contributors* — why the system is built the way it is. | this tree (`architecture/`, `adr/`, `contributing/`, `standards/`, `../rfcs/`) |
 
 If you want to *use* faucet-stream, start with the [book](./book/src/introduction.md).

@@ -13,4 +13,4 @@ independently).
 
 - Initial release: DuckDB sink — writes JSON records to a DuckDB table via a
   JSON column or auto-mapped columns, each batch a transaction-wrapped
-  multi-row INSERT. Conformance battery wired ([#413](https://github.com/PawanSikawat/faucet-stream/issues/413)).
+  multi-row INSERT. Conformance battery wired ([#413](https://github.com/faucet-hq/faucet-stream/issues/413)).

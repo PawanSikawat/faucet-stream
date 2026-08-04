@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-postgres-cdc.svg)](https://crates.io/crates/faucet-source-postgres-cdc)
 [![Docs.rs](https://docs.rs/faucet-source-postgres-cdc/badge.svg)](https://docs.rs/faucet-source-postgres-cdc)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-postgres-cdc.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-postgres-cdc.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-postgres-cdc.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-postgres-cdc.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-PostgreSQL **change-data-capture (CDC)** source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Subscribes to a Postgres logical-replication slot via the built-in `pgoutput` plugin and emits each row-level change — `INSERT` / `UPDATE` / `DELETE` / `TRUNCATE` — as a JSON change event, in transaction order.
+PostgreSQL **change-data-capture (CDC)** source for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Subscribes to a Postgres logical-replication slot via the built-in `pgoutput` plugin and emits each row-level change — `INSERT` / `UPDATE` / `DELETE` / `TRUNCATE` — as a JSON change event, in transaction order.
 
 Reach for it when you want to stream live mutations out of an operational Postgres database into any faucet-stream sink — a warehouse, a queue, a search index, a file — without polling, triggers, or touching the application. Replication position is persisted to any `faucet-core` `StateStore`, so pipelines resume exactly where they left off across restarts: no gap, no loss.
 
@@ -297,7 +297,7 @@ A **permanent** slot keeps pinning WAL even when no consumer is connected — an
 
 This source implements `capture_resume_position()`: it ensures the slot exists, reads the server's **current WAL LSN** (`pg_current_wal_lsn`) as a resume bookmark, and consumes no changes. The `faucet replicate` command uses it to anchor the CDC stream at-or-before a bulk snapshot of the table, so the combined snapshot + CDC result is a gap-free, duplicate-free mirror when paired with a `write_mode: upsert` sink.
 
-Capture **requires a permanent slot** (`slot_type: permanent`, the default): a temporary slot is dropped when the short-lived capture connection closes and so cannot retain WAL across the snapshot. Capture rejects a temporary slot with a typed error. See the [replication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/replication.html) for the full handoff model.
+Capture **requires a permanent slot** (`slot_type: permanent`, the default): a temporary slot is dropped when the short-lived capture connection closes and so cannot retain WAL across the snapshot. Capture rejects a temporary slot with a typed error. See the [replication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/replication.html) for the full handoff model.
 
 ## Crash-safe WAL feedback (durability)
 
@@ -371,7 +371,7 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 ## See also
 
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [Replication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/replication.html) · [State & resume cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) · [Upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html)
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) · [Replication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/replication.html) · [State & resume cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html) · [Upsert cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html)
 - [faucet-source-postgres](https://crates.io/crates/faucet-source-postgres) (query-mode snapshots, not CDC) · [faucet-state-postgres](https://crates.io/crates/faucet-state-postgres) (pair as a `StateStore`) · `cli/examples/postgres_cdc_to_jsonl.yaml`
 
 ## License

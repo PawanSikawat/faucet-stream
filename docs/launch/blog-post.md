@@ -48,10 +48,10 @@ pipeline from Rust with typed `Source`/`Sink` traits.
   sustains 712k rows/s in 11.8 MiB of RAM (~96× faster, ~62× less memory than
   Meltano, exact row parity); sink-bound moves like Postgres→Postgres narrow the
   gap toward ~16×. The harness is `make bench` — see
-  [`BENCHMARKS.md`](https://github.com/PawanSikawat/faucet-stream/blob/main/BENCHMARKS.md)
+  [`BENCHMARKS.md`](https://github.com/faucet-hq/faucet-stream/blob/main/BENCHMARKS.md)
   for the methodology and the caveats.
 - **A connector marketplace you can trust.** Every connector is graded against the
-  [Faucet Connector Protocol](https://pawansikawat.github.io/faucet-stream/spec/faucet-connector-spec-v0.html)
+  [Faucet Connector Protocol](https://faucet-hq.github.io/faucet-stream/spec/faucet-connector-spec-v0.html)
   by a conformance battery — valid config schema, bounded-memory streaming,
   bookmark round-trip, idempotent replay, truthful capabilities, errors-not-panics
   — that runs in CI and sets each connector's maturity tier.
@@ -80,12 +80,12 @@ already run — without standing up a platform — that's exactly what we built.
 
 ## Try it
 
-- Docs: <https://pawansikawat.github.io/faucet-stream/>
-- Source: <https://github.com/PawanSikawat/faucet-stream>
+- Docs: <https://faucet-hq.github.io/faucet-stream/>
+- Source: <https://github.com/faucet-hq/faucet-stream>
 - Crates: <https://crates.io/crates/faucet-stream>
-- Deep dive: [Exactly-once delivery without a broker](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/blog/exactly-once-without-a-broker.md)
-- Coming from Singer/Meltano? [Migration guide](https://github.com/PawanSikawat/faucet-stream/blob/main/docs/blog/migrating-from-meltano.md)
+- Deep dive: [Exactly-once delivery without a broker](https://github.com/faucet-hq/faucet-stream/blob/main/docs/blog/exactly-once-without-a-broker.md)
+- Coming from Singer/Meltano? [Migration guide](https://github.com/faucet-hq/faucet-stream/blob/main/docs/blog/migrating-from-meltano.md)
 
 It's pre-1.0 and moving fast. Connector requests and contributions welcome —
-there's a [contributing guide](https://github.com/PawanSikawat/faucet-stream/blob/main/CONTRIBUTING.md)
+there's a [contributing guide](https://github.com/faucet-hq/faucet-stream/blob/main/CONTRIBUTING.md)
 and an authoring guide for building your own connector crates.

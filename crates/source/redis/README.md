@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-redis.svg)](https://crates.io/crates/faucet-source-redis)
 [![Docs.rs](https://docs.rs/faucet-source-redis/badge.svg)](https://docs.rs/faucet-source-redis)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-redis.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-redis.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-redis.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-redis.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-A **Redis** source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Reads records from a Redis **list**, **stream**, or a set of keys matched by a **glob pattern**, yielding each record as a `serde_json::Value`.
+A **Redis** source for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Reads records from a Redis **list**, **stream**, or a set of keys matched by a **glob pattern**, yielding each record as a `serde_json::Value`.
 
 Built on a lazily-opened, reused `MultiplexedConnection` and each mode's native paging primitive (`LRANGE`, `XRANGE`, `SCAN` + `MGET`), so it streams page-by-page without buffering the whole dataset in memory. Reach for it to drain a work queue, replay a stream's history, or load a keyspace into any faucet-stream sink.
 
@@ -321,7 +321,7 @@ This crate has no optional features of its own. Enable it in the CLI / umbrella 
 
 ## See also
 
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [faucet-sink-redis](https://crates.io/crates/faucet-sink-redis) · [faucet-source-kafka](https://crates.io/crates/faucet-source-kafka)
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) · [faucet-sink-redis](https://crates.io/crates/faucet-sink-redis) · [faucet-source-kafka](https://crates.io/crates/faucet-source-kafka)
 
 ## License
 

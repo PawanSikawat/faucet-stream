@@ -1,7 +1,7 @@
 # faucet-source-sqs
 
 AWS SQS **source** connector for
-[faucet-stream](https://github.com/PawanSikawat/faucet-stream): long-polls
+[faucet-stream](https://github.com/faucet-hq/faucet-stream): long-polls
 `ReceiveMessage`, buffers up to `batch_size` messages, and emits them page by
 page with bounded memory. It terminates on `idle_timeout_secs` and/or
 `max_messages`.

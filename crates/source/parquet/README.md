@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-parquet.svg)](https://crates.io/crates/faucet-source-parquet)
 [![Docs.rs](https://docs.rs/faucet-source-parquet/badge.svg)](https://docs.rs/faucet-source-parquet)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-parquet.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-parquet.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-parquet.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-parquet.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Apache **Parquet** file source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Reads one or more Parquet files from a **local path**, a **local glob pattern**, or **Amazon S3** (single object or prefix) and yields each row as a `serde_json::Value` object.
+Apache **Parquet** file source for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Reads one or more Parquet files from a **local path**, a **local glob pattern**, or **Amazon S3** (single object or prefix) and yields each row as a `serde_json::Value` object.
 
 Built on the `parquet` + `arrow` crates wired through `object_store`, so local and S3 share one vectorized, streaming code path — `RecordBatch`es are decoded and converted to JSON incrementally and the source never buffers a whole file in memory. Reach for it to load columnar data lakes, S3 exports, or partitioned `year=/month=/` trees into any faucet-stream sink.
 
@@ -191,11 +191,11 @@ No optional features of its own; enable it in the CLI/umbrella via the `source-p
 
 ## See also
 
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [faucet-sink-parquet](https://crates.io/crates/faucet-sink-parquet) · [faucet-source-s3](https://crates.io/crates/faucet-source-s3)
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) · [faucet-sink-parquet](https://crates.io/crates/faucet-sink-parquet) · [faucet-source-s3](https://crates.io/crates/faucet-source-s3)
 
 ## Sharded execution (cluster Mode B)
 
-Under [`faucet serve --cluster`](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html),
+Under [`faucet serve --cluster`](https://faucet-hq.github.io/faucet-stream/cookbook/cluster.html),
 a top-level `shard: { count: N }` block splits this source across cluster
 workers **automatically — no connector config needed**. Each worker reads the
 files whose path hashes to its shard index (stable FNV-1a modulo `count`),

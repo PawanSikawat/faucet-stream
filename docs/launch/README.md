@@ -24,7 +24,7 @@ add this line under a relevant section (e.g. *Database* → *ETL* or *Data
 processing*), and open a PR:
 
 ```markdown
-* [faucet-stream](https://github.com/PawanSikawat/faucet-stream) — A fast, config-driven data-movement platform: <!--COUNT:connectors-->66<!--/COUNT--> source and sink connectors wired by a single `faucet` binary (YAML) or embedded as a Rust library; runs your existing Singer taps unchanged, with streaming, CDC, DLQ, and built-in metrics.
+* [faucet-stream](https://github.com/faucet-hq/faucet-stream) — A fast, config-driven data-movement platform: <!--COUNT:connectors-->66<!--/COUNT--> source and sink connectors wired by a single `faucet` binary (YAML) or embedded as a Rust library; runs your existing Singer taps unchanged, with streaming, CDC, DLQ, and built-in metrics.
 ```
 
 Also consider [`awesome-data-engineering`](https://github.com/igorbarinov/awesome-data-engineering).
@@ -60,8 +60,8 @@ Submit via the ["Send us a PR" form / issue](https://github.com/rust-lang/this-w
 > It's the EL of ELT — I'm upfront in the README about where Meltano/Airbyte/dbt
 > fit better. Pre-1.0 and moving fast; connector requests welcome.
 >
-> Docs: https://pawansikawat.github.io/faucet-stream/
-> Repo: https://github.com/PawanSikawat/faucet-stream
+> Docs: https://faucet-hq.github.io/faucet-stream/
+> Repo: https://github.com/faucet-hq/faucet-stream
 
 Post early in the US morning (Pacific) on a weekday; reply to comments quickly.
 

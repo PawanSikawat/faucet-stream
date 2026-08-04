@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-mongodb.svg)](https://crates.io/crates/faucet-source-mongodb)
 [![Docs.rs](https://docs.rs/faucet-source-mongodb/badge.svg)](https://docs.rs/faucet-source-mongodb)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-mongodb.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-mongodb.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-mongodb.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-mongodb.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-A **MongoDB** source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Runs a single `find()` query against a collection — with optional filter, projection, sort, and limit — and yields each matching document as a `serde_json::Value` object.
+A **MongoDB** source for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Runs a single `find()` query against a collection — with optional filter, projection, sort, and limit — and yields each matching document as a `serde_json::Value` object.
 
 Built on the official `mongodb` driver, which maintains an internal connection pool created once at construction and reused for every query. The source streams documents straight off the driver cursor (no full-result buffering), so memory stays bounded by `batch_size` regardless of how large the collection or result set is. Reach for it to drain collections into any faucet-stream sink — SQL warehouses, object stores, search indexes, or another database.
 
@@ -365,7 +365,7 @@ This crate has no optional features of its own. Enable it in the CLI / umbrella 
 
 ## See also
 
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [Choosing a connector](https://pawansikawat.github.io/faucet-stream/reference/choosing.html)
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) · [Choosing a connector](https://faucet-hq.github.io/faucet-stream/reference/choosing.html)
 - [faucet-source-mongodb-cdc](https://crates.io/crates/faucet-source-mongodb-cdc) — resumable, effectively-once change capture from MongoDB.
 - [faucet-sink-mongodb](https://crates.io/crates/faucet-sink-mongodb) — write into MongoDB (with upsert/delete write modes).
 

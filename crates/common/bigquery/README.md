@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-common-bigquery.svg)](https://crates.io/crates/faucet-common-bigquery)
 [![Docs.rs](https://docs.rs/faucet-common-bigquery/badge.svg)](https://docs.rs/faucet-common-bigquery)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-common-bigquery.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-common-bigquery.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-common-bigquery.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-common-bigquery.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Shared Google BigQuery credentials and client construction for the BigQuery source and sink connectors. Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+Shared Google BigQuery credentials and client construction for the BigQuery source and sink connectors. Part of the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem.
 
 This is a small **internal/shared** crate: it holds the one credential enum and the one async client builder that both [`faucet-source-bigquery`](https://crates.io/crates/faucet-source-bigquery) and [`faucet-sink-bigquery`](https://crates.io/crates/faucet-sink-bigquery) need, so the two crates accept exactly the same auth shape and build their `gcp_bigquery_client::Client` the same way.
 
@@ -57,7 +57,7 @@ credentials:
 cargo add faucet-common-bigquery
 ```
 
-The only required faucet dependency is `faucet-core` (pulled in transitively); see the [Third-Party Connector Friendliness](https://github.com/PawanSikawat/faucet-stream#readme) guidance.
+The only required faucet dependency is `faucet-core` (pulled in transitively); see the [Third-Party Connector Friendliness](https://github.com/faucet-hq/faucet-stream#readme) guidance.
 
 ## Usage
 
@@ -109,7 +109,7 @@ None. The crate has no optional features; all functionality is always compiled.
 
 - [faucet-source-bigquery](https://crates.io/crates/faucet-source-bigquery) — BigQuery query source.
 - [faucet-sink-bigquery](https://crates.io/crates/faucet-sink-bigquery) — BigQuery streaming-insert / `MERGE` upsert sink.
-- [faucet-stream documentation](https://pawansikawat.github.io/faucet-stream/) — full project docs.
+- [faucet-stream documentation](https://faucet-hq.github.io/faucet-stream/) — full project docs.
 
 ## License
 

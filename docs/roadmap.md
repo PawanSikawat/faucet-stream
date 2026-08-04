@@ -5,7 +5,7 @@
 This roadmap describes where the *architecture* is heading, not which connectors
 ship next. Feature-level and connector-level planning lives in the
 [community roadmap](./community/roadmap.md) and the tracking epic
-[#38](https://github.com/PawanSikawat/faucet-stream/issues/38). Deeper,
+[#38](https://github.com/faucet-hq/faucet-stream/issues/38). Deeper,
 subsystem-scoped direction is in
 [docs/architecture/roadmap.md](./architecture/roadmap.md); concrete design
 proposals live in [rfcs/](../rfcs/README.md).

@@ -14,4 +14,4 @@ independently).
 - Initial release: NATS sink — publishes each record as a JSON message to a
   fixed subject or a per-record subject (`subject_field`), flushing after each
   batch. Append-only. Conformance battery wired
-  ([#411](https://github.com/PawanSikawat/faucet-stream/issues/411)).
+  ([#411](https://github.com/faucet-hq/faucet-stream/issues/411)).

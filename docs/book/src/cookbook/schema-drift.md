@@ -173,7 +173,7 @@ Not every sink can evolve, and a schemaless sink has no schema to diverge from.
 ## Worked example: CDC mirror that evolves with the source
 
 The shipped example
-[`cli/examples/postgres_cdc_to_postgres_evolve.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/postgres_cdc_to_postgres_evolve.yaml)
+[`cli/examples/postgres_cdc_to_postgres_evolve.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/postgres_cdc_to_postgres_evolve.yaml)
 mirrors a Postgres table via CDC and evolves the destination as the source
 schema changes — effectively-once, upsert, drift-aware:
 

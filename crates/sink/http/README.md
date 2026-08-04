@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-http.svg)](https://crates.io/crates/faucet-sink-http)
 [![Docs.rs](https://docs.rs/faucet-sink-http/badge.svg)](https://docs.rs/faucet-sink-http)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-http.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-http.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-http.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-http.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-HTTP POST sink connector for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Sends JSON records to any HTTP(S) endpoint — a webhook, an ingest API, a serverless function, another faucet pipeline's webhook source.
+HTTP POST sink connector for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Sends JSON records to any HTTP(S) endpoint — a webhook, an ingest API, a serverless function, another faucet pipeline's webhook source.
 
 Reach for it when the destination speaks HTTP but isn't one of the first-class warehouse/database/queue sinks: a SaaS ingest endpoint, an internal microservice, a Lambda/Cloud Function URL, or a fan-out webhook. It reuses a single `reqwest::Client`, sends records concurrently, and retries transient failures so it stays fast and resilient under load.
 
@@ -190,7 +190,7 @@ Recommended `batch_size` for array-accepting endpoints: match the destination's 
 
 ## Dead-letter queue
 
-The sink overrides `write_batch_partial` so a configured [DLQ](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html) gets accurate per-row outcomes:
+The sink overrides `write_batch_partial` so a configured [DLQ](https://faucet-hq.github.io/faucet-stream/cookbook/dlq.html) gets accurate per-row outcomes:
 
 - **`Individual` mode** — every record is an independent POST, so each success/failure is attributable. The sink attempts **all** records (failures don't short-circuit siblings) and returns one outcome per record; only the genuinely-failed rows are dead-lettered. This avoids duplicating already-delivered rows against a non-idempotent endpoint under `on_batch_error: dlq_all`.
 - **`Array` mode** — a single array POST cannot attribute a failure to specific rows, so it stays all-or-nothing: the whole array surfaces as an error and the DLQ `on_batch_error` policy decides whether to abort or dead-letter the batch.
@@ -262,9 +262,9 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 ## See also
 
-- [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix across all connectors.
-- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html) — shared `auth:` providers and the `{ type, config }` shape.
-- [Dead-letter queue cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html) — `on_batch_error` policies and per-row dead-lettering.
+- [Sinks reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — capability matrix across all connectors.
+- [Authentication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/auth.html) — shared `auth:` providers and the `{ type, config }` shape.
+- [Dead-letter queue cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/dlq.html) — `on_batch_error` policies and per-row dead-lettering.
 - [`faucet-source-webhook`](https://crates.io/crates/faucet-source-webhook) — the natural upstream for HTTP fan-out pipelines.
 - [`faucet-source-rest`](https://crates.io/crates/faucet-source-rest) — pull from a REST API and forward it over HTTP.
 

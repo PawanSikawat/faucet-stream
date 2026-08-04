@@ -3,7 +3,7 @@
 faucet ships **ready-made Grafana dashboards** and **Prometheus alert rules**
 built on the metrics every pipeline emits automatically — production
 observability without hand-building panels. The artifacts live in the repo
-under [`observability/`](https://github.com/PawanSikawat/faucet-stream/tree/main/observability)
+under [`observability/`](https://github.com/faucet-hq/faucet-stream/tree/main/observability)
 and are kept honest by a CI lint that fails whenever they reference a metric
 name that no longer exists in the code.
 
@@ -35,7 +35,7 @@ Alert rules (`observability/prometheus/alerts.yml`):
 
 ## Quick start with the example stack
 
-The [examples Docker stack](https://github.com/PawanSikawat/faucet-stream/tree/main/examples)
+The [examples Docker stack](https://github.com/faucet-hq/faucet-stream/tree/main/examples)
 provisions both automatically:
 
 ```bash

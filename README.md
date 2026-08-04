@@ -1,14 +1,14 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/PawanSikawat/faucet-stream/main/.github/assets/social-banner.png" alt="faucet-stream" width="640">
+  <img src="https://raw.githubusercontent.com/faucet-hq/faucet-stream/main/.github/assets/social-banner.png" alt="faucet-stream" width="640">
 </p>
 
 # faucet-stream
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-stream.svg)](https://crates.io/crates/faucet-stream)
 [![Docs.rs](https://docs.rs/faucet-stream/badge.svg)](https://docs.rs/faucet-stream)
-[![Guide](https://img.shields.io/badge/guide-pawansikawat.github.io-1f6feb)](https://pawansikawat.github.io/faucet-stream/)
-[![CI](https://github.com/PawanSikawat/faucet-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/PawanSikawat/faucet-stream/actions/workflows/ci.yml)
-[![Coverage](https://codecov.io/gh/PawanSikawat/faucet-stream/branch/main/graph/badge.svg)](https://codecov.io/gh/PawanSikawat/faucet-stream)
+[![Guide](https://img.shields.io/badge/guide-faucet-hq.github.io-1f6feb)](https://faucet-hq.github.io/faucet-stream/)
+[![CI](https://github.com/faucet-hq/faucet-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/faucet-hq/faucet-stream/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/faucet-hq/faucet-stream/branch/main/graph/badge.svg)](https://codecov.io/gh/faucet-hq/faucet-stream)
 [![Downloads](https://img.shields.io/crates/d/faucet-core.svg)](https://crates.io/crates/faucet-stream)
 [![MSRV](https://img.shields.io/crates/msrv/faucet-stream.svg)](rust-toolchain.toml)
 [![Dependencies](https://img.shields.io/badge/deps-cargo--deny-blue)](deny.toml)
@@ -29,12 +29,12 @@ declaratively from YAML/JSON (no Rust code required), or embedded in your own se
 the typed `Source` / `Sink` traits. One platform, whether you want a CLI you can drop on any
 box or a library you compile in.
 
-📖 **[Guide](https://pawansikawat.github.io/faucet-stream/)** · 📊 **[Benchmarks](BENCHMARKS.md)** · 📜 **[Connector spec (FCP v0)](docs/spec/faucet-connector-spec-v0.md)**
+📖 **[Guide](https://faucet-hq.github.io/faucet-stream/)** · 📊 **[Benchmarks](BENCHMARKS.md)** · 📜 **[Connector spec (FCP v0)](docs/spec/faucet-connector-spec-v0.md)**
 
 ```bash
-brew install PawanSikawat/faucet-stream/faucet-cli   # the CLI — prebuilt, no Rust needed
+brew install faucet-hq/faucet-stream/faucet-cli   # the CLI — prebuilt, no Rust needed
 # — or —
-curl -LsSf https://github.com/PawanSikawat/faucet-stream/releases/latest/download/faucet-cli-installer.sh | sh
+curl -LsSf https://github.com/faucet-hq/faucet-stream/releases/latest/download/faucet-cli-installer.sh | sh
 # — or —
 cargo install faucet-cli          # build the CLI from source
 # — or —
@@ -70,7 +70,7 @@ cargo add faucet-stream           # the library
 - **📦 Pay only for what you use** — every connector is a Cargo feature, so a slim build can
   be just REST + JSONL, or pull in all <!--COUNT:connectors-->66<!--/COUNT--> connectors with `--features full`.
 
-**Documentation:** the [faucet-stream guide](https://pawansikawat.github.io/faucet-stream/)
+**Documentation:** the [faucet-stream guide](https://faucet-hq.github.io/faucet-stream/)
 (getting started, tutorials, cookbook, operations) · API reference on
 [docs.rs](https://docs.rs/faucet-stream) · [`cli/README.md`](cli/README.md) for the full config grammar.
 
@@ -101,7 +101,7 @@ cargo add faucet-stream           # the library
 > **Just want to poke at it?** From a clone, run `./scripts/try-local.sh` — it
 > builds a light feature set, runs a no-infrastructure demo (transforms,
 > quality, contracts, masking, lineage, catalog, DLQ replay) against generated
-> data, then leaves the [web console](https://pawansikawat.github.io/faucet-stream/getting-started/try-it-locally.html)
+> data, then leaves the [web console](https://faucet-hq.github.io/faucet-stream/getting-started/try-it-locally.html)
 > running so you can browse Runs, Datasets, and Lineage. No Docker or cloud
 > accounts needed.
 
@@ -130,7 +130,7 @@ pipeline:
     type: rest
     config:
       base_url: https://api.github.com
-      path: /repos/PawanSikawat/faucet-stream/issues
+      path: /repos/faucet-hq/faucet-stream/issues
       method: GET
       auth: { type: api_key, config: { header: Authorization, value: "Bearer ${env:GITHUB_TOKEN}" } }
       query_params: { state: open }
@@ -187,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 More library recipes — pagination styles, OAuth2, streaming, incremental replication,
 partitions, transforms, and custom connectors — are in
 [Using faucet-stream as a Rust library](#using-faucet-stream-as-a-rust-library) below and the
-[library tutorial](https://pawansikawat.github.io/faucet-stream/tutorials/library.html).
+[library tutorial](https://faucet-hq.github.io/faucet-stream/tutorials/library.html).
 
 ## What's in the box
 
@@ -197,30 +197,30 @@ one-block addition to your YAML:
 
 | Capability | What it does | Learn more |
 |---|---|---|
-| **Streaming, bounded memory** | Sources stream page-by-page; sinks write each page as it arrives — memory stays at one `batch_size` regardless of total volume. | [concepts](https://pawansikawat.github.io/faucet-stream/getting-started/concepts.html) |
-| **Incremental + resumable** | Bookmark-based replication: only fetch what changed, resume mid-run from a durable state store (file / Redis / Postgres). | [state](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) |
-| **Change data capture** | Streaming row-level CDC for **PostgreSQL** (logical replication), **MySQL** (binlog), **MongoDB** (change streams), and **SQL Server** (CDC change tables) — resumable. | [CDC guide](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) |
-| **Effectively-once delivery** | Monotonic per-page commit tokens committed atomically with the data (SQL sinks, Iceberg, BigQuery), so a resumed run re-delivers no duplicates. This is idempotent at-least-once (dedup on resume), not distributed-consensus exactly-once. | [state](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) |
-| **Upsert / delete write modes** | `write_mode: upsert \| delete` with a `key` + `delete_marker` — merge by key on Postgres / MySQL / SQL Server / SQLite / Mongo / Elasticsearch. | [upsert](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) |
-| **Data-quality checks** | 13 per-record and per-batch assertions (not-null, regex, ranges, uniqueness, row-count, JSON Schema, …) with quarantine routing or abort policies. | [quality](https://pawansikawat.github.io/faucet-stream/cookbook/quality.html) |
-| **Data contracts** | A versioned promise about the output shape (types, nullability, enums, patterns, bounds) enforced per page — breaches fail, quarantine, or warn; export as JSON Schema / OpenLineage via `faucet contract`. | [contracts](https://pawansikawat.github.io/faucet-stream/cookbook/contracts.html) |
-| **SLA monitoring** | Declared freshness (`max_staleness_secs`) + volume floors and learned-baseline anomaly detection (z-score / IQR) per pipeline — violations emit metrics + warnings and surface in `faucet doctor`, never failing the run. | [SLA](https://pawansikawat.github.io/faucet-stream/cookbook/sla.html) |
-| **Dead-letter queue** | Route failed rows to any sink instead of aborting the run, with a fixed envelope and reason. | [DLQ](https://pawansikawat.github.io/faucet-stream/cookbook/dlq.html) |
-| **Adaptive batch sizing** | Opt-in AIMD controller that tunes write batch size from observed sink latency and error rate. | [tuning](https://pawansikawat.github.io/faucet-stream/) |
-| **Secrets-manager interpolation** | `${vault:…}`, `${aws-sm:…}`, `${gcp-sm:…}`, `${azure-kv:…}` resolved at load time, redacted from logs. | [secrets](https://pawansikawat.github.io/faucet-stream/cookbook/secrets.html) |
-| **Cron scheduling** | `faucet schedule` — DST-correct cron, overlap policies, run timeouts, graceful drain. | [scheduling](https://pawansikawat.github.io/faucet-stream/) |
-| **HTTP control plane** | `faucet serve` — submit / poll / cancel runs over REST, idempotency keys, run history, optional embedded web console (`serve-ui`), clustered execution. | [serve](https://pawansikawat.github.io/faucet-stream/) |
-| **Event-driven triggers** | `faucet serve --triggers` — auto-enqueue runs on object-arrival (S3/GCS), webhook, or queue-depth (Redis/Kafka). | [triggers](https://pawansikawat.github.io/faucet-stream/reference/triggers.html) |
-| **OpenLineage emission** | Emit START/RUNNING/COMPLETE/FAIL events with schema facets and column-level lineage over HTTP / file / Kafka. | [lineage](https://pawansikawat.github.io/faucet-stream/cookbook/lineage.html) |
+| **Streaming, bounded memory** | Sources stream page-by-page; sinks write each page as it arrives — memory stays at one `batch_size` regardless of total volume. | [concepts](https://faucet-hq.github.io/faucet-stream/getting-started/concepts.html) |
+| **Incremental + resumable** | Bookmark-based replication: only fetch what changed, resume mid-run from a durable state store (file / Redis / Postgres). | [state](https://faucet-hq.github.io/faucet-stream/cookbook/state.html) |
+| **Change data capture** | Streaming row-level CDC for **PostgreSQL** (logical replication), **MySQL** (binlog), **MongoDB** (change streams), and **SQL Server** (CDC change tables) — resumable. | [CDC guide](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) |
+| **Effectively-once delivery** | Monotonic per-page commit tokens committed atomically with the data (SQL sinks, Iceberg, BigQuery), so a resumed run re-delivers no duplicates. This is idempotent at-least-once (dedup on resume), not distributed-consensus exactly-once. | [state](https://faucet-hq.github.io/faucet-stream/cookbook/state.html) |
+| **Upsert / delete write modes** | `write_mode: upsert \| delete` with a `key` + `delete_marker` — merge by key on Postgres / MySQL / SQL Server / SQLite / Mongo / Elasticsearch. | [upsert](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html) |
+| **Data-quality checks** | 13 per-record and per-batch assertions (not-null, regex, ranges, uniqueness, row-count, JSON Schema, …) with quarantine routing or abort policies. | [quality](https://faucet-hq.github.io/faucet-stream/cookbook/quality.html) |
+| **Data contracts** | A versioned promise about the output shape (types, nullability, enums, patterns, bounds) enforced per page — breaches fail, quarantine, or warn; export as JSON Schema / OpenLineage via `faucet contract`. | [contracts](https://faucet-hq.github.io/faucet-stream/cookbook/contracts.html) |
+| **SLA monitoring** | Declared freshness (`max_staleness_secs`) + volume floors and learned-baseline anomaly detection (z-score / IQR) per pipeline — violations emit metrics + warnings and surface in `faucet doctor`, never failing the run. | [SLA](https://faucet-hq.github.io/faucet-stream/cookbook/sla.html) |
+| **Dead-letter queue** | Route failed rows to any sink instead of aborting the run, with a fixed envelope and reason. | [DLQ](https://faucet-hq.github.io/faucet-stream/cookbook/dlq.html) |
+| **Adaptive batch sizing** | Opt-in AIMD controller that tunes write batch size from observed sink latency and error rate. | [tuning](https://faucet-hq.github.io/faucet-stream/) |
+| **Secrets-manager interpolation** | `${vault:…}`, `${aws-sm:…}`, `${gcp-sm:…}`, `${azure-kv:…}` resolved at load time, redacted from logs. | [secrets](https://faucet-hq.github.io/faucet-stream/cookbook/secrets.html) |
+| **Cron scheduling** | `faucet schedule` — DST-correct cron, overlap policies, run timeouts, graceful drain. | [scheduling](https://faucet-hq.github.io/faucet-stream/) |
+| **HTTP control plane** | `faucet serve` — submit / poll / cancel runs over REST, idempotency keys, run history, optional embedded web console (`serve-ui`), clustered execution. | [serve](https://faucet-hq.github.io/faucet-stream/) |
+| **Event-driven triggers** | `faucet serve --triggers` — auto-enqueue runs on object-arrival (S3/GCS), webhook, or queue-depth (Redis/Kafka). | [triggers](https://faucet-hq.github.io/faucet-stream/reference/triggers.html) |
+| **OpenLineage emission** | Emit START/RUNNING/COMPLETE/FAIL events with schema facets and column-level lineage over HTTP / file / Kafka. | [lineage](https://faucet-hq.github.io/faucet-stream/cookbook/lineage.html) |
 | **Observability** | Automatic Prometheus metrics + `tracing` spans for every source, sink, transform, and state op — labelled by pipeline / row / connector. | [observability](cli/README.md#observability-prometheus--tracing) |
-| **Transforms** | `flatten`, `rename_keys`, `keys_case`, `select`, `drop`, `set`, `rename_field`, `cast`, `redact`, `hash`, `json_parse`, `coalesce`, `value_case`, `split`, `join`, `spell_symbols`, `cdc_unwrap`, `sql` (embedded DuckDB, page-level), and `wasm` (custom code in any language, per-record, sandboxed). | [transforms](https://pawansikawat.github.io/faucet-stream/cookbook/transforms.html) |
+| **Transforms** | `flatten`, `rename_keys`, `keys_case`, `select`, `drop`, `set`, `rename_field`, `cast`, `redact`, `hash`, `json_parse`, `coalesce`, `value_case`, `split`, `join`, `spell_symbols`, `cdc_unwrap`, `sql` (embedded DuckDB, page-level), and `wasm` (custom code in any language, per-record, sandboxed). | [transforms](https://faucet-hq.github.io/faucet-stream/cookbook/transforms.html) |
 
 ## Connectors
 
 All connector crates depend only on `faucet-core`, so any source pairs with any sink. See
-the [connector capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
+the [connector capability matrix](https://faucet-hq.github.io/faucet-stream/reference/connectors.html)
 (streaming, resumable state, compression, auth per connector) and the
-[choosing-a-connector guide](https://pawansikawat.github.io/faucet-stream/reference/choosing.html)
+[choosing-a-connector guide](https://faucet-hq.github.io/faucet-stream/reference/choosing.html)
 for help picking between overlapping connectors (Postgres query vs CDC, S3 vs Parquet, Redis vs Kafka, …).
 
 > **Support tiers** (the **Tier** column below). A connector is **Tier-1 ✅** when
@@ -363,10 +363,10 @@ and `lineage`:
 
 ```bash
 # Homebrew
-brew install PawanSikawat/faucet-stream/faucet-cli
+brew install faucet-hq/faucet-stream/faucet-cli
 
 # Shell installer (installs to ~/.cargo/bin by default, checksummed)
-curl -LsSf https://github.com/PawanSikawat/faucet-stream/releases/latest/download/faucet-cli-installer.sh | sh
+curl -LsSf https://github.com/faucet-hq/faucet-stream/releases/latest/download/faucet-cli-installer.sh | sh
 
 # Or download an archive + SHA256 checksum from the latest faucet-cli GitHub Release
 ```
@@ -420,7 +420,7 @@ own service.
 | Self-hosted, no daemon | ✓ run-to-completion | ✓ | ✗ needs platform | usually a service | agent | ✗ SaaS |
 | License | MIT / Apache-2.0 | MIT | ELv2 + MIT | Apache-2.0 / source-available² | MPL-2.0 | Proprietary |
 
-¹ Singer CDC depends on the individual tap. ² The original Benthos is Apache-2.0; Redpanda Connect's maintained build is source-available. ³ "Effectively-once" = idempotent at-least-once: per-page commit tokens are committed atomically with the data so a resumed run drops duplicates — not distributed-consensus exactly-once (see [delivery guarantees](https://pawansikawat.github.io/faucet-stream/cookbook/state.html)). *Comparison reflects the general shape of each tool as of 2026-05 — check each project for current details.*
+¹ Singer CDC depends on the individual tap. ² The original Benthos is Apache-2.0; Redpanda Connect's maintained build is source-available. ³ "Effectively-once" = idempotent at-least-once: per-page commit tokens are committed atomically with the data so a resumed run drops duplicates — not distributed-consensus exactly-once (see [delivery guarantees](https://faucet-hq.github.io/faucet-stream/cookbook/state.html)). *Comparison reflects the general shape of each tool as of 2026-05 — check each project for current details.*
 
 For reference: **[Singer](https://www.singer.io/)** is a connector spec and **[Meltano](https://meltano.com/)**
 is its most common runtime; both appear above. faucet-stream is a full **ETL** tool — it
@@ -431,7 +431,7 @@ it models transformations *in the warehouse* on data already loaded (the "T" of 
 warehouse scale) — pair the two when you need heavy in-warehouse modeling on top of what
 faucet extracts, transforms, and loads.
 
-**Deep dives** (detailed, and honest about where each tool wins): [vs. Meltano](https://pawansikawat.github.io/faucet-stream/comparison/meltano.html) · [vs. Airbyte](https://pawansikawat.github.io/faucet-stream/comparison/airbyte.html) · [vs. Singer](https://pawansikawat.github.io/faucet-stream/comparison/singer.html).
+**Deep dives** (detailed, and honest about where each tool wins): [vs. Meltano](https://faucet-hq.github.io/faucet-stream/comparison/meltano.html) · [vs. Airbyte](https://faucet-hq.github.io/faucet-stream/comparison/airbyte.html) · [vs. Singer](https://faucet-hq.github.io/faucet-stream/comparison/singer.html).
 
 ## When to use faucet-stream
 
@@ -491,7 +491,7 @@ connector libraries, the shared auth-provider library, 2 state-store backends, t
 crate, the SQL transform crate, the conformance test battery, the shared core, the umbrella
 crate, and the CLI binary. See
 the [Connectors](#connectors) table above and the
-[architecture guide](https://pawansikawat.github.io/faucet-stream/getting-started/concepts.html).
+[architecture guide](https://faucet-hq.github.io/faucet-stream/getting-started/concepts.html).
 
 ## Performance
 
@@ -711,7 +711,7 @@ let config = RestStreamConfig::new("https://api.example.com", "/data")
 `Auth::TokenEndpoint` fetches a token from an external API (a login endpoint, secrets
 manager, or custom auth service) via a JSONPath, caches it across pages, and refreshes it at
 `expiry_ratio` of the reported lifetime (default 90%). See the
-[auth cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html) for the full
+[auth cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/auth.html) for the full
 shape and `ResponseValidator` customization.
 
 </details>
@@ -842,7 +842,7 @@ Any `Source` works with any `Sink` via `Pipeline::new(&source, &sink).run().awai
 own failures to `FaucetError` variants (`Source` / `Sink` / `Config`, or `Custom(boxed_err)`
 to wrap any `std::error::Error` without losing the chain). Publish under the naming
 convention `faucet-source-<name>` / `faucet-sink-<name>`. Full walkthrough:
-[authoring connectors](https://pawansikawat.github.io/faucet-stream/extending/authoring-connectors.html).
+[authoring connectors](https://faucet-hq.github.io/faucet-stream/extending/authoring-connectors.html).
 
 To use a third-party connector **from a `faucet.yaml` config** (not just from Rust), build a
 custom `faucet` binary that registers it via `PluginRegistry` and `faucet_cli::run_main` — the
@@ -881,11 +881,11 @@ docs/book/                    — mdBook documentation site (source under docs/b
 
 ## Star history
 
-<a href="https://www.star-history.com/?repos=PawanSikawat%2Ffaucet-stream&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=faucet-hq%2Ffaucet-stream&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=PawanSikawat/faucet-stream&type=date&theme=dark&legend=top-left&sealed_token=9G0SLiIBTDIhFTaBki1bRfURPsuWihZWbMamJ6mn6RIc_wQxXlvqeoPe6MLo5Zx2jx5i4s8VgB-Yu-MSjq8bMIzXcDn7hf0oe5BOU7H6RRz2w3Qnia4vog1vgULXzVCY0zPe10ztVjfTTzu2va4KvyZxVZR-8ZfNK3ku3XuVeoFCrIQgo3dtkQXJCmR8" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=PawanSikawat/faucet-stream&type=date&legend=top-left&sealed_token=9G0SLiIBTDIhFTaBki1bRfURPsuWihZWbMamJ6mn6RIc_wQxXlvqeoPe6MLo5Zx2jx5i4s8VgB-Yu-MSjq8bMIzXcDn7hf0oe5BOU7H6RRz2w3Qnia4vog1vgULXzVCY0zPe10ztVjfTTzu2va4KvyZxVZR-8ZfNK3ku3XuVeoFCrIQgo3dtkQXJCmR8" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=PawanSikawat/faucet-stream&type=date&legend=top-left&sealed_token=9G0SLiIBTDIhFTaBki1bRfURPsuWihZWbMamJ6mn6RIc_wQxXlvqeoPe6MLo5Zx2jx5i4s8VgB-Yu-MSjq8bMIzXcDn7hf0oe5BOU7H6RRz2w3Qnia4vog1vgULXzVCY0zPe10ztVjfTTzu2va4KvyZxVZR-8ZfNK3ku3XuVeoFCrIQgo3dtkQXJCmR8" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=faucet-hq/faucet-stream&type=date&theme=dark&legend=top-left&sealed_token=9G0SLiIBTDIhFTaBki1bRfURPsuWihZWbMamJ6mn6RIc_wQxXlvqeoPe6MLo5Zx2jx5i4s8VgB-Yu-MSjq8bMIzXcDn7hf0oe5BOU7H6RRz2w3Qnia4vog1vgULXzVCY0zPe10ztVjfTTzu2va4KvyZxVZR-8ZfNK3ku3XuVeoFCrIQgo3dtkQXJCmR8" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=faucet-hq/faucet-stream&type=date&legend=top-left&sealed_token=9G0SLiIBTDIhFTaBki1bRfURPsuWihZWbMamJ6mn6RIc_wQxXlvqeoPe6MLo5Zx2jx5i4s8VgB-Yu-MSjq8bMIzXcDn7hf0oe5BOU7H6RRz2w3Qnia4vog1vgULXzVCY0zPe10ztVjfTTzu2va4KvyZxVZR-8ZfNK3ku3XuVeoFCrIQgo3dtkQXJCmR8" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=faucet-hq/faucet-stream&type=date&legend=top-left&sealed_token=9G0SLiIBTDIhFTaBki1bRfURPsuWihZWbMamJ6mn6RIc_wQxXlvqeoPe6MLo5Zx2jx5i4s8VgB-Yu-MSjq8bMIzXcDn7hf0oe5BOU7H6RRz2w3Qnia4vog1vgULXzVCY0zPe10ztVjfTTzu2va4KvyZxVZR-8ZfNK3ku3XuVeoFCrIQgo3dtkQXJCmR8" />
  </picture>
 </a>
 
@@ -897,7 +897,7 @@ best signal for the next person deciding whether to bet a pipeline on it.
 Contributions — core changes and third-party connectors alike — are welcome. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks CI runs, and the add-a-connector
 checklist, and the
-[authoring guide](https://pawansikawat.github.io/faucet-stream/extending/authoring-connectors.html)
+[authoring guide](https://faucet-hq.github.io/faucet-stream/extending/authoring-connectors.html)
 for building your own `faucet-source-*` / `faucet-sink-*` crate. Please review our
 [Code of Conduct](CODE_OF_CONDUCT.md). To report a vulnerability, see [SECURITY.md](SECURITY.md).
 

@@ -1,6 +1,6 @@
 # faucet-common-kinesis
 
-Shared configuration types for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream)
+Shared configuration types for the [faucet-stream](https://github.com/faucet-hq/faucet-stream)
 AWS Kinesis Data Streams connectors — [`faucet-source-kinesis`](https://crates.io/crates/faucet-source-kinesis)
 and [`faucet-sink-kinesis`](https://crates.io/crates/faucet-sink-kinesis).
 

@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-webhook.svg)](https://crates.io/crates/faucet-source-webhook)
 [![Docs.rs](https://docs.rs/faucet-source-webhook/badge.svg)](https://docs.rs/faucet-source-webhook)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-webhook.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-webhook.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-webhook.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-webhook.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-A **webhook receiver** source that starts a temporary HTTP server, collects incoming `POST` payloads as JSON records, and then hands them to the pipeline. Part of the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem.
+A **webhook receiver** source that starts a temporary HTTP server, collects incoming `POST` payloads as JSON records, and then hands them to the pipeline. Part of the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem.
 
 Reach for it to capture push-style events — GitHub/GitLab hooks, Stripe events, SaaS callbacks, IoT pushes — without standing up a separate ingestion service. The server is short-lived: it runs for a bounded receive window (a timeout and/or a payload cap), drains everything it collected, and shuts down. Built on [`axum`](https://crates.io/crates/axum) + [`tokio`](https://crates.io/crates/tokio), with a constant-time shared-secret check and a hard request-body cap so a single huge POST can't exhaust memory.
 
@@ -320,7 +320,7 @@ This crate has no optional features of its own. Enable it in the CLI / umbrella 
 
 ## See also
 
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [Choosing a connector](https://pawansikawat.github.io/faucet-stream/reference/choosing.html)
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) · [Choosing a connector](https://faucet-hq.github.io/faucet-stream/reference/choosing.html)
 - Related crates: [faucet-source-websocket](https://crates.io/crates/faucet-source-websocket) · [faucet-source-kafka](https://crates.io/crates/faucet-source-kafka) · [faucet-sink-http](https://crates.io/crates/faucet-sink-http)
 
 ## License

@@ -8,7 +8,7 @@ pub const OL_SCHEMA_URL: &str =
 
 /// Producer identifier embedded in every event.
 pub const PRODUCER: &str = concat!(
-    "https://github.com/PawanSikawat/faucet-stream/tree/v",
+    "https://github.com/faucet-hq/faucet-stream/tree/v",
     env!("CARGO_PKG_VERSION")
 );
 

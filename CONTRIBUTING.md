@@ -9,7 +9,7 @@ By participating you agree to abide by our [Code of Conduct](./CODE_OF_CONDUCT.m
 ## Getting set up
 
 ```bash
-git clone https://github.com/PawanSikawat/faucet-stream
+git clone https://github.com/faucet-hq/faucet-stream
 cd faucet-stream
 cargo build --workspace
 ```

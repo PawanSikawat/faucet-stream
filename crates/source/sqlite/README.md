@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-sqlite.svg)](https://crates.io/crates/faucet-source-sqlite)
 [![Docs.rs](https://docs.rs/faucet-source-sqlite/badge.svg)](https://docs.rs/faucet-source-sqlite)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-sqlite.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-sqlite.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-sqlite.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-sqlite.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-A **SQLite** query source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Executes a SQL statement against a SQLite database (a file or an in-memory database), decodes each row into a typed `serde_json::Value`, and streams the result set back page-by-page via a sqlx row cursor so memory stays bounded no matter how large the table is.
+A **SQLite** query source for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Executes a SQL statement against a SQLite database (a file or an in-memory database), decodes each row into a typed `serde_json::Value`, and streams the result set back page-by-page via a sqlx row cursor so memory stays bounded no matter how large the table is.
 
 SQLite is an in-process, file-based engine — there is no server, no network wire, and no auth. That makes this connector the simplest, lowest-overhead way to pull rows out of a local database and land them in any faucet-stream sink (a file, another database, a warehouse, a queue) with one declarative config and no glue code. It's also ideal for CI and locked-down environments where you don't want to stand up a server.
 
@@ -288,15 +288,15 @@ This crate has no optional features of its own. Enable it in the CLI / umbrella 
 
 ## See also
 
-- [Connector reference & capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
-- [CLI & config-file grammar](https://pawansikawat.github.io/faucet-stream/reference/cli.html)
-- [State & resume cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html)
+- [Connector reference & capability matrix](https://faucet-hq.github.io/faucet-stream/reference/connectors.html)
+- [CLI & config-file grammar](https://faucet-hq.github.io/faucet-stream/reference/cli.html)
+- [State & resume cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html)
 - [`faucet-sink-sqlite`](https://crates.io/crates/faucet-sink-sqlite) — the matching SQLite sink
 - [`faucet-source-postgres`](https://crates.io/crates/faucet-source-postgres) · [`faucet-source-mysql`](https://crates.io/crates/faucet-source-mysql) — server-based SQL sources
 
 ## Sharded execution (cluster Mode B)
 
-Under [`faucet serve --cluster`](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html),
+Under [`faucet serve --cluster`](https://faucet-hq.github.io/faucet-stream/cookbook/cluster.html),
 a top-level `shard: { count: N }` block splits this source into contiguous
 primary-key ranges that different cluster workers process concurrently. Opt in
 by naming an integer-typed key column:

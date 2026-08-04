@@ -11,7 +11,7 @@ it.
 **Homebrew (macOS / Linux):**
 
 ```bash
-brew install PawanSikawat/faucet-stream/faucet-cli
+brew install faucet-hq/faucet-stream/faucet-cli
 ```
 
 (The formula is named after the `faucet-cli` package; it installs the `faucet`
@@ -20,11 +20,11 @@ binary.)
 **Shell installer (macOS / Linux):**
 
 ```bash
-curl -LsSf https://github.com/PawanSikawat/faucet-stream/releases/latest/download/faucet-cli-installer.sh | sh
+curl -LsSf https://github.com/faucet-hq/faucet-stream/releases/latest/download/faucet-cli-installer.sh | sh
 ```
 
 **Direct download:** grab the archive for your platform from the latest
-[`faucet-cli` GitHub Release](https://github.com/PawanSikawat/faucet-stream/releases?q=faucet-cli&expanded=true)
+[`faucet-cli` GitHub Release](https://github.com/faucet-hq/faucet-stream/releases?q=faucet-cli&expanded=true)
 (e.g. `faucet-cli-aarch64-apple-darwin.tar.xz`), verify it against the
 published `.sha256` checksum, and put `faucet` on your `PATH`.
 

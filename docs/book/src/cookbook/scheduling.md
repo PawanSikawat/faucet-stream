@@ -43,7 +43,7 @@ pipeline:
       path: ./events.jsonl
 ```
 
-See [`cli/examples/scheduled_nightly.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/scheduled_nightly.yaml)
+See [`cli/examples/scheduled_nightly.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/scheduled_nightly.yaml)
 for the canonical copy.
 
 ## Cron syntax

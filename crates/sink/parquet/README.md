@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-parquet.svg)](https://crates.io/crates/faucet-sink-parquet)
 [![Docs.rs](https://docs.rs/faucet-sink-parquet/badge.svg)](https://docs.rs/faucet-sink-parquet)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-parquet.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-parquet.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-parquet.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-parquet.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Apache **Parquet** file sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records as columnar Parquet files to a **local filesystem path** or an **Amazon S3** bucket (or any S3-compatible service).
+Apache **Parquet** file sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Writes JSON records as columnar Parquet files to a **local filesystem path** or an **Amazon S3** bucket (or any S3-compatible service).
 
 Built on the `parquet` + `arrow` crates wired through `object_store`, so local and S3 share one streaming code path — records are decoded into Arrow `RecordBatch`es and paged through an `AsyncArrowWriter` with bounded buffering, never staging a whole file in memory. Reach for it to land pipeline output as a columnar data lake, partition large exports across many files, or feed downstream analytics engines (DuckDB, Spark, BigQuery external tables).
 
@@ -316,7 +316,7 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 
 ## See also
 
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [faucet-source-parquet](https://crates.io/crates/faucet-source-parquet) · [faucet-sink-s3](https://crates.io/crates/faucet-sink-s3)
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) · [faucet-source-parquet](https://crates.io/crates/faucet-source-parquet) · [faucet-sink-s3](https://crates.io/crates/faucet-sink-s3)
 
 ## License
 

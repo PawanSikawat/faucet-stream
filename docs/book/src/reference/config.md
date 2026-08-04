@@ -904,4 +904,4 @@ the current directory, and load a sibling `.env` unless `--no-env-file` is given
 
 > The authoritative, exhaustive grammar — including every matrix and template
 > edge case — is in
-> [`cli/README.md`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/README.md).
+> [`cli/README.md`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/README.md).

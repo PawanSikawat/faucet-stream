@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-gcs.svg)](https://crates.io/crates/faucet-sink-gcs)
 [![Docs.rs](https://docs.rs/faucet-sink-gcs/badge.svg)](https://docs.rs/faucet-sink-gcs)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-gcs.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-gcs.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-gcs.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-gcs.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Google **Cloud Storage** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Serializes batches of `serde_json::Value` records as [JSON Lines](https://jsonlines.org/) (NDJSON) and uploads them concurrently to a GCS bucket with time-sortable UUIDv7 object keys.
+Google **Cloud Storage** sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Serializes batches of `serde_json::Value` records as [JSON Lines](https://jsonlines.org/) (NDJSON) and uploads them concurrently to a GCS bucket with time-sortable UUIDv7 object keys.
 
 Reach for it when you want to land data from any faucet-stream source — a database, an API, a queue, a CDC stream — into GCS as newline-delimited JSON, ready for BigQuery external tables, Dataflow, or any downstream reader. It is built on the official [`google-cloud-storage`](https://crates.io/crates/google-cloud-storage) SDK and uses `buffer_unordered` to fan uploads out across the wire.
 
@@ -256,7 +256,7 @@ println!("uploaded {written} records");
 # }
 ```
 
-Most users drive the sink through a `Pipeline` rather than calling `write_batch` directly — see the [library tutorial](https://pawansikawat.github.io/faucet-stream/tutorials/library.html).
+Most users drive the sink through a `Pipeline` rather than calling `write_batch` directly — see the [library tutorial](https://faucet-hq.github.io/faucet-stream/tutorials/library.html).
 
 ## How it works
 
@@ -297,8 +297,8 @@ Enable the connector itself in the CLI/umbrella via the `sink-gcs` feature.
 
 ## See also
 
-- [Connector reference & capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
-- [Compression cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/compression.html)
+- [Connector reference & capability matrix](https://faucet-hq.github.io/faucet-stream/reference/connectors.html)
+- [Compression cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/compression.html)
 - [`faucet-source-gcs`](https://crates.io/crates/faucet-source-gcs) — the matching GCS source.
 - [`faucet-common-gcs`](https://crates.io/crates/faucet-common-gcs) — shared `GcsCredentials` enum and client builders.
 - [`faucet-sink-s3`](https://crates.io/crates/faucet-sink-s3) — the structurally equivalent AWS S3 sink.

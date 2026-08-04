@@ -1,7 +1,7 @@
 # faucet-common-pubsub
 
 Shared Google Cloud Pub/Sub configuration for the
-[faucet-stream](https://github.com/PawanSikawat/faucet-stream) Pub/Sub
+[faucet-stream](https://github.com/faucet-hq/faucet-stream) Pub/Sub
 connectors — `faucet-source-pubsub` and `faucet-sink-pubsub`. Both connector
 crates depend on this crate and re-export its types, so end-user imports do not
 change.

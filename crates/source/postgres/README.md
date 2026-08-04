@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-postgres.svg)](https://crates.io/crates/faucet-source-postgres)
 [![Docs.rs](https://docs.rs/faucet-source-postgres/badge.svg)](https://docs.rs/faucet-source-postgres)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-postgres.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-postgres.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-postgres.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-postgres.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-A **PostgreSQL query source** for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Runs any SQL `SELECT` against a PostgreSQL database and streams the result set back row-by-row as `serde_json::Value` records.
+A **PostgreSQL query source** for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Runs any SQL `SELECT` against a PostgreSQL database and streams the result set back row-by-row as `serde_json::Value` records.
 
 Built on [`sqlx`](https://crates.io/crates/sqlx) with a reusable connection pool and a true row cursor (`Query::fetch`), so the source never buffers the whole result set in memory and the downstream sink starts writing as soon as the first batch is parsed off the wire. Reach for it to extract tables, joins, aggregates, or ad-hoc query results out of Postgres and land them in any faucet-stream sink — a file, an object store, a warehouse, a queue — with one declarative config and no glue code.
 
@@ -15,7 +15,7 @@ Built on [`sqlx`](https://crates.io/crates/sqlx) with a reusable connection pool
 - **Connection pooling** — a `PgPoolOptions` pool sized by `max_connections` is built once in `new()` and reused for every fetch.
 - **Type-aware row decoding** — integers, floats, booleans, `text`, `json`/`jsonb`, `timestamp(tz)`, `date`/`time`, `uuid`, `numeric`/`decimal`, and `bytea` are each converted to the right JSON shape (full numeric precision preserved as strings; binary base64-encoded).
 - **Positional bind parameters** — `params` from config are bound as native scalar types (`$1`, `$2`, …), so a numeric or boolean bind compares correctly against a typed column instead of being coerced to `jsonb`.
-- **Matrix-context binding** — `${parent.path}` tokens in the query are rewritten to additional positional bind markers and filled per parent record, so the same query template runs once per row produced by a parent in a [matrix](https://pawansikawat.github.io/faucet-stream/reference/config.html) pipeline.
+- **Matrix-context binding** — `${parent.path}` tokens in the query are rewritten to additional positional bind markers and filled per parent record, so the same query template runs once per row produced by a parent in a [matrix](https://faucet-hq.github.io/faucet-stream/reference/config.html) pipeline.
 - **Credential redaction** — the connection URL is masked in `Debug` output and stripped from the emitted lineage dataset URI.
 
 ## Installation
@@ -190,7 +190,7 @@ Columns are converted to JSON values by probing the row's value with each candid
 
 ## Matrix-context binding
 
-In a parent/child [matrix](https://pawansikawat.github.io/faucet-stream/reference/config.html) pipeline, the query may reference fields from each parent record with `${parent_id.dotted.path}` tokens. At runtime these are rewritten to additional positional bind markers (appended after the static `params`) and filled per parent record, so a single query template fans out into one parameterized execution per parent row — never string-interpolated, so it is SQL-injection safe.
+In a parent/child [matrix](https://faucet-hq.github.io/faucet-stream/reference/config.html) pipeline, the query may reference fields from each parent record with `${parent_id.dotted.path}` tokens. At runtime these are rewritten to additional positional bind markers (appended after the static `params`) and filled per parent record, so a single query template fans out into one parameterized execution per parent row — never string-interpolated, so it is SQL-injection safe.
 
 ```yaml
 matrix:
@@ -302,14 +302,14 @@ This crate has no optional features of its own. Enable it in the CLI or umbrella
 
 ## See also
 
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) · [Choosing a connector](https://pawansikawat.github.io/faucet-stream/reference/choosing.html)
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) · [Choosing a connector](https://faucet-hq.github.io/faucet-stream/reference/choosing.html)
 - [`faucet-source-postgres-cdc`](https://crates.io/crates/faucet-source-postgres-cdc) — resumable change data capture via logical replication
 - [`faucet-sink-postgres`](https://crates.io/crates/faucet-sink-postgres) — the PostgreSQL sink (insert / upsert / delete)
 - [`faucet-source-mysql`](https://crates.io/crates/faucet-source-mysql) · [`faucet-source-sqlite`](https://crates.io/crates/faucet-source-sqlite) · [`faucet-source-mssql`](https://crates.io/crates/faucet-source-mssql)
 
 ## Sharded execution (cluster Mode B)
 
-Under [`faucet serve --cluster`](https://pawansikawat.github.io/faucet-stream/cookbook/cluster.html),
+Under [`faucet serve --cluster`](https://faucet-hq.github.io/faucet-stream/cookbook/cluster.html),
 a top-level `shard: { count: N }` block splits this source into contiguous
 primary-key ranges that different cluster workers process concurrently. Opt in
 by naming an integer-typed key column:

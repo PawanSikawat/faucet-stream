@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-iceberg.svg)](https://crates.io/crates/faucet-sink-iceberg)
 [![Docs.rs](https://docs.rs/faucet-sink-iceberg/badge.svg)](https://docs.rs/faucet-sink-iceberg)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-iceberg.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-iceberg.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-iceberg.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-iceberg.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Apache **Iceberg** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Buffers JSON records into Arrow batches, writes them as Parquet data files, and commits each batch as a new Iceberg snapshot via `Transaction::fast_append` — so any faucet-stream source can land directly in an Iceberg lakehouse.
+Apache **Iceberg** sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Buffers JSON records into Arrow batches, writes them as Parquet data files, and commits each batch as a new Iceberg snapshot via `Transaction::fast_append` — so any faucet-stream source can land directly in an Iceberg lakehouse.
 
 Reach for it when you want a database query, a CDC stream, a CSV dump, or an API feed to become append-only Iceberg snapshots in your lake — with a pluggable catalog (REST, AWS Glue, SQL-backed, or Hive Metastore) and a local **or** cloud (S3/GCS) warehouse, all from one declarative config and no glue code.
 
@@ -242,7 +242,7 @@ Cleanup runs **only** on a *definitive* loss (an exhausted commit conflict, or a
 
 ## Write mode (append-only)
 
-`write_mode` accepts the shared `faucet_core::WriteMode` enum, but **only `append` is supported at runtime**. `upsert` / `delete` deserialise successfully (so configs round-trip) but are rejected by `IcebergSink::new` with a typed `FaucetError::Config`; `overwrite` is not a recognised variant and fails to deserialise. `Sink::supported_write_modes()` therefore returns `[Append]`. Equality-delete upsert is tracked in [#179](https://github.com/PawanSikawat/faucet-stream/issues/179), blocked on upstream `iceberg-rust` exposing a replace/overwrite transaction action.
+`write_mode` accepts the shared `faucet_core::WriteMode` enum, but **only `append` is supported at runtime**. `upsert` / `delete` deserialise successfully (so configs round-trip) but are rejected by `IcebergSink::new` with a typed `FaucetError::Config`; `overwrite` is not a recognised variant and fails to deserialise. `Sink::supported_write_modes()` therefore returns `[Append]`. Equality-delete upsert is tracked in [#179](https://github.com/faucet-hq/faucet-stream/issues/179), blocked on upstream `iceberg-rust` exposing a replace/overwrite transaction action.
 
 ## Effectively-once delivery
 
@@ -278,13 +278,13 @@ pipeline:
 delivery: exactly_once
 ```
 
-See the [Effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for the full rationale and supported source/sink set.
+See the [Effectively-once delivery cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery) for the full rationale and supported source/sink set.
 
 ## Schema drift
 
 `IcebergSink` reports its live table schema via `current_schema()` (the table's current Iceberg schema converted through Arrow to the `infer_schema` JSON shape; a missing table → `None`), so the pipeline-level `schema:` policy can **detect** drift between an incoming page's top-level shape and the real table. The `warn` / `ignore` / `quarantine` / `fail` modes all work against this sink.
 
-**`on_drift: evolve` supports additive columns** ([#255](https://github.com/PawanSikawat/faucet-stream/issues/255)). `supports_schema_evolution()` returns `true`: on drift, each **new** column is added as an optional field via `iceberg-rust` 0.10.0's `Transaction::update_schema` action, in a single schema-update commit. Only additions are applied — iceberg-rust 0.10.0's `update_schema` exposes `add_column` (+ `delete_column`) but **no** in-place type promotion or nullability relaxation, so a `widenings` / `relax_nullability` evolution is rejected with a typed error rather than silently ignored. Row-level overwrite/upsert remain separately blocked upstream (#179 / #225). See the [schema-drift cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/schema-drift.html).
+**`on_drift: evolve` supports additive columns** ([#255](https://github.com/faucet-hq/faucet-stream/issues/255)). `supports_schema_evolution()` returns `true`: on drift, each **new** column is added as an optional field via `iceberg-rust` 0.10.0's `Transaction::update_schema` action, in a single schema-update commit. Only additions are applied — iceberg-rust 0.10.0's `update_schema` exposes `add_column` (+ `delete_column`) but **no** in-place type promotion or nullability relaxation, so a `widenings` / `relax_nullability` evolution is rejected with a typed error rather than silently ignored. Row-level overwrite/upsert remain separately blocked upstream (#179 / #225). See the [schema-drift cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/schema-drift.html).
 
 ## Schema inference
 
@@ -376,9 +376,9 @@ In the CLI/umbrella, the corresponding feature is `sink-iceberg` (REST), with `s
 
 ## See also
 
-- [Connector reference & capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
-- [Effectively-once delivery cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery)
-- [Configuration grammar](https://pawansikawat.github.io/faucet-stream/reference/config.html)
+- [Connector reference & capability matrix](https://faucet-hq.github.io/faucet-stream/reference/connectors.html)
+- [Effectively-once delivery cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html#effectively-once-delivery)
+- [Configuration grammar](https://faucet-hq.github.io/faucet-stream/reference/config.html)
 - Related crates: [`faucet-sink-parquet`](https://crates.io/crates/faucet-sink-parquet), [`faucet-sink-s3`](https://crates.io/crates/faucet-sink-s3), [`faucet-sink-bigquery`](https://crates.io/crates/faucet-sink-bigquery), [`faucet-source-postgres-cdc`](https://crates.io/crates/faucet-source-postgres-cdc)
 
 ## License

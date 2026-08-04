@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-jsonl.svg)](https://crates.io/crates/faucet-sink-jsonl)
 [![Docs.rs](https://docs.rs/faucet-sink-jsonl/badge.svg)](https://docs.rs/faucet-sink-jsonl)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-jsonl.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-jsonl.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-jsonl.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-jsonl.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-JSON Lines (**`.jsonl`**) file sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes each record as one JSON object per line in [JSON Lines](https://jsonlines.org/) format.
+JSON Lines (**`.jsonl`**) file sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Writes each record as one JSON object per line in [JSON Lines](https://jsonlines.org/) format.
 
 It's the workhorse local-file destination: zero credentials, zero connection setup, and a streaming-friendly format that everything downstream understands (`jq`, `pandas`, DuckDB, BigQuery / Snowflake / Spark loaders). Records stream through a buffered async writer so even multi-million-row exports stay fast and bounded in memory, and dated output paths like `./data/dt=2026-03-08/part.jsonl` work without pre-creating the directory tree.
 
@@ -258,9 +258,9 @@ This sink does **not** support effectively-once delivery or upsert/delete write 
 
 ## See also
 
-- [Sinks reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — the full connector capability matrix.
-- [Compression cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/compression.html) — gzip/zstd across file sinks.
-- [CLI reference](https://pawansikawat.github.io/faucet-stream/reference/cli.html) — `faucet run`, `faucet validate`, `faucet schema`, `faucet doctor`.
+- [Sinks reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — the full connector capability matrix.
+- [Compression cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/compression.html) — gzip/zstd across file sinks.
+- [CLI reference](https://faucet-hq.github.io/faucet-stream/reference/cli.html) — `faucet run`, `faucet validate`, `faucet schema`, `faucet doctor`.
 - [`faucet-sink-stdout`](https://crates.io/crates/faucet-sink-stdout) — the same JSON Lines to a standard stream instead of a file.
 - [`faucet-sink-csv`](https://crates.io/crates/faucet-sink-csv) — CSV/TSV file output with full quoting.
 - [`faucet-sink-s3`](https://crates.io/crates/faucet-sink-s3) / [`faucet-sink-gcs`](https://crates.io/crates/faucet-sink-gcs) — the same JSONL records to object storage.

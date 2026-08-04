@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-sink-s3.svg)](https://crates.io/crates/faucet-sink-s3)
 [![Docs.rs](https://docs.rs/faucet-sink-s3/badge.svg)](https://docs.rs/faucet-sink-s3)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-s3.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-sink-s3.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-sink-s3.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-sink-s3.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-AWS **S3** sink for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Writes JSON records to S3 (or any S3-compatible store) as JSON Lines (NDJSON) objects, one UUID-keyed object per chunk, uploaded concurrently via `buffer_unordered`.
+AWS **S3** sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Writes JSON records to S3 (or any S3-compatible store) as JSON Lines (NDJSON) objects, one UUID-keyed object per chunk, uploaded concurrently via `buffer_unordered`.
 
 Reach for it to land any faucet-stream source — a REST API, a database, a Kafka topic, a CDC stream — into an S3 data lake as newline-delimited JSON with one declarative config and no glue code. It's tuned to write a small number of large objects rather than a flood of tiny ones, which keeps downstream scans and PUT/LIST costs low.
 
@@ -340,9 +340,9 @@ This is a write-only file sink: it does **not** support effectively-once deliver
 
 ## See also
 
-- [Compression cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/compression.html) — codecs, auto-detection, and the `Content-Encoding` note.
-- [Connector reference & capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
-- [CLI & config-file reference](https://pawansikawat.github.io/faucet-stream/reference/cli.html)
+- [Compression cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/compression.html) — codecs, auto-detection, and the `Content-Encoding` note.
+- [Connector reference & capability matrix](https://faucet-hq.github.io/faucet-stream/reference/connectors.html)
+- [CLI & config-file reference](https://faucet-hq.github.io/faucet-stream/reference/cli.html)
 - [`faucet-source-s3`](https://crates.io/crates/faucet-source-s3) — read JSONL / JSON-array / raw-text objects back out of S3.
 - [`faucet-sink-gcs`](https://crates.io/crates/faucet-sink-gcs) — the equivalent sink for Google Cloud Storage.
 - [`faucet-sink-parquet`](https://crates.io/crates/faucet-sink-parquet) — columnar output to local or S3 with internal compression.

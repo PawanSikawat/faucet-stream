@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-websocket.svg)](https://crates.io/crates/faucet-source-websocket)
 [![Docs.rs](https://docs.rs/faucet-source-websocket/badge.svg)](https://docs.rs/faucet-source-websocket)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-websocket.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-websocket.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-websocket.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-websocket.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-**WebSocket** streaming source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Connects to a `ws://` / `wss://` endpoint, optionally sends subscription frames, and streams every incoming message into the pipeline as a record — continuously, page-by-page — until a configured stop condition (`max_messages`, `idle_timeout`) or Ctrl-C ends the run.
+**WebSocket** streaming source for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Connects to a `ws://` / `wss://` endpoint, optionally sends subscription frames, and streams every incoming message into the pipeline as a record — continuously, page-by-page — until a configured stop condition (`max_messages`, `idle_timeout`) or Ctrl-C ends the run.
 
 Reach for it when you want to tap a live feed — market-data tickers, chat/event streams, IoT telemetry, real-time APIs — and land it in any faucet-stream sink with one declarative config and no glue code. The connection is built once and the receive loop is fully async, so records flow to the sink the moment they arrive rather than waiting for the run to finish.
 
@@ -320,9 +320,9 @@ This crate has no optional features of its own; enable it in the CLI / umbrella 
 
 ## See also
 
-- [Connectors reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — capability matrix.
-- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html) — inline auth and shared `auth:` providers.
-- [Configuration reference](https://pawansikawat.github.io/faucet-stream/reference/config.html) — the full config-file grammar.
+- [Connectors reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — capability matrix.
+- [Authentication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/auth.html) — inline auth and shared `auth:` providers.
+- [Configuration reference](https://faucet-hq.github.io/faucet-stream/reference/config.html) — the full config-file grammar.
 - [`faucet-source-webhook`](https://crates.io/crates/faucet-source-webhook) — the inbound (server) counterpart for push delivery over HTTP.
 - [`faucet-source-kafka`](https://crates.io/crates/faucet-source-kafka) — durable, resumable streaming for a different transport.
 

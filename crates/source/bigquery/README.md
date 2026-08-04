@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-bigquery.svg)](https://crates.io/crates/faucet-source-bigquery)
 [![Docs.rs](https://docs.rs/faucet-source-bigquery/badge.svg)](https://docs.rs/faucet-source-bigquery)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-bigquery.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-bigquery.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-bigquery.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-bigquery.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Google **BigQuery** query source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Runs a SQL statement against BigQuery's [REST API](https://cloud.google.com/bigquery/docs/reference/rest) (`jobs.query` + `jobs.getQueryResults`), decodes each row into a typed `serde_json::Value`, and streams the result set back page-by-page so memory stays bounded no matter how large the query result is.
+Google **BigQuery** query source for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Runs a SQL statement against BigQuery's [REST API](https://cloud.google.com/bigquery/docs/reference/rest) (`jobs.query` + `jobs.getQueryResults`), decodes each row into a typed `serde_json::Value`, and streams the result set back page-by-page so memory stays bounded no matter how large the query result is.
 
 Reach for it when you want to pull analytics tables, aggregates, or ad-hoc query results out of BigQuery and land them in any faucet-stream sink — a file, a database, a warehouse, a queue — with one declarative config and no glue code.
 

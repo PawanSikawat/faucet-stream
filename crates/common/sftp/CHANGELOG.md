@@ -15,4 +15,4 @@ independently).
   `SftpAuth`, `HostKeyPolicy`) and the async `connect` helper used by the
   `faucet-source-sftp` and `faucet-sink-sftp` connectors. Password and
   private-key auth; host-key verification via strict / accept-new / insecure
-  policies; secret-safe `Debug` ([#410](https://github.com/PawanSikawat/faucet-stream/issues/410)).
+  policies; secret-safe `Debug` ([#410](https://github.com/faucet-hq/faucet-stream/issues/410)).

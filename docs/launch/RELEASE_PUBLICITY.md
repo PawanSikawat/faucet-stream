@@ -78,8 +78,8 @@ DB→DB move, **~96×** as the CSV→JSONL upper bound — never the ~96× alone
 >
 > This release: <highlight 1>, <highlight 2>, <highlight 3>.
 >
-> Docs: https://pawansikawat.github.io/faucet-stream/
-> Repo: https://github.com/PawanSikawat/faucet-stream
+> Docs: https://faucet-hq.github.io/faucet-stream/
+> Repo: https://github.com/faucet-hq/faucet-stream
 
 ### This Week in Rust
 
@@ -110,7 +110,7 @@ DB→DB move, **~96×** as the CSV→JSONL upper bound — never the ~96× alone
   welcome," not an ad.
 - **r/dataengineering** — lead with the DE pain: no platform to operate, version-controlled
   YAML pipelines, runs on cron/CI, CDC + incremental + DLQ built in. Be honest about
-  connector-count vs. incumbents (link the [comparison pages](https://pawansikawat.github.io/faucet-stream/comparison/index.html)).
+  connector-count vs. incumbents (link the [comparison pages](https://faucet-hq.github.io/faucet-stream/comparison/index.html)).
 
 ## Metrics view (know which channels convert)
 

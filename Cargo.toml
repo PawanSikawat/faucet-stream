@@ -107,7 +107,7 @@ exclude = [
 edition = "2024"
 rust-version = "1.96"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/PawanSikawat/faucet-stream"
+repository = "https://github.com/faucet-hq/faucet-stream"
 # Shared crates.io discovery metadata, inherited by connector/state crates via
 # `keywords.workspace = true` / `categories.workspace = true` (#78 LOW). Crates
 # that want more specific keywords (cli, umbrella) set their own.

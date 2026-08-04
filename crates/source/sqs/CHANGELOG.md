@@ -15,4 +15,4 @@ independently).
   `batch_size` and streams pages with bounded memory, deletes each page's
   receipt handles before yielding (at-least-once), and terminates on
   `idle_timeout_secs` / `max_messages`. Conformance battery wired
-  ([#412](https://github.com/PawanSikawat/faucet-stream/issues/412)).
+  ([#412](https://github.com/faucet-hq/faucet-stream/issues/412)).

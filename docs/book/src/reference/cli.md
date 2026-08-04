@@ -761,7 +761,7 @@ which is handy for containerized deployments where everything comes from the
 environment. Nested/tagged-enum fields use a `*_JSON` suffix.
 
 > The complete config grammar (matrix, templates, vars, execution) lives in
-> [`cli/README.md`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/README.md).
+> [`cli/README.md`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/README.md).
 
 ## Shell completions
 

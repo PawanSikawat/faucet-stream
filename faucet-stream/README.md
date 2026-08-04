@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-stream.svg)](https://crates.io/crates/faucet-stream)
 [![Docs.rs](https://docs.rs/faucet-stream/badge.svg)](https://docs.rs/faucet-stream)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-stream.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-stream.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-stream.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-stream.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-The umbrella crate for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem — a modular, config-driven Rust data-pipeline toolkit. One dependency gives you feature-gated access to every source and sink connector, the state-store backends, shared auth providers, data-quality checks, OpenLineage emission, and the embedded SQL transform — all built on the lightweight `faucet-core` traits.
+The umbrella crate for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem — a modular, config-driven Rust data-pipeline toolkit. One dependency gives you feature-gated access to every source and sink connector, the state-store backends, shared auth providers, data-quality checks, OpenLineage emission, and the embedded SQL transform — all built on the lightweight `faucet-core` traits.
 
 This crate is for **Rust library users** who want to build pipelines in code. If you'd rather drive pipelines declaratively from YAML/JSON with zero Rust, install the [`faucet-cli`](https://crates.io/crates/faucet-cli) binary instead — it wraps these same connectors behind a `faucet run pipeline.yaml` command.
 
@@ -260,9 +260,9 @@ If you are **building your own connector**, depend only on `faucet-core` — it 
 
 ## See also
 
-- [Getting started](https://pawansikawat.github.io/faucet-stream/getting-started/concepts.html) and the [library tutorial](https://pawansikawat.github.io/faucet-stream/tutorials/library.html)
-- [Connector reference & capability matrix](https://pawansikawat.github.io/faucet-stream/reference/connectors.html)
-- [Choosing connectors](https://pawansikawat.github.io/faucet-stream/reference/choosing.html)
+- [Getting started](https://faucet-hq.github.io/faucet-stream/getting-started/concepts.html) and the [library tutorial](https://faucet-hq.github.io/faucet-stream/tutorials/library.html)
+- [Connector reference & capability matrix](https://faucet-hq.github.io/faucet-stream/reference/connectors.html)
+- [Choosing connectors](https://faucet-hq.github.io/faucet-stream/reference/choosing.html)
 - [`faucet-core`](https://crates.io/crates/faucet-core) — the traits + pipeline engine (the only dependency connector authors need)
 - [`faucet-cli`](https://crates.io/crates/faucet-cli) — drive these connectors from YAML/JSON with no Rust code
 

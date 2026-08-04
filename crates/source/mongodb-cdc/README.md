@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-source-mongodb-cdc.svg)](https://crates.io/crates/faucet-source-mongodb-cdc)
 [![Docs.rs](https://docs.rs/faucet-source-mongodb-cdc/badge.svg)](https://docs.rs/faucet-source-mongodb-cdc)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-source-mongodb-cdc.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-source-mongodb-cdc.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-source-mongodb-cdc.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-source-mongodb-cdc.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-MongoDB **Change Data Capture (CDC)** source for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Tails a MongoDB [Change Stream](https://www.mongodb.com/docs/manual/changeStreams/) — at collection, database, or whole-cluster scope — and emits each per-document change event (insert, update, replace, delete, DDL) as a flat JSON CDC envelope.
+MongoDB **Change Data Capture (CDC)** source for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Tails a MongoDB [Change Stream](https://www.mongodb.com/docs/manual/changeStreams/) — at collection, database, or whole-cluster scope — and emits each per-document change event (insert, update, replace, delete, DDL) as a flat JSON CDC envelope.
 
 Reach for it when you want to stream live mutations out of MongoDB into any faucet-stream sink — a warehouse, a queue, another database — with no polling and no missed changes. The opaque `resumeToken` is persisted to any `faucet-core` `StateStore` after every page, so a restarted pipeline resumes from exactly where it stopped: no duplicates, no gap. Paired with a CDC-aware sink, it is also an **effectively-once** delivery source.
 
@@ -325,13 +325,13 @@ state:
     connection_url: postgres://user:pass@localhost/warehouse
 ```
 
-> **Note:** `full_document: update_lookup` re-reads the document at lookup time, not change time (see [Caveats](#caveats)). For a strict mirror, prefer the change-event payload itself plus an idempotent sink, and pair with the `cdc_unwrap` transform + `write_mode: upsert` — see the [upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html).
+> **Note:** `full_document: update_lookup` re-reads the document at lookup time, not change time (see [Caveats](#caveats)). For a strict mirror, prefer the change-event payload itself plus an idempotent sink, and pair with the `cdc_unwrap` transform + `write_mode: upsert` — see the [upsert cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html).
 
 ## Snapshot → CDC handoff
 
 This source implements `capture_resume_position()`, which opens a change stream against the configured scope and reads its `postBatchResumeToken` (present after the first server round-trip even with no events) as a resume bookmark — **without consuming any changes**. The `faucet replicate` command uses it to anchor the change stream at-or-before a bulk snapshot of the collection, so the combined snapshot + CDC result is a gap-free, duplicate-free mirror when paired with a `write_mode: upsert` sink.
 
-There is no replication slot to pin — the **oplog window** is the retention risk. Keep it comfortably larger than the expected snapshot duration, or the captured token may roll off the oplog before CDC starts and the stream will error. See the [replication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/replication.html) for the full handoff model.
+There is no replication slot to pin — the **oplog window** is the retention risk. Keep it comfortably larger than the expected snapshot duration, or the captured token may roll off the oplog before CDC starts and the stream will error. See the [replication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/replication.html) for the full handoff model.
 
 ## `invalidate` events
 
@@ -426,10 +426,10 @@ This crate has no optional features of its own. From the umbrella / CLI it is ga
 
 ## See also
 
-- [State & resumability cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) — bookmarks, durable state stores, effectively-once.
-- [Replication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/replication.html) — the snapshot → CDC handoff with `faucet replicate`.
-- [Upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html) — `cdc_unwrap` + `write_mode: upsert` for a true CDC mirror.
-- [Connector reference](https://pawansikawat.github.io/faucet-stream/reference/connectors.html) — the full capability matrix.
+- [State & resumability cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html) — bookmarks, durable state stores, effectively-once.
+- [Replication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/replication.html) — the snapshot → CDC handoff with `faucet replicate`.
+- [Upsert cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html) — `cdc_unwrap` + `write_mode: upsert` for a true CDC mirror.
+- [Connector reference](https://faucet-hq.github.io/faucet-stream/reference/connectors.html) — the full capability matrix.
 - [`faucet-source-mongodb`](https://crates.io/crates/faucet-source-mongodb) — query-mode MongoDB source (`find()` snapshots).
 - [`faucet-state-redis`](https://crates.io/crates/faucet-state-redis) / [`faucet-state-postgres`](https://crates.io/crates/faucet-state-postgres) — durable `StateStore` backends for resumeToken bookmarks.
 - [`faucet-source-postgres-cdc`](https://crates.io/crates/faucet-source-postgres-cdc) / [`faucet-source-mysql-cdc`](https://crates.io/crates/faucet-source-mysql-cdc) — CDC sources for other databases.
@@ -438,7 +438,7 @@ This crate has no optional features of its own. From the umbrella / CLI it is ga
 
 Licensed under either of:
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](https://github.com/PawanSikawat/faucet-stream/blob/main/LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](https://github.com/PawanSikawat/faucet-stream/blob/main/LICENSE-MIT))
+- Apache License, Version 2.0 ([LICENSE-APACHE](https://github.com/faucet-hq/faucet-stream/blob/main/LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](https://github.com/faucet-hq/faucet-stream/blob/main/LICENSE-MIT))
 
 at your option.

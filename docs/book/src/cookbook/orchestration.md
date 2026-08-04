@@ -24,11 +24,11 @@ workers and no Python-version matrix to keep green.
 ## The runnable recipe
 
 A complete, working example lives at
-[`examples/orchestration/`](https://github.com/PawanSikawat/faucet-stream/tree/main/examples/orchestration):
+[`examples/orchestration/`](https://github.com/faucet-hq/faucet-stream/tree/main/examples/orchestration):
 
 | File | Role |
 |------|------|
-| `faucet_pipeline.yaml` | EL step — REST → Postgres raw JSONB landing table (based on the shipped [`rest_to_postgres.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/rest_to_postgres.yaml)). |
+| `faucet_pipeline.yaml` | EL step — REST → Postgres raw JSONB landing table (based on the shipped [`rest_to_postgres.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/rest_to_postgres.yaml)). |
 | `dbt/` | A minimal dbt project — a source over the raw table and a `stg_charges` model that unpacks the JSONB into typed, tested columns. |
 | `airflow_dag.py` | Airflow DAG: `faucet run` → `dbt build`, chained with `>>`. |
 | `dagster_defs.py` | Dagster equivalent: two assets with a dependency edge. |

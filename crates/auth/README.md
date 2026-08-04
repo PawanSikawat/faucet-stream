@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-auth.svg)](https://crates.io/crates/faucet-auth)
 [![Docs.rs](https://docs.rs/faucet-auth/badge.svg)](https://docs.rs/faucet-auth)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-auth.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-auth.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-auth.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-auth.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-Shared, single-flight authentication providers for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Each provider implements [`faucet_core::AuthProvider`](https://docs.rs/faucet-core/latest/faucet_core/trait.AuthProvider.html) — a live entity that owns a token cache and refresh lifecycle.
+Shared, single-flight authentication providers for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Each provider implements [`faucet_core::AuthProvider`](https://docs.rs/faucet-core/latest/faucet_core/trait.AuthProvider.html) — a live entity that owns a token cache and refresh lifecycle.
 
 The point of this crate is **token sharing**: one provider instance, wrapped in an `Arc`, is handed to every connector that authenticates against the same identity provider. So N connectors (or N matrix rows) hitting one IdP share a **single** token with **single-flight** refresh, instead of each racing to mint or rotate its own. That is the difference between one token request per run and one per connector per refresh window — and, for rotating refresh tokens, the difference between working and invalidating each other.
 
@@ -218,8 +218,8 @@ This crate has no optional Cargo features of its own. It is pulled in by:
 
 ## See also
 
-- [Authentication cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/auth.html) — the full `{ type, config }` vs `{ ref }` model, per-connector auth methods, and the shared `auth:` catalog.
-- [Secrets cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/secrets.html) — feeding `${secret:…}` / `${vault:…}` references into provider configs.
+- [Authentication cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/auth.html) — the full `{ type, config }` vs `{ ref }` model, per-connector auth methods, and the shared `auth:` catalog.
+- [Secrets cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/secrets.html) — feeding `${secret:…}` / `${vault:…}` references into provider configs.
 - [`faucet-core`](https://crates.io/crates/faucet-core) — defines the [`AuthProvider`](https://docs.rs/faucet-core/latest/faucet_core/trait.AuthProvider.html) trait, [`Credential`](https://docs.rs/faucet-core/latest/faucet_core/enum.Credential.html) enum, and `SharedAuthProvider` / `AuthSpec` types this crate implements against.
 
 ## License

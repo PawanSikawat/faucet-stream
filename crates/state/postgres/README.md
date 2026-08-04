@@ -2,10 +2,10 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-state-postgres.svg)](https://crates.io/crates/faucet-state-postgres)
 [![Docs.rs](https://docs.rs/faucet-state-postgres/badge.svg)](https://docs.rs/faucet-state-postgres)
-[![MSRV](https://img.shields.io/crates/msrv/faucet-state-postgres.svg)](https://github.com/PawanSikawat/faucet-stream/blob/main/rust-toolchain.toml)
-[![License](https://img.shields.io/crates/l/faucet-state-postgres.svg)](https://github.com/PawanSikawat/faucet-stream#license)
+[![MSRV](https://img.shields.io/crates/msrv/faucet-state-postgres.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
+[![License](https://img.shields.io/crates/l/faucet-state-postgres.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-PostgreSQL-backed [`StateStore`](https://docs.rs/faucet-core/latest/faucet_core/state/trait.StateStore.html) for the [faucet-stream](https://github.com/PawanSikawat/faucet-stream) ecosystem. Persists incremental-replication bookmarks in a single JSONB-backed table so sources can resume exactly where they left off after a crash, restart, or scheduled invocation.
+PostgreSQL-backed [`StateStore`](https://docs.rs/faucet-core/latest/faucet_core/state/trait.StateStore.html) for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Persists incremental-replication bookmarks in a single JSONB-backed table so sources can resume exactly where they left off after a crash, restart, or scheduled invocation.
 
 Reach for it when you run faucet pipelines across multiple machines (or in Kubernetes) and want durable, shared resume state in a database you already operate — instead of a local `file` store that lives on one node's disk.
 
@@ -202,8 +202,8 @@ This crate has **no optional features of its own**. Enable the backend in the CL
 
 ## See also
 
-- [State & resumability cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/state.html) — how bookmarks, resume, and effectively-once work end to end.
-- [Configuration reference](https://pawansikawat.github.io/faucet-stream/reference/config.html) — the full `state:` block grammar.
+- [State & resumability cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/state.html) — how bookmarks, resume, and effectively-once work end to end.
+- [Configuration reference](https://faucet-hq.github.io/faucet-stream/reference/config.html) — the full `state:` block grammar.
 - [`faucet-core`](https://crates.io/crates/faucet-core) — the `StateStore` trait, `Pipeline`, and the built-in `MemoryStateStore` / `FileStateStore`.
 - [`faucet-state-redis`](https://crates.io/crates/faucet-state-redis) — the Redis-backed alternative for the same role.
 

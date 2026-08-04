@@ -1,7 +1,7 @@
 # Benchmarks (vs Meltano)
 
 Honest, reproducible evidence for the "built for throughput" claim. Every number
-below comes from [`BENCHMARKS.md`](https://github.com/PawanSikawat/faucet-stream/blob/main/BENCHMARKS.md)
+below comes from [`BENCHMARKS.md`](https://github.com/faucet-hq/faucet-stream/blob/main/BENCHMARKS.md)
 — identical workloads, one machine (Apple M3 Pro, 12 cores, 18 GiB RAM), 1M rows,
 seed 42, median of 5 timed runs. faucet-stream is compared against
 [Meltano](https://meltano.com/) (the most common [Singer](https://www.singer.io/)
@@ -11,7 +11,7 @@ runtime).
 > three specific moves. It does **not** measure distributed throughput, connector
 > breadth, or correctness. The CSV→JSONL figure is a **best case** (upper bound),
 > not the typical case — see [vs. Meltano](./meltano.md) and
-> [`BENCHMARKS.md`](https://github.com/PawanSikawat/faucet-stream/blob/main/BENCHMARKS.md)
+> [`BENCHMARKS.md`](https://github.com/faucet-hq/faucet-stream/blob/main/BENCHMARKS.md)
 > for the full methodology, hardware capture, and the Postgres-row measurement
 > caveat.
 
@@ -173,6 +173,6 @@ make bench-postgres   # adds Scenarios B & C (needs Docker)
 Results land in `benchmarks/results/`. One independent confirmation on your own
 hardware is worth more to this project than a new connector — open an issue or PR
 with your output, **especially if faucet does not win.** See
-[`benchmarks/README.md`](https://github.com/PawanSikawat/faucet-stream/blob/main/benchmarks/README.md)
+[`benchmarks/README.md`](https://github.com/faucet-hq/faucet-stream/blob/main/benchmarks/README.md)
 and [Performance tuning](../operations/tuning.md) for the levers behind these
 numbers.

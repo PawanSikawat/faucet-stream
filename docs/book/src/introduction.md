@@ -4,7 +4,7 @@
   <div class="fs-cta">
     <a class="primary" href="getting-started/installation.html">Get started →</a>
     <a class="secondary" href="getting-started/learn.html">Learn the architecture</a>
-    <a class="secondary" href="https://github.com/PawanSikawat/faucet-stream">GitHub</a>
+    <a class="secondary" href="https://github.com/faucet-hq/faucet-stream">GitHub</a>
   </div>
 </div>
 
@@ -61,8 +61,8 @@ faucet run pipeline.yaml
 
 - **API docs:** every crate is on [docs.rs](https://docs.rs/faucet-stream),
   rendered with all features so optional connectors are visible.
-- **Source & issues:** [github.com/PawanSikawat/faucet-stream](https://github.com/PawanSikawat/faucet-stream).
-- **Runnable examples:** the [`cli/examples/`](https://github.com/PawanSikawat/faucet-stream/tree/main/cli/examples)
+- **Source & issues:** [github.com/faucet-hq/faucet-stream](https://github.com/faucet-hq/faucet-stream).
+- **Runnable examples:** the [`cli/examples/`](https://github.com/faucet-hq/faucet-stream/tree/main/cli/examples)
   directory ships a config for nearly every connector pair, and
-  [`examples/`](https://github.com/PawanSikawat/faucet-stream/tree/main/examples)
+  [`examples/`](https://github.com/faucet-hq/faucet-stream/tree/main/examples)
   has a `docker-compose` stack so they run locally.

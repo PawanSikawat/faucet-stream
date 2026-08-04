@@ -8,7 +8,7 @@ them up to a configurable attempt cap.
 
 This is **Mode A** — a simple, coordinator-free design where any node can run
 any submitted pipeline. Mode B (source-shard rebalancing, dedicated coordinator)
-is a future follow-up ([#197](https://github.com/PawanSikawat/faucet-stream/issues/197)).
+is a future follow-up ([#197](https://github.com/faucet-hq/faucet-stream/issues/197)).
 
 > **Use clustered serve when:** you have more concurrent pipeline runs than one
 > node can handle, or when you need resilience against single-node failure.
@@ -318,7 +318,7 @@ A non-shardable source (or a matrix pipeline) ignores `shard:` and runs whole �
 
 Kafka already solves work distribution inside the broker, so the `kafka`
 source does not enumerate data slices like the sharders above
-([#261](https://github.com/PawanSikawat/faucet-stream/issues/261)). Each shard
+([#261](https://github.com/faucet-hq/faucet-stream/issues/261)). Each shard
 is a **membership slot**: `shard.count: N` makes N workers each run one more
 consumer with the pipeline's `group_id`, and Kafka's consumer-group protocol
 assigns the topic's partitions across them — killing a worker triggers a

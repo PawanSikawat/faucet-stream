@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS users (id int4 PRIMARY KEY, name text);
 CREATE PUBLICATION faucet_pub FOR TABLE users;
 ```
 
-The bundled [`examples/docker-compose.yml`](https://github.com/PawanSikawat/faucet-stream/tree/main/examples)
+The bundled [`examples/docker-compose.yml`](https://github.com/faucet-hq/faucet-stream/tree/main/examples)
 starts a Postgres already configured for logical replication.
 
 ## Config

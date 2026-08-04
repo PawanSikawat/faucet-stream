@@ -4,7 +4,7 @@
 without Kafka transactions, a two-phase commit coordinator, or an external
 dedup store — just a commit token that rides along with your data.*
 
-> Grounded in [`cli/examples/kafka_to_postgres_exactly_once.yaml`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/examples/kafka_to_postgres_exactly_once.yaml).
+> Grounded in [`cli/examples/kafka_to_postgres_exactly_once.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/kafka_to_postgres_exactly_once.yaml).
 > Reflects faucet-stream as of 2026-07.
 
 ## The problem
@@ -123,7 +123,7 @@ is upsert-capable, you get idempotency a different way: write with
 `write_mode: upsert` keyed on the primary key. A replayed row overwrites itself
 instead of duplicating. That's a weaker guarantee (it needs a stable key and
 last-write-wins semantics) but it covers non-log sources into any of the eight
-upsert-capable sinks. See the [upsert cookbook](https://pawansikawat.github.io/faucet-stream/cookbook/upsert.html).
+upsert-capable sinks. See the [upsert cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html).
 
 ## Try it
 
@@ -137,5 +137,5 @@ Kill it mid-run. Restart it. Count the rows. They'll be right.
 ---
 
 *faucet-stream is an MIT/Apache-2.0 Rust library + CLI for moving data between
-<!--COUNT:sources-->37<!--/COUNT--> sources and <!--COUNT:sinks-->29<!--/COUNT--> sinks. [Docs](https://pawansikawat.github.io/faucet-stream/) ·
-[GitHub](https://github.com/PawanSikawat/faucet-stream).*
+<!--COUNT:sources-->37<!--/COUNT--> sources and <!--COUNT:sinks-->29<!--/COUNT--> sinks. [Docs](https://faucet-hq.github.io/faucet-stream/) ·
+[GitHub](https://github.com/faucet-hq/faucet-stream).*

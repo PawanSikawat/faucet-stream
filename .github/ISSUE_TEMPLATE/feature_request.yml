@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         For a brand-new connector, please use the **Connector request** template instead.
-        Search [existing issues](https://github.com/PawanSikawat/faucet-stream/issues) and the roadmap epic (the `epic` label) first.
+        Search [existing issues](https://github.com/faucet-hq/faucet-stream/issues) and the roadmap epic (the `epic` label) first.
   - type: textarea
     id: problem
     attributes:

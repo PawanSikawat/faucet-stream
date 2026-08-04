@@ -1,6 +1,6 @@
 # faucet-stream Helm chart
 
-Deploy [faucet-stream](https://github.com/PawanSikawat/faucet-stream) on Kubernetes:
+Deploy [faucet-stream](https://github.com/faucet-hq/faucet-stream) on Kubernetes:
 
 - **`faucet serve`** — the long-running HTTP control plane (Deployment + Service + probes, optional Ingress / HPA / PDB / ServiceMonitor).
 - **`faucet run`** — one-shot pipelines (Job) and scheduled pipelines (CronJob).
@@ -164,7 +164,7 @@ See [`values.yaml`](./values.yaml) — every key is commented. Common ones:
 
 | Key | Default | Purpose |
 |---|---|---|
-| `image.repository` / `image.tag` | `ghcr.io/pawansikawat/faucet-stream` / appVersion | image to run |
+| `image.repository` / `image.tag` | `ghcr.io/faucet-hq/faucet-stream` / appVersion | image to run |
 | `connectors.sources` / `.sinks` | `[]` | declared connectors (verified at boot) |
 | `connectors.verify.enabled` | `true` | fail pod start if a declared connector is absent |
 | `serve.enabled` | `true` | deploy the control plane |

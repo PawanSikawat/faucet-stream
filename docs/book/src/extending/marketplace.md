@@ -13,7 +13,7 @@ discovered and consumed by others. Three commands power this:
 ## The registry index
 
 The index is a committed JSON file,
-[`cli/connectors/registry.json`](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/connectors/registry.json),
+[`cli/connectors/registry.json`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/connectors/registry.json),
 embedded into the binary so `search` / `install` work offline and independently
 of which connectors you compiled in. Each entry:
 
@@ -40,7 +40,7 @@ of which connectors you compiled in. Each entry:
 - **Built-in, not compiled in** → `cargo install faucet-cli --features <kind>-<name>`.
 - **Community** → a custom-binary snippet that `cargo add`s the crate and
   registers it via `PluginRegistry` (see
-  [Custom binaries with third-party connectors](https://github.com/PawanSikawat/faucet-stream/blob/main/cli/README.md#custom-binaries-with-third-party-connectors)).
+  [Custom binaries with third-party connectors](https://github.com/faucet-hq/faucet-stream/blob/main/cli/README.md#custom-binaries-with-third-party-connectors)).
 
 Trust is explicit: community connectors are marked, and `install` only ever
 *prints* instructions — it never downloads or runs code.
