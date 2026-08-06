@@ -55,11 +55,21 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # The release job builds the whole workspace at once (cargo-release runs
+      # `cargo publish` per crate). Reclaim ~25 GB of preinstalled toolchains
+      # first, or the all-features build exhausts the runner's ~14 GB disk
+      # ("No space left on device") — validation is already sharded across CI.
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force || true
+          df -h /
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96.0"
-          components: rustfmt, clippy
 
       - name: Install librdkafka prerequisites
         run: |
@@ -84,14 +94,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Check formatting
-        run: cargo fmt --all --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-      - name: Test
-        run: cargo test --workspace --all-features
+      # NOTE: fmt / clippy / test are intentionally NOT re-run here — they are
+      # already enforced on every push/PR by ci.yml (sharded across the
+      # feature matrix). This manual fallback exists to *publish*; cargo-release
+      # builds and verifies each crate during `cargo publish`. Re-running the
+      # full all-features test in this single job is redundant and was
+      # exhausting the runner disk (see "Free up disk space" above).
 
       # ── Derive publishable crate lists from cargo metadata ────────────
       #
