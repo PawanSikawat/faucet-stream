@@ -6,7 +6,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/faucet-stream.svg)](https://crates.io/crates/faucet-stream)
 [![Docs.rs](https://docs.rs/faucet-stream/badge.svg)](https://docs.rs/faucet-stream)
-[![Guide](https://img.shields.io/badge/guide-faucet-hq.github.io-1f6feb)](https://faucet-hq.github.io/faucet-stream/)
+[![Guide](https://img.shields.io/badge/guide-faucet--hq.github.io-1f6feb)](https://faucet-hq.github.io/faucet-stream/)
 [![CI](https://github.com/faucet-hq/faucet-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/faucet-hq/faucet-stream/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/faucet-hq/faucet-stream/branch/main/graph/badge.svg)](https://codecov.io/gh/faucet-hq/faucet-stream)
 [![Downloads](https://img.shields.io/crates/d/faucet-core.svg)](https://crates.io/crates/faucet-stream)
