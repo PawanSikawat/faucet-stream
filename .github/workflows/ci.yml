@@ -21,10 +21,50 @@ env:
   CARGO_NET_RETRY: "10"
   CARGO_HTTP_MULTIPLEXING: "false"
 
+# Cancel superseded runs on the same ref (PR branch / main) so stale builds
+# don't keep holding runner slots — important on a shared/capacity-limited pool.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # Detect whether a PR touches anything that can affect the build/tests. When a
+  # PR only changes docs / workflows / assets, the heavy (non-required) jobs
+  # below skip. Pushes to main always run everything (the `github.event_name`
+  # guard on each job), so main stays fully verified and coverage still uploads.
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # 'every' quantifier: a changed file counts toward `code` only if it
+          # matches ALL these negations — i.e. it is NOT a doc/workflow/asset
+          # file. So `code` is true iff at least one real source/build file
+          # changed. If detection is ever uncertain, paths-filter errs toward
+          # "changed" (fail-safe → run everything).
+          predicate-quantifier: 'every'
+          filters: |
+            code:
+              - '!**/*.md'
+              - '!docs/**'
+              - '!.github/**'
+              - '!LICENSE*'
+              - '!**/*.png'
+              - '!**/*.svg'
+              - '!**/*.jpg'
+
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -44,6 +84,9 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    # Required check → job always runs (stays green), but the heavy step is
+    # gated so a docs/workflow-only PR reports green without a full build.
+    needs: changes
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -54,19 +97,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-clippy-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-clippy-
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - uses: Swatinem/rust-cache@v2
+      - if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   docs:
     name: Docs
     runs-on: ubuntu-latest
+    needs: changes
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -76,18 +114,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-docs-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-docs-
+      - uses: Swatinem/rust-cache@v2
       # Fail on any rustdoc warning (broken intra-doc links, etc.) so the
       # docs.rs render stays clean. The `doc_cfg` feature-badge path itself is
       # nightly-only and exercised by docs.rs, not here.
       - name: Build docs
+        if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --workspace --all-features --no-deps
@@ -95,6 +127,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     # Drop debug info for this job. The all-features workspace binary plus the
     # serve-ui isolation test binaries are enormous; with full DWARF the final
     # `ld` intermittently dies with `signal 7 [Bus error]` (an out-of-memory
@@ -133,14 +167,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-test-
+      - uses: Swatinem/rust-cache@v2
       - name: Run workspace tests
         # Integration tests boot Docker containers via testcontainers, whose
         # in-process (bollard) image pull intermittently fails with
@@ -170,6 +197,8 @@ jobs:
   feature-check:
     name: Feature isolation
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -310,14 +339,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96.0"
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-feat-${{ matrix.feature }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-feat-${{ matrix.feature }}-
+          key: ${{ matrix.feature }}
       - name: Install librdkafka prerequisites (Ubuntu)
         if: runner.os == 'Linux'
         run: |
@@ -341,6 +365,7 @@ jobs:
   cli-build:
     name: CLI build
     runs-on: ubuntu-latest
+    needs: changes
     strategy:
       fail-fast: false
       matrix:
@@ -365,34 +390,23 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cli-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('cli/**/*.rs', 'cli/Cargo.toml') }}
-          restore-keys: ${{ runner.os }}-cli-
-      - run: cargo build -p faucet-cli --no-default-features --features "${{ matrix.features }}"
+          key: ${{ matrix.features }}
+      - if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
+        run: cargo build -p faucet-cli --no-default-features --features "${{ matrix.features }}"
 
   observability-bench:
     name: Observability bench (5% regression budget)
     runs-on: ubuntu-latest
-    needs: [test]
+    needs: [test, changes]
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96.0"
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-obs-bench-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-obs-bench-
+      - uses: Swatinem/rust-cache@v2
       - name: Run observability benchmark
         run: cargo bench -p faucet-core --bench observability -- --warm-up-time 1 --measurement-time 3 --save-baseline ci
       - name: Check regression threshold
@@ -401,6 +415,8 @@ jobs:
   kafka-integration:
     name: Kafka integration tests (Docker)
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
@@ -411,15 +427,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-kafka-integration-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-kafka-integration-
+      - uses: Swatinem/rust-cache@v2
       # These steps boot Docker containers (Kafka, Elasticsearch) via
       # testcontainers, whose in-process (bollard) image pull intermittently
       # fails with "bytes remaining on stream". The flake is transient, so each
@@ -456,6 +464,8 @@ jobs:
   supply-chain:
     name: Supply chain (cargo-deny)
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     steps:
       - uses: actions/checkout@v4
       # Hard gate: licenses, banned crates, and dependency sources are
@@ -485,20 +495,15 @@ jobs:
   semver-checks:
     name: API stability (cargo-semver-checks)
     runs-on: ubuntu-latest
+    needs: changes
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96.0"
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-semver-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-semver-
+      - uses: Swatinem/rust-cache@v2
       - name: Check faucet-core public API for breaking changes
+        if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           # `faucet-core` at minimum — the required connector-author dependency.
@@ -509,6 +514,7 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    needs: changes
     steps:
       - uses: actions/checkout@v4
       - name: Free runner disk space
@@ -539,14 +545,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-coverage-
+      - uses: Swatinem/rust-cache@v2
       # Cover unit + integration tests. The integration tests boot Docker
       # testcontainers whose image pulls intermittently flake, so retry the run
       # like the `test` job does — the final successful attempt re-runs the whole
@@ -555,6 +554,7 @@ jobs:
       # regenerating the report each attempt. (cargo-llvm-cov 0.8.5 forbids
       # combining --no-report with --no-clean, so the run uses --no-report alone.)
       - name: Collect coverage (unit + integration)
+        if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
         run: |
           cargo llvm-cov clean --workspace
           ok=0
@@ -569,6 +569,7 @@ jobs:
           done
           [ "$ok" = 1 ] || { echo "::error::instrumented tests failed after 3 attempts"; exit 1; }
       - name: Generate lcov report
+        if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
         run: |
           # The two GCS data-plane I/O files are untestable in CI (no
           # gRPC-compatible GCS emulator; integration tests are #[ignore]d, #220)
@@ -576,6 +577,7 @@ jobs:
           cargo llvm-cov report --lcov --output-path lcov.info \
             --ignore-filename-regex '(/tests?/|/examples?/|/benches?/|build\.rs$|crates/source/gcs/src/stream\.rs$|crates/sink/gcs/src/sink\.rs$)'
       - name: Upload to Codecov
+        if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
         continue-on-error: true
         uses: codecov/codecov-action@v4
         with:
