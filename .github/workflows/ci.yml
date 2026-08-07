@@ -81,9 +81,31 @@ jobs:
       - name: Check connector counts in docs match connector crates
         run: bash scripts/check-doc-counts.sh
 
+  # Catch broken links / malformed badges in Markdown before merge (e.g. the
+  # shields.io badge that 404'd from an unescaped hyphen). Runs on every PR
+  # since link rot affects docs changes most. Not a required check.
+  link-check:
+    name: Docs link check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check links in Markdown
+        uses: lycheeverse/lychee-action@v2
+        with:
+          # Accept 429 (rate-limited badge/CDN hosts) so transient throttling
+          # isn't a false failure; retry transient network errors.
+          args: >-
+            --no-progress --max-retries 3 --retry-wait-time 5
+            --accept 200,206,429 --exclude-mail
+            "./**/*.md"
+          fail: true
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    # Required check → job always runs (stays green), but the heavy step is
+    # gated so a docs/workflow-only PR reports green without a full build.
+    needs: changes
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -102,11 +124,13 @@ jobs:
             target
           key: ${{ runner.os }}-clippy-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-clippy-
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   docs:
     name: Docs
     runs-on: ubuntu-latest
+    needs: changes
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -128,6 +152,7 @@ jobs:
       # docs.rs render stays clean. The `doc_cfg` feature-badge path itself is
       # nightly-only and exercised by docs.rs, not here.
       - name: Build docs
+        if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --workspace --all-features --no-deps
@@ -383,6 +408,7 @@ jobs:
   cli-build:
     name: CLI build
     runs-on: ubuntu-latest
+    needs: changes
     strategy:
       fail-fast: false
       matrix:
@@ -415,7 +441,8 @@ jobs:
             target
           key: ${{ runner.os }}-cli-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('cli/**/*.rs', 'cli/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-cli-
-      - run: cargo build -p faucet-cli --no-default-features --features "${{ matrix.features }}"
+      - if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
+        run: cargo build -p faucet-cli --no-default-features --features "${{ matrix.features }}"
 
   observability-bench:
     name: Observability bench (5% regression budget)
@@ -532,6 +559,7 @@ jobs:
   semver-checks:
     name: API stability (cargo-semver-checks)
     runs-on: ubuntu-latest
+    needs: changes
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -546,6 +574,7 @@ jobs:
           key: ${{ runner.os }}-semver-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-semver-
       - name: Check faucet-core public API for breaking changes
+        if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           # `faucet-core` at minimum — the required connector-author dependency.
@@ -556,6 +585,7 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    needs: changes
     steps:
       - uses: actions/checkout@v4
       - name: Free runner disk space
@@ -602,6 +632,7 @@ jobs:
       # regenerating the report each attempt. (cargo-llvm-cov 0.8.5 forbids
       # combining --no-report with --no-clean, so the run uses --no-report alone.)
       - name: Collect coverage (unit + integration)
+        if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
         run: |
           cargo llvm-cov clean --workspace
           ok=0
@@ -616,6 +647,7 @@ jobs:
           done
           [ "$ok" = 1 ] || { echo "::error::instrumented tests failed after 3 attempts"; exit 1; }
       - name: Generate lcov report
+        if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
         run: |
           # The two GCS data-plane I/O files are untestable in CI (no
           # gRPC-compatible GCS emulator; integration tests are #[ignore]d, #220)
@@ -623,6 +655,7 @@ jobs:
           cargo llvm-cov report --lcov --output-path lcov.info \
             --ignore-filename-regex '(/tests?/|/examples?/|/benches?/|build\.rs$|crates/source/gcs/src/stream\.rs$|crates/sink/gcs/src/sink\.rs$)'
       - name: Upload to Codecov
+        if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
         continue-on-error: true
         uses: codecov/codecov-action@v4
         with:
