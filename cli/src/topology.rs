@@ -28,6 +28,35 @@ pub fn is_topology(cfg: &PipelineConfig) -> bool {
     !cfg.pipeline.nodes.is_empty()
 }
 
+/// Config-level graph validation: the checks that need only the `nodes:` /
+/// `edges:` spec, no connectors. Run as a fail-fast prelude to
+/// [`build_topology`] (so a wiring typo is reported before any client is
+/// constructed) and standalone by the template registry, which validates a
+/// config it must not build connectors for (#444).
+///
+/// Node **arity** (a tee's fan-out, a join's labelled inputs, …) is validated by
+/// [`faucet_core::topology::Topology::validate`] once the graph is built —
+/// deliberately not re-implemented here, so the two can never disagree.
+pub fn validate_topology_spec(cfg: &PipelineConfig) -> CliResult<()> {
+    if !cfg.matrix.is_empty() {
+        return Err(CliError::MatrixAndNodesBothPresent);
+    }
+    let spec = &cfg.pipeline;
+    let mut known: Vec<String> = spec.nodes.keys().cloned().collect();
+    known.sort_unstable();
+    for edge in &spec.edges {
+        for endpoint in [&edge.from, &edge.to] {
+            if !spec.nodes.contains_key(endpoint) {
+                return Err(CliError::EdgeEndpointMissing {
+                    name: endpoint.clone(),
+                    known: known.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Resolve one source/sink node's template `ref` + inline overrides into a
 /// concrete `(kind, config)` pair.
 fn resolve_connector(
@@ -81,9 +110,8 @@ fn resolve_connector(
 /// Build a [`faucet_core::Topology`] from the config's `pipeline.nodes` /
 /// `edges` block.
 pub async fn build_topology(cfg: &PipelineConfig, auth: &AuthCatalog) -> CliResult<Topology> {
-    if !cfg.matrix.is_empty() {
-        return Err(CliError::MatrixAndNodesBothPresent);
-    }
+    // Cheap graph checks first, so a wiring typo never costs a connector build.
+    validate_topology_spec(cfg)?;
 
     let spec = &cfg.pipeline;
     let mut builder = Topology::builder();
@@ -162,21 +190,9 @@ pub async fn build_topology(cfg: &PipelineConfig, auth: &AuthCatalog) -> CliResu
         builder = builder.node((*id).clone(), kind);
     }
 
-    // Validate edge endpoints up front for a friendly error, then wire them.
-    let known: Vec<String> = node_ids.iter().map(|s| (*s).clone()).collect();
+    // Edge endpoints were already validated by `validate_topology_spec` above —
+    // before any connector was constructed — so just wire them.
     for e in &spec.edges {
-        if !spec.nodes.contains_key(&e.from) {
-            return Err(CliError::EdgeEndpointMissing {
-                name: e.from.clone(),
-                known: known.clone(),
-            });
-        }
-        if !spec.nodes.contains_key(&e.to) {
-            return Err(CliError::EdgeEndpointMissing {
-                name: e.to.clone(),
-                known: known.clone(),
-            });
-        }
         builder = match &e.label {
             Some(label) => builder.labelled_edge(e.from.clone(), e.to.clone(), label.clone()),
             None => builder.edge(e.from.clone(), e.to.clone()),

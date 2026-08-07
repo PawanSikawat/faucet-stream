@@ -47,7 +47,7 @@ pub async fn load_submission(
         .map_err(|e| ServeError::BadConfig(e.to_string()))?;
 
     // 3. Merge onto the workspace default (submitted wins; see merge.rs semantics).
-    let merged = match default_base {
+    let mut merged = match default_base {
         Some(base) => {
             let mut m = base.clone();
             crate::merge::merge_value(&mut m, submitted);
@@ -55,6 +55,22 @@ pub async fn load_submission(
         }
         None => submitted,
     };
+
+    // 3b. Bind `${param.*}` against the config's own `params:` defaults (#444).
+    // A body materialized by the template registry has no `params:` block left,
+    // so this is a no-op for template-triggered runs; for a directly-submitted
+    // parameterized config it applies the declared defaults and rejects a
+    // `required` param with no value — which is the honest answer, since
+    // `POST /v1/runs` has no param channel (register a template to get one).
+    crate::params::bind_document(
+        &mut merged,
+        &Default::default(),
+        crate::params::BindMode::Strict,
+    )
+    .map_err(|e| ServeError::Unprocessable {
+        message: e.to_string(),
+        details: None,
+    })?;
 
     // 4. Version gate + structural-ref resolution.
     let mut cfg = PipelineConfig::from_value(merged).map_err(|e| ServeError::Unprocessable {

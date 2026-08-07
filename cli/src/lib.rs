@@ -40,6 +40,7 @@ pub mod merge;
 #[cfg(feature = "notify")]
 pub mod notify;
 pub mod obs;
+pub mod params;
 pub mod pipeline_test;
 #[cfg(feature = "cli-progress")]
 pub mod progress;
@@ -56,6 +57,8 @@ pub mod select;
 pub mod serve;
 pub mod sla;
 pub mod state;
+#[cfg(feature = "templates")]
+pub mod templates;
 pub mod topology;
 pub mod transforms;
 #[cfg(feature = "cli-tui")]
@@ -201,6 +204,8 @@ pub async fn run_command(cli: Cli) -> CliResult<()> {
         Command::Notify(args) => commands::notify::run(args).await,
         #[cfg(feature = "catalog")]
         Command::Catalog(args) => commands::catalog::run(args).await,
+        #[cfg(feature = "templates")]
+        Command::Template(args) => commands::template::run(args).await,
         Command::Completions(args) => commands::completions::run(args.shell),
         Command::Migrate(args) => commands::migrate::run(args).await,
         Command::Fmt(args) => commands::fmt::run(args).await,
@@ -242,6 +247,10 @@ pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
             message: e.to_string(),
         })?;
     interpolate::interpolate_value(&mut value)?;
+    // Bind `${param.*}` from the config's own `params:` defaults (#444). No
+    // caller-supplied values on this convenience path, so a required param is a
+    // clear error rather than a token leaking into a connector config.
+    params::bind_document(&mut value, &Default::default(), params::BindMode::Strict)?;
     let interpolated = serde_yaml::to_string(&value).map_err(|e| CliError::ParseConfig {
         path: std::path::PathBuf::from("<yaml-string>"),
         message: e.to_string(),

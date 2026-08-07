@@ -292,6 +292,42 @@ pub enum CliError {
     #[error("interpolation '{token}' could not be resolved: {reason}")]
     UnknownTemplateRef { token: String, reason: String },
 
+    /// A `params:` entry declared `required: true` and the caller supplied no
+    /// value (#444).
+    #[error(
+        "missing required param '{name}'{} — supply it with `--param {name}=<value>` (or a \
+         `\"params\"` entry over HTTP)",
+        match description { Some(d) => format!(" ({d})"), None => String::new() }
+    )]
+    MissingParam {
+        name: String,
+        description: Option<String>,
+    },
+
+    /// A supplied param is not declared in the config's `params:` block (#444).
+    /// Rejected rather than ignored so a typo can never silently no-op.
+    #[error(
+        "unknown param '{name}'. Declared params: {}",
+        if known.is_empty() { String::from("(none — this config has no `params:` block)") } else { known.join(", ") }
+    )]
+    UnknownParam { name: String, known: Vec<String> },
+
+    /// A `${param.X}` token referenced a param the config does not declare (#444).
+    #[error(
+        "interpolation '{token}' references undeclared param '{name}' (declare it under top-level \
+         `params:`)"
+    )]
+    UnknownParamRef { name: String, token: String },
+
+    /// A pipeline-template id / version was not found in the registry (#444).
+    /// Distinct from [`CliError::UnknownTemplate`], which is about a
+    /// `pipeline.sources` / `pipeline.sinks` connector template.
+    #[error(
+        "no pipeline template '{id}'{} in the registry — list them with `faucet template list`",
+        match version { Some(v) => format!(" at version {v}"), None => String::new() }
+    )]
+    UnknownPipelineTemplate { id: String, version: Option<u32> },
+
     /// A connector's `auth: { ref }` named a provider not declared in the
     /// top-level `auth:` catalog.
     #[error(

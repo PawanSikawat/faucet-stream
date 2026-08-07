@@ -27,8 +27,8 @@ built-in roles form a ladder:
 
 | Role | Permitted |
 |------|-----------|
-| `viewer` | read-only: `GET /v1/runs*`, `GET /v1/schemas*` |
-| `operator` | everything a viewer can do **plus** submit / cancel / delete runs, `POST /v1/doctor`, and firing triggers |
+| `viewer` | read-only: `GET /v1/runs*`, `GET /v1/schemas*`, `GET /v1/catalog/*`, `GET /v1/templates*` |
+| `operator` | everything a viewer can do **plus** submit / cancel / delete runs, `POST /v1/doctor`, firing triggers, and registering / deleting / triggering pipeline templates |
 | `admin` | everything, including `GET /v1/audit` |
 
 ```yaml
@@ -48,7 +48,8 @@ A request whose role lacks the route's required permission gets `403 forbidden`
 `--auth-token` / `--no-auth`. Every token is registered for log redaction at
 startup.
 
-**Audit log.** Every mutating action (`run.submit` / `run.cancel` / `run.delete`)
+**Audit log.** Every mutating action (`run.submit` / `run.cancel` / `run.delete` /
+`template.register` / `template.delete` / `template.run` / `template.promote`)
 and every denied attempt is recorded with principal, role, action, run id,
 config fingerprint (submit), source IP, timestamp, and result. Admins read it via
 `GET /v1/audit`. Records persist in the run-history backend (`faucet_serve_audit`
@@ -71,6 +72,12 @@ for the SQL backends; an in-memory ring otherwise) and expire with the
 | `GET` | `/v1/catalog/datasets` | `200` | List catalogued datasets (`kind`, `q`, `limit`, `cursor`) — requires the `catalog` build feature |
 | `GET` | `/v1/catalog/datasets/{id}` | `200` | One dataset's detail: schema timeline, volume, edges |
 | `GET` | `/v1/catalog/lineage` | `200` | The lineage edge graph (`root`, `depth`) |
+| `POST` | `/v1/templates` | `201` | Register a pipeline template (operator / `TemplateWrite`) — requires the `templates` build feature |
+| `GET` | `/v1/templates` | `200` | List templates, latest version each (viewer / `TemplateRead`) |
+| `GET` | `/v1/templates/{id}` | `200` | One template + its version list. `?version=latest` (default) or `?version=N` |
+| `DELETE` | `/v1/templates/{id}` | `204` | Delete one version (`?version=latest\|N`) or all (operator / `TemplateWrite`) |
+| `POST` | `/v1/templates/{id}/runs` | `202` | Trigger a run from a template with `params` / `env` (operator / `RunWrite`) |
+| `POST` | `/v1/templates/{id}/tags` | `200` | Point a named channel (`prod`, `dev`, …) at a version (operator / `TemplateWrite`) |
 | `GET` | `/healthz` | `200` | Liveness (unauthenticated) |
 | `GET` | `/readyz` | `200`/`503` | Readiness (unauthenticated) |
 | `GET` | `/metrics` | `200` | Prometheus exposition (unauthenticated) |
@@ -189,6 +196,58 @@ it automatically). Viewer-readable under RBAC; requires a build with the
 curl -H "Authorization: Bearer $TOKEN" \
   "http://127.0.0.1:8080/v1/catalog/datasets?kind=postgres&limit=20"
 ```
+
+### `/v1/templates*` (pipeline template registry)
+
+Register a config declaring [`params:`](config.md#params) once, then trigger runs
+by `{id, params}` instead of re-sending the whole config. Storage rides the
+server's `--history` backend, so `faucet template …` and the MCP template tools
+see the same registry. Requires a build with the `templates` feature; see the
+[cookbook page](../cookbook/templates.md).
+
+```bash
+# Register (the body is stored verbatim — ${env:…} / ${vault:…} stay unresolved).
+curl -sX POST http://127.0.0.1:8080/v1/templates \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"id":"tenant-sync","config":"version: 1\nname: tenant-sync\n…","config_format":"yaml"}'
+# → 201 {"id":"tenant-sync","version":1,"params":{…},"created_at":"…","created_by":"…"}
+
+# Trigger.
+curl -sX POST http://127.0.0.1:8080/v1/templates/tenant-sync/runs \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"params":{"tenant_id":"acme"},"env":{"API_HOST":"eu.example.com"},"version":2}'
+# → 202 {"run_id":"…","status":"queued","submitted_at":"…",
+#        "template_id":"tenant-sync","template_version":2,
+#        "params":{"tenant_id":"acme","api_token":"***"}}
+```
+
+**Version selection.** Versions are numeric and auto-incrementing; on top of them
+sits a closed set of named channels — `latest` (derived: the newest registration,
+and what an omitted selector resolves to) plus the movable `dev`, `test`,
+`staging`, `pre-prod`, `canary`, `stable`, `prod`, `previous`. `version` accepts a
+channel name (`"prod"`), a numeric string (`"2"`), or a bare number (`2`), so a
+query string and a JSON body agree. `0` and unknown channel names are rejected
+rather than silently falling back, and asking for an *unset* channel is a `422`
+naming the channels that are set.
+
+`POST /v1/templates/{id}/tags` moves a channel: `{"tag":"prod","version":"stable"}`
+copies whatever `stable` names today; `{"tag":"prod","version":3}` pins one.
+`latest` cannot be assigned (`422`). `GET /v1/templates/{id}` returns `versions`
+(newest first), `latest_version`, `is_latest`, and the `tags` pointer map, so a
+client can pin, promote, or roll back without a second request.
+
+The trigger body's `params` / `env` / `version` are template-specific; every other
+field (`name`, `labels`, `timeout_secs`, `doctor_first`, `idempotency_key`,
+`clock`) behaves exactly as in `POST /v1/runs`, because the run is submitted
+through the same path. The run is labelled `template` and `template_version`.
+
+Status codes: `404` for an unknown id or pinned version; `422` for a missing
+`required` param or a type mismatch, naming the param; `429` when the queue is
+full. On a **clustered** server a template declaring `secret: true` params is
+refused with `422` — the materialized config is persisted for peer execution, and
+the shared history database is not a secret store. Reference the secret from the
+template body (`${env:…}` / `${vault:…}`, resolved on the executing instance)
+instead.
 
 ### `POST /v1/backfill`
 

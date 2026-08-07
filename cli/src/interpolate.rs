@@ -27,17 +27,33 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// An overlay consulted before the process environment when resolving
+/// `${env:VAR}` / `${secret:VAR}`. Populated by a caller-supplied `env:` map
+/// (`faucet run --param-env`, `POST /v1/templates/{id}/runs`) so a run can
+/// override a variable without mutating the shared process environment — which
+/// would be racy in a concurrent server (#444).
+pub type EnvOverlay = HashMap<String, String>;
+
 /// Resolve every load-time directive in `input`. Unknown prefixes (and
 /// tokens with no `:` at all — i.e. `${row_id.field}` references) survive
 /// verbatim for record-time resolution.
 pub fn interpolate(input: &str) -> CliResult<String> {
+    interpolate_with_env(input, &EnvOverlay::new())
+}
+
+/// [`interpolate`] with an [`EnvOverlay`] taking precedence over the process
+/// environment for `${env:}` / `${secret:}` lookups.
+pub fn interpolate_with_env(input: &str, overlay: &EnvOverlay) -> CliResult<String> {
     rewrite(input, |body| match classify_directive(body) {
         Directive::LoadTime { prefix, body } => match prefix {
             "env" | "secret" => {
-                let value = std::env::var(body).map_err(|_| CliError::MissingEnvVar {
-                    var: body.to_owned(),
-                    location: format!("${{{prefix}:{body}}}"),
-                })?;
+                let value = match overlay.get(body) {
+                    Some(v) => v.clone(),
+                    None => std::env::var(body).map_err(|_| CliError::MissingEnvVar {
+                        var: body.to_owned(),
+                        location: format!("${{{prefix}:{body}}}"),
+                    })?,
+                };
                 // Register the resolved value for redaction, exactly as the
                 // secrets-manager pass does for `${vault:…}` etc. — otherwise a
                 // credential supplied via the very common `${env:TOKEN}` /
@@ -72,13 +88,19 @@ pub fn interpolate(input: &str) -> CliResult<String> {
 /// secrets-manager pass. Deferred `${id.path}` / `${now.*}` tokens survive
 /// verbatim for their later resolution stages.
 pub fn interpolate_value(value: &mut Value) -> CliResult<()> {
+    interpolate_value_with_env(value, &EnvOverlay::new())
+}
+
+/// [`interpolate_value`] with an [`EnvOverlay`] taking precedence over the
+/// process environment.
+pub fn interpolate_value_with_env(value: &mut Value, overlay: &EnvOverlay) -> CliResult<()> {
     match value {
         Value::String(s) => {
-            *s = interpolate(s)?;
+            *s = interpolate_with_env(s, overlay)?;
         }
         Value::Array(items) => {
             for item in items {
-                interpolate_value(item)?;
+                interpolate_value_with_env(item, overlay)?;
             }
         }
         Value::Object(map) => {
@@ -86,8 +108,8 @@ pub fn interpolate_value(value: &mut Value) -> CliResult<()> {
             // raw-text pass). Rebuild the map so an interpolated key is honoured.
             let entries: Vec<(String, Value)> = std::mem::take(map).into_iter().collect();
             for (key, mut val) in entries {
-                interpolate_value(&mut val)?;
-                let resolved_key = interpolate(&key)?;
+                interpolate_value_with_env(&mut val, overlay)?;
+                let resolved_key = interpolate_with_env(&key, overlay)?;
                 map.insert(resolved_key, val);
             }
         }
@@ -324,7 +346,7 @@ fn resolve_dotted(root: &Value, path: &str) -> Option<Value> {
 /// Render a JSON value as a plain string suitable for substitution into a
 /// config field. Strings come through unquoted; everything else uses
 /// `to_string()` (numbers / bools / null / nested JSON).
-fn value_to_string(v: &Value) -> String {
+pub(crate) fn value_to_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         other => other.to_string(),

@@ -40,7 +40,12 @@ pub async fn handle(
                 .into_response();
         }
     };
+    // The server's run-history backend doubles as the pipeline-template registry
+    // (#444), so an agent on `/mcp` sees the same templates the `/v1/templates`
+    // endpoints and `faucet template` do.
     let ctx = crate::mcp::McpContext::new(auth, can_mutate);
+    #[cfg(feature = "templates")]
+    let ctx = ctx.with_templates(state.history());
     let response = crate::mcp::handle_message(&ctx, &body).await;
 
     // Best-effort audit: record the MCP call under the caller's principal/role.
@@ -56,52 +61,9 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serve::cluster::ClusterConfig;
-    use crate::serve::config::{AuthMode, HistoryBackendSpec, ServeConfig};
-    use crate::serve::history::memory::MemoryHistory;
-    use crate::serve::history::{AuditFilter, RunHistory};
+    use crate::serve::history::AuditFilter;
     use crate::serve::rbac::Role;
-    use crate::serve::state::ServerState;
-    use std::sync::Arc;
-    use std::time::Duration;
-    use tokio_util::sync::CancellationToken;
-
-    fn test_state() -> ServerState {
-        let mut cluster = ClusterConfig::disabled();
-        cluster.enabled = false;
-        let cfg = ServeConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            auth: AuthMode::None,
-            max_concurrent_runs: 4,
-            max_queued_runs: 4,
-            default_config_path: None,
-            history: HistoryBackendSpec::Memory,
-            cors_origins: vec![],
-            body_limit_bytes: 1_048_576,
-            shutdown_grace: Duration::from_secs(60),
-            retain_terminal_runs: Duration::from_secs(60),
-            idempotency_retention: Duration::from_secs(60),
-            lease_ttl: Duration::from_secs(30),
-            probe_timeout: Duration::from_secs(10),
-            env_file: None,
-            no_env_file: false,
-            log_level: "info".into(),
-            ui_enabled: true,
-            cluster,
-            triggers_path: None,
-        };
-        let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
-        ServerState::new(
-            &cfg,
-            None,
-            CancellationToken::new(),
-            history,
-            crate::serve::logs::LogHub::new(),
-            None,
-            #[cfg(feature = "triggers")]
-            crate::serve::triggers::health::TriggersHandle::empty(),
-        )
-    }
+    use crate::serve::test_support::test_state;
 
     fn actor(role: Role) -> AuthContext {
         AuthContext {

@@ -29,7 +29,10 @@ pub fn build_router(
 
     // `/v1` routes guarded by the bearer middleware via `route_layer` (only runs
     // for matched routes; OPTIONS preflight is allowed through inside the layer).
-    #[cfg_attr(not(any(feature = "triggers", feature = "catalog")), allow(unused_mut))]
+    #[cfg_attr(
+        not(any(feature = "triggers", feature = "catalog", feature = "templates")),
+        allow(unused_mut)
+    )]
     let mut api = Router::new()
         .route("/v1/runs", post(runs::submit_run).get(runs::list_runs))
         .route("/v1/runs/{id}", get(runs::get_run).delete(runs::delete_run))
@@ -59,6 +62,22 @@ pub fn build_router(
             .route("/v1/catalog/datasets", get(catalog::list_datasets))
             .route("/v1/catalog/datasets/{id}", get(catalog::get_dataset))
             .route("/v1/catalog/lineage", get(catalog::lineage));
+    }
+    // Pipeline template registry + parameterized trigger API (#444).
+    #[cfg(feature = "templates")]
+    {
+        use crate::serve::handlers::templates;
+        api = api
+            .route(
+                "/v1/templates",
+                post(templates::register_template).get(templates::list_templates),
+            )
+            .route(
+                "/v1/templates/{id}",
+                get(templates::get_template).delete(templates::delete_template),
+            )
+            .route("/v1/templates/{id}/runs", post(templates::trigger_template))
+            .route("/v1/templates/{id}/tags", post(templates::promote_template));
     }
     // MCP endpoint (#420): mounted only with `--mcp`. Placed on `api` so it
     // inherits the bearer-auth + RBAC route-layer below; the per-request

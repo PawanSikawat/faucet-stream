@@ -38,6 +38,14 @@ pub enum Permission {
     DlqManage,
     /// Read the Data Movement Catalog (`GET /v1/catalog/*`, #279) — read-only.
     CatalogRead,
+    /// Read the pipeline template registry (`GET /v1/templates*`, #444) —
+    /// read-only. Also required to *resolve* a template when triggering a run.
+    TemplateRead,
+    /// Register or delete a pipeline template (`POST`/`DELETE /v1/templates*`,
+    /// #444). Granted from `operator` up: a principal that can already submit an
+    /// arbitrary config to `POST /v1/runs` gains no new capability by storing one
+    /// under a name.
+    TemplateWrite,
     /// Read the audit log (`GET /v1/audit`) — admin-only.
     AuditRead,
     /// Hot-reload the server's `--default-config` (`POST /v1/reload`) — admin-only.
@@ -64,7 +72,12 @@ impl Role {
     pub fn grants(self, perm: Permission) -> bool {
         use Permission::*;
         match self {
-            Role::Viewer => matches!(perm, RunRead | SchemaRead | DlqRead | CatalogRead),
+            Role::Viewer => {
+                matches!(
+                    perm,
+                    RunRead | SchemaRead | DlqRead | CatalogRead | TemplateRead
+                )
+            }
             Role::Operator => {
                 matches!(
                     perm,
@@ -72,10 +85,12 @@ impl Role {
                         | SchemaRead
                         | DlqRead
                         | CatalogRead
+                        | TemplateRead
                         | RunWrite
                         | Doctor
                         | TriggerFire
                         | DlqManage
+                        | TemplateWrite
                 )
             }
             Role::Admin => true,
@@ -247,6 +262,15 @@ pub fn required_permission(method: &Method, matched_path: &str) -> Option<Permis
         (&Method::GET, "/v1/catalog/datasets") => Some(CatalogRead),
         (&Method::GET, "/v1/catalog/datasets/{id}") => Some(CatalogRead),
         (&Method::GET, "/v1/catalog/lineage") => Some(CatalogRead),
+        // Pipeline templates (#444). Triggering maps to `RunWrite` — it starts a
+        // run, which is the privileged half; `operator` holds both scopes, so a
+        // single check suffices and a `viewer` can browse but never trigger.
+        (&Method::POST, "/v1/templates") => Some(TemplateWrite),
+        (&Method::GET, "/v1/templates") => Some(TemplateRead),
+        (&Method::GET, "/v1/templates/{id}") => Some(TemplateRead),
+        (&Method::DELETE, "/v1/templates/{id}") => Some(TemplateWrite),
+        (&Method::POST, "/v1/templates/{id}/runs") => Some(RunWrite),
+        (&Method::POST, "/v1/templates/{id}/tags") => Some(TemplateWrite),
         (&Method::POST, "/v1/reload") => Some(Reload),
         // MCP endpoint (#420): baseline access needs only a read scope (Viewer+);
         // the mutating `run_pipeline` tool is separately gated on RunWrite inside
@@ -277,6 +301,12 @@ pub fn audit_action(method: &Method, matched_path: &str) -> &'static str {
         (&Method::GET, "/v1/catalog/datasets") => "catalog.list",
         (&Method::GET, "/v1/catalog/datasets/{id}") => "catalog.get",
         (&Method::GET, "/v1/catalog/lineage") => "catalog.lineage",
+        (&Method::POST, "/v1/templates") => "template.register",
+        (&Method::GET, "/v1/templates") => "template.list",
+        (&Method::GET, "/v1/templates/{id}") => "template.get",
+        (&Method::DELETE, "/v1/templates/{id}") => "template.delete",
+        (&Method::POST, "/v1/templates/{id}/runs") => "template.run",
+        (&Method::POST, "/v1/templates/{id}/tags") => "template.promote",
         (&Method::POST, "/v1/reload") => "config.reload",
         (&Method::POST, "/mcp") => "mcp",
         _ => "unknown",
@@ -302,16 +332,19 @@ mod tests {
         assert!(Role::Viewer.grants(RunRead));
         assert!(Role::Viewer.grants(SchemaRead));
         assert!(Role::Viewer.grants(DlqRead));
+        assert!(Role::Viewer.grants(TemplateRead));
         assert!(!Role::Viewer.grants(RunWrite));
         assert!(!Role::Viewer.grants(Doctor));
         assert!(!Role::Viewer.grants(DlqManage));
         assert!(!Role::Viewer.grants(AuditRead));
+        assert!(!Role::Viewer.grants(TemplateWrite));
         // Operator: reads + writes + doctor + triggers + dlq management, but not audit.
         assert!(Role::Operator.grants(RunWrite));
         assert!(Role::Operator.grants(Doctor));
         assert!(Role::Operator.grants(TriggerFire));
         assert!(Role::Operator.grants(DlqRead));
         assert!(Role::Operator.grants(DlqManage));
+        assert!(Role::Operator.grants(TemplateWrite));
         assert!(!Role::Operator.grants(AuditRead));
         // Admin: everything.
         for p in [
@@ -323,6 +356,8 @@ mod tests {
             DlqRead,
             DlqManage,
             AuditRead,
+            TemplateRead,
+            TemplateWrite,
         ] {
             assert!(Role::Admin.grants(p));
         }
@@ -412,6 +447,12 @@ mod tests {
             (Method::GET, "/v1/catalog/datasets", CatalogRead),
             (Method::GET, "/v1/catalog/datasets/{id}", CatalogRead),
             (Method::GET, "/v1/catalog/lineage", CatalogRead),
+            (Method::POST, "/v1/templates", TemplateWrite),
+            (Method::GET, "/v1/templates", TemplateRead),
+            (Method::GET, "/v1/templates/{id}", TemplateRead),
+            (Method::DELETE, "/v1/templates/{id}", TemplateWrite),
+            (Method::POST, "/v1/templates/{id}/runs", RunWrite),
+            (Method::POST, "/v1/templates/{id}/tags", TemplateWrite),
             (Method::POST, "/v1/reload", Reload),
         ] {
             assert_eq!(required_permission(&m, path), Some(want), "{m} {path}");
@@ -472,6 +513,14 @@ mod tests {
         assert_eq!(
             audit_action(&Method::POST, "/v1/runs/{id}/cancel"),
             "run.cancel"
+        );
+        assert_eq!(
+            audit_action(&Method::POST, "/v1/templates"),
+            "template.register"
+        );
+        assert_eq!(
+            audit_action(&Method::POST, "/v1/templates/{id}/runs"),
+            "template.run"
         );
         assert_eq!(audit_action(&Method::GET, "/v1/whatever"), "unknown");
     }

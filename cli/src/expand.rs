@@ -25,7 +25,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 /// Row ids that callers can never use because they collide with
 /// load-time interpolation prefixes or future runtime scopes.
 pub const RESERVED_IDS: &[&str] = &[
-    "env", "file", "secret", "matrix", "pipeline", "now", "backfill",
+    "env", "file", "secret", "matrix", "pipeline", "now", "backfill", "param",
 ];
 
 /// One fully-merged matrix row, ready for the executor.
@@ -894,6 +894,21 @@ fn check_refs(value: &Value, id_set: &HashSet<&str>, owner: &str) -> CliResult<(
             // are validated here, against the known row ids.
             // `now` and `backfill` are reserved built-in deferred ids
             // resolved at run time (`backfill` by `faucet backfill`, #282).
+            // `${param.*}` is bound *pre-parse* (`params::bind_document`), so a
+            // token surviving to expansion means the config was built through a
+            // path that skipped binding — e.g. a host calling
+            // `PipelineConfig::from_text`/`from_value` directly. Name the cause
+            // rather than reporting a generic unknown row id (#444).
+            if let Directive::Deferred { id, .. } = dir
+                && id == crate::params::PARAM_ID
+            {
+                return Err(CliError::Config(format!(
+                    "interpolation token `{token}` (in {owner}) was never bound — a `${{param.*}}` \
+                     reference is resolved when the run is triggered. Load the config through \
+                     `PipelineConfig::from_path*` (or supply values with `--param`) so params are \
+                     bound before expansion"
+                )));
+            }
             if let Directive::Deferred { id, .. } = dir
                 && id != "now"
                 && id != "backfill"

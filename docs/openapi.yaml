@@ -483,6 +483,174 @@ paths:
                     items: { $ref: "#/components/schemas/CatalogLineageEdge" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { description: Principal's role lacks the required permission }
+  /v1/templates:
+    post:
+      summary: Register a pipeline template
+      description: >
+        Stores a config document plus the typed `params:` it declares, so later
+        runs are triggered by `{id, params}` instead of re-sending the whole
+        config. Each register appends a **new version**; the newest is used
+        unless a trigger pins one. The body is stored verbatim, so `${env:…}` /
+        `${vault:…}` stay unresolved and are resolved at trigger time on the
+        instance that runs the pipeline. Validation runs against a
+        placeholder binding, so no secret is read and no connector is built.
+        Requires the `TemplateWrite` permission (operator) and the `templates`
+        Cargo feature.
+      operationId: registerTemplate
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterTemplateRequest" }
+      responses:
+        "201":
+          description: The newly registered version's summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TemplateSummary" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { description: Principal's role lacks the required permission }
+        "422": { $ref: "#/components/responses/Error" }
+    get:
+      summary: List registered pipeline templates
+      description: >
+        The latest version of every registered template, newest-registered
+        first. Bodies are omitted — fetch one with `GET /v1/templates/{id}`.
+        Requires the `TemplateRead` permission (viewer).
+      operationId: listTemplates
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: The template summaries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [templates]
+                properties:
+                  templates:
+                    type: array
+                    items: { $ref: "#/components/schemas/TemplateSummary" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { description: Principal's role lacks the required permission }
+  /v1/templates/{id}:
+    get:
+      summary: Get one pipeline template
+      description: >
+        One version of a template — the latest unless `version` is given —
+        including the stored config body and the full list of available
+        versions. Requires the `TemplateRead` permission (viewer).
+      operationId: getTemplate
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: "Template id (slug)." }
+        - { name: version, in: query, required: false, schema: { $ref: "#/components/schemas/VersionSelector" }, description: "Version to return: `latest` (the default when omitted) or an exact version number." }
+      responses:
+        "200":
+          description: The template version plus its version list.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TemplateDetail" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { description: Principal's role lacks the required permission }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Delete a pipeline template
+      description: >
+        Removes one version (`version` given) or every version of the template.
+        Runs already produced by it are untouched. Requires the
+        `TemplateWrite` permission (operator).
+      operationId: deleteTemplate
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: version, in: query, required: false, schema: { $ref: "#/components/schemas/VersionSelector" }, description: "Delete just this version (`latest` or a number). Omitted = every version." }
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { description: Principal's role lacks the required permission }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/templates/{id}/tags:
+    post:
+      summary: Point a named channel at a template version
+      description: >
+        Moves one of the fixed named channels (`dev`, `test`, `staging`,
+        `pre-prod`, `canary`, `stable`, `prod`, `previous`) at a version. Versions
+        themselves are numeric and immutable; this is how `prod` advances from v3
+        to v4. `version` may be a number, or another channel whose current target
+        should be copied (`{"tag":"prod","version":"stable"}`), defaulting to
+        `latest` — which is resolved to a concrete version so the pointer does not
+        silently follow future registrations. `latest` itself is derived and
+        cannot be assigned (`422`). Requires the `TemplateWrite` permission
+        (operator) and the `templates` Cargo feature.
+      operationId: promoteTemplate
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tag]
+              properties:
+                tag: { $ref: "#/components/schemas/VersionChannel" }
+                version: { $ref: "#/components/schemas/VersionSelector" }
+      responses:
+        "200":
+          description: The channel now points at this version.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, tag, version]
+                properties:
+                  id: { type: string }
+                  tag: { type: string }
+                  version: { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { description: Principal's role lacks the required permission }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/templates/{id}/runs:
+    post:
+      summary: Trigger a run from a pipeline template
+      description: >
+        Materializes the template with the supplied `params` (and optional
+        per-request `env` overrides), then submits it through the same path as
+        `POST /v1/runs` — so idempotency keys, `doctor_first`, queue limits,
+        cluster dispatch, metrics, and the audit log behave identically. The run
+        is labelled `template` / `template_version` for provenance. Requires the
+        `RunWrite` permission (operator).
+
+
+        A missing required param or a type mismatch is a `422` naming the param;
+        an unknown template or pinned version is a `404`. On a clustered server a
+        template declaring `secret: true` params is refused (`422`) because the
+        materialized config is persisted for peer execution — reference the
+        secret from the template body instead.
+      operationId: triggerTemplate
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TriggerTemplateRequest" }
+      responses:
+        "202":
+          description: Run accepted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TriggerTemplateResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { description: Principal's role lacks the required permission }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /v1/audit:
     get:
       summary: Read the control-plane audit log (RBAC, admin-only)
@@ -779,6 +947,116 @@ components:
             downstream:
               type: array
               items: { $ref: "#/components/schemas/CatalogLineageEdge" }
+    ParamSpec:
+      type: object
+      description: One entry of a config's `params:` block — the trigger-time override surface.
+      properties:
+        type:
+          type: string
+          enum: [string, int, float, bool]
+          default: string
+        required: { type: boolean, default: false, description: "Caller must supply a value. Mutually exclusive with `default`." }
+        default: { description: "Value used when the caller supplies none. Resolved like any other config scalar, so `${env:X}` works." }
+        secret: { type: boolean, default: false, description: "Registered for log/response redaction the moment it is bound; never persisted." }
+        description: { type: string }
+    TemplateSummary:
+      type: object
+      description: Body-free view of one registered template version.
+      required: [id, version, params, created_at]
+      properties:
+        id: { type: string, description: "Registry id (slug)." }
+        version: { type: integer, description: "1-based, incremented on every register." }
+        name: { type: string, nullable: true, description: "The config's own `name:`." }
+        description: { type: string, nullable: true }
+        params:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/ParamSpec" }
+        created_at: { type: string, format: date-time }
+        created_by: { type: string, nullable: true, description: "Principal that registered this version." }
+    VersionChannel:
+      type: string
+      description: >
+        A named version channel — a movable pointer at one numeric version. The
+        set is **closed**: an unknown or mistyped name is rejected rather than
+        creating a channel nobody watches. `latest` is derived (always the newest
+        registration) and is the only one that cannot be assigned or moved.
+      enum: [latest, dev, test, staging, pre-prod, canary, stable, prod, previous]
+    VersionSelector:
+      description: >
+        A template version selector: a `VersionChannel` name, a numeric string, or
+        a bare number. Omitting it means `latest`. `0` and unknown channel names
+        are rejected.
+      oneOf:
+        - { $ref: "#/components/schemas/VersionChannel" }
+        - { type: integer, minimum: 1 }
+    TemplateDetail:
+      allOf:
+        - { $ref: "#/components/schemas/TemplateSummary" }
+        - type: object
+          required: [body, format, versions, latest_version, is_latest]
+          properties:
+            body: { type: string, description: "The config document, stored verbatim (interpolation directives unresolved)." }
+            format: { type: string, enum: [yaml, json] }
+            versions:
+              type: array
+              description: Every stored version for this id, newest first.
+              items: { type: integer }
+            latest_version: { type: integer, description: "The version the `latest` channel resolves to right now." }
+            is_latest: { type: boolean, description: "False when a pinned older version was returned." }
+            tags:
+              type: object
+              description: "Named channel pointers for this template ({channel: version}), excluding the derived `latest`."
+              additionalProperties: { type: integer }
+    RegisterTemplateRequest:
+      type: object
+      required: [config]
+      properties:
+        id: { type: string, description: "Registry id. Derived from the config's `name:` when omitted." }
+        config: { type: string, description: "The config document, stored verbatim." }
+        config_format: { type: string, enum: [yaml, json], default: yaml }
+        description: { type: string }
+        tags:
+          type: array
+          description: "Named channels to point at the newly registered version. The version number always auto-increments; `latest` is derived and rejected."
+          items: { $ref: "#/components/schemas/VersionChannel" }
+    TriggerTemplateRequest:
+      type: object
+      description: >
+        Everything after `params` / `env` / `version` mirrors
+        `SubmitRunRequest`, because the run is submitted through the same path.
+      properties:
+        params:
+          type: object
+          description: "Values for the template's declared params. Scalars; coerced to the declared type."
+          additionalProperties: true
+        env:
+          type: object
+          description: "Values that win over the server's environment for `${env:VAR}` during this materialization only."
+          additionalProperties: { type: string }
+        version:
+          description: "Version to run: `latest` (the default when omitted) or an exact version number."
+          $ref: "#/components/schemas/VersionSelector"
+        name: { type: string, description: "Run name override (default: the template config's `name:`)." }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        timeout_secs: { type: integer }
+        doctor_first: { type: boolean, default: false }
+        idempotency_key: { type: string }
+        clock: { type: string, description: "RFC3339 or YYYY-MM-DD override for `${now.*}`." }
+    TriggerTemplateResponse:
+      type: object
+      required: [run_id, status, submitted_at, template_id, template_version, params]
+      properties:
+        run_id: { type: string }
+        status: { type: string, enum: [queued, pending] }
+        submitted_at: { type: string, format: date-time }
+        template_id: { type: string }
+        template_version: { type: integer }
+        params:
+          type: object
+          description: "The bound params, with every `secret: true` value replaced by `***`."
+          additionalProperties: true
     ApiError:
       type: object
       required: [error]

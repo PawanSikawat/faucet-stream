@@ -26,8 +26,15 @@ use serde_json::{Value, json};
 pub struct McpContext {
     /// Shared auth providers (for `preview`/`run_pipeline` connector builds).
     pub auth: AuthCatalog,
-    /// Whether mutating tools (`run_pipeline`) are exposed and callable.
+    /// Whether mutating tools (`run_pipeline`, `register_template`,
+    /// `run_template`) are exposed and callable.
     pub allow_mutations: bool,
+    /// The pipeline template registry (#444), when one is wired: `faucet serve
+    /// --mcp` passes its own `--history` backend; `faucet mcp` needs
+    /// `--template-store`. Absent = the template tools are not advertised at all,
+    /// so an agent never sees a tool it cannot use.
+    #[cfg(feature = "templates")]
+    pub templates: Option<crate::templates::TemplateStore>,
 }
 
 impl McpContext {
@@ -35,7 +42,16 @@ impl McpContext {
         Self {
             auth,
             allow_mutations,
+            #[cfg(feature = "templates")]
+            templates: None,
         }
+    }
+
+    /// Attach a template registry, enabling the template tools.
+    #[cfg(feature = "templates")]
+    pub fn with_templates(mut self, store: crate::templates::TemplateStore) -> Self {
+        self.templates = Some(store);
+        self
     }
 }
 

@@ -54,6 +54,17 @@ const ROUTES_CATALOG: &[(&str, &str)] = &[
     ("GET", "/v1/catalog/lineage"),
 ];
 
+/// Routes that are only registered when the `templates` feature is compiled in.
+#[cfg(feature = "templates")]
+const ROUTES_TEMPLATES: &[(&str, &str)] = &[
+    ("POST", "/v1/templates"),
+    ("GET", "/v1/templates"),
+    ("GET", "/v1/templates/{id}"),
+    ("DELETE", "/v1/templates/{id}"),
+    ("POST", "/v1/templates/{id}/runs"),
+    ("POST", "/v1/templates/{id}/tags"),
+];
+
 /// Returns the full canonical route set for the current feature configuration.
 fn canonical_routes() -> BTreeSet<(String, String)> {
     #[allow(unused_mut)]
@@ -67,6 +78,10 @@ fn canonical_routes() -> BTreeSet<(String, String)> {
     }
     #[cfg(feature = "catalog")]
     for (m, p) in ROUTES_CATALOG {
+        set.insert((m.to_string(), p.to_string()));
+    }
+    #[cfg(feature = "templates")]
+    for (m, p) in ROUTES_TEMPLATES {
         set.insert((m.to_string(), p.to_string()));
     }
     set
@@ -91,6 +106,11 @@ fn openapi_routes() -> BTreeSet<(String, String)> {
         // Likewise for the `catalog` feature's routes.
         #[cfg(not(feature = "catalog"))]
         if path.starts_with("/v1/catalog") {
+            continue;
+        }
+        // …and the `templates` feature's routes (#444).
+        #[cfg(not(feature = "templates"))]
+        if path.starts_with("/v1/templates") {
             continue;
         }
         let ops = ops.as_mapping().unwrap();

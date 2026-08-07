@@ -143,6 +143,11 @@ pub enum Command {
     /// store — datasets, schema timelines, volume/freshness, lineage.
     #[cfg(feature = "catalog")]
     Catalog(CatalogArgs),
+    /// Register a parameterized config once, then trigger runs by id + params.
+    /// The registry is shared with `faucet serve` — point both at the same
+    /// store URL and templates registered here are triggerable over HTTP.
+    #[cfg(feature = "templates")]
+    Template(TemplateArgs),
     /// Generate a shell tab-completion script (bash / zsh / fish / powershell /
     /// elvish). For registry- and config-aware *dynamic* completion, enable the
     /// `COMPLETE` hook instead, e.g. `source <(COMPLETE=zsh faucet)`.
@@ -338,6 +343,166 @@ pub struct CatalogLineageArgs {
     /// BFS hop bound around --root.
     #[arg(long, default_value_t = 5)]
     pub depth: u32,
+}
+
+/// `faucet template` arguments (#444).
+#[cfg(feature = "templates")]
+#[derive(Debug, Parser)]
+pub struct TemplateArgs {
+    #[command(subcommand)]
+    pub command: TemplateCommand,
+}
+
+/// `faucet template` subcommands.
+#[cfg(feature = "templates")]
+#[derive(Debug, Subcommand)]
+pub enum TemplateCommand {
+    /// Validate a config and register it as a new template version.
+    Register(TemplateRegisterArgs),
+    /// List registered templates (latest version of each).
+    List(TemplateListArgs),
+    /// Show one template: its params, config body, and versions.
+    Show(TemplateShowArgs),
+    /// Point a named channel (`prod`, `dev`, …) at a version.
+    Promote(TemplatePromoteArgs),
+    /// Delete one version, or every version, of a template.
+    Delete(TemplateDeleteArgs),
+    /// Materialize a template with the given params and run it locally.
+    Run(TemplateRunArgs),
+}
+
+/// Where the template registry lives — shared by every `faucet template`
+/// subcommand.
+#[cfg(feature = "templates")]
+#[derive(Debug, Parser)]
+pub struct TemplateStoreArgs {
+    /// Registry store URL: `sqlite:<path>`, a `postgres://…` URL, or `memory`
+    /// (process-lifetime only — useful for a smoke test). Point
+    /// `faucet serve --history` at the same URL to trigger these templates over
+    /// HTTP. SQL backends need the matching `serve-history-sqlite` /
+    /// `serve-history-postgres` build feature.
+    #[arg(long, env = "FAUCET_TEMPLATE_STORE")]
+    pub store: String,
+    /// Path to a `.env` file to load for `${env:VAR}` interpolation.
+    /// Defaults to `.env` in cwd if present.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from cwd.
+    #[arg(long)]
+    pub no_env_file: bool,
+    /// Emit machine-readable JSON instead of the human summary.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `faucet template register <config>` arguments.
+#[cfg(feature = "templates")]
+#[derive(Debug, Parser)]
+pub struct TemplateRegisterArgs {
+    /// Path to the `.yaml`, `.yml`, or `.json` config to register. Stored
+    /// verbatim, so `${env:…}` / `${vault:…}` stay unresolved and are resolved
+    /// when a run is triggered.
+    #[arg(value_hint = clap::ValueHint::FilePath)]
+    pub config: PathBuf,
+    /// Registry id. Derived from the config's `name:` when omitted.
+    #[arg(long)]
+    pub id: Option<String>,
+    /// Free-text description shown by `list` / `show`.
+    #[arg(long)]
+    pub description: Option<String>,
+    /// Point a named channel at the newly registered version, e.g.
+    /// `--tag dev --tag test`. The version number itself always auto-increments;
+    /// channels come from a fixed set (`dev`, `test`, `staging`, `pre-prod`,
+    /// `canary`, `stable`, `prod`, `previous`). `latest` is derived and always
+    /// names the newest version, so it cannot be assigned.
+    #[arg(long = "tag", value_name = "CHANNEL")]
+    pub tag: Vec<String>,
+    #[command(flatten)]
+    pub common: TemplateStoreArgs,
+}
+
+/// `faucet template promote <id>` arguments.
+#[cfg(feature = "templates")]
+#[derive(Debug, Parser)]
+pub struct TemplatePromoteArgs {
+    /// Template id.
+    pub id: String,
+    /// Channel to move: `dev`, `test`, `staging`, `pre-prod`, `canary`,
+    /// `stable`, `prod`, or `previous`. `latest` is derived and cannot be moved.
+    #[arg(long = "tag", value_name = "CHANNEL")]
+    pub tag: String,
+    /// What to point it at: a version number, or another channel whose current
+    /// target should be copied (`--tag prod --version stable`). Default `latest`.
+    #[arg(long, default_value = "latest")]
+    pub version: String,
+    #[command(flatten)]
+    pub common: TemplateStoreArgs,
+}
+
+/// `faucet template list` arguments.
+#[cfg(feature = "templates")]
+#[derive(Debug, Parser)]
+pub struct TemplateListArgs {
+    #[command(flatten)]
+    pub common: TemplateStoreArgs,
+}
+
+/// `faucet template show <id>` arguments.
+#[cfg(feature = "templates")]
+#[derive(Debug, Parser)]
+pub struct TemplateShowArgs {
+    /// Template id.
+    pub id: String,
+    /// Version to show: a number, or a named channel (`latest` — the default —
+    /// `prod`, `pre-prod`, `dev`, …).
+    #[arg(long, default_value = "latest")]
+    pub version: String,
+    #[command(flatten)]
+    pub common: TemplateStoreArgs,
+}
+
+/// `faucet template delete <id>` arguments.
+#[cfg(feature = "templates")]
+#[derive(Debug, Parser)]
+pub struct TemplateDeleteArgs {
+    /// Template id.
+    pub id: String,
+    /// Delete only this version — a number, or a named channel (`latest`,
+    /// `prod`, …) resolved to the version it points at. Omitted = delete every
+    /// version of the template.
+    #[arg(long)]
+    pub version: Option<String>,
+    #[command(flatten)]
+    pub common: TemplateStoreArgs,
+}
+
+/// `faucet template run <id>` arguments.
+#[cfg(feature = "templates")]
+#[derive(Debug, Parser)]
+pub struct TemplateRunArgs {
+    /// Template id.
+    pub id: String,
+    /// Version to run: a number, or a named channel (`latest` — the default —
+    /// `prod`, `pre-prod`, `dev`, …). Naming a channel is how a scheduled job
+    /// stays on a promoted version while newer ones land.
+    #[arg(long, default_value = "latest")]
+    pub version: String,
+    /// Supply a declared param: `--param tenant_id=acme`. Repeatable.
+    #[arg(long = "param", value_name = "NAME=VALUE")]
+    pub param: Vec<String>,
+    /// Override an environment variable for this materialization only:
+    /// `--param-env REGION=eu`, or bare `--param-env TOKEN` to take it from the
+    /// caller's environment. Repeatable.
+    #[arg(long = "param-env", value_name = "NAME[=VALUE]")]
+    pub param_env: Vec<String>,
+    /// Materialize and validate without running (prints the resolved config).
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Stop after writing this many records to the sink.
+    #[arg(long)]
+    pub limit: Option<usize>,
+    #[command(flatten)]
+    pub common: TemplateStoreArgs,
 }
 
 /// `faucet notify test` arguments.
@@ -753,10 +918,21 @@ pub struct McpArgs {
     /// Skip auto-loading `.env` from cwd at startup.
     #[arg(long)]
     pub no_env_file: bool,
+    /// Pipeline-template registry to expose (#444): `sqlite:<path>`, a
+    /// `postgres://…` URL, or `memory`. Enables the `list_templates` /
+    /// `get_template` tools (plus `register_template` / `run_template` with
+    /// `--allow-mutations`). Omitted = no template tools are advertised.
+    #[cfg(feature = "templates")]
+    #[arg(long, env = "FAUCET_TEMPLATE_STORE")]
+    pub template_store: Option<String>,
 }
 
 /// `faucet run` arguments.
-#[derive(Debug, Parser)]
+///
+/// `Default` is derived so callers that execute an already-loaded config through
+/// `commands::run::execute` (notably `faucet template run`) can build a
+/// plain-run argument set without restating every flag.
+#[derive(Debug, Parser, Default)]
 pub struct RunArgs {
     /// Path to a `.yaml`, `.yml`, or `.json` pipeline config.
     /// If omitted (and `--from-env` is not set), auto-discover
@@ -820,6 +996,20 @@ pub struct RunArgs {
     /// the summary — logs stay on stderr — so `faucet run` is scriptable.
     #[arg(long, value_enum, default_value_t = RunOutput::Text)]
     pub output: RunOutput,
+
+    /// Supply a value for a `params:` entry declared by the config (#444):
+    /// `--param tenant_id=acme`. Repeatable. Values are coerced to the declared
+    /// type, so `--param page=50` satisfies a `type: int` param. A param with a
+    /// `default` needs no flag; a `required` one errors when unsupplied.
+    #[arg(long = "param", value_name = "NAME=VALUE")]
+    pub param: Vec<String>,
+
+    /// Override an environment variable for this run's `${env:VAR}` resolution
+    /// only (#444): `--param-env REGION=eu` sets it, bare `--param-env TOKEN`
+    /// takes the value from the caller's environment. Repeatable. The process
+    /// environment is not modified.
+    #[arg(long = "param-env", value_name = "NAME[=VALUE]")]
+    pub param_env: Vec<String>,
 
     /// Runtime matrix-row selection (`--select`/`--only`/`--skip`/`--status`/
     /// `--tag`/`--include-parents`).
@@ -1000,6 +1190,21 @@ pub struct ValidateArgs {
     #[arg(long)]
     pub show_composed: bool,
 
+    /// Supply a value for a declared `params:` entry (#444), e.g.
+    /// `--param tenant_id=acme`. Repeatable. Without any `--param`, a `required`
+    /// param is validated against a type-shaped placeholder — so a
+    /// parameterized config validates in CI without inventing real values.
+    /// Passing at least one `--param` switches to strict binding, checking that
+    /// every required param is supplied and every value has the declared type.
+    #[arg(long = "param", value_name = "NAME=VALUE")]
+    pub param: Vec<String>,
+
+    /// Override an environment variable for this validation only:
+    /// `--param-env REGION=eu`, or bare `--param-env TOKEN` to take it from the
+    /// caller's environment. Repeatable.
+    #[arg(long = "param-env", value_name = "NAME[=VALUE]")]
+    pub param_env: Vec<String>,
+
     /// Runtime matrix-row selection — `validate` reports each row's resolved
     /// status/tags and whether the selection would run or skip it.
     #[command(flatten)]
@@ -1079,6 +1284,10 @@ pub enum SchemaTarget {
     /// JSON Schema for the `catalog:` (Data Movement Catalog store) block.
     #[cfg(feature = "catalog")]
     Catalog,
+    /// JSON Schema for one entry of the `params:` (typed run parameters) block.
+    /// A config's `params:` maps names to entries of this shape; values are
+    /// supplied per run via `--param` or a template trigger.
+    Params,
 }
 
 /// `faucet preview` arguments.

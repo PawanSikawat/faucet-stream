@@ -57,6 +57,8 @@ Flags:
 | `--status <tier>` | Additively widen the eligible readiness set beyond `{mandatory, active}`: `available` / `draft` / `archived`. Env: `FAUCET_STATUS`. |
 | `--tag <t>` | Narrow the eligible set to rows carrying any listed tag (union). Env: `FAUCET_TAGS`. |
 | `--include-parents <off\|eligible\|all>` | Parent/`depends_on` inclusion policy for a narrowed run set (default `off`). Overrides `selection.include_parents:`. Env: `FAUCET_INCLUDE_PARENTS`. |
+| `--param <NAME=VALUE>` | Supply a value for a declared [`params:`](config.md#params) entry. Repeatable; coerced to the declared type. A `required` param with no value is an error naming it. |
+| `--param-env <NAME[=VALUE]>` | Override an environment variable for this run's `${env:VAR}` resolution only. Bare `NAME` takes the value from the caller's environment (so a secret stays out of the process arguments). The process environment is not modified. Repeatable. |
 | `--tui` | Show a live full-screen terminal UI while the pipeline runs: per-invocation source→sink route, records in/out, records/s, errors, DLQ counts, bookmark age, and a scrolling log pane. Press `q` (or `Ctrl-C`) to cancel cooperatively — in-flight invocations stop at their next page boundary and flush their sinks. Requires a binary built with the `cli-tui` feature (`cargo install faucet-cli --features cli-tui`); on a non-TTY stdout (CI, pipes) the flag logs a notice and runs normally. When the config has an `observability.prometheus` block, the `/metrics` endpoint stays up alongside the TUI; OTLP *metrics* export is skipped under `--tui` (traces are unaffected). |
 | `--quiet` | Suppress the inline live progress line. |
 
@@ -105,6 +107,18 @@ development before vault access is available:
 ```bash
 faucet validate --no-secrets pipeline.yaml
 ```
+
+A config declaring [`params:`](config.md#params) reports its trigger surface and
+validates against **type-shaped placeholders** for any `required` param, so a
+parameterized config passes CI without inventing values:
+
+```
+params: 4 declared (required: api_token, tenant_id) — validated against placeholders; pass --param NAME=VALUE to bind for real
+```
+
+Pass `--param NAME=VALUE` (repeatable) to switch to strict binding and check one
+concrete invocation; `--param-env NAME[=VALUE]` overrides an environment variable
+for the validation only.
 
 ### Composition flags
 
@@ -259,6 +273,7 @@ faucet schema notifications
 faucet schema secrets
 faucet schema triggers
 faucet schema catalog
+faucet schema params
 ```
 
 `faucet schema config` prints a composed JSON Schema for the **entire**
@@ -283,6 +298,10 @@ block, including concurrency, error handling, and adaptive batch sizing.
 
 `faucet schema sla` prints the schema for the top-level `sla:`
 (freshness/volume SLA) block — see [SLA monitoring](../cookbook/sla.md).
+
+`faucet schema params` prints the schema for **one entry** of the top-level
+`params:` (typed run parameters) block — see
+[Parameters & pipeline templates](../cookbook/templates.md).
 
 `faucet schema secrets` prints the directive grammar and auth requirements for
 all four secrets-manager backends in machine-readable JSON — useful for tooling
@@ -558,6 +577,52 @@ config's `catalog:` block: the dataset list (newest activity first, `--kind` /
 volume, upstream/downstream edges), and the lineage graph. All subcommands
 accept `--json`; `--config` auto-discovers `faucet.yaml` in cwd when omitted.
 Read-only — it never mutates the store.
+
+## `template`
+
+*(requires the `templates` build feature — included in `full`)*
+
+```bash
+faucet template register tenant-sync.yaml --store sqlite:./faucet-templates.db
+faucet template register tenant-sync.yaml --id tenant-sync --tag dev --description "per-tenant events"
+faucet template list    --store sqlite:./faucet-templates.db
+faucet template show    tenant-sync --store sqlite:./faucet-templates.db --version 2
+faucet template promote tenant-sync --tag prod --version dev   # move a channel
+faucet template run     tenant-sync --store sqlite:./faucet-templates.db \
+  --version prod --param tenant_id=acme --param-env API_HOST=eu.example.com
+faucet template delete  tenant-sync --store sqlite:./faucet-templates.db --version 1
+```
+
+Register a config declaring [`params:`](config.md#params) **once**, then trigger
+runs by id — the register-once / trigger-by-id model. See the
+[Parameters & pipeline templates](../cookbook/templates.md) cookbook page.
+
+| Flag | Purpose |
+|------|---------|
+| `--store <url>` | Registry location: `sqlite:<path>`, a `postgres://…` URL, or `memory`. Same grammar as `catalog.url` and `faucet serve --history` — point `serve` at the same URL to trigger these templates over HTTP/MCP. Env: `FAUCET_TEMPLATE_STORE`. SQL stores need `serve-history-sqlite` / `serve-history-postgres`. |
+| `--id <slug>` | *(register)* Registry id (`^[a-z0-9][a-z0-9_-]*$`). Derived from the config's `name:` when omitted. |
+| `--description <text>` | *(register)* Shown by `list` / `show`. |
+| `--tag <channel>` | *(register)* Point a named channel at the new version; repeatable. *(promote)* The channel to move. One of the closed set: `dev`, `test`, `staging`, `pre-prod`, `canary`, `stable`, `prod`, `previous`. `latest` is derived and cannot be assigned. |
+| `--version <n\|channel>` | *(show / run / delete / promote)* Version selector: an exact number or a channel name (`latest` is the default for `show`/`run`/`promote`). For `delete`, omitting it removes **every** version; giving one removes just that version. For `promote`, it is the *target* — `--tag prod --version dev` copies whatever `dev` names today. |
+| `--param <NAME=VALUE>` | *(run)* Supply a declared param. Repeatable. |
+| `--param-env <NAME[=VALUE]>` | *(run)* Override an environment variable for this materialization only. Repeatable. |
+| `--dry-run` | *(run)* Materialize and validate without writing to any sink. |
+| `--limit <n>` | *(run)* Stop after writing this many records. |
+| `--json` | Machine-readable output for every subcommand. |
+
+Every `register` appends a new **numeric version** (auto-incrementing from 1); the
+20 most recent per id are kept. On top of the numbers sits a **closed set of named
+channels** — `latest` (derived: always the newest, never assignable) plus the
+movable `dev`, `test`, `staging`, `pre-prod`, `canary`, `stable`, `prod`, and
+`previous`. Promote a version up the channels as it earns trust, and point
+scheduled jobs at a channel (`--version prod`) so a deploy never silently changes
+what production runs. An unknown channel name is rejected with the valid list;
+deleting a version drops any channel aimed at it. `list` shows each template's
+latest version; `show` marks it `[latest]` and prints the channel map.
+`faucet template run` executes through the identical path as `faucet run`, so
+observability, lineage, notifications, the catalog, and SLA evaluation all behave
+the same. The stored body is verbatim — `${env:…}` / `${vault:…}` resolve at
+trigger time, never at registration.
 
 ## `notify`
 

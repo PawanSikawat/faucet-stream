@@ -9,18 +9,8 @@ use std::path::PathBuf;
 fn run_args(config: PathBuf) -> faucet_cli::cli::RunArgs {
     faucet_cli::cli::RunArgs {
         config: Some(config),
-        from_env: false,
-        env_file: None,
         no_env_file: true,
-        dry_run: false,
-        limit: None,
-        state_path: None,
-        clock: None,
-        profile: None,
-        tui: false,
-        quiet: false,
-        output: Default::default(),
-        selection: Default::default(),
+        ..Default::default()
     }
 }
 

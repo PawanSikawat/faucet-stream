@@ -270,50 +270,11 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_pending_run_in_cluster_mode_cancels_it() {
-        use crate::serve::cluster::ClusterConfig;
-        use crate::serve::config::{AuthMode, HistoryBackendSpec, ServeConfig};
-        use crate::serve::history::memory::MemoryHistory;
-        use crate::serve::history::{RunHistory, RunRecord, RunStatus};
-        use crate::serve::state::ServerState;
+        use crate::serve::history::{RunRecord, RunStatus};
+        use crate::serve::test_support::test_state_clustered;
         use chrono::Utc;
-        use std::sync::Arc;
-        use std::time::Duration;
-        use tokio_util::sync::CancellationToken;
 
-        let mut cluster = ClusterConfig::disabled();
-        cluster.enabled = true;
-        let cfg = ServeConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            auth: AuthMode::None,
-            max_concurrent_runs: 4,
-            max_queued_runs: 4,
-            default_config_path: None,
-            history: HistoryBackendSpec::Memory,
-            cors_origins: vec![],
-            body_limit_bytes: 1_048_576,
-            shutdown_grace: Duration::from_secs(60),
-            retain_terminal_runs: Duration::from_secs(60),
-            idempotency_retention: Duration::from_secs(60),
-            lease_ttl: Duration::from_secs(30),
-            probe_timeout: Duration::from_secs(10),
-            env_file: None,
-            no_env_file: false,
-            log_level: "info".into(),
-            ui_enabled: true,
-            cluster,
-            triggers_path: None,
-        };
-        let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
-        let state = ServerState::new(
-            &cfg,
-            None,
-            CancellationToken::new(),
-            history,
-            crate::serve::logs::LogHub::new(),
-            None,
-            #[cfg(feature = "triggers")]
-            crate::serve::triggers::health::TriggersHandle::empty(),
-        );
+        let state = test_state_clustered();
         // A pending run with no local token (simulating an unclaimed cluster run).
         let mut rec = RunRecord::queued("p1".into(), None, Default::default(), None, Utc::now());
         rec.status = RunStatus::Pending;

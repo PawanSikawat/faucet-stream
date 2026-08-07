@@ -6,6 +6,7 @@ use super::catalog::{
     self, CatalogDataset, CatalogDatasetDetail, CatalogDatasetPage, CatalogLineageEdge,
     CatalogListFilter, CatalogSchemaVersion, CatalogStatsPoint, CatalogUpdate,
 };
+use super::templates;
 use super::{
     AuditEntry, AuditFilter, Claim, DeleteOutcome, HistoryError, ListFilter, ListPage, RunHistory,
     RunRecord,
@@ -13,7 +14,7 @@ use super::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -50,6 +51,13 @@ pub struct MemoryHistory {
     audit: Mutex<VecDeque<AuditEntry>>,
     /// Data Movement Catalog (#279). Ephemeral like everything else here.
     catalog: Mutex<CatalogState>,
+    /// Pipeline-template registry (#444): id → version → record. One `Mutex`
+    /// keeps version assignment atomic (read-max-then-insert).
+    templates: Mutex<std::collections::HashMap<String, BTreeMap<u32, templates::TemplateRecord>>>,
+    /// Named channel pointers (#444): template id → tag → version. Guarded by
+    /// the same lock as `templates` would be if it mattered; a separate `Mutex` is
+    /// fine because a tag is only ever written after its version exists.
+    template_tags: Mutex<std::collections::HashMap<String, BTreeMap<String, u32>>>,
     /// Retention window for idempotency claims (separate from run retention).
     idem_retention: Duration,
 }
@@ -61,6 +69,8 @@ impl MemoryHistory {
             idem: DashMap::new(),
             audit: Mutex::new(VecDeque::new()),
             catalog: Mutex::new(CatalogState::default()),
+            templates: Mutex::new(std::collections::HashMap::new()),
+            template_tags: Mutex::new(std::collections::HashMap::new()),
             idem_retention,
         }
     }
@@ -377,6 +387,156 @@ impl RunHistory for MemoryHistory {
             .lock()
             .map_err(|_| HistoryError::Backend("catalog lock poisoned".into()))?;
         Ok(cat.config_snapshots.get(pipeline).cloned())
+    }
+
+    // ── Pipeline-template registry (#444) ────────────────────────────────────
+
+    async fn template_register(
+        &self,
+        draft: &templates::TemplateDraft,
+    ) -> Result<templates::TemplateRecord, HistoryError> {
+        let mut store = self
+            .templates
+            .lock()
+            .map_err(|_| HistoryError::Backend("template lock poisoned".into()))?;
+        let id = draft.id.to_string();
+        let versions = store.entry(id.clone()).or_default();
+        let next = versions.keys().copied().max().unwrap_or(0) + 1;
+        let record = templates::TemplateRecord {
+            id,
+            version: next,
+            name: draft.name.clone(),
+            description: draft.description.clone(),
+            body: draft.body.clone(),
+            format: draft.format,
+            params: draft.params.clone(),
+            created_at: Utc::now(),
+            created_by: draft.created_by.clone(),
+        };
+        versions.insert(next, record.clone());
+        for stale in templates::versions_to_prune(versions.keys().copied().collect()) {
+            versions.remove(&stale);
+        }
+        Ok(record)
+    }
+
+    async fn template_get(
+        &self,
+        id: &str,
+        version: Option<u32>,
+    ) -> Result<Option<templates::TemplateRecord>, HistoryError> {
+        let store = self
+            .templates
+            .lock()
+            .map_err(|_| HistoryError::Backend("template lock poisoned".into()))?;
+        let Some(versions) = store.get(id) else {
+            return Ok(None);
+        };
+        let picked = match version {
+            Some(v) => versions.get(&v),
+            None => versions
+                .keys()
+                .copied()
+                .max()
+                .and_then(|v| versions.get(&v)),
+        };
+        Ok(picked.cloned())
+    }
+
+    async fn template_list(&self) -> Result<Vec<templates::TemplateSummary>, HistoryError> {
+        let store = self
+            .templates
+            .lock()
+            .map_err(|_| HistoryError::Backend("template lock poisoned".into()))?;
+        let all: Vec<templates::TemplateRecord> =
+            store.values().flat_map(|v| v.values().cloned()).collect();
+        Ok(templates::latest_per_id(all))
+    }
+
+    async fn template_versions(&self, id: &str) -> Result<Vec<u32>, HistoryError> {
+        let store = self
+            .templates
+            .lock()
+            .map_err(|_| HistoryError::Backend("template lock poisoned".into()))?;
+        let mut versions: Vec<u32> = store
+            .get(id)
+            .map(|v| v.keys().copied().collect())
+            .unwrap_or_default();
+        versions.sort_unstable_by(|a, b| b.cmp(a));
+        Ok(versions)
+    }
+
+    async fn template_delete(&self, id: &str, version: Option<u32>) -> Result<usize, HistoryError> {
+        let mut store = self
+            .templates
+            .lock()
+            .map_err(|_| HistoryError::Backend("template lock poisoned".into()))?;
+        let mut tags = self
+            .template_tags
+            .lock()
+            .map_err(|_| HistoryError::Backend("template tag lock poisoned".into()))?;
+        match version {
+            None => {
+                tags.remove(id);
+                Ok(store.remove(id).map(|v| v.len()).unwrap_or(0))
+            }
+            Some(v) => {
+                let Some(versions) = store.get_mut(id) else {
+                    return Ok(0);
+                };
+                let removed = versions.remove(&v).is_some() as usize;
+                if versions.is_empty() {
+                    store.remove(id);
+                    tags.remove(id);
+                } else if let Some(t) = tags.get_mut(id) {
+                    // A channel must never dangle at a deleted version.
+                    t.retain(|_, pointed| *pointed != v);
+                    if t.is_empty() {
+                        tags.remove(id);
+                    }
+                }
+                Ok(removed)
+            }
+        }
+    }
+
+    async fn template_set_tag(
+        &self,
+        id: &str,
+        tag: &str,
+        version: u32,
+    ) -> Result<(), HistoryError> {
+        let mut tags = self
+            .template_tags
+            .lock()
+            .map_err(|_| HistoryError::Backend("template tag lock poisoned".into()))?;
+        tags.entry(id.to_string())
+            .or_default()
+            .insert(tag.to_string(), version);
+        Ok(())
+    }
+
+    async fn template_tags(&self, id: &str) -> Result<BTreeMap<String, u32>, HistoryError> {
+        let tags = self
+            .template_tags
+            .lock()
+            .map_err(|_| HistoryError::Backend("template tag lock poisoned".into()))?;
+        Ok(tags.get(id).cloned().unwrap_or_default())
+    }
+
+    async fn template_delete_tag(&self, id: &str, tag: &str) -> Result<bool, HistoryError> {
+        let mut tags = self
+            .template_tags
+            .lock()
+            .map_err(|_| HistoryError::Backend("template tag lock poisoned".into()))?;
+        let Some(t) = tags.get_mut(id) else {
+            return Ok(false);
+        };
+        let existed = t.remove(tag).is_some();
+        if t.is_empty() {
+            tags.remove(id);
+        }
+        Ok(existed)
     }
 
     fn degraded(&self) -> bool {

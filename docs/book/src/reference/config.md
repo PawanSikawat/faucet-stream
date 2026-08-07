@@ -145,6 +145,9 @@ Three stages resolve placeholders:
   the file is read. `${vars.X}` resolves against the top-level `vars:` block;
   `${sources.NAME.PATH}` / `${sinks.NAME.PATH}` resolve against named templates.
   Secret-manager directives (see below) run as the final load-time stage.
+- **Trigger time:** `${param.NAME}` resolves against the top-level [`params:`](#params)
+  block, bound from `--param` / an HTTP `params` object before the config is
+  parsed.
 - **Runtime:** `${row_id.dotted.path}` tokens are resolved per parent record in
   DAG runs. `${now.*}` tokens are resolved per invocation at run time (see
   below).
@@ -220,6 +223,50 @@ grammar reference and `faucet validate --no-secrets` to check grammar offline.
 
 See the [secrets cookbook](../cookbook/secrets.md) for full examples, the
 redaction guarantee, and the known limitation around the `auth:` catalog.
+
+## `params`
+
+Declares the config's **trigger-time** override surface: the values that change
+per run, each typed. Referenced anywhere in the config as `${param.NAME}` and
+bound *before* the config is parsed, so a param can never alter the document's
+structure and never reaches a connector unresolved.
+
+```yaml
+params:
+  tenant_id: { type: string, required: true, description: "Tenant to sync" }
+  since:     { default: "1970-01-01" }
+  page_size: { type: int, default: 500 }
+  api_token: { required: true, secret: true }
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `type` | `string` | `string` · `int` · `float` · `bool` |
+| `required` | `false` | The caller must supply a value. Mutually exclusive with `default`. |
+| `default` | — | Value when none is supplied. An ordinary config scalar, so `default: "${env:SINCE}"` resolves. |
+| `secret` | `false` | Registered for redaction the instant it is bound — never reaches a log, error, API response, audit record, or the template registry. |
+| `description` | — | Surfaced by `faucet template list`/`show`, `GET /v1/templates`, and the MCP `get_template` tool. |
+
+**Supplying values.** `faucet run --param name=value` (repeatable),
+`faucet template run <id> --param …`, or `POST /v1/templates/{id}/runs` with a
+`params` object. `--param-env NAME[=VALUE]` overrides an environment variable for
+that run's `${env:VAR}` resolution only, without mutating the process
+environment.
+
+**Typing.** When `${param.NAME}` is a scalar's entire text the declared type
+survives (an `int` param lands as a JSON number); embedded in a longer string it
+is stringified, like every other namespace. Values are accepted as JSON (`500`)
+or as strings (`"500"`) and coerced to the declared type, so CLI and HTTP behave
+identically. A type mismatch, a missing `required` param, an undeclared
+`--param`, or an undeclared `${param.x}` reference is an error naming the param.
+
+**Validation.** `faucet validate` with no `--param` binds required params to
+type-shaped placeholders, so a parameterized config validates in CI without
+inventing values; passing any `--param` switches to strict binding. `faucet
+schema params` prints the JSON Schema for one entry.
+
+Persisting a parameterized config for register-once / trigger-by-id use is the
+[pipeline template registry](../cookbook/templates.md).
 
 ## `matrix`
 

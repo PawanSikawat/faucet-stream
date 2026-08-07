@@ -26,8 +26,8 @@ cargo install faucet-cli --no-default-features \
 
 | Command | What it does |
 |---------|--------------|
-| `faucet run <config>` | Execute the pipeline end-to-end. Supports `--dry-run`, `--limit N`, `--state-path PATH`, `--tui` (live full-screen progress view; `cli-tui` build feature), and `--quiet` (suppress the inline progress line). On an interactive terminal it shows a lightweight inline per-row progress line (records in/out, rows/s, pages, elapsed) on stderr; auto-disabled on a non-TTY stdout or under `--quiet` (`cli-progress` build feature, in the default build). |
-| `faucet validate <config>` | Parse + validate without running. Exits non-zero on error. |
+| `faucet run <config>` | Execute the pipeline end-to-end. Supports `--dry-run`, `--limit N`, `--state-path PATH`, `--param NAME=VALUE` / `--param-env NAME[=VALUE]` (typed run parameters), `--tui` (live full-screen progress view; `cli-tui` build feature), and `--quiet` (suppress the inline progress line). On an interactive terminal it shows a lightweight inline per-row progress line (records in/out, rows/s, pages, elapsed) on stderr; auto-disabled on a non-TTY stdout or under `--quiet` (`cli-progress` build feature, in the default build). |
+| `faucet validate <config>` | Parse + validate without running. Exits non-zero on error. `--param NAME=VALUE` binds declared params strictly; without it, required params validate against type-shaped placeholders. |
 | `faucet schema source|sink|transform <name>` | Print the JSON Schema for a connector's or transform's config. |
 | `faucet schema dlq` | Print the JSON Schema for the dead-letter-queue spec. |
 | `faucet list` | List every compiled-in source, sink, transform, and state-store backend, each with its conformance maturity tier. |
@@ -42,6 +42,7 @@ cargo install faucet-cli --no-default-features \
 | `faucet backfill <config> --from A --to B [--window W] [--resume]` | Replay a bounded historical window as resumable, bookmark-isolated window units (`${backfill.*}` tokens scope the source; durable progress marker; `--dry-run` to preview; bookmark mode via `--from-bookmark`). `faucet schema backfill` prints the defaults-block schema. Exits with the failed-unit count. |
 | `faucet schedule <config> [--once]` | Run a pipeline on a cron schedule (long-running foreground process). Requires a `schedule:` block. |
 | `faucet catalog datasets\|show\|lineage [--config C] [--json]` | Browse the Data Movement Catalog accumulated by a config's `catalog:` store: dataset list, per-dataset schema timeline / volume / edges, and the lineage graph. Requires the `catalog` build feature. `faucet schema catalog` prints the block's JSON Schema. |
+| `faucet template register\|list\|show\|promote\|delete\|run --store URL` | Register a config declaring `params:` **once**, then trigger runs by id + `--param name=value`. Versions auto-increment; a closed set of named channels (`latest` derived, plus `dev`/`test`/`staging`/`pre-prod`/`canary`/`stable`/`prod`/`previous`) is promoted between them with `--tag`, and `--version <n\|channel>` selects one. Point `faucet serve --history` at the same store and the same templates are triggerable over HTTP/MCP. Requires the `templates` build feature. `faucet schema params` prints one param entry's JSON Schema. |
 | `faucet completions <bash\|zsh\|fish\|powershell\|elvish>` | Print a shell tab-completion script. For registry- and config-aware **dynamic** completion, enable the `COMPLETE` hook instead (see [`faucet completions`](#faucet-completions)). |
 | `faucet migrate [config] [--check\|--stdout]` | Upgrade an old-grammar config to the current shape in place (idempotent): wraps top-level `source:`/`sink:` into `pipeline:`, folds legacy `auth`/`credentials` into `{ type, config }`. `--check` exits non-zero if a migration is needed (CI); `--stdout` previews without writing. |
 | `faucet doctor --offline [config]` | Static, credential-free config lints (no network): dangling / unreferenced `auth:` providers, unused `vars:`, no-op sink `batch_size: 0`. Exits non-zero on any lint error. |
@@ -1109,6 +1110,47 @@ Browse with `faucet catalog datasets|show|lineage`, `GET /v1/catalog/*` on
 `faucet serve`, or the web console's Datasets / Lineage views.
 `faucet schema catalog` prints the block's JSON Schema. Full model:
 [Data Movement Catalog](https://faucet-hq.github.io/faucet-stream/cookbook/catalog.html).
+
+### `params:` (optional)
+
+**Top-level** block (sibling of `pipeline:`) declaring the config's
+**trigger-time** surface: the values that change per run, each typed. Referenced
+anywhere in the config as `${param.NAME}` and bound *before* the config is
+parsed, so a param can never alter the document's structure and never reaches a
+connector unresolved.
+
+```yaml
+params:
+  tenant_id: { type: string, required: true, description: "Tenant to sync" }
+  since:     { default: "1970-01-01" }        # type defaults to string
+  page_size: { type: int, default: 500 }
+  api_token: { required: true, secret: true } # redacted everywhere, never persisted
+pipeline:
+  source:
+    type: rest
+    config:
+      url: "https://api.example.com/${param.tenant_id}/events?since=${param.since}"
+      auth: { type: bearer, config: { token: "${param.api_token}" } }
+```
+
+```bash
+faucet run tenant-sync.yaml --param tenant_id=acme --param api_token="$TOKEN"
+faucet validate tenant-sync.yaml          # required params → type-shaped placeholders
+```
+
+Types are real: when `${param.NAME}` is a value's *entire* text the declared type
+survives (`page_size` arrives as the number `500`); embedded in a longer string it
+is stringified. Values arrive as JSON (`500`) or strings (`"500"`) and are coerced
+to the declared type, so CLI and HTTP behave identically. A missing `required`
+param, a type mismatch, an undeclared `--param`, or an undeclared `${param.x}`
+reference is an error naming the param.
+
+`--param-env NAME[=VALUE]` overrides an environment variable for one run's
+`${env:VAR}` resolution without mutating the process environment. Always
+available (no build feature); `faucet schema params` prints one entry's JSON
+Schema. To register a parameterized config once and trigger it by id, see
+`faucet template` and
+[Parameters & pipeline templates](https://faucet-hq.github.io/faucet-stream/cookbook/templates.html).
 
 ### Transforms
 
