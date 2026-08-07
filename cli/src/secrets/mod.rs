@@ -316,7 +316,21 @@ pub fn scan_path_refs(
     path: &std::path::Path,
     profile: Option<&str>,
 ) -> CliResult<BTreeSet<SecretRef>> {
-    let cfg = PipelineConfig::from_path_tolerating_secrets(path, profile)?;
+    scan_path_refs_with(path, profile, &crate::config::RunInputs::default())
+}
+
+/// [`scan_path_refs`] with caller-supplied [`RunInputs`] (#444).
+///
+/// The pre-scan is a *structural* load, so it must bind `${param.*}` the same way
+/// the caller's real load will. Without this a bare `faucet validate` on a config
+/// declaring a `required` param failed here — in strict mode — before the caller's
+/// placeholder binding ever ran.
+pub fn scan_path_refs_with(
+    path: &std::path::Path,
+    profile: Option<&str>,
+    inputs: &crate::config::RunInputs,
+) -> CliResult<BTreeSet<SecretRef>> {
+    let cfg = PipelineConfig::from_path_tolerating_secrets_with(path, profile, inputs)?;
     Ok(scan_config(&cfg))
 }
 
@@ -694,5 +708,40 @@ pipeline:
             ensure_no_secret_directives(&cfg),
             Err(CliError::SecretsRequireAsyncLoad)
         ));
+    }
+
+    #[test]
+    fn path_scan_binds_params_so_a_required_one_does_not_break_the_prescan() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfg.yaml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            r#"version: 1
+name: prescan
+params:
+  country: {{ type: string, required: true }}
+pipeline:
+  source: {{ type: rest, config: {{ token: "${{vault:secret/data/app#token}}" }} }}
+  sink: {{ type: jsonl, config: {{ path: "./out-${{param.country}}.jsonl" }} }}
+"#
+        )
+        .unwrap();
+
+        // The default (strict) scan is how `faucet validate` used to fail before
+        // it bound params: a `required` param with no value aborts the pre-scan.
+        assert!(scan_path_refs(&path, None).is_err());
+
+        // Bound in placeholder mode — the way `validate` loads it — the scan
+        // reaches the secret reference it exists to report.
+        let inputs = crate::config::RunInputs::placeholders();
+        let refs = scan_path_refs_with(&path, None, &inputs).unwrap();
+        assert_eq!(
+            refs.iter()
+                .map(|(s, r)| (s.as_str(), r.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("vault", "secret/data/app#token")]
+        );
     }
 }

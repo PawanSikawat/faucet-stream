@@ -23,14 +23,17 @@
 #
 #   faucet template register cli/examples/rest_to_jsonl_templated.yaml \
 #     --store sqlite:./faucet-templates.db --tag dev
-#   faucet template promote tenant-sync --tag prod --version dev
+#   faucet template launch tenant-sync --version dev     # make it live
 #   faucet template run tenant-sync --store sqlite:./faucet-templates.db \
-#     --version prod --param tenant_id=acme
+#     --param tenant_id=acme                             # runs `stable`
 #
-# Versions auto-increment on every register; the named channels are a fixed set
-# (`latest` — derived — plus dev / test / staging / pre-prod / canary / stable /
-# prod / previous), so a scheduled job can ride `--version prod` while newer
-# versions land behind it.
+# Versions auto-increment on every register — and a register **moves nobody**.
+# `launch` is the one step that changes what an unpinned run gets, so a nightly
+# can land while `stable` stays put; `rollback` re-launches the previous one.
+# Three channels are derived (`stable` = the launched version and the default
+# selector, `previous`, `newest`) and six are assignable with `promote`
+# (dev / test / staging / pre-prod / canary / prod), so a scheduled job can ride
+# `--version prod` while newer versions land behind it.
 #
 #   faucet serve --history sqlite:./faucet-templates.db --auth-token "$TOKEN"
 #   curl -sX POST localhost:8080/v1/templates/tenant-sync/runs \

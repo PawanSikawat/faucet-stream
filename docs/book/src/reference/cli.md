@@ -583,14 +583,18 @@ Read-only — it never mutates the store.
 *(requires the `templates` build feature — included in `full`)*
 
 ```bash
-faucet template register tenant-sync.yaml --store sqlite:./faucet-templates.db
-faucet template register tenant-sync.yaml --id tenant-sync --tag dev --description "per-tenant events"
-faucet template list    --store sqlite:./faucet-templates.db
-faucet template show    tenant-sync --store sqlite:./faucet-templates.db --version 2
-faucet template promote tenant-sync --tag prod --version dev   # move a channel
-faucet template run     tenant-sync --store sqlite:./faucet-templates.db \
+faucet template register  tenant-sync.yaml --store sqlite:./faucet-templates.db
+faucet template register  tenant-sync.yaml --id tenant-sync --tag dev --description "per-tenant events"
+faucet template register  tenant-sync.yaml --launch            # register AND make live
+faucet template list      --store sqlite:./faucet-templates.db
+faucet template show      tenant-sync --store sqlite:./faucet-templates.db --version 2
+faucet template promote   tenant-sync --tag prod --version dev  # move an environment channel
+faucet template launch    tenant-sync --version pre-prod        # move `stable` (the release lever)
+faucet template rollback  tenant-sync                           # re-launch `previous`
+faucet template deprecate tenant-sync --reason "superseded"      # retire (`--undo` revives)
+faucet template run       tenant-sync --store sqlite:./faucet-templates.db \
   --version prod --param tenant_id=acme --param-env API_HOST=eu.example.com
-faucet template delete  tenant-sync --store sqlite:./faucet-templates.db --version 1
+faucet template delete    tenant-sync --store sqlite:./faucet-templates.db --version 1
 ```
 
 Register a config declaring [`params:`](config.md#params) **once**, then trigger
@@ -601,24 +605,38 @@ runs by id — the register-once / trigger-by-id model. See the
 |------|---------|
 | `--store <url>` | Registry location: `sqlite:<path>`, a `postgres://…` URL, or `memory`. Same grammar as `catalog.url` and `faucet serve --history` — point `serve` at the same URL to trigger these templates over HTTP/MCP. Env: `FAUCET_TEMPLATE_STORE`. SQL stores need `serve-history-sqlite` / `serve-history-postgres`. |
 | `--id <slug>` | *(register)* Registry id (`^[a-z0-9][a-z0-9_-]*$`). Derived from the config's `name:` when omitted. |
-| `--description <text>` | *(register)* Shown by `list` / `show`. |
-| `--tag <channel>` | *(register)* Point a named channel at the new version; repeatable. *(promote)* The channel to move. One of the closed set: `dev`, `test`, `staging`, `pre-prod`, `canary`, `stable`, `prod`, `previous`. `latest` is derived and cannot be assigned. |
-| `--version <n\|channel>` | *(show / run / delete / promote)* Version selector: an exact number or a channel name (`latest` is the default for `show`/`run`/`promote`). For `delete`, omitting it removes **every** version; giving one removes just that version. For `promote`, it is the *target* — `--tag prod --version dev` copies whatever `dev` names today. |
+| `--description <text>` | *(register)* Shown by `list` / `show`. Carried forward from the previous version when omitted. |
+| `--launch` | *(register)* Launch the new version immediately, making it `stable`. Off by default — registering a build must never move existing callers. |
+| `--tag <channel>` | *(register)* Point an assignable channel at the new version; repeatable. *(promote)* The channel to move. One of the closed set: `dev`, `test`, `staging`, `pre-prod`, `canary`, `prod`. The derived channels (`stable`, `previous`, `newest`) cannot be assigned — `stable` moves only via `launch`. |
+| `--version <n\|channel>` | *(show / run / delete / promote / launch)* Version selector: an exact number or a channel name. Defaults to `stable` for `show`/`run`/`promote` and to `newest` for `launch`. For `delete`, omitting it removes **every** version; giving one removes just that version. For `promote`, it is the *target* — `--tag prod --version dev` copies whatever `dev` names today. |
+| `--reason <text>` | *(deprecate)* Why the template is being retired; surfaced to anyone who triggers it. |
+| `--undo` | *(deprecate)* Revive instead of retire. |
 | `--param <NAME=VALUE>` | *(run)* Supply a declared param. Repeatable. |
 | `--param-env <NAME[=VALUE]>` | *(run)* Override an environment variable for this materialization only. Repeatable. |
 | `--dry-run` | *(run)* Materialize and validate without writing to any sink. |
 | `--limit <n>` | *(run)* Stop after writing this many records. |
 | `--json` | Machine-readable output for every subcommand. |
 
-Every `register` appends a new **numeric version** (auto-incrementing from 1); the
-20 most recent per id are kept. On top of the numbers sits a **closed set of named
-channels** — `latest` (derived: always the newest, never assignable) plus the
-movable `dev`, `test`, `staging`, `pre-prod`, `canary`, `stable`, `prod`, and
-`previous`. Promote a version up the channels as it earns trust, and point
-scheduled jobs at a channel (`--version prod`) so a deploy never silently changes
-what production runs. An unknown channel name is rejected with the valid list;
-deleting a version drops any channel aimed at it. `list` shows each template's
-latest version; `show` marks it `[latest]` and prints the channel map.
+Every `register` appends a new **numeric version** (auto-incrementing from 1) and
+**does not move existing callers** — the 20 most recent per id are kept. Making a
+version live is the separate `launch` step, so a template is `draft` until
+something is launched, then `launched`, and `deprecated` once retired (a
+deprecated template keeps serving pinned and `stable` callers, but every trigger
+warns; `delete` is the hard stop).
+
+On top of the numbers sits a **closed set of channels**. Three are **derived** and
+never assignable: `stable` (the launched version — the default when no
+`--version` is given), `previous` (the rollback target), and `newest` (the build
+tip). Six are **assignable** with `promote`: `dev`, `test`, `staging`,
+`pre-prod`, `canary`, `prod`. There is deliberately no `latest` — it means both
+"newest build" and "current release", so it is rejected with a message naming
+`stable` and `newest`. An unknown channel name is rejected with the valid list;
+deleting a version drops any channel and launch-log entry aimed at it.
+
+Promote a version up the channels as it earns trust, then `launch` it when it
+should become what unpinned callers get; `rollback` re-launches `previous`.
+`list` shows each template's status, live version, and build tip; `show` prints
+every version with the channels pointing at it plus the launch history.
 `faucet template run` executes through the identical path as `faucet run`, so
 observability, lineage, notifications, the catalog, and SLA evaluation all behave
 the same. The stored body is verbatim — `${env:…}` / `${vault:…}` resolve at

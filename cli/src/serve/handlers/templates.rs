@@ -214,10 +214,10 @@ pub async fn delete_template(
     Query(q): Query<VersionQuery>,
 ) -> Result<StatusCode, ServeError> {
     let s = store(&state);
-    // Unlike `GET`, an omitted selector and `latest` mean *different* things
-    // here: no selector deletes the whole template, `latest` deletes only its
-    // newest version. So `latest` must be resolved to a number first rather than
-    // collapsing to the "all versions" `None`.
+    // Unlike `GET`, an omitted selector and an explicit channel mean *different*
+    // things here: no selector deletes the whole template, whereas a channel
+    // deletes only the version it points at. So a channel must be resolved to a
+    // number first rather than collapsing to the "all versions" `None`.
     let target = match q.version {
         None => None,
         // A selector always resolves to a concrete version, so `--version stable`

@@ -894,6 +894,23 @@ fn shipped_example_yamls_pass_validate() {
                 continue;
             }
         }
+        // The `sql` / `wasm` transforms are feature-gated, and `validate` now
+        // compiles every transform chain — so an example using one cannot
+        // validate in a build that lacks it.
+        #[cfg(not(feature = "transform-sql"))]
+        {
+            let yaml_text = fs::read_to_string(&path).unwrap_or_default();
+            if yaml_text.contains("type: sql") {
+                continue;
+            }
+        }
+        #[cfg(not(feature = "transform-wasm"))]
+        {
+            let yaml_text = fs::read_to_string(&path).unwrap_or_default();
+            if yaml_text.contains("type: wasm") {
+                continue;
+            }
+        }
         count += 1;
         let mut cmd = Command::cargo_bin("faucet").unwrap();
         for (k, v) in env_placeholders {

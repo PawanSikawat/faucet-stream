@@ -489,8 +489,11 @@ paths:
       description: >
         Stores a config document plus the typed `params:` it declares, so later
         runs are triggered by `{id, params}` instead of re-sending the whole
-        config. Each register appends a **new version**; the newest is used
-        unless a trigger pins one. The body is stored verbatim, so `${env:…}` /
+        config. Each register appends a **new version** and **does not move
+        existing callers** — an unpinned run keeps resolving `stable` until a
+        version is explicitly launched (pass `launch: true` here, or call
+        `POST /v1/templates/{id}/launch`). The first registration therefore leaves
+        the template a `draft`. The body is stored verbatim, so `${env:…}` /
         `${vault:…}` stay unresolved and are resolved at trigger time on the
         instance that runs the pipeline. Validation runs against a
         placeholder binding, so no secret is read and no connector is built.
@@ -515,9 +518,11 @@ paths:
     get:
       summary: List registered pipeline templates
       description: >
-        The latest version of every registered template, newest-registered
-        first. Bodies are omitted — fetch one with `GET /v1/templates/{id}`.
-        Requires the `TemplateRead` permission (viewer).
+        The newest version of every registered template, newest-registered first,
+        each carrying the template's release `state` (status, `stable` /
+        `previous` / `newest`, channel pointers). Bodies are omitted — fetch one
+        with `GET /v1/templates/{id}`. Requires the `TemplateRead` permission
+        (viewer).
       operationId: listTemplates
       security: [{ bearerAuth: [] }]
       responses:
@@ -538,14 +543,16 @@ paths:
     get:
       summary: Get one pipeline template
       description: >
-        One version of a template — the latest unless `version` is given —
-        including the stored config body and the full list of available
-        versions. Requires the `TemplateRead` permission (viewer).
+        One version of a template — the launched (`stable`) one unless `version`
+        is given — including the stored config body, the template's whole release
+        state, and the launch log. Pass `version=newest` to open a `draft`
+        template, which has no `stable` version yet. Requires the `TemplateRead`
+        permission (viewer).
       operationId: getTemplate
       security: [{ bearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string }, description: "Template id (slug)." }
-        - { name: version, in: query, required: false, schema: { $ref: "#/components/schemas/VersionSelector" }, description: "Version to return: `latest` (the default when omitted) or an exact version number." }
+        - { name: version, in: query, required: false, schema: { $ref: "#/components/schemas/VersionSelector" }, description: "Version to return: `stable` (the default when omitted), another channel, or an exact version number." }
       responses:
         "200":
           description: The template version plus its version list.
@@ -565,7 +572,7 @@ paths:
       security: [{ bearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
-        - { name: version, in: query, required: false, schema: { $ref: "#/components/schemas/VersionSelector" }, description: "Delete just this version (`latest` or a number). Omitted = every version." }
+        - { name: version, in: query, required: false, schema: { $ref: "#/components/schemas/VersionSelector" }, description: "Delete just this version (a channel name or a number). Omitted = every version. Channels pointing at a deleted version, and its launch-log entries, are dropped with it." }
       responses:
         "204": { description: Deleted }
         "401": { $ref: "#/components/responses/Error" }
@@ -575,15 +582,15 @@ paths:
     post:
       summary: Point a named channel at a template version
       description: >
-        Moves one of the fixed named channels (`dev`, `test`, `staging`,
-        `pre-prod`, `canary`, `stable`, `prod`, `previous`) at a version. Versions
-        themselves are numeric and immutable; this is how `prod` advances from v3
-        to v4. `version` may be a number, or another channel whose current target
-        should be copied (`{"tag":"prod","version":"stable"}`), defaulting to
-        `latest` — which is resolved to a concrete version so the pointer does not
-        silently follow future registrations. `latest` itself is derived and
-        cannot be assigned (`422`). Requires the `TemplateWrite` permission
-        (operator) and the `templates` Cargo feature.
+        Points one of the assignable channels (`dev`, `test`, `staging`,
+        `pre-prod`, `canary`, `prod`) at a version. Versions themselves are numeric
+        and immutable; this is how `prod` advances from v3 to v4. `version` may be
+        a number, or another channel whose current target should be copied
+        (`{"tag":"prod","version":"stable"}`), defaulting to `stable` — resolved to
+        a concrete version, so the pointer never silently follows future
+        registrations. The derived channels (`stable`, `previous`, `newest`) cannot
+        be assigned (`422`) — `stable` moves only via `launch`. Requires the
+        `TemplateWrite` permission (operator) and the `templates` Cargo feature.
       operationId: promoteTemplate
       security: [{ bearerAuth: [] }]
       parameters:
@@ -614,6 +621,106 @@ paths:
         "403": { description: Principal's role lacks the required permission }
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+  /v1/templates/{id}/launch:
+    post:
+      summary: Launch a template version (make it live)
+      description: >
+        The one operation that moves unpinned callers: it appends to the launch log
+        so `stable` points at `version`, and the version it replaced becomes
+        `previous`. Registering a build does **not** do this — that separation is
+        what lets a nightly land without dragging anyone along. `version` defaults
+        to `newest` (launching what you just registered is the common case) and may
+        also be a channel whose current target should be blessed
+        (`{"version":"pre-prod"}`). Re-launching the already-live version is a
+        no-op (`already_launched: true`), keeping `previous` a real rollback
+        target. A deprecated template refuses to launch — revive it first.
+        Requires the `TemplateWrite` permission (operator) and the `templates`
+        Cargo feature.
+      operationId: launchTemplate
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version:
+                  description: "Version to make live: a number, or a channel whose target to copy. Defaults to `newest`."
+                  $ref: "#/components/schemas/VersionSelector"
+      responses:
+        "200":
+          description: The version now live.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LaunchResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { description: Principal's role lacks the required permission }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/templates/{id}/rollback:
+    post:
+      summary: Roll a template back to its previous launch
+      description: >
+        Re-launches `previous` — the version that was live before the current one.
+        Implemented as a normal launch, so the launch log keeps the full audit
+        trail and `previous` becomes the version you just rolled off. A template
+        with fewer than two launches has nothing to roll back to (`422`). Requires
+        the `TemplateWrite` permission (operator) and the `templates` Cargo
+        feature.
+      operationId: rollbackTemplate
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The version now live.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LaunchResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { description: Principal's role lacks the required permission }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/templates/{id}/deprecate:
+    post:
+      summary: Retire (or revive) a pipeline template
+      description: >
+        Deprecation is template-wide and deliberately soft: a deprecated template
+        keeps serving callers who pin or ride `stable` — retiring must not
+        hard-break them — but every trigger response carries a `deprecated` field
+        and listings mark it. `DELETE` is the hard stop. Pass `undo: true` to
+        revive. Requires the `TemplateWrite` permission (operator) and the
+        `templates` Cargo feature.
+      operationId: deprecateTemplate
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, description: "Why it is being retired; surfaced to anyone who triggers it." }
+                undo: { type: boolean, default: false, description: "Revive instead of retire." }
+      responses:
+        "200":
+          description: The template's status after the change.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id: { type: string }
+                  status: { $ref: "#/components/schemas/TemplateStatus" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { description: Principal's role lacks the required permission }
+        "404": { $ref: "#/components/responses/Error" }
   /v1/templates/{id}/runs:
     post:
       summary: Trigger a run from a pipeline template
@@ -626,8 +733,12 @@ paths:
         `RunWrite` permission (operator).
 
 
-        A missing required param or a type mismatch is a `422` naming the param;
-        an unknown template or pinned version is a `404`. On a clustered server a
+        `version` defaults to `stable`, so a nightly registration never drags
+        unpinned callers along. A `draft` template (nothing launched) refuses an
+        unpinned request with a `422`; a `deprecated` one still runs but the
+        response carries a `deprecated` field. A missing required param or a type
+        mismatch is a `422` naming the param; an unknown template or pinned
+        version is a `404`. On a clustered server a
         template declaring `secret: true` params is refused (`422`) because the
         materialized config is persisted for peer execution — reference the
         secret from the template body instead.
@@ -965,7 +1076,7 @@ components:
       required: [id, version, params, created_at]
       properties:
         id: { type: string, description: "Registry id (slug)." }
-        version: { type: integer, description: "1-based, incremented on every register." }
+        version: { type: integer, description: "The newest registered version (the build tip). `state.stable` is what an unpinned run uses." }
         name: { type: string, nullable: true, description: "The config's own `name:`." }
         description: { type: string, nullable: true }
         params:
@@ -973,40 +1084,102 @@ components:
           additionalProperties: { $ref: "#/components/schemas/ParamSpec" }
         created_at: { type: string, format: date-time }
         created_by: { type: string, nullable: true, description: "Principal that registered this version." }
+        state:
+          allOf: [{ $ref: "#/components/schemas/TemplateState" }]
+          description: "Release state of the template as a whole. Present on the read paths."
+    TemplateStatus:
+      type: string
+      description: >
+        Lifecycle state of the **template** (not of a version), derived so it can
+        never disagree with the registry: `draft` until something is launched,
+        `launched` afterwards, `deprecated` once explicitly retired.
+      enum: [draft, launched, deprecated]
+    TemplateState:
+      type: object
+      description: >
+        The template's whole release state. Everything except `tags` and
+        `deprecation` is derived from the append-only launch log, so a pointer can
+        never outlive its target.
+      required: [status, versions, tags]
+      properties:
+        status: { $ref: "#/components/schemas/TemplateStatus" }
+        versions:
+          type: array
+          description: Every stored version, newest first.
+          items: { type: integer }
+        stable: { type: integer, nullable: true, description: "The launched version — what `stable` and an unpinned request resolve to. Null while the template is a draft." }
+        previous: { type: integer, nullable: true, description: "The version launched before the current one; the rollback target." }
+        newest: { type: integer, nullable: true, description: "Highest version number, launched or not." }
+        tags:
+          type: object
+          description: "Assignable channel pointers ({channel: version}), excluding the derived `stable` / `previous` / `newest`."
+          additionalProperties: { type: integer }
+        deprecation:
+          allOf: [{ $ref: "#/components/schemas/DeprecationRecord" }]
+          description: "Present only when `status` is `deprecated`."
+    DeprecationRecord:
+      type: object
+      required: [deprecated_at]
+      properties:
+        deprecated_at: { type: string, format: date-time }
+        deprecated_by: { type: string, nullable: true }
+        reason: { type: string, nullable: true }
+    LaunchRecord:
+      type: object
+      description: One entry of the append-only launch log — who blessed which build, and when.
+      required: [seq, version, launched_at]
+      properties:
+        seq: { type: integer, description: "Monotonic per-template sequence, from 1." }
+        version: { type: integer }
+        launched_at: { type: string, format: date-time }
+        launched_by: { type: string, nullable: true, description: "Principal that launched it; null for a CLI launch." }
     VersionChannel:
       type: string
       description: >
-        A named version channel — a movable pointer at one numeric version. The
-        set is **closed**: an unknown or mistyped name is rejected rather than
-        creating a channel nobody watches. `latest` is derived (always the newest
-        registration) and is the only one that cannot be assigned or moved.
-      enum: [latest, dev, test, staging, pre-prod, canary, stable, prod, previous]
+        A named version channel — a pointer at one numeric version. The set is
+        **closed**: an unknown or mistyped name is rejected rather than creating a
+        channel nobody watches. `stable` (the launched version — the default for
+        an unpinned request), `previous`, and `newest` are **derived** and cannot
+        be assigned; the rest are assigned with `POST /v1/templates/{id}/tags`.
+        `latest` is deliberately **not** a channel: it reads as both "newest
+        build" and "current stable", so it is rejected with a message naming both.
+      enum: [stable, previous, newest, dev, test, staging, pre-prod, canary, prod]
     VersionSelector:
       description: >
         A template version selector: a `VersionChannel` name, a numeric string, or
-        a bare number. Omitting it means `latest`. `0` and unknown channel names
-        are rejected.
+        a bare number. Omitting it means `stable` — so a freshly registered build
+        never moves existing callers. `0`, `latest`, and unknown channel names are
+        rejected.
       oneOf:
         - { $ref: "#/components/schemas/VersionChannel" }
         - { type: integer, minimum: 1 }
     TemplateDetail:
+      description: >
+        One version, plus the template's whole release state (flattened) — so a
+        client can pin, promote, launch, or roll back without a second request.
       allOf:
         - { $ref: "#/components/schemas/TemplateSummary" }
+        - { $ref: "#/components/schemas/TemplateState" }
         - type: object
-          required: [body, format, versions, latest_version, is_latest]
+          required: [body, format, is_stable, launches]
           properties:
             body: { type: string, description: "The config document, stored verbatim (interpolation directives unresolved)." }
             format: { type: string, enum: [yaml, json] }
-            versions:
+            is_stable: { type: boolean, description: "Whether the returned version is the currently launched one." }
+            launches:
               type: array
-              description: Every stored version for this id, newest first.
-              items: { type: integer }
-            latest_version: { type: integer, description: "The version the `latest` channel resolves to right now." }
-            is_latest: { type: boolean, description: "False when a pinned older version was returned." }
-            tags:
-              type: object
-              description: "Named channel pointers for this template ({channel: version}), excluding the derived `latest`."
-              additionalProperties: { type: integer }
+              description: The launch log, newest first.
+              items: { $ref: "#/components/schemas/LaunchRecord" }
+    LaunchResponse:
+      type: object
+      description: Result of a launch or rollback.
+      required: [id, version, already_launched, status]
+      properties:
+        id: { type: string }
+        version: { type: integer, description: "The version now live." }
+        replaced: { type: integer, description: "The version it replaced — the new `previous`. Absent on a first launch." }
+        already_launched: { type: boolean, description: "True when the version was already live, so nothing changed." }
+        status: { $ref: "#/components/schemas/TemplateStatus" }
     RegisterTemplateRequest:
       type: object
       required: [config]
@@ -1017,8 +1190,14 @@ components:
         description: { type: string }
         tags:
           type: array
-          description: "Named channels to point at the newly registered version. The version number always auto-increments; `latest` is derived and rejected."
+          description: "Assignable channels to point at the newly registered version. The version number always auto-increments; a derived channel (`stable` / `previous` / `newest`) is rejected."
           items: { $ref: "#/components/schemas/VersionChannel" }
+        launch:
+          type: boolean
+          default: false
+          description: >
+            Launch the newly registered version immediately, making it `stable`.
+            Off by default: registering a build must never move existing callers.
     TriggerTemplateRequest:
       type: object
       description: >
@@ -1034,7 +1213,7 @@ components:
           description: "Values that win over the server's environment for `${env:VAR}` during this materialization only."
           additionalProperties: { type: string }
         version:
-          description: "Version to run: `latest` (the default when omitted) or an exact version number."
+          description: "Version to run: `stable` (the default when omitted), another channel, or an exact version number."
           $ref: "#/components/schemas/VersionSelector"
         name: { type: string, description: "Run name override (default: the template config's `name:`)." }
         labels:
@@ -1057,6 +1236,12 @@ components:
           type: object
           description: "The bound params, with every `secret: true` value replaced by `***`."
           additionalProperties: true
+        deprecated:
+          type: string
+          description: >
+            Present only when the template is deprecated — the run still started,
+            but the caller should migrate. Carries the retirement reason when one
+            was given.
     ApiError:
       type: object
       required: [error]

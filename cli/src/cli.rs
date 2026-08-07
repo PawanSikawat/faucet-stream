@@ -359,7 +359,7 @@ pub struct TemplateArgs {
 pub enum TemplateCommand {
     /// Validate a config and register it as a new template version.
     Register(TemplateRegisterArgs),
-    /// List registered templates (latest version of each).
+    /// List registered templates (newest version of each, plus its release state).
     List(TemplateListArgs),
     /// Show one template: its params, config body, and versions.
     Show(TemplateShowArgs),

@@ -73,11 +73,14 @@ for the SQL backends; an in-memory ring otherwise) and expire with the
 | `GET` | `/v1/catalog/datasets/{id}` | `200` | One dataset's detail: schema timeline, volume, edges |
 | `GET` | `/v1/catalog/lineage` | `200` | The lineage edge graph (`root`, `depth`) |
 | `POST` | `/v1/templates` | `201` | Register a pipeline template (operator / `TemplateWrite`) — requires the `templates` build feature |
-| `GET` | `/v1/templates` | `200` | List templates, latest version each (viewer / `TemplateRead`) |
-| `GET` | `/v1/templates/{id}` | `200` | One template + its version list. `?version=latest` (default) or `?version=N` |
-| `DELETE` | `/v1/templates/{id}` | `204` | Delete one version (`?version=latest\|N`) or all (operator / `TemplateWrite`) |
+| `GET` | `/v1/templates` | `200` | List templates — newest version each, plus release state (viewer / `TemplateRead`) |
+| `GET` | `/v1/templates/{id}` | `200` | One template version + its whole release state. `?version=stable` (default), another channel, or `?version=N` |
+| `DELETE` | `/v1/templates/{id}` | `204` | Delete one version (`?version=<channel\|N>`) or all (operator / `TemplateWrite`) |
 | `POST` | `/v1/templates/{id}/runs` | `202` | Trigger a run from a template with `params` / `env` (operator / `RunWrite`) |
-| `POST` | `/v1/templates/{id}/tags` | `200` | Point a named channel (`prod`, `dev`, …) at a version (operator / `TemplateWrite`) |
+| `POST` | `/v1/templates/{id}/tags` | `200` | Point an assignable channel (`prod`, `dev`, …) at a version (operator / `TemplateWrite`) |
+| `POST` | `/v1/templates/{id}/launch` | `200` | Make a version live — moves `stable` and so unpinned callers (operator / `TemplateWrite`) |
+| `POST` | `/v1/templates/{id}/rollback` | `200` | Re-launch `previous` (operator / `TemplateWrite`) |
+| `POST` | `/v1/templates/{id}/deprecate` | `200` | Retire a template, or revive it with `{"undo":true}` (operator / `TemplateWrite`) |
 | `GET` | `/healthz` | `200` | Liveness (unauthenticated) |
 | `GET` | `/readyz` | `200`/`503` | Readiness (unauthenticated) |
 | `GET` | `/metrics` | `200` | Prometheus exposition (unauthenticated) |
@@ -221,20 +224,36 @@ curl -sX POST http://127.0.0.1:8080/v1/templates/tenant-sync/runs \
 #        "params":{"tenant_id":"acme","api_token":"***"}}
 ```
 
-**Version selection.** Versions are numeric and auto-incrementing; on top of them
-sits a closed set of named channels — `latest` (derived: the newest registration,
-and what an omitted selector resolves to) plus the movable `dev`, `test`,
-`staging`, `pre-prod`, `canary`, `stable`, `prod`, `previous`. `version` accepts a
-channel name (`"prod"`), a numeric string (`"2"`), or a bare number (`2`), so a
-query string and a JSON body agree. `0` and unknown channel names are rejected
-rather than silently falling back, and asking for an *unset* channel is a `422`
-naming the channels that are set.
+**Registering never moves callers.** `POST /v1/templates` appends a version and
+stops there; `POST /v1/templates/{id}/launch` is the one call that moves `stable`
+and therefore every unpinned caller. So a template is `draft` until something is
+launched (an unpinned trigger is a `422`), then `launched`, and `deprecated` once
+retired — a deprecated template still serves pinned and `stable` callers, but the
+trigger response carries a `deprecated` field. Pass `launch: true` on register to
+do both in one call.
 
-`POST /v1/templates/{id}/tags` moves a channel: `{"tag":"prod","version":"stable"}`
-copies whatever `stable` names today; `{"tag":"prod","version":3}` pins one.
-`latest` cannot be assigned (`422`). `GET /v1/templates/{id}` returns `versions`
-(newest first), `latest_version`, `is_latest`, and the `tags` pointer map, so a
-client can pin, promote, or roll back without a second request.
+**Version selection.** Versions are numeric and auto-incrementing. On top of them
+sits a closed channel set: three **derived** — `stable` (the launched version, and
+what an omitted selector resolves to), `previous` (the rollback target), `newest`
+(the build tip) — and six **assignable**: `dev`, `test`, `staging`, `pre-prod`,
+`canary`, `prod`. There is deliberately no `latest`: it means both "newest build"
+and "current release", so it is rejected with a message naming `stable` and
+`newest`. `version` accepts a channel name (`"prod"`), a numeric string (`"2"`), or
+a bare number (`2`), so a query string and a JSON body agree. `0` and unknown
+channel names are rejected rather than silently falling back, and asking for an
+*unset* channel is a `422` phrased for that channel (`stable` needs a launch,
+`previous` needs a second launch, an environment channel needs a promote).
+
+`POST /v1/templates/{id}/tags` moves an assignable channel:
+`{"tag":"prod","version":"stable"}` copies whatever `stable` names today;
+`{"tag":"prod","version":3}` pins one. A derived channel cannot be assigned
+(`422`) — `stable` moves only via `launch`. `POST /v1/templates/{id}/launch`
+defaults to `newest` and returns `{version, replaced, already_launched, status}`;
+re-launching the live version is a no-op, which keeps `previous` a real rollback
+target. `GET /v1/templates/{id}` returns `status`, `versions` (newest first),
+`stable` / `previous` / `newest`, `is_stable`, the `tags` pointer map, and the
+`launches` log — so a client can pin, promote, launch, or roll back without a
+second request. Use `?version=newest` to read a `draft` template.
 
 The trigger body's `params` / `env` / `version` are template-specific; every other
 field (`name`, `labels`, `timeout_secs`, `doctor_first`, `idempotency_key`,

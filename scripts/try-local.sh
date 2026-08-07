@@ -54,7 +54,7 @@ SERVE_PORT=8899
 # console + persistent history + lineage + catalog. Pure-Rust deps only, so it
 # builds in a few minutes with no cmake / DuckDB / librdkafka. `--full` swaps in
 # the everything build (Kafka, gRPC, cloud, DuckDB SQL — needs cmake, ~15-30min).
-LIGHT_FEATURES="source-csv,source-sqlite,source-parquet,sink-jsonl,sink-csv,sink-stdout,sink-sqlite,sink-parquet,transforms,quality,contract,masking,serve,serve-ui,serve-history-sqlite,lineage,catalog,schedule,triggers"
+LIGHT_FEATURES="source-csv,source-sqlite,source-parquet,sink-jsonl,sink-csv,sink-stdout,sink-sqlite,sink-parquet,transforms,quality,contract,masking,serve,serve-ui,serve-history-sqlite,lineage,catalog,schedule,triggers,templates"
 BUILD_FEATURES="$LIGHT_FEATURES"
 
 while [ $# -gt 0 ]; do
@@ -168,6 +168,26 @@ launch_ui() {
       fi
     done
     sleep 2
+
+    # Seed the template registry over HTTP if it is empty — so `--serve-only`
+    # (which skips the CLI battery) still opens on a populated Templates view.
+    if curl -s "${base}/v1/templates" | grep -q '"templates":\[\]'; then
+      local tcfg="${DEMO_DIR}/23_templated.yaml"
+      if [ -f "$tcfg" ]; then
+        info "Seeding the template registry (3 versions, one launched)…"
+        for tbody in \
+          '{"description":"Per-country orders export","launch":true}' \
+          '{"tags":["dev"]}' \
+          '{"tags":["staging"]}'
+        do
+          body="$(python3 -c 'import json,sys;b=json.loads(sys.argv[2]);b["config"]=open(sys.argv[1]).read();print(json.dumps(b))' "$tcfg" "$tbody")"
+          curl -s -o /dev/null -X POST "${base}/v1/templates" \
+            -H 'content-type: application/json' -d "$body"
+        done
+        curl -s -o /dev/null -X POST "${base}/v1/templates/orders-by-country/tags" \
+          -H 'content-type: application/json' -d '{"tag":"prod","version":1}'
+      fi
+    fi
   else
     info "python3/curl unavailable — the console will start empty; use the Submit tab."
   fi
@@ -184,6 +204,11 @@ launch_ui() {
   echo "           (keep 'dry-run' on first). Discard (with/without archive) is there too."
   echo "    • Datasets  — every dataset touched, with schema timelines + volume/freshness"
   echo "    • Lineage   — the source→sink graph across all runs (with column lineage)"
+  echo "    • Templates — the pipeline template registry: each template's status"
+  echo "                  (draft / launched / deprecated), which version is live, and a"
+  echo "                  ${BOLD}versions page${RESET} where you assign channels (prod, staging, …),"
+  echo "                  Launch / Roll back / Deprecate, and trigger a run from a typed"
+  echo "                  form generated from the template's params."
   echo "    • Submit    — build/paste a new config and run it live"
   echo "    • Schemas   — browse every connector's config schema"
   echo
@@ -246,6 +271,7 @@ info "Binary: ${FAUCET}"
 HAVE_SQL=0;      "$FAUCET" schema transform sql >/dev/null 2>&1 && HAVE_SQL=1
 HAVE_TRIGGERS=0; "$FAUCET" schema triggers      >/dev/null 2>&1 && HAVE_TRIGGERS=1
 HAVE_SCHEDULE=0; "$FAUCET" schedule --help       >/dev/null 2>&1 && HAVE_SCHEDULE=1
+HAVE_TEMPLATES=0; "$FAUCET" template --help      >/dev/null 2>&1 && HAVE_TEMPLATES=1
 if [ "$HAVE_SQL" -eq 1 ]; then
   info "SQL transform (DuckDB) available."
 else
@@ -683,6 +709,39 @@ profiles:
       sink: { config: { path: ./out/compose_prod.jsonl } }
 YAML
 
+# --- 23. Parameterized config for the pipeline template registry -----------
+cat > 23_templated.yaml <<'YAML'
+version: 1
+name: orders-by-country
+
+params:
+  country:
+    type: string
+    required: true
+    description: ISO country code to export
+  label:
+    type: string
+    default: nightly
+    description: Free-text tag written into every exported record
+  batch_size:
+    type: int
+    default: 500
+    description: Records per page (arrives as a real JSON number, not a string)
+
+pipeline:
+  source:
+    type: csv
+    config: { path: ./data/orders.csv, batch_size: "${param.batch_size}" }
+  transforms:
+    - type: filter
+      config: { path: country_code, op: eq, value: "${param.country}" }
+    - type: set
+      config: { values: { export_label: "${param.label}" } }
+  sink:
+    type: jsonl
+    config: { path: "./out/orders-${param.country}.jsonl" }
+YAML
+
 # --- 22. Scheduler config (validated at compile time; not run here) ---------
 cat > 22_scheduled.yaml <<'YAML'
 version: 1
@@ -739,6 +798,7 @@ VALIDATE_CFGS="01_basic 02_transforms 03_quality 04_contract 05_masking \
 for cfg in $VALIDATE_CFGS; do
   step "validate ${cfg}" "$FAUCET" validate "${cfg}.yaml"
 done
+step "validate 23_templated (params bind to placeholders)" "$FAUCET" validate 23_templated.yaml
 step "validate 20_basic.json"  "$FAUCET" validate 20_basic.json
 step "validate 21 compose (--show-composed)" "$FAUCET" validate 21_child.yaml --show-composed
 
@@ -803,6 +863,46 @@ step "run --from-env (pure env-var pipeline)" \
   env FAUCET_SOURCE=csv FAUCET_SOURCE_CSV_PATH=./data/orders.csv \
       FAUCET_SINK=jsonl FAUCET_SINK_JSONL_PATH=./out/from_env.jsonl \
       "$FAUCET" run --from-env
+
+hdr "Params & the pipeline template registry"
+step "run 23 with --param"  "$FAUCET" run 23_templated.yaml --param country=US --param batch_size=2
+if [ "$HAVE_TEMPLATES" -eq 1 ]; then
+  # The registry lives in the same SQLite file the web console uses as its
+  # --history backend, so everything registered here is triggerable in the UI.
+  TPL_STORE="sqlite:./faucet-meta.db"
+  step "template register v1 (+ launch → live)" \
+    "$FAUCET" template register 23_templated.yaml --store "$TPL_STORE" \
+      --description "Per-country orders export" --launch
+  step "template register v2 (a nightly — moves nobody)" \
+    "$FAUCET" template register 23_templated.yaml --store "$TPL_STORE" --tag dev
+  step "template promote staging ← dev" \
+    "$FAUCET" template promote orders-by-country --store "$TPL_STORE" --tag staging --version dev
+  step "template launch (bless what soaked in staging)" \
+    "$FAUCET" template launch orders-by-country --store "$TPL_STORE" --version staging
+  step "template promote prod ← stable" \
+    "$FAUCET" template promote orders-by-country --store "$TPL_STORE" --tag prod --version stable
+  step "template list"  "$FAUCET" template list --store "$TPL_STORE"
+  step "template show"  "$FAUCET" template show orders-by-country --store "$TPL_STORE"
+  step "template run (stable, by id + params)" \
+    "$FAUCET" template run orders-by-country --store "$TPL_STORE" \
+      --param country=GB --param label=demo
+  step "template rollback"  "$FAUCET" template rollback orders-by-country --store "$TPL_STORE"
+  step "template launch (back to newest)" \
+    "$FAUCET" template launch orders-by-country --store "$TPL_STORE"
+  # Two more so every lifecycle status is represented in `list` / the console.
+  step "template register a draft (never launched)" \
+    "$FAUCET" template register 23_templated.yaml --store "$TPL_STORE" \
+      --id orders-by-country-next --description "Work in progress — not launched yet"
+  step "template register + launch, then deprecate" \
+    "$FAUCET" template register 23_templated.yaml --store "$TPL_STORE" \
+      --id orders-legacy-dump --description "Superseded by orders-by-country" --launch
+  step "template deprecate" \
+    "$FAUCET" template deprecate orders-legacy-dump --store "$TPL_STORE" \
+      --reason "replaced by orders-by-country"
+  step "template list (all three statuses)" "$FAUCET" template list --store "$TPL_STORE"
+else
+  info "Skipping the template registry (built without the \`templates\` feature)."
+fi
 
 # ----------------------------------------------------------------------------
 # Output inspection

@@ -13,7 +13,8 @@ leaving a browser tab.
 > **Want to see it populated in one command?** The
 > [Try it locally](../getting-started/try-it-locally.md) quickstart builds the
 > CLI, runs a battery of demo pipelines, and leaves this console up with Runs,
-> Datasets, and Lineage already filled in — the screenshots below are from it.
+> Datasets, Lineage, and Templates already filled in — the screenshots below are
+> from it.
 
 ## Enabling the feature
 
@@ -103,6 +104,34 @@ Browses the connector catalog compiled into the running server
 (`GET /v1/schemas`). Click any source, sink, or transform to view its full
 JSON Schema — useful for checking config field names and types without leaving
 the browser.
+
+### Templates
+
+When the server is built with the `templates` feature, a **Templates** view browses
+the [pipeline template registry](./templates.md) in the `--history` backend. The
+list shows each template's lifecycle status (`draft` / `launched` / `deprecated`),
+which version is live, the build tip, and its parameter count:
+
+![The Templates view listing three templates — one deprecated, one draft, one launched — each with its live and newest version](../assets/console/templates.png)
+
+Clicking one opens its **versions page** — the release console for that template:
+
+- one row per stored version, with the channels currently pointing at it
+  (`stable` / `previous` / `newest` derived, `dev`…`prod` assigned) and an
+  **assign-channel** dropdown
+- **Launch** on any version (disabled on the live one), **Roll back** to the
+  previous launch, and **Deprecate** / **Revive**
+- **Config** to expand the stored body verbatim, and **Delete** for one version
+- a **Trigger a run** form generated from the template's declared `params:` —
+  typed inputs, required/secret badges, descriptions — plus a version selector
+  listing only channels that actually resolve
+- the **launch history**: who blessed which build, and when
+
+![The versions page for orders-by-country: v2 carrying stable/newest/dev/prod/staging, v1 as previous with its config expanded, a typed trigger form, and the launch history table](../assets/console/template-detail.png)
+
+Registering is in the UI too — **Register a template** opens an editor with `id` /
+format / description and a **launch it** checkbox, so a template can go from
+config to live without leaving the browser.
 
 ### Datasets & Lineage (Data Movement Catalog)
 

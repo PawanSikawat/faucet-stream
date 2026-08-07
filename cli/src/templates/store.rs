@@ -118,7 +118,16 @@ pub async fn register(store: &TemplateStore, req: RegisterRequest) -> CliResult<
     if crate::topology::is_topology(&cfg) {
         crate::topology::validate_topology_spec(&cfg)?;
     } else {
-        crate::expand::expand(&cfg)?;
+        // Compile each row's transform chain too — `expand` only checks an entry's
+        // shape, so without this a template with a misspelled transform field
+        // registers cleanly and fails at trigger time instead.
+        for node in crate::expand::expand(&cfg)? {
+            if node.transforms.is_empty() {
+                continue;
+            }
+            crate::transforms::compile_transforms(&node.transforms)
+                .map_err(|e| CliError::Config(format!("row '{}': {e}", node.id)))?;
+        }
     }
 
     let id = match &req.id {
@@ -144,10 +153,22 @@ pub async fn register(store: &TemplateStore, req: RegisterRequest) -> CliResult<
         reject_derived(*tag)?;
     }
 
+    // A description describes the *template*, not the build, so carry the previous
+    // version's forward when the caller omits one. Without this, a deploy that
+    // re-registers without `--description` blanks the listing for everybody.
+    let description = match &req.description {
+        Some(d) => Some(d.clone()),
+        None => store
+            .template_get(id.as_str(), None)
+            .await
+            .map_err(|e| CliError::Internal(format!("template registry read: {e}")))?
+            .and_then(|prev| prev.description),
+    };
+
     let draft = TemplateDraft {
         id,
         name: cfg.name.clone(),
-        description: req.description.clone(),
+        description,
         body: req.body.clone(),
         format: req.format,
         params: declared,
@@ -234,10 +255,13 @@ fn unresolved_channel(id: &str, channel: VersionChannel, state: &TemplateState) 
         .map(|v| v.to_string())
         .unwrap_or_else(|| "1".into());
     match channel {
+        // Phrased for both audiences — the same error surfaces on the CLI, over
+        // HTTP, and in the console's versions page.
         VersionChannel::Stable => CliError::Config(format!(
-            "template '{id}' has no launched version (status: {}). Launch one with \
-             `faucet template launch {id} --version {newest}`, or run a specific build with \
-             `--version newest` / `--version <n>`",
+            "template '{id}' has no launched version (status: {}). Launch one first \
+             (`faucet template launch {id} --version {newest}`, or \
+             `POST /v1/templates/{id}/launch`), or select a specific build with \
+             `newest` / a version number",
             state.status
         )),
         VersionChannel::Previous => CliError::Config(format!(
@@ -589,6 +613,55 @@ pipeline:
         assert_eq!(st.status, TemplateStatus::Draft);
         assert_eq!(st.newest, Some(2));
         assert_eq!(st.stable, None);
+    }
+
+    #[tokio::test]
+    async fn register_compiles_transforms_not_just_their_shape() {
+        let s = store();
+        // `set` takes `values:`; `fields:` is a plausible typo that used to
+        // register cleanly and then fail at trigger time.
+        let mut bad = req(r#"
+version: 1
+name: tenant-sync
+pipeline:
+  source: { type: rest, config: {} }
+  transforms:
+    - type: set
+      config: { fields: { a: 1 } }
+  sink: { type: jsonl, config: { path: ./o.jsonl } }
+"#);
+        bad.description = None;
+        let err = register(&s, bad).await.unwrap_err().to_string();
+        assert!(err.contains("values"), "names the missing field: {err}");
+        assert!(
+            s.template_versions("tenant-sync").await.unwrap().is_empty(),
+            "nothing is persisted when validation fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_description_carries_forward_across_registers() {
+        let s = store();
+        let first = register(&s, req(PARAMETERIZED)).await.unwrap();
+        assert_eq!(first.description.as_deref(), Some("test"));
+
+        // A deploy that re-registers without `--description` must not blank it.
+        let mut bare = req(PARAMETERIZED);
+        bare.description = None;
+        let second = register(&s, bare).await.unwrap();
+        assert_eq!(second.description.as_deref(), Some("test"));
+
+        // An explicit description still wins.
+        let mut changed = req(PARAMETERIZED);
+        changed.description = Some("now something else".into());
+        let third = register(&s, changed).await.unwrap();
+        assert_eq!(third.description.as_deref(), Some("now something else"));
+
+        // …and the new one is what the next bare register inherits.
+        let mut bare2 = req(PARAMETERIZED);
+        bare2.description = None;
+        let fourth = register(&s, bare2).await.unwrap();
+        assert_eq!(fourth.description.as_deref(), Some("now something else"));
     }
 
     #[tokio::test]
