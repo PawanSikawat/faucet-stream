@@ -35,18 +35,57 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         return Ok(());
     }
 
+    // Typed run params (#444). With no `--param`, required params bind to
+    // type-shaped placeholders so a parameterized config still validates in CI;
+    // supplying any `--param` opts into strict binding, which is how you check a
+    // concrete invocation.
+    let inputs = crate::config::RunInputs {
+        params: crate::params::collect_cli_params(&args.param)?,
+        env: crate::params::collect_env_overrides(&args.param_env)?
+            .into_iter()
+            .collect(),
+        mode: if args.param.is_empty() {
+            crate::params::BindMode::Placeholder
+        } else {
+            crate::params::BindMode::Strict
+        },
+    };
+
     let cfg = if args.no_secrets {
         // Grammar / structure only — never touch the network.
-        PipelineConfig::from_path_tolerating_secrets(&path, args.profile.as_deref())?
+        PipelineConfig::from_path_tolerating_secrets_with(&path, args.profile.as_deref(), &inputs)?
     } else {
         // Real preflight: report each secret reference, then resolve.
         let refs = crate::secrets::scan_path_refs(&path, args.profile.as_deref())?;
-        let cfg = PipelineConfig::from_path_async(&path, args.profile.as_deref()).await?;
+        let cfg =
+            PipelineConfig::from_path_async_with(&path, args.profile.as_deref(), &inputs).await?;
         for (scheme, reference) in &refs {
             println!("secret: {scheme}:{reference} → resolved");
         }
         cfg
     };
+    if !cfg.params.is_empty() {
+        let required: Vec<&str> = cfg
+            .params
+            .iter()
+            .filter(|(_, p)| p.required)
+            .map(|(n, _)| n.as_str())
+            .collect();
+        println!(
+            "params: {} declared ({}){}",
+            cfg.params.len(),
+            if required.is_empty() {
+                String::from("all optional")
+            } else {
+                format!("required: {}", required.join(", "))
+            },
+            if args.param.is_empty() && !required.is_empty() {
+                " — validated against placeholders; pass --param NAME=VALUE to bind for real"
+            } else {
+                ""
+            }
+        );
+    }
     // Topology mode (#71/#72): build + validate the node graph instead of the
     // matrix. `build_topology` runs the core structural validator (arity,
     // fan-out, join edges, cycle, reachability).

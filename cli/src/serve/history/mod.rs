@@ -14,6 +14,7 @@ pub mod postgres;
 pub mod sql;
 #[cfg(feature = "serve-history-sqlite")]
 pub mod sqlite;
+pub mod templates;
 
 use crate::error::CliResult;
 use crate::executor::InvocationOutcome;
@@ -626,6 +627,86 @@ pub trait RunHistory: Send + Sync {
     ) -> Result<Option<catalog::ConfigSnapshot>, HistoryError> {
         let _ = pipeline;
         Ok(None)
+    }
+
+    // ── Pipeline-template registry (#444) ────────────────────────────────────
+    //
+    // Register-once / trigger-by-id storage for parameterized configs. Defaulted
+    // inert (like the catalog methods) so a third-party `RunHistory` impl is
+    // unaffected; implemented by the memory + SQL backends and forwarded by the
+    // fallback wrapper. Template rows are NOT purged by run retention — a
+    // template outlives the runs it produced, by design.
+
+    /// Append a new version of a template, returning the stored record with the
+    /// assigned `version`. Versioning is atomic per id: two concurrent registers
+    /// produce two distinct versions, never a lost write. Default: unsupported.
+    async fn template_register(
+        &self,
+        draft: &templates::TemplateDraft,
+    ) -> Result<templates::TemplateRecord, HistoryError> {
+        let _ = draft;
+        Err(HistoryError::Backend(
+            "this run-history backend does not support the pipeline-template registry".into(),
+        ))
+    }
+
+    /// One template version — the latest when `version` is `None`. Default: none.
+    async fn template_get(
+        &self,
+        id: &str,
+        version: Option<u32>,
+    ) -> Result<Option<templates::TemplateRecord>, HistoryError> {
+        let _ = (id, version);
+        Ok(None)
+    }
+
+    /// The latest version of every registered template, newest-registered first.
+    /// Default: empty.
+    async fn template_list(&self) -> Result<Vec<templates::TemplateSummary>, HistoryError> {
+        Ok(Vec::new())
+    }
+
+    /// Every stored version number for one id, newest first. Default: empty.
+    async fn template_versions(&self, id: &str) -> Result<Vec<u32>, HistoryError> {
+        let _ = id;
+        Ok(Vec::new())
+    }
+
+    /// Delete one version (`Some`) or every version (`None`) of a template.
+    /// Returns how many rows were removed. Implementations must also drop any
+    /// named-channel pointer aimed at a deleted version, so a channel never
+    /// dangles. Default: 0.
+    async fn template_delete(&self, id: &str, version: Option<u32>) -> Result<usize, HistoryError> {
+        let _ = (id, version);
+        Ok(0)
+    }
+
+    /// Point a named channel (`dev`, `prod`, …) at an existing version, moving it
+    /// if it was already set. `latest` is derived from the version list and never
+    /// stored, so callers reject it before reaching here. Default: unsupported.
+    async fn template_set_tag(
+        &self,
+        id: &str,
+        tag: &str,
+        version: u32,
+    ) -> Result<(), HistoryError> {
+        let _ = (id, tag, version);
+        Err(HistoryError::Backend(
+            "this run-history backend does not support pipeline-template channels".into(),
+        ))
+    }
+
+    /// Every stored channel pointer for a template (`{tag: version}`), excluding
+    /// the derived `latest`. Default: empty.
+    async fn template_tags(&self, id: &str) -> Result<BTreeMap<String, u32>, HistoryError> {
+        let _ = id;
+        Ok(BTreeMap::new())
+    }
+
+    /// Remove one channel pointer. Returns whether it existed. Default: `false`.
+    async fn template_delete_tag(&self, id: &str, tag: &str) -> Result<bool, HistoryError> {
+        let _ = (id, tag);
+        Ok(false)
     }
 
     /// True when the backend is in fallback mode (drives `/readyz`). Always false

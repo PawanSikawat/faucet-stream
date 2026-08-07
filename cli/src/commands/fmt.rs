@@ -127,6 +127,7 @@ const KEY_ORDER: &[&str] = &[
     "version",
     "name",
     "vars",
+    "params",
     "auth",
     "pipeline",
     "matrix",

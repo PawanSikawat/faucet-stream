@@ -52,6 +52,7 @@
 - [MCP server (agent tools)](./cookbook/mcp.md)
 - [Running a cluster](./cookbook/cluster.md)
 - [Event-driven triggers](./cookbook/triggers.md)
+- [Parameters & pipeline templates](./cookbook/templates.md)
 - [Lineage (OpenLineage)](./cookbook/lineage.md)
 - [Dashboards & alerts](./cookbook/dashboards.md)
 - [Data Movement Catalog](./cookbook/catalog.md)

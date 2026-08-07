@@ -28,7 +28,7 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "transform-wasm", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "cli-dev", "encryption", "cli-tui", "mcp", "delta-s3", "delta-azure", "delta-gcs"]
+full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "transform-wasm", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "templates", "cli-dev", "encryption", "cli-tui", "mcp", "delta-s3", "delta-azure", "delta-gcs"]
 
 # Data Movement Catalog (#279): the `catalog:` config block + post-run
 # recording (datasets, schema timelines, volume/freshness stats, lineage
@@ -351,6 +351,16 @@ triggers = ["serve"]
 triggers-object-store = ["triggers", "dep:object_store"]
 triggers-redis = ["triggers", "dep:redis"]
 triggers-kafka = ["triggers", "dep:rdkafka"]
+
+# Pipeline template registry + parameterized trigger API (#444): register a
+# config declaring typed `params:` once, then trigger runs by `{id, params}`.
+# Adds the `faucet template` verb, the `/v1/templates*` serve endpoints, and the
+# MCP template tools. Implies `serve` because the registry rides the run-history
+# backends (add `serve-history-sqlite` / `serve-history-postgres` for
+# persistence across restarts). The `params:` config block and `${param.*}`
+# interpolation are always available — this feature is only the registry.
+# CLI-only; not in `default`; included in `full`.
+templates = ["serve"]
 
 [dependencies]
 faucet-core.workspace = true

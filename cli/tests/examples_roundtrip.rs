@@ -76,7 +76,15 @@ fn every_example_loads_and_expands() {
             }
         }
         count += 1;
-        let cfg = match PipelineConfig::from_path(&path, None) {
+        // Load exactly as `faucet validate` does: an example may declare typed
+        // `params:` whose values arrive at trigger time, so required params bind
+        // to type-shaped placeholders rather than failing the structural check
+        // (#444).
+        let cfg = match PipelineConfig::from_path_with(
+            &path,
+            None,
+            &faucet_cli::config::RunInputs::placeholders(),
+        ) {
             Ok(c) => c,
             Err(ref e) if is_credential_error(e) => {
                 // Credential not available in this environment — skip.

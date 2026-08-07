@@ -27,6 +27,7 @@ on stdout (logs go to stderr):
 ```bash
 faucet mcp                     # read-only tools
 faucet mcp --allow-mutations   # also expose run_pipeline
+faucet mcp --template-store sqlite:./faucet-templates.db   # + the template tools
 ```
 
 Claude Desktop config (`claude_desktop_config.json`):
@@ -74,6 +75,20 @@ even on a mutation-enabled server.
 | `validate_config` | no | Full load-time validation (matrix **or** topology). |
 | `preview` | no | Up to 100 sample records from the first source (source side only). |
 | `run_pipeline` | **yes** | Run an inline config. Pass `dry_run: true` to validate + preview only. |
+| `list_templates` | no | Registered [pipeline templates](./templates.md) and the typed params each takes. |
+| `get_template` | no | One template: declared params, stored config body, versions. |
+| `register_template` | **yes** | Register a config declaring `params:` as a new template version. |
+| `run_template` | **yes** | Run a template with given `params` / `env`, at a version or named channel. `dry_run: true` materializes + validates only. |
+
+The four template tools appear **only when a registry is wired** — `faucet serve
+--mcp` uses its own `--history` backend; `faucet mcp` needs
+`--template-store <url>`. Without one they are not advertised at all, so an agent
+never sees a tool it cannot use.
+
+Templates are the ergonomic shape for agent-driven runs: the agent discovers the
+typed parameter surface with `list_templates` / `get_template` and then supplies
+only the values that change, instead of composing (and possibly mis-composing) a
+whole config. A `secret: true` param is echoed back as `"***"`.
 
 Every MCP call over HTTP is written to the audit log; secret material is
 redacted from any tool output.
@@ -95,8 +110,8 @@ A JSON-RPC 2.0 subset: `initialize`, `tools/list`, `tools/call`,
 
 ## Security model
 
-- **Read-only by default.** `run_pipeline` is absent from `tools/list` unless
-  mutations are enabled.
+- **Read-only by default.** `run_pipeline`, `register_template`, and
+  `run_template` are absent from `tools/list` unless mutations are enabled.
 - **HTTP inherits serve auth.** Bearer/RBAC + audit apply to `/mcp` as to any
   route; mutations additionally require the `RunWrite` scope.
 - **`preview` is bounded** (≤100 rows) — never a full extract.

@@ -135,6 +135,29 @@ pub const DDL: &[&str] = &[
         recorded_at TEXT NOT NULL,\
         faucet_version TEXT NOT NULL,\
         body TEXT NOT NULL)",
+    // Registered pipeline templates (#444), one row per (id, version). `body` is
+    // the full `TemplateRecord` JSON — including the config document *verbatim*,
+    // so `${env:…}` / `${vault:…}` stay unresolved tokens and no secret material
+    // is ever persisted. `version` is an integer stored as TEXT (cast on
+    // ORDER BY), matching the schema-version / shard-estimate convention.
+    // Deliberately NOT purged by run retention: a template outlives its runs.
+    "CREATE TABLE IF NOT EXISTS faucet_templates (\
+        id TEXT NOT NULL,\
+        version TEXT NOT NULL,\
+        name TEXT,\
+        created_at TEXT NOT NULL,\
+        body TEXT NOT NULL,\
+        PRIMARY KEY (id, version))",
+    // Named channel pointers (#444): one row per (template, channel), each
+    // aiming at a numeric version. `latest` is derived from `faucet_templates`
+    // and never stored here. Deleting a version drops the channels aimed at it,
+    // so a pointer can never dangle.
+    "CREATE TABLE IF NOT EXISTS faucet_template_tags (\
+        id TEXT NOT NULL,\
+        tag TEXT NOT NULL,\
+        version TEXT NOT NULL,\
+        updated_at TEXT NOT NULL,\
+        PRIMARY KEY (id, tag))",
 ];
 
 /// SQL placeholder dialect.
@@ -272,6 +295,34 @@ pub struct Stmts {
     pub catalog_upsert_config_snapshot: String,
     /// The latest config snapshot body for a pipeline. Param: pipeline.
     pub catalog_select_config_snapshot: String,
+    // ── Pipeline templates (#444) ────────────────────────────────────────────
+    /// Highest existing version for a template id (0 when new). Param: id.
+    pub template_max_version: String,
+    /// Insert one template version. Params: id, version, name, created_at, body.
+    pub template_insert: String,
+    /// One template version's body. Params: id, version.
+    pub template_select_version: String,
+    /// The latest version's body for an id. Param: id.
+    pub template_select_latest: String,
+    /// Every template body (latest-per-id folding happens in shared pure code,
+    /// so the memory and SQL backends can never disagree).
+    pub template_select_all: String,
+    /// Version numbers for one id, newest first. Param: id.
+    pub template_versions: String,
+    /// Delete one version. Params: id, version.
+    pub template_delete_version: String,
+    /// Delete every version of an id. Param: id.
+    pub template_delete_all: String,
+    /// Upsert one channel pointer. Params: id, tag, version, updated_at.
+    pub template_upsert_tag: String,
+    /// Every channel pointer for an id. Param: id.
+    pub template_select_tags: String,
+    /// Delete one channel pointer. Params: id, tag.
+    pub template_delete_tag: String,
+    /// Delete every channel pointer for an id. Param: id.
+    pub template_delete_tags_all: String,
+    /// Delete the channel pointers aimed at one version. Params: id, version.
+    pub template_delete_tags_for_version: String,
 }
 
 impl Stmts {
@@ -497,6 +548,36 @@ impl Stmts {
                 .into(),
             catalog_select_config_snapshot:
                 "SELECT body FROM faucet_config_snapshots WHERE pipeline=$1".into(),
+            template_max_version: "SELECT COALESCE(MAX(CAST(version AS BIGINT)), 0) AS v \
+                FROM faucet_templates WHERE id=$1"
+                .into(),
+            template_insert: "INSERT INTO faucet_templates \
+                (id, version, name, created_at, body) VALUES ($1,$2,$3,$4,$5)"
+                .into(),
+            template_select_version:
+                "SELECT body FROM faucet_templates WHERE id=$1 AND version=$2".into(),
+            template_select_latest: "SELECT body FROM faucet_templates WHERE id=$1 \
+                ORDER BY CAST(version AS BIGINT) DESC LIMIT 1"
+                .into(),
+            template_select_all: "SELECT body FROM faucet_templates".into(),
+            template_versions: "SELECT version FROM faucet_templates WHERE id=$1 \
+                ORDER BY CAST(version AS BIGINT) DESC"
+                .into(),
+            template_delete_version: "DELETE FROM faucet_templates WHERE id=$1 AND version=$2"
+                .into(),
+            template_delete_all: "DELETE FROM faucet_templates WHERE id=$1".into(),
+            template_upsert_tag: "INSERT INTO faucet_template_tags \
+                (id, tag, version, updated_at) VALUES ($1,$2,$3,$4) \
+                ON CONFLICT (id, tag) DO UPDATE SET version=excluded.version, \
+                updated_at=excluded.updated_at"
+                .into(),
+            template_select_tags: "SELECT tag, version FROM faucet_template_tags \
+                WHERE id=$1 ORDER BY tag"
+                .into(),
+            template_delete_tag: "DELETE FROM faucet_template_tags WHERE id=$1 AND tag=$2".into(),
+            template_delete_tags_all: "DELETE FROM faucet_template_tags WHERE id=$1".into(),
+            template_delete_tags_for_version:
+                "DELETE FROM faucet_template_tags WHERE id=$1 AND version=$2".into(),
         }
     }
 
@@ -707,6 +788,35 @@ impl Stmts {
                 .into(),
             catalog_select_config_snapshot:
                 "SELECT body FROM faucet_config_snapshots WHERE pipeline=?".into(),
+            template_max_version: "SELECT COALESCE(MAX(CAST(version AS INTEGER)), 0) AS v \
+                FROM faucet_templates WHERE id=?"
+                .into(),
+            template_insert: "INSERT INTO faucet_templates \
+                (id, version, name, created_at, body) VALUES (?,?,?,?,?)"
+                .into(),
+            template_select_version: "SELECT body FROM faucet_templates WHERE id=? AND version=?"
+                .into(),
+            template_select_latest: "SELECT body FROM faucet_templates WHERE id=? \
+                ORDER BY CAST(version AS INTEGER) DESC LIMIT 1"
+                .into(),
+            template_select_all: "SELECT body FROM faucet_templates".into(),
+            template_versions: "SELECT version FROM faucet_templates WHERE id=? \
+                ORDER BY CAST(version AS INTEGER) DESC"
+                .into(),
+            template_delete_version: "DELETE FROM faucet_templates WHERE id=? AND version=?".into(),
+            template_delete_all: "DELETE FROM faucet_templates WHERE id=?".into(),
+            template_upsert_tag: "INSERT INTO faucet_template_tags \
+                (id, tag, version, updated_at) VALUES (?,?,?,?) \
+                ON CONFLICT (id, tag) DO UPDATE SET version=excluded.version, \
+                updated_at=excluded.updated_at"
+                .into(),
+            template_select_tags: "SELECT tag, version FROM faucet_template_tags \
+                WHERE id=? ORDER BY tag"
+                .into(),
+            template_delete_tag: "DELETE FROM faucet_template_tags WHERE id=? AND tag=?".into(),
+            template_delete_tags_all: "DELETE FROM faucet_template_tags WHERE id=?".into(),
+            template_delete_tags_for_version:
+                "DELETE FROM faucet_template_tags WHERE id=? AND version=?".into(),
         }
     }
 }
@@ -2141,6 +2251,264 @@ macro_rules! impl_sql_history {
                 };
                 let body: String = row.try_get("body").map_err(backend)?;
                 Ok(Some(sql::decode_json(&body, "config snapshot")?))
+            }
+
+            // ── Pipeline-template registry (#444) ────────────────────────────
+
+            async fn template_register(
+                &self,
+                draft: &$crate::serve::history::templates::TemplateDraft,
+            ) -> Result<
+                $crate::serve::history::templates::TemplateRecord,
+                $crate::serve::history::HistoryError,
+            > {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::{sql, templates};
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let id = draft.id.to_string();
+
+                // Read-max-then-insert inside a transaction. Two concurrent
+                // registers can still both read the same max under READ
+                // COMMITTED; the primary key then rejects one of them, and the
+                // retry picks up the winner's version — so a register never
+                // silently overwrites another (F: lost-update).
+                for attempt in 1..=sql::CLAIM_ATTEMPTS {
+                    let mut tx = self.pool.begin().await.map_err(backend)?;
+                    let row = sqlx::query(&self.stmts.template_max_version)
+                        .bind(&id)
+                        .fetch_one(&mut *tx)
+                        .await
+                        .map_err(backend)?;
+                    let max: i64 = row.try_get("v").map_err(backend)?;
+                    let next = (max as u32).saturating_add(1);
+                    let record = templates::TemplateRecord {
+                        id: id.clone(),
+                        version: next,
+                        name: draft.name.clone(),
+                        description: draft.description.clone(),
+                        body: draft.body.clone(),
+                        format: draft.format,
+                        params: draft.params.clone(),
+                        created_at: chrono::Utc::now(),
+                        created_by: draft.created_by.clone(),
+                    };
+                    let insert = sqlx::query(&self.stmts.template_insert)
+                        .bind(&id)
+                        .bind(next.to_string())
+                        .bind(&record.name)
+                        .bind(sql::fmt_ts(record.created_at))
+                        .bind(sql::encode_json(&record, "pipeline template")?)
+                        .execute(&mut *tx)
+                        .await;
+                    match insert {
+                        Ok(_) => {
+                            tx.commit().await.map_err(backend)?;
+                            // Bound the version history so a template
+                            // re-registered on every deploy can't grow forever.
+                            let keep = self.template_versions(&id).await?;
+                            for stale in templates::versions_to_prune(keep) {
+                                let _ = sqlx::query(&self.stmts.template_delete_version)
+                                    .bind(&id)
+                                    .bind(stale.to_string())
+                                    .execute(&self.pool)
+                                    .await;
+                            }
+                            return Ok(record);
+                        }
+                        Err(e) if attempt < sql::CLAIM_ATTEMPTS => {
+                            let _ = tx.rollback().await;
+                            tracing::debug!(
+                                template = %id, attempt, error = %e,
+                                "template version insert lost a race; retrying with the next version"
+                            );
+                        }
+                        Err(e) => {
+                            let _ = tx.rollback().await;
+                            return Err(backend(e));
+                        }
+                    }
+                }
+                Err(HistoryError::Backend(format!(
+                    "could not assign a version for template '{id}' after {} attempts",
+                    sql::CLAIM_ATTEMPTS
+                )))
+            }
+
+            async fn template_get(
+                &self,
+                id: &str,
+                version: Option<u32>,
+            ) -> Result<
+                Option<$crate::serve::history::templates::TemplateRecord>,
+                $crate::serve::history::HistoryError,
+            > {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let row = match version {
+                    Some(v) => sqlx::query(&self.stmts.template_select_version)
+                        .bind(id)
+                        .bind(v.to_string())
+                        .fetch_optional(&self.pool)
+                        .await,
+                    None => sqlx::query(&self.stmts.template_select_latest)
+                        .bind(id)
+                        .fetch_optional(&self.pool)
+                        .await,
+                }
+                .map_err(backend)?;
+                let Some(row) = row else {
+                    return Ok(None);
+                };
+                let body: String = row.try_get("body").map_err(backend)?;
+                Ok(Some(sql::decode_json(&body, "pipeline template")?))
+            }
+
+            async fn template_list(
+                &self,
+            ) -> Result<
+                Vec<$crate::serve::history::templates::TemplateSummary>,
+                $crate::serve::history::HistoryError,
+            > {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::{sql, templates};
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let rows = sqlx::query(&self.stmts.template_select_all)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                let mut all = Vec::with_capacity(rows.len());
+                for r in &rows {
+                    let body: String = r.try_get("body").map_err(backend)?;
+                    all.push(sql::decode_json(&body, "pipeline template")?);
+                }
+                Ok(templates::latest_per_id(all))
+            }
+
+            async fn template_versions(
+                &self,
+                id: &str,
+            ) -> Result<Vec<u32>, $crate::serve::history::HistoryError> {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let rows = sqlx::query(&self.stmts.template_versions)
+                    .bind(id)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                let mut out = Vec::with_capacity(rows.len());
+                for r in &rows {
+                    let v: String = r.try_get("version").map_err(backend)?;
+                    if let Ok(n) = v.parse::<u32>() {
+                        out.push(n);
+                    }
+                }
+                Ok(out)
+            }
+
+            async fn template_delete(
+                &self,
+                id: &str,
+                version: Option<u32>,
+            ) -> Result<usize, $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let result = match version {
+                    Some(v) => {
+                        // Drop channels aimed at this version first, so a pointer
+                        // can never outlive what it points at.
+                        sqlx::query(&self.stmts.template_delete_tags_for_version)
+                            .bind(id)
+                            .bind(v.to_string())
+                            .execute(&self.pool)
+                            .await
+                            .map_err(backend)?;
+                        sqlx::query(&self.stmts.template_delete_version)
+                            .bind(id)
+                            .bind(v.to_string())
+                            .execute(&self.pool)
+                            .await
+                    }
+                    None => {
+                        sqlx::query(&self.stmts.template_delete_tags_all)
+                            .bind(id)
+                            .execute(&self.pool)
+                            .await
+                            .map_err(backend)?;
+                        sqlx::query(&self.stmts.template_delete_all)
+                            .bind(id)
+                            .execute(&self.pool)
+                            .await
+                    }
+                }
+                .map_err(backend)?;
+                Ok(result.rows_affected() as usize)
+            }
+
+            async fn template_set_tag(
+                &self,
+                id: &str,
+                tag: &str,
+                version: u32,
+            ) -> Result<(), $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                sqlx::query(&self.stmts.template_upsert_tag)
+                    .bind(id)
+                    .bind(tag)
+                    .bind(version.to_string())
+                    .bind(sql::fmt_ts(chrono::Utc::now()))
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                Ok(())
+            }
+
+            async fn template_tags(
+                &self,
+                id: &str,
+            ) -> Result<
+                std::collections::BTreeMap<String, u32>,
+                $crate::serve::history::HistoryError,
+            > {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let rows = sqlx::query(&self.stmts.template_select_tags)
+                    .bind(id)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                let mut out = std::collections::BTreeMap::new();
+                for r in &rows {
+                    let tag: String = r.try_get("tag").map_err(backend)?;
+                    let version: String = r.try_get("version").map_err(backend)?;
+                    if let Ok(n) = version.parse::<u32>() {
+                        out.insert(tag, n);
+                    }
+                }
+                Ok(out)
+            }
+
+            async fn template_delete_tag(
+                &self,
+                id: &str,
+                tag: &str,
+            ) -> Result<bool, $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let result = sqlx::query(&self.stmts.template_delete_tag)
+                    .bind(id)
+                    .bind(tag)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                Ok(result.rows_affected() > 0)
             }
 
             fn degraded(&self) -> bool {

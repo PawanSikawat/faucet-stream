@@ -28,6 +28,13 @@
       "additionalProperties": true,
       "default": null
     },
+    "params": {
+      "description": "Optional typed run parameters (#444) — the config's trigger-time\noverride surface. Each entry declares a name, scalar `type`,\n`required`/`default`, a `secret` flag, and a `description`; values are\nreferenced as `${param.NAME}` and bound before parsing by\n[`crate::params::bind`] (from `--param`, `faucet template run`, or\n`POST /v1/templates/{id}/runs`). Because binding happens pre-parse, no\n`${param.*}` token ever reaches a connector. See `faucet schema params`.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/ParamSpec"
+      }
+    },
     "auth": {
       "description": "Optional named auth providers. Each entry is a `{ type, config }` spec\n(the same shape as inline auth) built once and shared across every\nconnector that references it via `auth: { ref: <name> }`. Values are kept\nas raw JSON so `faucet-auth` owns the per-type schema.",
       "type": [
@@ -16600,6 +16607,48 @@
         "as"
       ],
       "type": "object"
+    },
+    "ParamSpec": {
+      "description": "One declared parameter.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Value type. Governs coercion of the supplied value and the type\nsubstituted when `${param.NAME}` is a config value's *entire* text.",
+          "$ref": "#/$defs/ParamType",
+          "default": "string"
+        },
+        "required": {
+          "description": "When true the caller MUST supply a value; there is no fallback.\nMutually exclusive with `default` (a defaulted param is by definition\noptional).",
+          "type": "boolean",
+          "default": false
+        },
+        "default": {
+          "description": "Value used when the caller supplies none. Resolved like any other config\nscalar first, so `default: \"${env:SINCE}\"` works."
+        },
+        "secret": {
+          "description": "Marks the value as sensitive: it is registered with the redaction\nregistry the moment it is bound, so it never reaches logs, error\nstrings, API responses, or the audit log in clear.",
+          "type": "boolean",
+          "default": false
+        },
+        "description": {
+          "description": "Human-readable purpose, surfaced by `faucet template list/show`, the\nMCP `get_template` tool, and `GET /v1/templates/{id}`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ParamType": {
+      "description": "The scalar type a param carries. Params are deliberately scalar-only: a\nparam substitutes into a config *value* position, and structured overrides\nare what named templates / matrix rows are for.",
+      "type": "string",
+      "enum": [
+        "string",
+        "int",
+        "float",
+        "bool"
+      ]
     }
   }
 }

@@ -30,9 +30,11 @@ published `.sha256` checksum, and put `faucet` on your `PATH`.
 
 The prebuilt binary includes the CLI **default** feature set (every first-party
 connector, transforms, quality checks, contracts, masking, compression) plus
-`serve` (with the embedded web console), `schedule`, and `lineage`. Not
-included — build from source for these: `transform-sql` (embedded DuckDB),
-`otel`, `triggers`, `catalog`, and the `serve-history-*` backends.
+`serve` (with the embedded web console), `schedule`, `lineage`, and `templates`
+(the pipeline template registry — note that a registry surviving a restart also
+needs a `serve-history-*` backend). Not included — build from source for these:
+`transform-sql` (embedded DuckDB), `otel`, `triggers`, `catalog`, and the
+`serve-history-*` backends.
 
 > **macOS Gatekeeper:** the binaries are not currently notarized. If macOS
 > blocks the downloaded binary, clear the quarantine attribute:
@@ -70,8 +72,8 @@ cargo install faucet-cli --no-default-features \
 ```
 
 **Add a runtime capability** — compose any of `serve`, `serve-ui`, `schedule`, `lineage`,
-`transform-sql` (embedded DuckDB), `triggers`, `catalog`, `otel`, `compression`, `quality`,
-`contract`, `masking`:
+`transform-sql` (embedded DuckDB), `triggers`, `templates`, `catalog`, `otel`, `compression`,
+`quality`, `contract`, `masking`:
 
 ```bash
 cargo install faucet-cli --features "serve,schedule,transform-sql,lineage"

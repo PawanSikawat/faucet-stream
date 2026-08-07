@@ -22,7 +22,17 @@ pub async fn run(args: McpArgs) -> CliResult<()> {
     // stdio mode has no shared `auth:` catalog; inline connector auth still
     // works for configs passed to preview/validate/run_pipeline.
     let auth = crate::auth_catalog::build_auth_catalog(None)?;
-    let ctx = McpContext::new(auth, args.allow_mutations);
+    #[cfg_attr(not(feature = "templates"), allow(unused_mut))]
+    let mut ctx = McpContext::new(auth, args.allow_mutations);
+
+    // Pipeline-template registry (#444): opt-in over stdio, since there is no
+    // `--history` backend to inherit. Without it the template tools are not
+    // advertised at all.
+    #[cfg(feature = "templates")]
+    if let Some(url) = args.template_store.as_deref() {
+        ctx = ctx.with_templates(crate::templates::resolve_store_url(url).await?);
+        tracing::info!(store = %url, "pipeline-template registry attached");
+    }
 
     tracing::info!(
         allow_mutations = args.allow_mutations,

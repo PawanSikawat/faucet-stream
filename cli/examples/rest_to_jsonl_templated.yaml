@@ -1,0 +1,100 @@
+# REST → JSONL driven by typed run parameters (#444).
+#
+# The `params:` block declares this pipeline's *trigger-time* surface: the few
+# values that change per run, each with a type, a requirement, and (optionally)
+# a default. Everywhere else in the config they are referenced as
+# `${param.NAME}`, bound before the config is parsed — so a param can never
+# alter the document's structure and never reaches a connector unresolved.
+#
+# Run it directly, supplying the required params:
+#
+#   faucet run cli/examples/rest_to_jsonl_templated.yaml \
+#     --param tenant_id=acme --param since=2026-01-01
+#
+# Validate it in CI without inventing values (required params bind to
+# type-shaped placeholders):
+#
+#   faucet validate cli/examples/rest_to_jsonl_templated.yaml
+#
+# Or register it **once** and trigger by id thereafter — the register-once /
+# trigger-by-id model. The registry rides the run-history backends, so point
+# `faucet serve --history` at the same URL to trigger the very same template
+# over HTTP or MCP:
+#
+#   faucet template register cli/examples/rest_to_jsonl_templated.yaml \
+#     --store sqlite:./faucet-templates.db --tag dev
+#   faucet template promote tenant-sync --tag prod --version dev
+#   faucet template run tenant-sync --store sqlite:./faucet-templates.db \
+#     --version prod --param tenant_id=acme
+#
+# Versions auto-increment on every register; the named channels are a fixed set
+# (`latest` — derived — plus dev / test / staging / pre-prod / canary / stable /
+# prod / previous), so a scheduled job can ride `--version prod` while newer
+# versions land behind it.
+#
+#   faucet serve --history sqlite:./faucet-templates.db --auth-token "$TOKEN"
+#   curl -sX POST localhost:8080/v1/templates/tenant-sync/runs \
+#        -H "Authorization: Bearer $TOKEN" \
+#        -d '{"params":{"tenant_id":"acme","since":"2026-01-01"}}'
+#
+# `faucet template` and the `/v1/templates*` endpoints need a build with the
+# `templates` feature (included in `--features full`), plus
+# `serve-history-sqlite` / `serve-history-postgres` for a persistent registry.
+# The `params:` block itself is always available.
+version: 1
+name: tenant-sync
+
+params:
+  # No default ⇒ the caller must supply it. `faucet validate` binds a
+  # placeholder so the config still checks out in CI.
+  tenant_id:
+    type: string
+    required: true
+    description: Tenant whose events to sync
+
+  # A default makes the param optional. Defaults are ordinary config scalars, so
+  # `default: "${env:SINCE}"` would work too.
+  since:
+    type: string
+    default: "1970-01-01"
+    description: Only fetch events at or after this date
+
+  # A whole-scalar `${param.page_size}` keeps the declared type, so this lands
+  # in the connector config as the number 500 — not the string "500".
+  page_size:
+    type: int
+    default: 500
+    description: Records per page
+
+  # `secret: true` registers the value for redaction the moment it is bound, so
+  # it never reaches a log line, an error message, an API response, or the audit
+  # log. It is never persisted with the template either — only the token
+  # reference below would be, if you sourced it from the server instead.
+  api_token:
+    type: string
+    required: true
+    secret: true
+    description: Bearer token for the events API
+
+pipeline:
+  source:
+    type: rest
+    config:
+      url: "https://api.example.com/tenants/${param.tenant_id}/events?since=${param.since}"
+      auth:
+        type: bearer
+        config:
+          token: "${param.api_token}"
+      pagination:
+        type: page_number
+        config:
+          page_param: page
+          size_param: per_page
+          size: "${param.page_size}"
+      records_path: "$.data"
+
+  sink:
+    type: jsonl
+    config:
+      # `${param.*}` works in any config value, including a path.
+      path: "./out/${param.tenant_id}/events.jsonl"

@@ -22,6 +22,8 @@ pub mod registry;
 pub mod runner;
 pub mod server;
 pub mod state;
+#[cfg(test)]
+pub mod test_support;
 #[cfg(feature = "triggers")]
 pub mod triggers;
 #[cfg(feature = "serve-ui")]

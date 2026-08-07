@@ -29,6 +29,7 @@
 //! new fields are added to individual connectors without needing CLI work.
 
 use crate::error::{CliError, CliResult};
+use crate::params::ParamsSpec;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -52,6 +53,16 @@ pub struct PipelineConfig {
     /// after env/file/secret substitution.
     #[serde(default)]
     pub vars: Option<HashMap<String, Value>>,
+
+    /// Optional typed run parameters (#444) — the config's trigger-time
+    /// override surface. Each entry declares a name, scalar `type`,
+    /// `required`/`default`, a `secret` flag, and a `description`; values are
+    /// referenced as `${param.NAME}` and bound before parsing by
+    /// [`crate::params::bind`] (from `--param`, `faucet template run`, or
+    /// `POST /v1/templates/{id}/runs`). Because binding happens pre-parse, no
+    /// `${param.*}` token ever reaches a connector. See `faucet schema params`.
+    #[serde(default, skip_serializing_if = "ParamsSpec::is_empty")]
+    pub params: ParamsSpec,
 
     /// Optional named auth providers. Each entry is a `{ type, config }` spec
     /// (the same shape as inline auth) built once and shared across every
@@ -1001,12 +1012,66 @@ where
 /// messages (unknown field, type mismatch, version gate) identical to the old
 /// path. A syntax error in the document surfaces here, mapped exactly as
 /// `from_text` would map it.
-fn interpolate_document(text: &str, path: &Path) -> CliResult<String> {
-    use crate::interpolate::interpolate_value;
+/// Caller-supplied inputs for one load: `params:` values and an `${env:}`
+/// overlay (#444). Both are empty by default, which is exactly the pre-#444
+/// behaviour — a config with no `params:` block, or one whose params all carry
+/// defaults, loads unchanged.
+#[derive(Debug, Clone)]
+pub struct RunInputs {
+    /// Values for the config's declared `params:` (from `--param`, an HTTP
+    /// `params` object, or a template trigger).
+    pub params: crate::params::SuppliedParams,
+    /// Values that win over the process environment for `${env:VAR}` /
+    /// `${secret:VAR}` during this load only.
+    pub env: crate::interpolate::EnvOverlay,
+    /// What to do with a `required` param the caller did not supply.
+    pub mode: crate::params::BindMode,
+}
+
+impl Default for RunInputs {
+    fn default() -> Self {
+        Self {
+            params: Default::default(),
+            env: Default::default(),
+            mode: crate::params::BindMode::Strict,
+        }
+    }
+}
+
+impl RunInputs {
+    /// Inputs that fill unsupplied required params with type-shaped
+    /// placeholders — for structural validation of a parameterized config.
+    pub fn placeholders() -> Self {
+        Self {
+            mode: crate::params::BindMode::Placeholder,
+            ..Self::default()
+        }
+    }
+
+    /// Inputs carrying just a supplied-param map.
+    pub fn with_params(params: crate::params::SuppliedParams) -> Self {
+        Self {
+            params,
+            ..Self::default()
+        }
+    }
+}
+
+fn resolve_document(text: &str, path: &Path, inputs: &RunInputs) -> CliResult<String> {
+    use crate::interpolate::interpolate_value_with_env;
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
+    // Shared per-scalar resolution: env/file/secret first (so a param `default:
+    // "${env:X}"` resolves), then `${param.*}` binding. Deliberately in that
+    // order — a *supplied* param value must never be re-scanned for directives
+    // (see `params::bind`).
+    let resolve = |value: &mut serde_json::Value| -> CliResult<()> {
+        interpolate_value_with_env(value, &inputs.env)?;
+        crate::params::bind_document(value, &inputs.params, inputs.mode)?;
+        Ok(())
+    };
     match ext.as_deref() {
         Some("yaml" | "yml") => {
             let mut value: serde_json::Value =
@@ -1014,7 +1079,7 @@ fn interpolate_document(text: &str, path: &Path) -> CliResult<String> {
                     path: path.to_path_buf(),
                     message: friendly_parse_error(&e.to_string()),
                 })?;
-            interpolate_value(&mut value)?;
+            resolve(&mut value)?;
             serde_yaml::to_string(&value).map_err(|e| CliError::ParseConfig {
                 path: path.to_path_buf(),
                 message: e.to_string(),
@@ -1026,7 +1091,7 @@ fn interpolate_document(text: &str, path: &Path) -> CliResult<String> {
                     path: path.to_path_buf(),
                     message: friendly_parse_error(&e.to_string()),
                 })?;
-            interpolate_value(&mut value)?;
+            resolve(&mut value)?;
             serde_json::to_string(&value).map_err(|e| CliError::ParseConfig {
                 path: path.to_path_buf(),
                 message: e.to_string(),
@@ -1052,9 +1117,19 @@ impl PipelineConfig {
     /// resolved by this path. If any are present the call returns
     /// `CliError::SecretsRequireAsyncLoad` — use [`Self::from_path_async`] instead.
     pub fn from_path(path: impl AsRef<Path>, profile: Option<&str>) -> CliResult<Self> {
+        Self::from_path_with(path, profile, &RunInputs::default())
+    }
+
+    /// [`Self::from_path`] with caller-supplied [`RunInputs`] (`params:` values
+    /// and an `${env:}` overlay, #444).
+    pub fn from_path_with(
+        path: impl AsRef<Path>,
+        profile: Option<&str>,
+        inputs: &RunInputs,
+    ) -> CliResult<Self> {
         let path = path.as_ref();
         let composed = crate::compose::compose(path, profile)?;
-        let interpolated = interpolate_document(&composed, path)?;
+        let interpolated = resolve_document(&composed, path, inputs)?;
         let cfg = Self::from_text(&interpolated, path)?;
         // Secret directives need the async resolver path; never let them survive
         // into a connector config as literal `${vault:…}` text.
@@ -1069,9 +1144,18 @@ impl PipelineConfig {
         path: impl AsRef<Path>,
         profile: Option<&str>,
     ) -> CliResult<Self> {
+        Self::from_path_tolerating_secrets_with(path, profile, &RunInputs::default())
+    }
+
+    /// [`Self::from_path_tolerating_secrets`] with caller-supplied [`RunInputs`].
+    pub fn from_path_tolerating_secrets_with(
+        path: impl AsRef<Path>,
+        profile: Option<&str>,
+        inputs: &RunInputs,
+    ) -> CliResult<Self> {
         let path = path.as_ref();
         let composed = crate::compose::compose(path, profile)?;
-        let interpolated = interpolate_document(&composed, path)?;
+        let interpolated = resolve_document(&composed, path, inputs)?;
         Self::from_text(&interpolated, path)
     }
 
@@ -1079,9 +1163,19 @@ impl PipelineConfig {
     /// directives (`${vault:…}`, `${aws-sm:…}`, …) as a final stage. Composition
     /// (extends/profiles/`!include`) runs first via [`crate::compose::compose`].
     pub async fn from_path_async(path: impl AsRef<Path>, profile: Option<&str>) -> CliResult<Self> {
+        Self::from_path_async_with(path, profile, &RunInputs::default()).await
+    }
+
+    /// [`Self::from_path_async`] with caller-supplied [`RunInputs`] (`params:`
+    /// values and an `${env:}` overlay, #444).
+    pub async fn from_path_async_with(
+        path: impl AsRef<Path>,
+        profile: Option<&str>,
+        inputs: &RunInputs,
+    ) -> CliResult<Self> {
         let path = path.as_ref();
         let composed = crate::compose::compose(path, profile)?;
-        let interpolated = interpolate_document(&composed, path)?;
+        let interpolated = resolve_document(&composed, path, inputs)?;
         let mut cfg = Self::from_text(&interpolated, path)?;
         crate::secrets::resolve_secrets(&mut cfg).await?;
         Ok(cfg)

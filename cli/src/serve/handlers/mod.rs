@@ -10,3 +10,5 @@ pub mod logs;
 pub mod reload;
 pub mod runs;
 pub mod schemas;
+#[cfg(feature = "templates")]
+pub mod templates;

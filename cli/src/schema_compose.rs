@@ -4,7 +4,7 @@
 //! was no single schema for the *entire* config document. This module builds
 //! one by taking the derived [`PipelineConfig`](crate::config::PipelineConfig)
 //! schema (which covers `version` / `name` / `pipeline` / `matrix` /
-//! `execution` / `auth` / `vars` / `schedule` / `lineage` / `quality` / `dlq` /
+//! `execution` / `auth` / `vars` / `params` / `schedule` / `lineage` / `quality` / `dlq` /
 //! … — every block whose type derives `JsonSchema`) and layering per-connector
 //! discrimination on top: the `source` / `sink` positions become a `oneOf` over
 //! the compiled-in connector kinds, each branch pinning `type: <kind>` and
@@ -295,6 +295,7 @@ mod tests {
             "execution",
             "auth",
             "vars",
+            "params",
         ] {
             assert!(
                 props.get(key).is_some(),

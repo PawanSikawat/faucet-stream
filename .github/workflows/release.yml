@@ -204,16 +204,35 @@ jobs:
 
       # ── Real release ──────────────────────────────────────────────────
       #
-      # crates.io rate-limits new crate registrations to 5 per window.
-      # For "all" and "connectors" scopes, we bump versions first (no publish),
-      # then publish in waves of 5 with 15-minute waits between waves.
-      # For small scopes (core, umbrella, custom <=5), publish directly.
+      # crates.io rate-limits *new* crate registrations to a burst of 5, then
+      # 1 per 10 minutes. For "all" and "connectors" scopes, we bump versions
+      # first (no publish), then publish in waves of 5 with 15-minute waits
+      # between waves. For small scopes (core, umbrella, custom <=5), publish
+      # directly with cargo-release.
       #
+      # Every publish is verified against the sparse index before moving on
+      # (#447). The previous `cargo publish || echo WARNING; sleep 5` loop had
+      # two compounding defects that produced silently-partial releases:
+      #
+      #   1. `|| { ... continuing }` swallowed *every* failure as a warning, so
+      #      a genuine error was indistinguishable from "already published" and
+      #      the job still reported success.
+      #   2. `sleep 5` is far too short for sparse-index propagation, so a
+      #      dependent published seconds after its dependency could not resolve
+      #      the new version — it failed, and the failure was swallowed.
+      #
+      # The loop below instead: skips a crate whose target version is already on
+      # the index (idempotent re-runs), retries a publish that fails only
+      # because a just-published dependency has not propagated yet, waits for
+      # the index to serve the new version before publishing anything that might
+      # depend on it, and fails the job at the end naming every crate it could
+      # not publish.
       - name: Release
         if: ${{ !inputs.dry_run }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
+          set -uo pipefail
           SCOPE="${{ inputs.scope }}"
           BUMP="${{ inputs.bump }}"
 
@@ -231,49 +250,186 @@ jobs:
               ;;
           esac
 
-          # If 5 or fewer crates, publish directly with cargo-release
+          # ── Sparse-index helpers ────────────────────────────────────────
+          #
+          # crates.io's sparse index serves one newline-delimited-JSON file per
+          # crate under a name-length-derived prefix. `index_has` answers "is
+          # version V of crate C resolvable yet?" — the authoritative check for
+          # both "already published" and "has propagated".
+          index_path() {
+            local name="$1"
+            case ${#name} in
+              1) echo "1/$name" ;;
+              2) echo "2/$name" ;;
+              3) echo "3/${name:0:1}/$name" ;;
+              *) echo "${name:0:2}/${name:2:2}/$name" ;;
+            esac
+          }
+          index_has() {
+            local name="$1" version="$2"
+            curl -sf "https://index.crates.io/$(index_path "$name")" \
+              | jq -e --arg v "$version" 'select(.vers == $v)' >/dev/null 2>&1
+          }
+          # Block until `version` of `name` is resolvable, or time out.
+          wait_for_index() {
+            local name="$1" version="$2" waited=0
+            while [ "$waited" -lt "$INDEX_TIMEOUT" ]; do
+              if index_has "$name" "$version"; then
+                echo "  index: $name@$version resolvable after ${waited}s"
+                return 0
+              fi
+              sleep "$INDEX_POLL"
+              waited=$(( waited + INDEX_POLL ))
+            done
+            echo "  index: $name@$version NOT resolvable after ${waited}s" >&2
+            return 1
+          }
+          # Publish one crate, tolerating only the two benign outcomes:
+          # already-published (idempotent re-run) and a dependency that has not
+          # propagated yet (retried). Anything else fails.
+          publish_one() {
+            local crate="$1" version="$2" attempt=1 log rc
+            if index_has "$crate" "$version"; then
+              echo "  $crate@$version already on crates.io — skipping"
+              return 0
+            fi
+            while [ "$attempt" -le "$PUBLISH_ATTEMPTS" ]; do
+              echo "  Publishing $crate@$version (attempt $attempt/$PUBLISH_ATTEMPTS)..."
+              log=$(cargo publish -p "$crate" --no-verify 2>&1)
+              rc=$?
+              echo "$log"
+              if [ "$rc" -eq 0 ]; then
+                wait_for_index "$crate" "$version" || return 1
+                return 0
+              fi
+              # Already on the registry (a re-run, or a racing publish): fine.
+              if grep -qiE "already (been )?uploaded|crate version .* is already" <<< "$log"; then
+                echo "  $crate@$version already uploaded — treating as published"
+                wait_for_index "$crate" "$version" || return 1
+                return 0
+              fi
+              # Dependency not visible on the index yet — the propagation race
+              # this step exists to defeat. Back off and retry.
+              if grep -qiE "no matching package named|failed to select a version|could not find .* in registry" <<< "$log"; then
+                echo "  $crate: dependency not yet propagated; retrying in ${PUBLISH_RETRY_WAIT}s" >&2
+                sleep "$PUBLISH_RETRY_WAIT"
+                attempt=$(( attempt + 1 ))
+                continue
+              fi
+              # Rate limited — wait out the window and retry.
+              if grep -qiE "429|too many requests|rate limit" <<< "$log"; then
+                echo "  $crate: rate limited; waiting ${RATE_LIMIT_WAIT}s" >&2
+                sleep "$RATE_LIMIT_WAIT"
+                attempt=$(( attempt + 1 ))
+                continue
+              fi
+              echo "  $crate: publish failed with a non-retriable error" >&2
+              return 1
+            done
+            echo "  $crate: publish still failing after $PUBLISH_ATTEMPTS attempt(s)" >&2
+            return 1
+          }
+
+          INDEX_POLL=10
+          INDEX_TIMEOUT=600        # 10 min for a version to appear on the index
+          PUBLISH_ATTEMPTS=5
+          PUBLISH_RETRY_WAIT=60    # dependency-propagation backoff
+          RATE_LIMIT_WAIT=630      # crates.io: 1 new crate per 10 minutes
+
+          # If 5 or fewer crates, publish directly with cargo-release, which
+          # bumps, publishes in dependency order, and waits for propagation
+          # between dependents itself (and fails the job on any error).
           if [ ${#selected[@]} -le 5 ]; then
             PKGS=""
             for c in "${selected[@]}"; do PKGS="$PKGS -p $c"; done
             echo "==> Publishing ${#selected[@]} crates directly"
             cargo release "$BUMP" $PKGS --no-confirm --execute
-          else
-            # Step 1: Bump versions, commit, tag — but don't publish yet
-            PKGS=""
-            for c in "${selected[@]}"; do PKGS="$PKGS -p $c"; done
-            echo "==> Step 1: Bumping versions for ${#selected[@]} crates"
-            cargo release "$BUMP" $PKGS --no-confirm --no-publish --execute
-
-            # Step 2: Publish in waves of 5 with 15-minute waits
-            WAVE_SIZE=5
-            WAVE_WAIT=900  # 15 minutes
-            total=${#selected[@]}
-            wave=1
-
-            for (( i=0; i<total; i+=WAVE_SIZE )); do
-              wave_crates=("${selected[@]:i:WAVE_SIZE}")
-              echo ""
-              echo "==> Wave $wave: publishing ${wave_crates[*]}"
-
-              for crate in "${wave_crates[@]}"; do
-                echo "  Publishing $crate..."
-                cargo publish -p "$crate" --no-verify || {
-                  echo "  WARNING: $crate publish failed (may already exist), continuing..."
-                }
-                sleep 5  # small delay between individual publishes
-              done
-
-              remaining=$(( total - i - WAVE_SIZE ))
-              if [ $remaining -gt 0 ]; then
-                echo "==> Waiting ${WAVE_WAIT}s for crates.io rate limit reset..."
-                sleep $WAVE_WAIT
-              fi
-
-              wave=$((wave + 1))
-            done
+            exit $?
           fi
 
+          # Step 1: Bump versions, commit, tag — but don't publish yet.
+          PKGS=""
+          for c in "${selected[@]}"; do PKGS="$PKGS -p $c"; done
+          echo "==> Step 1: Bumping versions for ${#selected[@]} crates"
+          if ! cargo release "$BUMP" $PKGS --no-confirm --no-publish --execute; then
+            echo "ERROR: version bump failed; nothing was published." >&2
+            exit 1
+          fi
+
+          # Push the bump commit + tags BEFORE publishing (#447). If publishing
+          # is partial, `main` and the tags still describe exactly the versions
+          # we intended, and re-running this workflow resumes from the index
+          # rather than re-bumping. Pushing only after a fully-successful
+          # publish would, on a partial failure, leave crates.io ahead of the
+          # repository — the worse of the two inconsistencies.
+          echo "==> Pushing bump commit and tags before publishing"
+          if ! git push --follow-tags origin HEAD; then
+            echo "ERROR: failed to push version bumps; aborting before publish." >&2
+            exit 1
+          fi
+
+          # Read the post-bump target version of every selected crate, so the
+          # index checks compare against what we are actually publishing.
+          declare -A target_version
+          while IFS=$'\t' read -r name version; do
+            target_version["$name"]="$version"
+          done < <(cargo metadata --no-deps --format-version 1 \
+                   | jq -r '.packages[] | "\(.name)\t\(.version)"')
+
+          # Step 2: Publish in waves of 5 with 15-minute waits between waves.
+          WAVE_SIZE=5
+          WAVE_WAIT=900  # 15 minutes
+          total=${#selected[@]}
+          wave=1
+          failed=()
+
+          for (( i=0; i<total; i+=WAVE_SIZE )); do
+            wave_crates=("${selected[@]:i:WAVE_SIZE}")
+            echo ""
+            echo "==> Wave $wave: publishing ${wave_crates[*]}"
+
+            for crate in "${wave_crates[@]}"; do
+              version="${target_version[$crate]:-}"
+              if [ -z "$version" ]; then
+                echo "  $crate: no version in cargo metadata — cannot verify publish" >&2
+                failed+=("$crate (unknown version)")
+                continue
+              fi
+              if ! publish_one "$crate" "$version"; then
+                failed+=("$crate@$version")
+              fi
+            done
+
+            remaining=$(( total - i - WAVE_SIZE ))
+            if [ $remaining -gt 0 ]; then
+              echo "==> Waiting ${WAVE_WAIT}s for crates.io rate limit reset..."
+              sleep $WAVE_WAIT
+            fi
+
+            wave=$((wave + 1))
+          done
+
+          # A partial release must never report success (#447). Tags/bumps are
+          # already on the branch, so the recovery is to re-run this workflow
+          # (publishes are idempotent — already-published crates are skipped).
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo ""
+            echo "ERROR: ${#failed[@]} crate(s) were NOT published:" >&2
+            for f in "${failed[@]}"; do echo "  - $f" >&2; done
+            echo "" >&2
+            echo "Versions and tags are committed; re-run this workflow with the same" >&2
+            echo "scope to publish the stragglers (already-published crates are skipped)." >&2
+            exit 1
+          fi
+          echo ""
+          echo "==> All ${total} selected crate(s) published and resolvable on the index."
+
+      # Catch-up push. The >5-crate path already pushes its bump commit + tags
+      # before publishing (see the Release step); the ≤5 path lets cargo-release
+      # push. This is a no-op in both cases unless something was left local.
+      # `always()` so a partial-publish failure still lands the bumps that were
+      # pushed above rather than silently dropping this step's catch-up.
       - name: Push tags and commits
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && always() }}
         run: |
           git push --follow-tags origin HEAD

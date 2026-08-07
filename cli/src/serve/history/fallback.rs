@@ -287,6 +287,54 @@ impl RunHistory for FallbackHistory {
         via!(self, p => p.catalog_last_config_snapshot(pipeline), f => f.catalog_last_config_snapshot(pipeline))
     }
 
+    // ── Pipeline-template registry (#444) ────────────────────────────────────
+    //
+    // Forwarded like every other method: while the SQL backend is reachable
+    // templates persist; once degraded they land in the in-memory fallback, so
+    // the control plane keeps serving (a registration made while degraded is
+    // process-lifetime only — the same trade-off as a degraded run record).
+    async fn template_register(
+        &self,
+        draft: &crate::serve::history::templates::TemplateDraft,
+    ) -> Result<crate::serve::history::templates::TemplateRecord, HistoryError> {
+        via!(self, p => p.template_register(draft), f => f.template_register(draft))
+    }
+    async fn template_get(
+        &self,
+        id: &str,
+        version: Option<u32>,
+    ) -> Result<Option<crate::serve::history::templates::TemplateRecord>, HistoryError> {
+        via!(self, p => p.template_get(id, version), f => f.template_get(id, version))
+    }
+    async fn template_list(
+        &self,
+    ) -> Result<Vec<crate::serve::history::templates::TemplateSummary>, HistoryError> {
+        via!(self, p => p.template_list(), f => f.template_list())
+    }
+    async fn template_versions(&self, id: &str) -> Result<Vec<u32>, HistoryError> {
+        via!(self, p => p.template_versions(id), f => f.template_versions(id))
+    }
+    async fn template_delete(&self, id: &str, version: Option<u32>) -> Result<usize, HistoryError> {
+        via!(self, p => p.template_delete(id, version), f => f.template_delete(id, version))
+    }
+    async fn template_set_tag(
+        &self,
+        id: &str,
+        tag: &str,
+        version: u32,
+    ) -> Result<(), HistoryError> {
+        via!(self, p => p.template_set_tag(id, tag, version), f => f.template_set_tag(id, tag, version))
+    }
+    async fn template_tags(
+        &self,
+        id: &str,
+    ) -> Result<std::collections::BTreeMap<String, u32>, HistoryError> {
+        via!(self, p => p.template_tags(id), f => f.template_tags(id))
+    }
+    async fn template_delete_tag(&self, id: &str, tag: &str) -> Result<bool, HistoryError> {
+        via!(self, p => p.template_delete_tag(id, tag), f => f.template_delete_tag(id, tag))
+    }
+
     fn degraded(&self) -> bool {
         self.is_degraded()
     }

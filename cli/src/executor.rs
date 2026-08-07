@@ -1909,6 +1909,7 @@ mod tests {
             version: 1,
             name: Some("test".into()),
             vars: None,
+            params: Default::default(),
             auth: None,
             pipeline: PipelineSpec {
                 source: Some(ConnectorSpec {

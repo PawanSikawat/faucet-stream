@@ -72,17 +72,51 @@ pub async fn run(args: RunArgs) -> CliResult<()> {
                 "--profile / FAUCET_PROFILE has no effect in --from-env mode (no config file to compose); ignoring"
             );
         }
+        if !args.param.is_empty() || !args.param_env.is_empty() {
+            return Err(CliError::Config(
+                "--param / --param-env have no effect in --from-env mode: the `params:` block \
+                 lives in a config file, and every value already comes from the environment"
+                    .into(),
+            ));
+        }
         crate::env_config::from_process_env()?
     } else {
-        PipelineConfig::from_path_async(
+        // Typed run params (#444): `--param name=value` / `--param-env NAME[=V]`
+        // are bound before the typed parse, so `${param.*}` never reaches a
+        // connector. A config with no `params:` block is unaffected.
+        let inputs = crate::config::RunInputs {
+            params: crate::params::collect_cli_params(&args.param)?,
+            env: crate::params::collect_env_overrides(&args.param_env)?
+                .into_iter()
+                .collect(),
+            mode: crate::params::BindMode::Strict,
+        };
+        PipelineConfig::from_path_async_with(
             resolved_config_path
                 .as_ref()
                 .expect("YAML mode always resolves a path above"),
             args.profile.as_deref(),
+            &inputs,
         )
         .await?
     };
 
+    execute(cfg, args, resolved_config_path).await
+}
+
+/// Execute an already-loaded config: install observability, build the auth
+/// catalog, expand + select rows, run, and report.
+///
+/// Split out of [`run`] so a caller that obtains its config some other way runs
+/// through the *identical* path — `faucet template run` materializes a
+/// registered template and hands it straight here, rather than re-implementing
+/// (and inevitably under-implementing) the lineage / notification / catalog /
+/// SLA / progress wiring below.
+pub(crate) async fn execute(
+    cfg: PipelineConfig,
+    args: RunArgs,
+    resolved_config_path: Option<std::path::PathBuf>,
+) -> CliResult<()> {
     #[cfg(not(feature = "cli-tui"))]
     if args.tui {
         return Err(CliError::Config(

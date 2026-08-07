@@ -9,7 +9,6 @@ use super::McpContext;
 use crate::config::PipelineConfig;
 use crate::mcp::protocol::{ToolDef, tool_error, tool_text};
 use serde_json::{Value, json};
-use std::path::Path;
 
 /// Hard cap on `preview` rows regardless of the requested limit — an MCP
 /// client must never trigger a full extract of a large source.
@@ -91,6 +90,57 @@ pub fn tool_defs(ctx: &McpContext) -> Vec<ToolDef> {
             }),
         });
     }
+    #[cfg(feature = "templates")]
+    if ctx.templates.is_some() {
+        defs.push(ToolDef {
+            name: "list_templates",
+            description: "List registered pipeline templates (latest version of each) with the typed params each one takes.",
+            input_schema: json!({ "type": "object", "properties": {} }),
+        });
+        defs.push(ToolDef {
+            name: "get_template",
+            description: "Show one registered pipeline template: its declared params, stored config body, and available versions.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Template id." },
+                    "version": { "description": "Version: a number, or a named channel (\"latest\" — the default — \"prod\", \"pre-prod\", \"staging\", \"canary\", \"stable\", \"test\", \"dev\", \"previous\").", "oneOf": [{ "type": "integer" }, { "type": "string" }] }
+                },
+                "required": ["id"]
+            }),
+        });
+        if ctx.allow_mutations {
+            defs.push(ToolDef {
+                name: "register_template",
+                description: "Register a config (declaring typed `params:`) as a new pipeline-template version. MUTATING — gated behind --allow-mutations.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "config": { "type": "string", "description": "The pipeline config document (YAML or JSON), stored verbatim." },
+                        "id": { "type": "string", "description": "Template id. Derived from the config's `name:` when omitted." },
+                        "description": { "type": "string" },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Named channels to point at the new version (dev/test/staging/pre-prod/canary/stable/prod/previous). The version number always auto-increments; `latest` is derived and rejected." }
+                    },
+                    "required": ["config"]
+                }),
+            });
+            defs.push(ToolDef {
+                name: "run_template",
+                description: "Run a registered pipeline template with the given params. MUTATING — gated behind --allow-mutations. Pass dry_run:true to materialize + validate only.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "version": { "description": "Version: a number, or a named channel (\"latest\" — the default — \"prod\", \"pre-prod\", \"staging\", \"canary\", \"stable\", \"test\", \"dev\", \"previous\").", "oneOf": [{ "type": "integer" }, { "type": "string" }] },
+                        "params": { "type": "object", "description": "Values for the template's declared params." },
+                        "env": { "type": "object", "description": "Per-run overrides for ${env:VAR} resolution." },
+                        "dry_run": { "type": "boolean", "description": "If true, materialize + validate only; do not write to any sink." }
+                    },
+                    "required": ["id"]
+                }),
+            });
+        }
+    }
     defs
 }
 
@@ -109,6 +159,26 @@ pub async fn call_tool(ctx: &McpContext, name: &str, args: &Value) -> Value {
                 Err("run_pipeline is disabled; start the MCP server with --allow-mutations to enable mutating tools".to_string())
             } else {
                 run_pipeline(ctx, args).await
+            }
+        }
+        #[cfg(feature = "templates")]
+        "list_templates" => list_templates(ctx).await,
+        #[cfg(feature = "templates")]
+        "get_template" => get_template(ctx, args).await,
+        #[cfg(feature = "templates")]
+        "register_template" => {
+            if !ctx.allow_mutations {
+                Err(MUTATION_GATE.to_string())
+            } else {
+                register_template(ctx, args).await
+            }
+        }
+        #[cfg(feature = "templates")]
+        "run_template" => {
+            if !ctx.allow_mutations {
+                Err(MUTATION_GATE.to_string())
+            } else {
+                run_template(ctx, args).await
             }
         }
         other => Err(format!("unknown tool '{other}'")),
@@ -197,11 +267,25 @@ fn scaffold_config(args: &Value) -> Result<String, String> {
     ))
 }
 
-/// Parse an inline config document. Tries YAML then JSON via `from_text`.
+/// Parse an inline config document, mirroring the file-load pipeline: resolve
+/// `${env:}` / `${file:}` / `${secret:}` per scalar, bind `${param.*}`, then take
+/// the typed path. YAML is a JSON superset, so one parser handles both wire
+/// formats.
+///
+/// `mode` decides what an unsupplied `required` param means: `Placeholder` for
+/// the read-only introspection tools (a parameterized config still validates),
+/// `Strict` where the config is about to actually run.
+fn parse_config_with(text: &str, mode: crate::params::BindMode) -> Result<PipelineConfig, String> {
+    let mut doc: Value = serde_yaml::from_str(text).map_err(|e| e.to_string())?;
+    crate::interpolate::interpolate_value(&mut doc).map_err(|e| e.to_string())?;
+    crate::params::bind_document(&mut doc, &Default::default(), mode).map_err(|e| e.to_string())?;
+    PipelineConfig::from_value(doc).map_err(|e| e.to_string())
+}
+
+/// Read-only introspection: a config whose required params arrive later still
+/// validates, against type-shaped placeholders.
 fn parse_config(text: &str) -> Result<PipelineConfig, String> {
-    // `from_text` picks the parser from the path extension; give it a `.yaml`
-    // path (YAML is a JSON superset, so a JSON document also parses).
-    PipelineConfig::from_text(text, Path::new("mcp-inline.yaml")).map_err(|e| e.to_string())
+    parse_config_with(text, crate::params::BindMode::Placeholder)
 }
 
 async fn validate_config(ctx: &McpContext, args: &Value) -> Result<String, String> {
@@ -334,6 +418,196 @@ async fn run_pipeline(ctx: &McpContext, args: &Value) -> Result<String, String> 
 
 fn pretty(v: &Value) -> String {
     serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
+}
+
+// ── Pipeline template tools (#444) ──────────────────────────────────────────
+
+/// Shared refusal text for a mutating template tool on a read-only server.
+#[cfg(feature = "templates")]
+const MUTATION_GATE: &str =
+    "this tool is disabled; start the MCP server with --allow-mutations to enable mutating tools";
+
+/// The wired template registry, or a tool error explaining how to wire one.
+#[cfg(feature = "templates")]
+fn template_store(ctx: &McpContext) -> Result<&crate::templates::TemplateStore, String> {
+    ctx.templates.as_ref().ok_or_else(|| {
+        "no pipeline-template registry is configured — start `faucet mcp --template-store \
+         <url>`, or use the /mcp route of a `faucet serve --mcp` whose --history backend holds \
+         the registry"
+            .to_string()
+    })
+}
+
+#[cfg(feature = "templates")]
+async fn list_templates(ctx: &McpContext) -> Result<String, String> {
+    let store = template_store(ctx)?;
+    let templates = store.template_list().await.map_err(|e| e.to_string())?;
+    Ok(pretty(&json!({
+        "count": templates.len(),
+        "templates": templates,
+    })))
+}
+
+/// Read the optional `version` argument: a number, or one of the closed set of
+/// named channels. Absent = `latest`, so an agent that never mentions versions
+/// always gets the newest registration.
+#[cfg(feature = "templates")]
+fn version_arg(args: &Value) -> Result<crate::serve::history::templates::VersionSelector, String> {
+    use crate::serve::history::templates::VersionSelector;
+    match args.get("version") {
+        None | Some(Value::Null) => Ok(VersionSelector::default()),
+        Some(v) => serde_json::from_value::<VersionSelector>(v.clone()).map_err(|e| e.to_string()),
+    }
+}
+
+/// Resolve the `version` argument against the registry (a named channel needs a
+/// lookup). `Ok(None)` = the newest version.
+#[cfg(feature = "templates")]
+async fn resolved_version_arg(
+    store: &crate::templates::TemplateStore,
+    id: &str,
+    args: &Value,
+) -> Result<Option<u32>, String> {
+    crate::templates::resolve_version(store, id, version_arg(args)?)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "templates")]
+async fn get_template(ctx: &McpContext, args: &Value) -> Result<String, String> {
+    let store = template_store(ctx)?;
+    let id = str_arg(args, "id")?;
+    let version = resolved_version_arg(store, id, args).await?;
+    let record = store
+        .template_get(id, version)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no pipeline template '{id}'"))?;
+    let versions = store
+        .template_versions(id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let tags = store.template_tags(id).await.map_err(|e| e.to_string())?;
+    let latest = versions.first().copied().unwrap_or(record.version);
+    Ok(pretty(&json!({
+        "template": record,
+        "versions": versions,
+        "latest_version": latest,
+        "is_latest": record.version == latest,
+        "tags": tags,
+    })))
+}
+
+/// Read the optional `tags` array, validating each against the closed channel set.
+#[cfg(feature = "templates")]
+fn tags_arg(args: &Value) -> Result<Vec<crate::serve::history::templates::VersionChannel>, String> {
+    use crate::serve::history::templates::VersionChannel;
+    let Some(list) = args.get("tags").and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    list.iter()
+        .map(|v| {
+            v.as_str()
+                .ok_or_else(|| "each `tags` entry must be a channel name".to_string())
+                .and_then(|s| VersionChannel::parse(s).map_err(|e| e.to_string()))
+        })
+        .collect()
+}
+
+#[cfg(feature = "templates")]
+async fn register_template(ctx: &McpContext, args: &Value) -> Result<String, String> {
+    use crate::templates::RegisterRequest;
+    let store = template_store(ctx)?;
+    let config = str_arg(args, "config")?;
+    let record = crate::templates::register(
+        store,
+        RegisterRequest {
+            id: args.get("id").and_then(Value::as_str).map(str::to_string),
+            body: config.to_string(),
+            // MCP always hands over an inline document; YAML parses JSON too.
+            format: crate::serve::load::ConfigFormat::Yaml,
+            description: args
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            tags: tags_arg(args)?,
+            created_by: Some("mcp".to_string()),
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(pretty(&json!({
+        "registered": record.summary(),
+    })))
+}
+
+#[cfg(feature = "templates")]
+async fn run_template(ctx: &McpContext, args: &Value) -> Result<String, String> {
+    let store = template_store(ctx)?;
+    let id = str_arg(args, "id")?;
+    let version = resolved_version_arg(store, id, args).await?;
+    let dry_run = args
+        .get("dry_run")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let supplied: crate::params::SuppliedParams = args
+        .get("params")
+        .and_then(Value::as_object)
+        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default();
+    let env: std::collections::BTreeMap<String, String> = args
+        .get("env")
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let materialized = crate::templates::materialize(store, id, version, &supplied, &env)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if dry_run {
+        // Validate the materialized config without touching a sink, and never
+        // echo the body — a secret param value would be in it.
+        let cfg = parse_config_with(&materialized.body, crate::params::BindMode::Strict)?;
+        let rows = crate::expand::expand(&cfg)
+            .map_err(|e| e.to_string())?
+            .len();
+        return Ok(pretty(&json!({
+            "template_id": materialized.template_id,
+            "template_version": materialized.version,
+            "params": materialized.params_redacted,
+            "rows": rows,
+            "dry_run": true,
+        })));
+    }
+
+    // The materialized body is JSON, which `run_from_yaml_str` parses (YAML is a
+    // JSON superset) and takes through the ordinary run path.
+    let summary = crate::run_from_yaml_str(&materialized.body)
+        .await
+        .map_err(|e| e.to_string())?;
+    let failed = summary.failure_count();
+    let total: usize = summary.invocations.iter().map(|i| i.records_written).sum();
+    let doc = json!({
+        "template_id": materialized.template_id,
+        "template_version": materialized.version,
+        "params": materialized.params_redacted,
+        "invocations": summary.invocations.len(),
+        "ok": summary.invocations.len() - failed,
+        "failed": failed,
+        "records_written": total,
+    });
+    if failed > 0 {
+        return Err(format!(
+            "template run had {failed} failed invocation(s): {}",
+            pretty(&doc)
+        ));
+    }
+    Ok(pretty(&doc))
 }
 
 #[cfg(test)]
@@ -585,5 +859,209 @@ mod tests {
         )
         .await;
         assert_eq!(out["isError"], true);
+    }
+
+    #[tokio::test]
+    async fn validate_config_accepts_a_parameterized_config() {
+        // Read-only introspection binds required params to placeholders, so a
+        // template-shaped config still validates (#444).
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = format!(
+            "version: 1\nname: t\nparams:\n  tag: {{ required: true }}\npipeline:\n  source:\n    type: csv\n    config:\n      path: {}\n  sink:\n    type: jsonl\n    config:\n      path: {}\n",
+            dir.path().join("in-${param.tag}.csv").display(),
+            dir.path().join("out.jsonl").display()
+        );
+        let out = call_tool(&ctx(false), "validate_config", &json!({ "config": cfg })).await;
+        assert_eq!(out["isError"], false, "{}", out["content"][0]["text"]);
+    }
+
+    // ── Pipeline template tools (#444) ──────────────────────────────────────
+
+    #[cfg(feature = "templates")]
+    mod templates {
+        use super::*;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        fn tpl_ctx(allow: bool) -> McpContext {
+            let store = Arc::new(crate::serve::history::memory::MemoryHistory::new(
+                Duration::from_secs(60),
+            )) as crate::templates::TemplateStore;
+            McpContext::new(
+                crate::auth_catalog::build_auth_catalog(None).unwrap(),
+                allow,
+            )
+            .with_templates(store)
+        }
+
+        fn body(dir: &std::path::Path) -> String {
+            let csv = dir.join("in.csv");
+            std::fs::write(&csv, "id,name\n1,alice\n2,bob\n").unwrap();
+            format!(
+                "version: 1\nname: mcp-tpl\nparams:\n  tag: {{ required: true }}\npipeline:\n  source:\n    type: csv\n    config:\n      path: {}\n  sink:\n    type: jsonl\n    config:\n      path: {}\n",
+                csv.display(),
+                dir.join("out-${param.tag}.jsonl").display()
+            )
+        }
+
+        #[tokio::test]
+        async fn tools_are_hidden_without_a_store() {
+            let names: Vec<&str> = tool_defs(&ctx(true)).iter().map(|t| t.name).collect();
+            assert!(!names.contains(&"list_templates"), "{names:?}");
+            assert!(!names.contains(&"register_template"), "{names:?}");
+            // Calling one anyway is a clear tool error, not a panic.
+            let out = call_tool(&ctx(true), "list_templates", &json!({})).await;
+            assert_eq!(out["isError"], true);
+            assert!(
+                out["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("--template-store")
+            );
+        }
+
+        #[tokio::test]
+        async fn read_tools_are_ungated_and_write_tools_are_gated() {
+            let ro: Vec<&str> = tool_defs(&tpl_ctx(false)).iter().map(|t| t.name).collect();
+            assert!(ro.contains(&"list_templates"), "{ro:?}");
+            assert!(ro.contains(&"get_template"), "{ro:?}");
+            assert!(!ro.contains(&"register_template"), "{ro:?}");
+            assert!(!ro.contains(&"run_template"), "{ro:?}");
+
+            let rw: Vec<&str> = tool_defs(&tpl_ctx(true)).iter().map(|t| t.name).collect();
+            assert!(rw.contains(&"register_template"), "{rw:?}");
+            assert!(rw.contains(&"run_template"), "{rw:?}");
+
+            for tool in ["register_template", "run_template"] {
+                let out = call_tool(&tpl_ctx(false), tool, &json!({"id":"x","config":"y"})).await;
+                assert_eq!(out["isError"], true, "{tool} must be gated");
+                assert!(
+                    out["content"][0]["text"]
+                        .as_str()
+                        .unwrap()
+                        .contains("--allow-mutations")
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn register_list_get_and_run_round_trip() {
+            let dir = tempfile::tempdir().unwrap();
+            let ctx = tpl_ctx(true);
+
+            let out = call_tool(
+                &ctx,
+                "register_template",
+                &json!({ "config": body(dir.path()) }),
+            )
+            .await;
+            assert_eq!(out["isError"], false, "{}", out["content"][0]["text"]);
+            let text = out["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("mcp-tpl"), "{text}");
+
+            let out = call_tool(&ctx, "list_templates", &json!({})).await;
+            let text = out["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("\"count\": 1"), "{text}");
+
+            let out = call_tool(&ctx, "get_template", &json!({"id":"mcp-tpl"})).await;
+            assert_eq!(out["isError"], false);
+            let text = out["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("\"versions\""), "{text}");
+            assert!(text.contains("${param.tag}"), "body is verbatim: {text}");
+
+            let out = call_tool(&ctx, "get_template", &json!({"id":"nope"})).await;
+            assert_eq!(out["isError"], true);
+
+            // A missing required param is a tool error naming it.
+            let out = call_tool(&ctx, "run_template", &json!({"id":"mcp-tpl"})).await;
+            assert_eq!(out["isError"], true);
+            assert!(out["content"][0]["text"].as_str().unwrap().contains("tag"));
+
+            // dry_run materializes + validates without writing.
+            let out = call_tool(
+                &ctx,
+                "run_template",
+                &json!({"id":"mcp-tpl","params":{"tag":"dry"},"dry_run":true}),
+            )
+            .await;
+            assert_eq!(out["isError"], false, "{}", out["content"][0]["text"]);
+            let text = out["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("\"dry_run\": true"), "{text}");
+            assert!(!dir.path().join("out-dry.jsonl").exists());
+
+            // The real run writes through the ordinary pipeline path.
+            let out = call_tool(
+                &ctx,
+                "run_template",
+                &json!({"id":"mcp-tpl","params":{"tag":"real"}}),
+            )
+            .await;
+            assert_eq!(out["isError"], false, "{}", out["content"][0]["text"]);
+            let text = out["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("\"records_written\": 2"), "{text}");
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("out-real.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .count(),
+                2
+            );
+        }
+
+        #[tokio::test]
+        async fn secret_params_are_redacted_in_the_response() {
+            let dir = tempfile::tempdir().unwrap();
+            let ctx = tpl_ctx(true);
+            let csv = dir.path().join("in.csv");
+            std::fs::write(&csv, "id\n1\n").unwrap();
+            let cfg = format!(
+                "version: 1\nname: mcp-secret\nparams:\n  token: {{ required: true, secret: true }}\npipeline:\n  source:\n    type: csv\n    config:\n      path: {}\n  sink:\n    type: jsonl\n    config:\n      path: {}\n",
+                csv.display(),
+                dir.path().join("out.jsonl").display()
+            );
+            call_tool(&ctx, "register_template", &json!({ "config": cfg })).await;
+            let out = call_tool(
+                &ctx,
+                "run_template",
+                &json!({"id":"mcp-secret","params":{"token":"top-secret-token-value"},"dry_run":true}),
+            )
+            .await;
+            let text = out["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("\"***\""), "{text}");
+            assert!(!text.contains("top-secret-token-value"), "leaked: {text}");
+        }
+
+        #[tokio::test]
+        async fn register_rejects_an_invalid_config() {
+            let out = call_tool(
+                &tpl_ctx(true),
+                "register_template",
+                &json!({ "config": "version: 1\nname: x\nbogus: 1\npipeline: {}\n" }),
+            )
+            .await;
+            assert_eq!(out["isError"], true);
+        }
+
+        #[tokio::test]
+        async fn env_overrides_flow_through_run_template() {
+            let dir = tempfile::tempdir().unwrap();
+            let ctx = tpl_ctx(true);
+            let csv = dir.path().join("in.csv");
+            std::fs::write(&csv, "id\n1\n").unwrap();
+            let cfg = format!(
+                "version: 1\nname: mcp-env\npipeline:\n  source:\n    type: csv\n    config:\n      path: {}\n  sink:\n    type: jsonl\n    config:\n      path: {}/out-${{env:MCP_TPL_SUFFIX}}.jsonl\n",
+                csv.display(),
+                dir.path().display()
+            );
+            call_tool(&ctx, "register_template", &json!({ "config": cfg })).await;
+            let out = call_tool(
+                &ctx,
+                "run_template",
+                &json!({"id":"mcp-env","env":{"MCP_TPL_SUFFIX":"eu"}}),
+            )
+            .await;
+            assert_eq!(out["isError"], false, "{}", out["content"][0]["text"]);
+            assert!(dir.path().join("out-eu.jsonl").exists());
+        }
     }
 }
