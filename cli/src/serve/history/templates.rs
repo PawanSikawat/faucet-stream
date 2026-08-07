@@ -21,33 +21,48 @@ use crate::params::ParamsSpec;
 use crate::serve::load::ConfigFormat;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Maximum length of a template id. Long enough for `team-service-purpose`,
 /// short enough to stay readable in a URL path and a CLI table.
 pub const MAX_ID_LEN: usize = 64;
 
-/// The reserved channel naming a template's newest version.
-pub const LATEST_TAG: &str = "latest";
+/// The channel an unpinned request resolves to: the **launched** version.
+pub const DEFAULT_CHANNEL: &str = "stable";
 
-/// A **named version channel** — a movable pointer at one numeric version.
+/// Rejected spelling. `latest` is ambiguous in this model — it could mean the
+/// blessed release (`stable`) or the highest build number (`newest`) — so it is
+/// refused rather than silently picking one.
+pub const REJECTED_LATEST: &str = "latest";
+
+/// A **named version channel** — a pointer at one numeric version.
 ///
-/// Versions themselves are numeric and auto-incrementing; channels are the
-/// human-facing names you promote *between* them, exactly like container image
-/// tags. The set is deliberately **closed**: an open-ended tag namespace turns
-/// into a second, unreviewable naming system, and a typo (`prd`) would silently
-/// create a new channel nobody watches. A caller who needs an arbitrary label
-/// puts it in the run's `labels`, not in the registry.
+/// Versions are numeric builds; channels are the human-facing names a build is
+/// promoted *into*, like npm dist-tags. Three are **derived** (computed, never
+/// assignable):
 ///
-/// [`Self::Latest`] is special: it is **derived**, always resolvable, and cannot
-/// be assigned or moved — it is by definition the highest registered version.
-/// Every other channel starts unset and points wherever it was last promoted.
+/// - [`Self::Stable`] — the **launched** version, and what an unpinned request
+///   resolves to. Moved only by an explicit `launch`, so a newly registered
+///   build (a nightly, a feature branch) never drags existing callers with it.
+/// - [`Self::Previous`] — the version launched *before* the current one, for a
+///   one-step rollback. Empty until a second launch has happened.
+/// - [`Self::Newest`] — the highest version number, launched or not. The "run
+///   what I just pushed" selector for development and CI.
+///
+/// The rest are assignable environment pointers moved with `promote`. The set is
+/// deliberately **closed**: an open tag namespace becomes a second, unreviewable
+/// naming system in which a typo (`prd`) silently creates a channel nobody
+/// watches. Free-form labels belong on the *run*, not in the registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum VersionChannel {
-    /// The newest registered version. Derived, never assigned.
+    /// The launched version — the default for an unpinned request. Derived from
+    /// the launch log; moved by `launch`, never by `promote`.
     #[default]
-    Latest,
-    /// The version blessed as known-good — the usual promotion target.
     Stable,
+    /// The previously launched version. Derived; the rollback target.
+    Previous,
+    /// The highest registered version number, launched or not. Derived.
+    Newest,
     /// Production.
     Prod,
     /// Pre-production / release-candidate soak.
@@ -60,77 +75,76 @@ pub enum VersionChannel {
     Test,
     /// Day-to-day development.
     Dev,
-    /// The previously-blessed version, kept for a one-step rollback.
-    Previous,
 }
 
 impl VersionChannel {
-    /// Every channel, in promotion order (`dev` → … → `prod`), with the derived
-    /// `latest` first. Drives help text, error messages, and `--tag` completion.
+    /// Every channel: the derived release pointers first, then the assignable
+    /// environments in promotion order (`dev` → … → `prod`). Drives help text,
+    /// error messages, and `--tag` completion.
     pub const ALL: &'static [Self] = &[
-        Self::Latest,
+        Self::Stable,
+        Self::Previous,
+        Self::Newest,
         Self::Dev,
         Self::Test,
         Self::Staging,
         Self::PreProd,
         Self::Canary,
-        Self::Stable,
         Self::Prod,
-        Self::Previous,
     ];
 
-    /// The channels a caller may actually assign (everything except `latest`).
+    /// The channels a caller may `promote`. Excludes the three derived release
+    /// pointers — `stable` moves via `launch`, and `previous` / `newest` are
+    /// computed.
     pub const ASSIGNABLE: &'static [Self] = &[
         Self::Dev,
         Self::Test,
         Self::Staging,
         Self::PreProd,
         Self::Canary,
-        Self::Stable,
         Self::Prod,
-        Self::Previous,
     ];
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Latest => LATEST_TAG,
-            Self::Stable => "stable",
+            Self::Stable => DEFAULT_CHANNEL,
+            Self::Previous => "previous",
+            Self::Newest => "newest",
             Self::Prod => "prod",
             Self::PreProd => "pre-prod",
             Self::Staging => "staging",
             Self::Canary => "canary",
             Self::Test => "test",
             Self::Dev => "dev",
-            Self::Previous => "previous",
         }
     }
 
-    /// `latest` is computed from the version list, so it can never be promoted,
-    /// moved, or deleted like the others.
+    /// Whether this channel is computed rather than assigned. A derived channel
+    /// can never be the target of `promote`.
     pub fn is_derived(self) -> bool {
-        matches!(self, Self::Latest)
+        matches!(self, Self::Stable | Self::Previous | Self::Newest)
     }
 
-    /// Parse a channel name. Case-insensitive, and `-`/`_`/`` separators are
+    /// Parse a channel name. Case-insensitive, and `-`/`_` separators are
     /// interchangeable, so `pre-prod`, `pre_prod`, `PreProd`, and `preprod` all
-    /// name the same channel. Anything outside the closed set is rejected with
-    /// the full list — the point of the enum.
+    /// name the same channel.
+    ///
+    /// `latest` gets a bespoke error rather than the generic one: it is the most
+    /// likely thing a newcomer types, and both plausible meanings exist under
+    /// other names, so naming them is more useful than listing all nine.
     pub fn parse(raw: &str) -> CliResult<Self> {
-        let normalized: String = raw
-            .trim()
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .map(|c| c.to_ascii_lowercase())
-            .collect();
+        let normalized = normalize(raw);
+        if normalized == REJECTED_LATEST {
+            return Err(CliError::Config(format!(
+                "`{REJECTED_LATEST}` is not a version channel here because it is ambiguous. \
+                 Did you mean `{DEFAULT_CHANNEL}` (the launched version — also the default when \
+                 no version is given), or `newest` (the highest version number, launched or not)?"
+            )));
+        }
         Self::ALL
             .iter()
             .copied()
-            .find(|c| {
-                c.as_str()
-                    .chars()
-                    .filter(char::is_ascii_alphanumeric)
-                    .eq(normalized.chars())
-            })
+            .find(|c| normalize(c.as_str()) == normalized)
             .ok_or_else(|| {
                 CliError::Config(format!(
                     "unknown template version channel '{raw}' — the named channels are fixed: {}",
@@ -142,6 +156,15 @@ impl VersionChannel {
                 ))
             })
     }
+}
+
+/// Lowercase and strip separators so every spelling of a channel compares equal.
+fn normalize(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }
 
 impl std::fmt::Display for VersionChannel {
@@ -163,14 +186,63 @@ impl<'de> Deserialize<'de> for VersionChannel {
     }
 }
 
+/// The lifecycle state of a **template** (not of an individual version).
+///
+/// Derived, so it can never disagree with the registry's actual contents: only
+/// the deprecation marker is stored, and `draft` vs `launched` falls out of
+/// whether anything has been launched yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TemplateStatus {
+    /// Registered but never launched — the work-in-progress state. An unpinned
+    /// request fails (there is no blessed version); explicit selectors still
+    /// work, so a draft template is fully testable.
+    Draft,
+    /// A version has been launched; `stable` points at it and unpinned requests
+    /// resolve to it.
+    Launched,
+    /// Explicitly retired. Unpinned requests still resolve `stable` — retiring
+    /// must not hard-break existing callers — but they warn, and listings mark
+    /// it. `delete` is the hard stop.
+    Deprecated,
+}
+
+impl TemplateStatus {
+    /// Derive the status from the two facts that determine it.
+    pub fn derive(has_launch: bool, deprecated: bool) -> Self {
+        match (deprecated, has_launch) {
+            (true, _) => Self::Deprecated,
+            (false, true) => Self::Launched,
+            (false, false) => Self::Draft,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Launched => "launched",
+            Self::Deprecated => "deprecated",
+        }
+    }
+}
+
+impl std::fmt::Display for TemplateStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Which version of a template to use: a named [`VersionChannel`] or an exact
 /// number.
 ///
-/// Omitting the selector is the same as `latest`, so a caller that never
-/// mentions versions always rides the newest registration.
+/// Omitting the selector is the same as `stable`, so a caller that never mentions
+/// versions rides the **launched** version — not whatever was registered most
+/// recently. Registering a nightly therefore moves nobody; only an explicit
+/// `launch` does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VersionSelector {
-    /// A named channel — `latest` (the default) or a promoted pointer.
+    /// A named channel — `stable` (the default), another derived pointer, or a
+    /// promoted environment.
     Channel(VersionChannel),
     /// An exact version, for a pin or a rollback.
     Pinned(u32),
@@ -178,14 +250,19 @@ pub enum VersionSelector {
 
 impl Default for VersionSelector {
     fn default() -> Self {
-        Self::Channel(VersionChannel::Latest)
+        Self::stable()
     }
 }
 
 impl VersionSelector {
-    /// The default selector: the newest version.
-    pub const fn latest() -> Self {
-        Self::Channel(VersionChannel::Latest)
+    /// The default selector: the launched version.
+    pub const fn stable() -> Self {
+        Self::Channel(VersionChannel::Stable)
+    }
+
+    /// The highest registered version, launched or not.
+    pub const fn newest() -> Self {
+        Self::Channel(VersionChannel::Newest)
     }
 
     /// Parse a channel name or a positive integer. A numeric string is a pin; a
@@ -204,14 +281,15 @@ impl VersionSelector {
         VersionChannel::parse(s).map(Self::Channel)
     }
 
-    /// True when this selector means "the newest version".
-    pub fn is_latest(self) -> bool {
-        matches!(self, Self::Channel(c) if c.is_derived())
+    /// True when this selector means "the launched version" — i.e. the default.
+    pub fn is_stable(self) -> bool {
+        matches!(self, Self::Channel(VersionChannel::Stable))
     }
 
-    /// The exact version, when the selector already names one. A non-`latest`
-    /// channel needs a registry lookup — see
-    /// [`crate::templates::resolve_version`].
+    /// The exact version, when the selector already names one. **Every** channel
+    /// — derived or assigned — needs a registry lookup, so callers must go
+    /// through [`crate::templates::resolve_version`] rather than treating a
+    /// `None` here as "the newest".
     pub fn pinned(self) -> Option<u32> {
         match self {
             Self::Pinned(n) => Some(n),
@@ -376,7 +454,8 @@ pub struct TemplateRecord {
 }
 
 impl TemplateRecord {
-    /// The summary view — everything except the (potentially large) body.
+    /// The summary view — everything except the (potentially large) body, with no
+    /// release state attached. Use [`Self::summary_with`] where the state is known.
     pub fn summary(&self) -> TemplateSummary {
         TemplateSummary {
             id: self.id.clone(),
@@ -386,6 +465,15 @@ impl TemplateRecord {
             params: self.params.clone(),
             created_at: self.created_at,
             created_by: self.created_by.clone(),
+            state: None,
+        }
+    }
+
+    /// The summary view carrying the template's release state.
+    pub fn summary_with(&self, state: TemplateState) -> TemplateSummary {
+        TemplateSummary {
+            state: Some(state),
+            ..self.summary()
         }
     }
 }
@@ -394,6 +482,8 @@ impl TemplateRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TemplateSummary {
     pub id: String,
+    /// The newest registered version (the build tip). Present for continuity with
+    /// the per-version record; `state.stable` is what an unpinned run uses.
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -404,6 +494,113 @@ pub struct TemplateSummary {
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by: Option<String>,
+    /// Release state of the template as a whole (status, `stable` / `previous` /
+    /// `newest`, channel pointers). Populated by the read paths; `None` on a
+    /// record that was built without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<TemplateState>,
+}
+
+/// One entry in a template's append-only **launch log**.
+///
+/// The log is the single source of truth for the release pointers: `stable` is
+/// the newest entry's version and `previous` is the one before it. Because it is
+/// append-only it doubles as the launch/rollback audit trail — who blessed which
+/// build, and when.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaunchRecord {
+    /// Monotonic per-template sequence, from 1.
+    pub seq: u32,
+    /// The version that was launched.
+    pub version: u32,
+    pub launched_at: DateTime<Utc>,
+    /// Principal that launched it (`None` for a CLI launch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launched_by: Option<String>,
+}
+
+/// Why and when a template was retired. Stored only while deprecated; clearing it
+/// is the `--undo`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeprecationRecord {
+    pub deprecated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecated_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Everything a surface needs to describe a template's release state, read in one
+/// go so the CLI, HTTP handlers, MCP tools, and UI can never assemble it
+/// inconsistently from separate calls.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TemplateState {
+    /// Derived lifecycle status of the **template**.
+    pub status: TemplateStatus,
+    /// Every stored version, newest first.
+    pub versions: Vec<u32>,
+    /// The launched version — what `stable` and an unpinned request resolve to.
+    /// `None` while the template is a draft.
+    pub stable: Option<u32>,
+    /// The version launched before the current one; the rollback target.
+    pub previous: Option<u32>,
+    /// Highest version number, launched or not.
+    pub newest: Option<u32>,
+    /// Assignable channel pointers (`{channel: version}`), excluding the derived
+    /// ones.
+    pub tags: BTreeMap<String, u32>,
+    /// Present only when `status` is `deprecated`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<DeprecationRecord>,
+}
+
+impl TemplateState {
+    /// Assemble the state from the raw facts. Pure, so the memory and SQL
+    /// backends cannot disagree about what a set of rows means.
+    pub fn assemble(
+        versions: Vec<u32>,
+        launches: &[LaunchRecord],
+        tags: BTreeMap<String, u32>,
+        deprecation: Option<DeprecationRecord>,
+    ) -> Self {
+        let stable = stable_version(launches);
+        Self {
+            status: TemplateStatus::derive(stable.is_some(), deprecation.is_some()),
+            newest: versions.first().copied(),
+            stable,
+            previous: previous_version(launches),
+            versions,
+            tags,
+            deprecation,
+        }
+    }
+
+    /// Resolve a derived channel against this state.
+    pub fn derived(&self, channel: VersionChannel) -> Option<u32> {
+        match channel {
+            VersionChannel::Stable => self.stable,
+            VersionChannel::Previous => self.previous,
+            VersionChannel::Newest => self.newest,
+            other => self.tags.get(other.as_str()).copied(),
+        }
+    }
+}
+
+/// The launched version: the newest launch-log entry. `launches` must be ordered
+/// newest-first (highest `seq` at index 0).
+pub fn stable_version(launches: &[LaunchRecord]) -> Option<u32> {
+    launches.first().map(|l| l.version)
+}
+
+/// The version launched *before* the current one — the rollback target.
+///
+/// Relies on the store never appending a launch for the version that is already
+/// stable (a re-launch is a no-op), so entry 1 is genuinely the prior release
+/// rather than a duplicate of the current one. Defensively skips any leading
+/// duplicates anyway, so a hand-edited log can't make `previous == stable`.
+pub fn previous_version(launches: &[LaunchRecord]) -> Option<u32> {
+    let current = stable_version(launches)?;
+    launches.iter().map(|l| l.version).find(|v| *v != current)
 }
 
 /// A registration request, after validation. `version` is assigned by the store.
@@ -506,14 +703,14 @@ mod tests {
             assert_eq!(VersionChannel::parse(raw).unwrap(), VersionChannel::PreProd);
         }
         for (raw, want) in [
-            ("latest", VersionChannel::Latest),
             ("stable", VersionChannel::Stable),
+            ("previous", VersionChannel::Previous),
+            ("newest", VersionChannel::Newest),
             ("prod", VersionChannel::Prod),
             ("staging", VersionChannel::Staging),
             ("canary", VersionChannel::Canary),
             ("test", VersionChannel::Test),
             ("dev", VersionChannel::Dev),
-            ("previous", VersionChannel::Previous),
         ] {
             assert_eq!(VersionChannel::parse(raw).unwrap(), want);
             assert_eq!(want.as_str(), raw);
@@ -528,18 +725,43 @@ mod tests {
     }
 
     #[test]
-    fn only_latest_is_derived_and_assignable_excludes_it() {
-        assert!(VersionChannel::Latest.is_derived());
-        assert_eq!(VersionChannel::default(), VersionChannel::Latest);
+    fn latest_is_rejected_by_name_with_both_alternatives() {
+        // `latest` is the most likely thing a newcomer types and both meanings
+        // exist under other names, so it gets a bespoke error rather than being
+        // silently resolved to one of them.
+        for raw in ["latest", "LATEST", " Latest "] {
+            let err = VersionChannel::parse(raw).unwrap_err().to_string();
+            assert!(err.contains("ambiguous"), "{raw:?}: {err}");
+            assert!(err.contains("stable"), "{raw:?}: {err}");
+            assert!(err.contains("newest"), "{raw:?}: {err}");
+        }
+        assert!(VersionSelector::parse("latest").is_err());
+    }
+
+    #[test]
+    fn derived_channels_are_not_assignable() {
+        // `stable` moves via `launch`; `previous` / `newest` are computed. None
+        // of the three may be a `promote` target.
+        for c in [
+            VersionChannel::Stable,
+            VersionChannel::Previous,
+            VersionChannel::Newest,
+        ] {
+            assert!(c.is_derived(), "{c} must be derived");
+            assert!(!VersionChannel::ASSIGNABLE.contains(&c), "{c}");
+        }
         for c in VersionChannel::ASSIGNABLE {
             assert!(!c.is_derived(), "{c} must be assignable");
         }
         assert_eq!(
             VersionChannel::ALL.len(),
-            VersionChannel::ASSIGNABLE.len() + 1,
-            "ALL is ASSIGNABLE plus the derived `latest`"
+            VersionChannel::ASSIGNABLE.len() + 3,
+            "ALL is ASSIGNABLE plus the three derived release pointers"
         );
-        assert!(!VersionChannel::ASSIGNABLE.contains(&VersionChannel::Latest));
+        // The default channel is `stable` — an unpinned request rides the
+        // launched version, not the newest build.
+        assert_eq!(VersionChannel::default(), VersionChannel::Stable);
+        assert_eq!(VersionChannel::default().as_str(), DEFAULT_CHANNEL);
     }
 
     #[test]
@@ -554,6 +776,7 @@ mod tests {
             VersionChannel::PreProd
         );
         assert!(serde_json::from_value::<VersionChannel>(json!("nope")).is_err());
+        assert!(serde_json::from_value::<VersionChannel>(json!("latest")).is_err());
         assert!(serde_json::from_value::<VersionChannel>(json!(2)).is_err());
     }
 
@@ -567,10 +790,14 @@ mod tests {
             VersionSelector::parse("prod").unwrap().channel(),
             Some(VersionChannel::Prod)
         );
-        assert!(VersionSelector::parse("prod").unwrap().pinned().is_none());
-        assert!(!VersionSelector::parse("prod").unwrap().is_latest());
-        assert!(VersionSelector::parse("latest").unwrap().is_latest());
-        assert!(VersionSelector::default().is_latest());
+        // Every channel needs a registry lookup — `pinned()` is None for all of
+        // them, including the derived ones.
+        for c in VersionChannel::ALL {
+            assert!(VersionSelector::Channel(*c).pinned().is_none(), "{c}");
+        }
+        assert!(VersionSelector::parse("stable").unwrap().is_stable());
+        assert!(VersionSelector::default().is_stable());
+        assert!(!VersionSelector::parse("newest").unwrap().is_stable());
         assert_eq!(VersionSelector::parse("4").unwrap().pinned(), Some(4));
         assert!(VersionSelector::parse("4").unwrap().channel().is_none());
         assert_eq!(
@@ -582,25 +809,21 @@ mod tests {
     }
 
     #[test]
-    fn version_selector_parses_latest_and_numbers() {
+    fn version_selector_parses_channels_and_numbers() {
         assert_eq!(
-            VersionSelector::parse("latest").unwrap(),
-            VersionSelector::latest()
+            VersionSelector::parse("stable").unwrap(),
+            VersionSelector::stable()
         );
         assert_eq!(
-            VersionSelector::parse("LATEST").unwrap(),
-            VersionSelector::latest()
-        );
-        assert_eq!(
-            VersionSelector::parse("  latest ").unwrap(),
-            VersionSelector::latest()
+            VersionSelector::parse("newest").unwrap(),
+            VersionSelector::newest()
         );
         assert_eq!(
             VersionSelector::parse("3").unwrap(),
             VersionSelector::Pinned(3)
         );
         // A version is 1-based; 0, negatives, and junk are all rejected.
-        for bad in ["0", "-1", "", "v2", "newest", "1.5"] {
+        for bad in ["0", "-1", "", "v2", "1.5"] {
             assert!(
                 VersionSelector::parse(bad).is_err(),
                 "{bad:?} should be rejected"
@@ -610,20 +833,21 @@ mod tests {
 
     #[test]
     fn version_selector_maps_to_a_lookup_and_back() {
-        assert_eq!(VersionSelector::latest().pinned(), None);
+        assert_eq!(VersionSelector::stable().pinned(), None);
         assert_eq!(VersionSelector::Pinned(7).pinned(), Some(7));
-        assert_eq!(VersionSelector::default(), VersionSelector::latest());
-        assert_eq!(VersionSelector::latest().to_string(), "latest");
+        assert_eq!(VersionSelector::default(), VersionSelector::stable());
+        assert_eq!(VersionSelector::stable().to_string(), "stable");
+        assert_eq!(VersionSelector::newest().to_string(), "newest");
         assert_eq!(VersionSelector::Pinned(2).to_string(), "2");
     }
 
     #[test]
     fn version_selector_serde_accepts_every_wire_spelling() {
         use serde_json::json;
-        for wire in [json!("latest"), json!("LATEST")] {
+        for wire in [json!("stable"), json!("STABLE")] {
             assert_eq!(
                 serde_json::from_value::<VersionSelector>(wire).unwrap(),
-                VersionSelector::latest()
+                VersionSelector::stable()
             );
         }
         // A string (query string / CLI) and a bare number (JSON body) agree.
@@ -638,14 +862,32 @@ mod tests {
         assert!(serde_json::from_value::<VersionSelector>(json!(0)).is_err());
         assert!(serde_json::from_value::<VersionSelector>(json!("nope")).is_err());
         assert!(serde_json::from_value::<VersionSelector>(json!(true)).is_err());
-        // Round-trips as the tag / the number, never as an enum variant name.
+        // Round-trips as the channel name / the number.
         assert_eq!(
-            serde_json::to_value(VersionSelector::latest()).unwrap(),
-            json!("latest")
+            serde_json::to_value(VersionSelector::stable()).unwrap(),
+            json!("stable")
         );
         assert_eq!(
             serde_json::to_value(VersionSelector::Pinned(9)).unwrap(),
             json!("9")
+        );
+    }
+
+    #[test]
+    fn template_status_is_derived_from_launch_and_deprecation() {
+        use TemplateStatus::*;
+        // Only two facts determine it, so the status can never disagree with the
+        // registry's contents.
+        assert_eq!(TemplateStatus::derive(false, false), Draft);
+        assert_eq!(TemplateStatus::derive(true, false), Launched);
+        assert_eq!(TemplateStatus::derive(false, true), Deprecated);
+        // Deprecation wins over having a launched version.
+        assert_eq!(TemplateStatus::derive(true, true), Deprecated);
+        assert_eq!(Draft.as_str(), "draft");
+        assert_eq!(Launched.to_string(), "launched");
+        assert_eq!(
+            serde_json::to_value(Deprecated).unwrap(),
+            serde_json::json!("deprecated")
         );
     }
 

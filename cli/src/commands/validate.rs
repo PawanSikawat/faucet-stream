@@ -56,7 +56,7 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         PipelineConfig::from_path_tolerating_secrets_with(&path, args.profile.as_deref(), &inputs)?
     } else {
         // Real preflight: report each secret reference, then resolve.
-        let refs = crate::secrets::scan_path_refs(&path, args.profile.as_deref())?;
+        let refs = crate::secrets::scan_path_refs_with(&path, args.profile.as_deref(), &inputs)?;
         let cfg =
             PipelineConfig::from_path_async_with(&path, args.profile.as_deref(), &inputs).await?;
         for (scheme, reference) in &refs {
@@ -178,6 +178,10 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         }
     }
 
+    // Transform *kinds* are checked above; this compiles each chain so a bad
+    // transform *config* fails validation too.
+    check_transforms(&nodes)?;
+
     let roots = nodes
         .iter()
         .filter(|n| matches!(n.role, NodeRole::Root))
@@ -272,9 +276,26 @@ fn row_line(node: &crate::expand::ExpandedNode) -> String {
     )
 }
 
+/// Compile every row's transform chain.
+///
+/// `expand` only checks the *shape* of a `transforms:` entry, so a misspelled
+/// field (`set: { fields: … }` instead of `values:`) or an invalid SQL/WASM stage
+/// used to pass validation and then fail on the first page of a real run. Pure and
+/// offline — no connector is built.
+fn check_transforms(nodes: &[crate::expand::ExpandedNode]) -> CliResult<()> {
+    for n in nodes {
+        if n.transforms.is_empty() {
+            continue;
+        }
+        crate::transforms::compile_transforms(&n.transforms)
+            .map_err(|e| CliError::Config(format!("row '{}': {e}", n.id)))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::row_line;
+    use super::{check_transforms, row_line};
     use crate::expand::expand;
 
     #[test]
@@ -368,5 +389,47 @@ pipeline:
             "got: {}",
             row_line(&nodes[0])
         );
+    }
+
+    #[test]
+    fn transform_chains_are_compiled_not_just_shape_checked() {
+        // `set` takes `values:`; `fields:` is a plausible-looking typo that used to
+        // validate cleanly and then fail on the first page of a real run.
+        let cfg = crate::config::parse_with_extension(
+            r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  transforms:
+    - type: set
+      config: { fields: { a: 1 } }
+  sink:   { type: jsonl, config: { path: ./o } }
+matrix:
+  - id: rowA
+"#,
+            "yaml",
+        )
+        .unwrap();
+        let err = check_transforms(&expand(&cfg).unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("rowA"), "names the row: {err}");
+        assert!(err.contains("values"), "names the missing field: {err}");
+
+        // A well-formed chain compiles.
+        let cfg = crate::config::parse_with_extension(
+            r#"
+version: 1
+pipeline:
+  source: { type: rest, config: {} }
+  transforms:
+    - type: set
+      config: { values: { a: 1 } }
+  sink:   { type: jsonl, config: { path: ./o } }
+"#,
+            "yaml",
+        )
+        .unwrap();
+        check_transforms(&expand(&cfg).unwrap()).unwrap();
     }
 }

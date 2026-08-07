@@ -709,6 +709,70 @@ pub trait RunHistory: Send + Sync {
         Ok(false)
     }
 
+    /// Append a launch to the template's log, making `version` the new `stable`.
+    /// Returns the assigned sequence number, or `None` when `version` is already
+    /// stable (a re-launch is a no-op, which keeps `previous` meaningful rather
+    /// than letting it degrade into a duplicate of `stable`). Default:
+    /// unsupported.
+    async fn template_launch(
+        &self,
+        id: &str,
+        version: u32,
+        launched_by: Option<&str>,
+    ) -> Result<Option<u32>, HistoryError> {
+        let _ = (id, version, launched_by);
+        Err(HistoryError::Backend(
+            "this run-history backend does not support pipeline-template launches".into(),
+        ))
+    }
+
+    /// The template's launch log, **newest first**. Drives `stable` / `previous`,
+    /// the derived template status, and the launch audit trail. Default: empty.
+    async fn template_launches(
+        &self,
+        id: &str,
+    ) -> Result<Vec<templates::LaunchRecord>, HistoryError> {
+        let _ = id;
+        Ok(Vec::new())
+    }
+
+    /// Set (`Some`) or clear (`None`) the template's deprecation marker — the only
+    /// stored part of the lifecycle status. Default: unsupported.
+    async fn template_set_deprecation(
+        &self,
+        id: &str,
+        record: Option<&templates::DeprecationRecord>,
+    ) -> Result<(), HistoryError> {
+        let _ = (id, record);
+        Err(HistoryError::Backend(
+            "this run-history backend does not support pipeline-template deprecation".into(),
+        ))
+    }
+
+    /// The template's deprecation marker, if it is deprecated. Default: `None`.
+    async fn template_deprecation(
+        &self,
+        id: &str,
+    ) -> Result<Option<templates::DeprecationRecord>, HistoryError> {
+        let _ = id;
+        Ok(None)
+    }
+
+    /// The template's full release state: versions, launch-derived `stable` /
+    /// `previous` / `newest`, channel pointers, and the derived status.
+    ///
+    /// Provided (not overridden) so every backend assembles it from the same four
+    /// primitives via the pure [`templates::TemplateState::assemble`] — the
+    /// memory and SQL stores cannot drift on what a set of rows means.
+    async fn template_state(&self, id: &str) -> Result<templates::TemplateState, HistoryError> {
+        Ok(templates::TemplateState::assemble(
+            self.template_versions(id).await?,
+            &self.template_launches(id).await?,
+            self.template_tags(id).await?,
+            self.template_deprecation(id).await?,
+        ))
+    }
+
     /// True when the backend is in fallback mode (drives `/readyz`). Always false
     /// for memory.
     fn degraded(&self) -> bool;

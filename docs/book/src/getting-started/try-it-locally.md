@@ -65,6 +65,10 @@ Everything below runs against generated CSV data in `faucet-local-demo/`:
   Movement Catalog.
 - **Ops**: offline `faucet test`, `dlq inspect` / `replay`, and the `serve`
   HTTP control plane.
+- **Templates**: a parameterized config registered into the template registry,
+  then walked through the release lifecycle — `--launch`, `promote` up the
+  channels, `launch` from a channel, `rollback`, `deprecate` — plus a run
+  triggered by id + `--param`.
 
 With `--full`, the embedded DuckDB **SQL transform** step is included too.
 
@@ -73,7 +77,8 @@ With `--full`, the embedded DuckDB **SQL transform** step is included too.
 When the battery finishes, the script submits a handful of demo runs through
 the HTTP API and then keeps the server up, so the console arrives already
 populated — you can open it and immediately browse **Runs**, **Datasets**,
-**Lineage**, and the per-run **dead-letter-queue** panel. See
+**Lineage**, **Templates** (with a versions page you can launch and roll back
+from), and the per-run **dead-letter-queue** panel. See
 [Web console](../cookbook/web-console.md) for a screenshot tour.
 
 The run-history database (`faucet-local-demo/faucet-meta.db`) is **not** wiped

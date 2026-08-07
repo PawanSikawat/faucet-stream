@@ -8,7 +8,8 @@ use crate::error::{CliError, CliResult};
 use crate::params::{self, BindMode, SuppliedParams};
 use crate::serve::config::HistoryBackendSpec;
 use crate::serve::history::templates::{
-    TemplateDraft, TemplateId, TemplateRecord, VersionChannel, VersionSelector,
+    DeprecationRecord, TemplateDraft, TemplateId, TemplateRecord, TemplateState, TemplateStatus,
+    TemplateSummary, VersionChannel, VersionSelector,
 };
 use crate::serve::history::{self, RunHistory};
 use crate::serve::load::ConfigFormat;
@@ -32,11 +33,16 @@ pub struct RegisterRequest {
     pub format: ConfigFormat,
     /// Free-text description (falls back to nothing).
     pub description: Option<String>,
-    /// Named channels to point at the newly registered version. The version
-    /// number itself always auto-increments; these are the human-facing pointers
-    /// (`dev`, `pre-prod`, …) the caller wants moved onto it in the same step.
-    /// `latest` is derived and rejected.
+    /// Named environment channels to point at the newly registered version. The
+    /// version number itself always auto-increments; these are the human-facing
+    /// pointers (`dev`, `pre-prod`, …) moved onto it in the same step. Derived
+    /// channels are rejected.
     pub tags: Vec<VersionChannel>,
+    /// Launch the newly registered version immediately, making it `stable`.
+    /// Without this a register is inert — a new build never moves existing
+    /// callers, which is the point of the model — so this is the explicit
+    /// "register and go live" shortcut.
+    pub launch: bool,
     /// Principal performing the registration, for provenance.
     pub created_by: Option<String>,
 }
@@ -112,7 +118,16 @@ pub async fn register(store: &TemplateStore, req: RegisterRequest) -> CliResult<
     if crate::topology::is_topology(&cfg) {
         crate::topology::validate_topology_spec(&cfg)?;
     } else {
-        crate::expand::expand(&cfg)?;
+        // Compile each row's transform chain too — `expand` only checks an entry's
+        // shape, so without this a template with a misspelled transform field
+        // registers cleanly and fails at trigger time instead.
+        for node in crate::expand::expand(&cfg)? {
+            if node.transforms.is_empty() {
+                continue;
+            }
+            crate::transforms::compile_transforms(&node.transforms)
+                .map_err(|e| CliError::Config(format!("row '{}': {e}", node.id)))?;
+        }
     }
 
     let id = match &req.id {
@@ -138,10 +153,22 @@ pub async fn register(store: &TemplateStore, req: RegisterRequest) -> CliResult<
         reject_derived(*tag)?;
     }
 
+    // A description describes the *template*, not the build, so carry the previous
+    // version's forward when the caller omits one. Without this, a deploy that
+    // re-registers without `--description` blanks the listing for everybody.
+    let description = match &req.description {
+        Some(d) => Some(d.clone()),
+        None => store
+            .template_get(id.as_str(), None)
+            .await
+            .map_err(|e| CliError::Internal(format!("template registry read: {e}")))?
+            .and_then(|prev| prev.description),
+    };
+
     let draft = TemplateDraft {
         id,
         name: cfg.name.clone(),
-        description: req.description.clone(),
+        description,
         body: req.body.clone(),
         format: req.format,
         params: declared,
@@ -159,6 +186,13 @@ pub async fn register(store: &TemplateStore, req: RegisterRequest) -> CliResult<
             .await
             .map_err(|e| CliError::Internal(format!("template channel write: {e}")))?;
     }
+    // `--launch` is the only way a register makes a version live.
+    if req.launch {
+        store
+            .template_launch(&record.id, record.version, req.created_by.as_deref())
+            .await
+            .map_err(|e| CliError::Internal(format!("template launch write: {e}")))?;
+    }
     Ok(record)
 }
 
@@ -166,9 +200,13 @@ pub async fn register(store: &TemplateStore, req: RegisterRequest) -> CliResult<
 /// no sense — say so instead of silently no-oping.
 fn reject_derived(tag: VersionChannel) -> CliResult<()> {
     if tag.is_derived() {
+        let how = match tag {
+            VersionChannel::Stable => " — move it with `faucet template launch` instead",
+            VersionChannel::Previous => " — it is whatever was launched before the current version",
+            _ => " — it is always the highest version number",
+        };
         return Err(CliError::Config(format!(
-            "`{tag}` is derived — it always names the newest version and cannot be assigned or \
-             moved. Register a new version instead, or promote one of: {}",
+            "`{tag}` is a derived channel and cannot be promoted{how}. Promotable channels: {}",
             VersionChannel::ASSIGNABLE
                 .iter()
                 .map(|c| c.as_str())
@@ -181,70 +219,108 @@ fn reject_derived(tag: VersionChannel) -> CliResult<()> {
 
 /// Resolve a [`VersionSelector`] to the exact version to act on.
 ///
-/// `Ok(None)` means "the newest" (`latest`, or an omitted selector) — the shape
-/// [`RunHistory::template_get`] already takes. A named channel is looked up in
-/// the registry; an unset one is an error naming the channels that *are* set,
-/// because silently falling back to `latest` would run the wrong code.
+/// **Every** channel — derived or assigned — is looked up here; nothing falls back
+/// to "the newest build". A selector that names an unset channel is an error
+/// listing what *is* set, because silently substituting another version is how a
+/// caller ends up running code they did not ask for.
 pub async fn resolve_version(
     store: &TemplateStore,
     id: &str,
     selector: VersionSelector,
-) -> CliResult<Option<u32>> {
-    match selector {
-        VersionSelector::Pinned(n) => Ok(Some(n)),
-        VersionSelector::Channel(c) if c.is_derived() => Ok(None),
-        VersionSelector::Channel(c) => {
-            let tags = store
-                .template_tags(id)
-                .await
-                .map_err(|e| CliError::Internal(format!("template channel read: {e}")))?;
-            tags.get(c.as_str()).copied().map(Some).ok_or_else(|| {
-                CliError::Config(format!(
-                    "template '{id}' has no `{c}` version. Channels currently set: {}. Promote one \
-                     with `faucet template promote {id} --tag {c} --version <n>`",
-                    if tags.is_empty() {
-                        String::from("(none)")
-                    } else {
-                        tags.iter()
-                            .map(|(t, v)| format!("{t}=v{v}"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    }
-                ))
-            })
+) -> CliResult<u32> {
+    if let VersionSelector::Pinned(n) = selector {
+        return Ok(n);
+    }
+    let channel = selector
+        .channel()
+        .expect("non-pinned selector names a channel");
+    let state = template_state(store, id).await?;
+    if state.versions.is_empty() {
+        return Err(CliError::UnknownPipelineTemplate {
+            id: id.to_string(),
+            version: None,
+        });
+    }
+    state
+        .derived(channel)
+        .ok_or_else(|| unresolved_channel(id, channel, &state))
+}
+
+/// The error for a selector that names a channel with nothing behind it. Phrased
+/// per channel, because the fix differs: `stable` needs a *launch*, `previous`
+/// needs a second launch, an environment channel needs a *promote*.
+fn unresolved_channel(id: &str, channel: VersionChannel, state: &TemplateState) -> CliError {
+    let newest = state
+        .newest
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "1".into());
+    match channel {
+        // Phrased for both audiences — the same error surfaces on the CLI, over
+        // HTTP, and in the console's versions page.
+        VersionChannel::Stable => CliError::Config(format!(
+            "template '{id}' has no launched version (status: {}). Launch one first \
+             (`faucet template launch {id} --version {newest}`, or \
+             `POST /v1/templates/{id}/launch`), or select a specific build with \
+             `newest` / a version number",
+            state.status
+        )),
+        VersionChannel::Previous => CliError::Config(format!(
+            "template '{id}' has no previous version — {}. `previous` is the version launched \
+             before the current one, so it only exists after a second launch",
+            match state.stable {
+                Some(v) => format!("v{v} is the first and only launched version"),
+                None => "nothing has been launched yet".to_string(),
+            }
+        )),
+        // `newest` is unreachable here (a template with versions always has one),
+        // so this arm only guards a future channel gaining derived status.
+        VersionChannel::Newest => {
+            CliError::Config(format!("template '{id}' has no versions registered"))
         }
+        assigned => CliError::Config(format!(
+            "template '{id}' has no `{assigned}` version. Channels currently set: {}. Promote one \
+             with `faucet template promote {id} --tag {assigned} --version <n>`",
+            if state.tags.is_empty() {
+                String::from("(none)")
+            } else {
+                state
+                    .tags
+                    .iter()
+                    .map(|(t, v)| format!("{t}=v{v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        )),
     }
 }
 
-/// Point a named channel at a version, moving it if already set.
+/// Every registered template's latest version, each carrying its release state.
 ///
-/// The target is itself a selector, so `--tag prod --version stable` promotes
-/// whatever `stable` currently names — the "select an existing named version"
-/// case — and `--version 3` pins an exact one. The version must exist.
-pub async fn promote(
-    store: &TemplateStore,
-    id: &str,
-    tag: VersionChannel,
-    target: VersionSelector,
-) -> CliResult<u32> {
-    reject_derived(tag)?;
-    let version = match resolve_version(store, id, target).await? {
-        Some(v) => v,
-        // `latest` → resolve to the concrete newest, so the pointer is stable
-        // rather than tracking future registrations.
-        None => {
-            store
-                .template_get(id, None)
-                .await
-                .map_err(|e| CliError::Internal(format!("template registry read: {e}")))?
-                .ok_or_else(|| CliError::UnknownPipelineTemplate {
-                    id: id.to_string(),
-                    version: None,
-                })?
-                .version
-        }
-    };
-    // Refuse to aim a channel at a version that does not exist.
+/// One extra read per template — the registry is a small, human-curated set, and
+/// assembling the state per row keeps the list and detail views consistent by
+/// construction rather than by convention.
+pub async fn list_with_state(store: &TemplateStore) -> CliResult<Vec<TemplateSummary>> {
+    let mut out = store
+        .template_list()
+        .await
+        .map_err(|e| CliError::Internal(format!("template registry read: {e}")))?;
+    for summary in &mut out {
+        summary.state = Some(template_state(store, &summary.id).await?);
+    }
+    Ok(out)
+}
+
+/// The template's full release state (status, `stable` / `previous` / `newest`,
+/// channel pointers). Errors only if the registry itself is unreadable.
+pub async fn template_state(store: &TemplateStore, id: &str) -> CliResult<TemplateState> {
+    store
+        .template_state(id)
+        .await
+        .map_err(|e| CliError::Internal(format!("template registry read: {e}")))
+}
+
+/// Confirm a version exists, returning a typed error naming it if not.
+async fn require_version(store: &TemplateStore, id: &str, version: u32) -> CliResult<()> {
     if store
         .template_get(id, Some(version))
         .await
@@ -256,6 +332,25 @@ pub async fn promote(
             version: Some(version),
         });
     }
+    Ok(())
+}
+
+/// Point a named environment channel at a version, moving it if already set.
+///
+/// The target is itself a selector, so `--tag prod --version stable` promotes
+/// whatever is currently launched — the "use the version I already blessed" case —
+/// and `--version 3` pins an exact build. Derived channels (`stable`, `previous`,
+/// `newest`) are not valid *targets*: `stable` moves via [`launch`], and the other
+/// two are computed.
+pub async fn promote(
+    store: &TemplateStore,
+    id: &str,
+    tag: VersionChannel,
+    target: VersionSelector,
+) -> CliResult<u32> {
+    reject_derived(tag)?;
+    let version = resolve_version(store, id, target).await?;
+    require_version(store, id, version).await?;
     store
         .template_set_tag(id, tag.as_str(), version)
         .await
@@ -263,6 +358,105 @@ pub async fn promote(
     Ok(version)
 }
 
+/// The outcome of a [`launch`]: which version is now live, and what it replaced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchOutcome {
+    /// The version now launched (`stable`).
+    pub version: u32,
+    /// The version it replaced — the new `previous`. `None` on a first launch.
+    pub replaced: Option<u32>,
+    /// True when the requested version was already launched, so nothing changed.
+    pub already_launched: bool,
+    /// Whether this launch flipped the template out of `draft`.
+    pub first_launch: bool,
+}
+
+/// **Launch** a version: make it `stable`, so unpinned callers start using it.
+///
+/// This is the one deliberate act that moves consumers. Registering a build never
+/// does — that is the whole point of the model, so a nightly can land without
+/// dragging anyone along.
+///
+/// Refuses to launch while the template is deprecated: reviving a retired template
+/// by moving its live pointer is almost certainly a mistake, and `--undo` makes the
+/// intent explicit.
+pub async fn launch(
+    store: &TemplateStore,
+    id: &str,
+    target: VersionSelector,
+    launched_by: Option<&str>,
+) -> CliResult<LaunchOutcome> {
+    let version = resolve_version(store, id, target).await?;
+    require_version(store, id, version).await?;
+    let before = template_state(store, id).await?;
+    if before.status == TemplateStatus::Deprecated {
+        return Err(CliError::Config(format!(
+            "template '{id}' is deprecated — un-deprecate it first with \
+             `faucet template deprecate {id} --undo`, then launch"
+        )));
+    }
+    let seq = store
+        .template_launch(id, version, launched_by)
+        .await
+        .map_err(|e| CliError::Internal(format!("template launch write: {e}")))?;
+    Ok(LaunchOutcome {
+        version,
+        replaced: before.stable,
+        already_launched: seq.is_none(),
+        first_launch: before.stable.is_none(),
+    })
+}
+
+/// Roll back to the previously launched version — `launch` of `previous`, named
+/// for the thing you actually want to find under pressure.
+pub async fn rollback(
+    store: &TemplateStore,
+    id: &str,
+    launched_by: Option<&str>,
+) -> CliResult<LaunchOutcome> {
+    launch(
+        store,
+        id,
+        VersionSelector::Channel(VersionChannel::Previous),
+        launched_by,
+    )
+    .await
+}
+
+/// Retire (`Some`) or revive (`None`) a template.
+///
+/// Deprecation is **template-wide**, not per version: a build that should not be
+/// used simply never gets launched (or gets deleted). A deprecated template keeps
+/// serving callers who pin or ride `stable` — retiring must not hard-break
+/// them — but every trigger warns and listings mark it. Returns the resulting
+/// status.
+pub async fn set_deprecated(
+    store: &TemplateStore,
+    id: &str,
+    reason: Option<String>,
+    by: Option<&str>,
+    deprecated: bool,
+) -> CliResult<TemplateStatus> {
+    let state = template_state(store, id).await?;
+    if state.versions.is_empty() {
+        return Err(CliError::UnknownPipelineTemplate {
+            id: id.to_string(),
+            version: None,
+        });
+    }
+    let record = deprecated.then(|| DeprecationRecord {
+        deprecated_at: chrono::Utc::now(),
+        deprecated_by: by.map(str::to_string),
+        reason,
+    });
+    store
+        .template_set_deprecation(id, record.as_ref())
+        .await
+        .map_err(|e| CliError::Internal(format!("template deprecation write: {e}")))?;
+    Ok(TemplateStatus::derive(state.stable.is_some(), deprecated))
+}
+
+/// Fetch a template (the launched version when `version` is `None`), binding the
 /// Fetch a template (latest version when `version` is `None`), binding the
 /// supplied params and env overrides into a runnable config document.
 ///
@@ -274,17 +468,20 @@ pub async fn promote(
 pub async fn materialize(
     store: &TemplateStore,
     id: &str,
-    version: Option<u32>,
+    version: u32,
     supplied: &SuppliedParams,
     env_overrides: &BTreeMap<String, String>,
 ) -> CliResult<MaterializedConfig> {
+    // Takes a concrete version, never an `Option`: "no version given" is resolved
+    // by `resolve_version` against the registry, so there is no code path where a
+    // `None` here could quietly mean "the newest build".
     let record = store
-        .template_get(id, version)
+        .template_get(id, Some(version))
         .await
         .map_err(|e| CliError::Internal(format!("template registry read: {e}")))?
         .ok_or_else(|| CliError::UnknownPipelineTemplate {
             id: id.to_string(),
-            version,
+            version: Some(version),
         })?;
 
     let mut doc = parse_body(&record.body, record.format)?;
@@ -379,7 +576,16 @@ pipeline:
             format: ConfigFormat::Yaml,
             description: Some("test".into()),
             tags: Vec::new(),
+            launch: false,
             created_by: Some("tester".into()),
+        }
+    }
+
+    /// Register + launch in one step, for tests that only care about the result.
+    fn req_launched(body: &str) -> RegisterRequest {
+        RegisterRequest {
+            launch: true,
+            ..req(body)
         }
     }
 
@@ -390,38 +596,278 @@ pipeline:
         assert_eq!(first.id, "tenant-sync");
         assert_eq!(first.version, 1);
         assert_eq!(first.created_by.as_deref(), Some("tester"));
-        // The declared param surface is extracted and stored.
         assert!(first.params["tenant_id"].required);
         assert_eq!(first.params["page"].default, Some(json!(100)));
-        // Body stored verbatim.
-        assert_eq!(first.body, PARAMETERIZED);
+        assert_eq!(first.body, PARAMETERIZED, "body stored verbatim");
 
         let second = register(&s, req(PARAMETERIZED)).await.unwrap();
         assert_eq!(second.version, 2);
-        // `template_get` with no version returns the newest.
-        assert_eq!(
-            s.template_get("tenant-sync", None)
-                .await
-                .unwrap()
-                .unwrap()
-                .version,
-            2
-        );
-        assert_eq!(
-            s.template_get("tenant-sync", Some(1))
-                .await
-                .unwrap()
-                .unwrap()
-                .version,
-            1
-        );
         assert_eq!(
             s.template_versions("tenant-sync").await.unwrap(),
             vec![2, 1]
         );
-        let listed = s.template_list().await.unwrap();
-        assert_eq!(listed.len(), 1, "list folds to the latest version per id");
-        assert_eq!(listed[0].version, 2);
+        let listed = list_with_state(&s).await.unwrap();
+        assert_eq!(listed.len(), 1, "list folds to one row per id");
+        // A register is inert: two versions exist, nothing is live.
+        let st = listed[0].state.as_ref().unwrap();
+        assert_eq!(st.status, TemplateStatus::Draft);
+        assert_eq!(st.newest, Some(2));
+        assert_eq!(st.stable, None);
+    }
+
+    #[tokio::test]
+    async fn register_compiles_transforms_not_just_their_shape() {
+        let s = store();
+        // `set` takes `values:`; `fields:` is a plausible typo that used to
+        // register cleanly and then fail at trigger time.
+        let mut bad = req(r#"
+version: 1
+name: tenant-sync
+pipeline:
+  source: { type: rest, config: {} }
+  transforms:
+    - type: set
+      config: { fields: { a: 1 } }
+  sink: { type: jsonl, config: { path: ./o.jsonl } }
+"#);
+        bad.description = None;
+        let err = register(&s, bad).await.unwrap_err().to_string();
+        assert!(err.contains("values"), "names the missing field: {err}");
+        assert!(
+            s.template_versions("tenant-sync").await.unwrap().is_empty(),
+            "nothing is persisted when validation fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_description_carries_forward_across_registers() {
+        let s = store();
+        let first = register(&s, req(PARAMETERIZED)).await.unwrap();
+        assert_eq!(first.description.as_deref(), Some("test"));
+
+        // A deploy that re-registers without `--description` must not blank it.
+        let mut bare = req(PARAMETERIZED);
+        bare.description = None;
+        let second = register(&s, bare).await.unwrap();
+        assert_eq!(second.description.as_deref(), Some("test"));
+
+        // An explicit description still wins.
+        let mut changed = req(PARAMETERIZED);
+        changed.description = Some("now something else".into());
+        let third = register(&s, changed).await.unwrap();
+        assert_eq!(third.description.as_deref(), Some("now something else"));
+
+        // …and the new one is what the next bare register inherits.
+        let mut bare2 = req(PARAMETERIZED);
+        bare2.description = None;
+        let fourth = register(&s, bare2).await.unwrap();
+        assert_eq!(fourth.description.as_deref(), Some("now something else"));
+    }
+
+    #[tokio::test]
+    async fn a_register_never_moves_existing_callers() {
+        let s = store();
+        register(&s, req_launched(PARAMETERIZED)).await.unwrap(); // v1, launched
+        assert_eq!(
+            resolve_version(&s, "tenant-sync", VersionSelector::stable())
+                .await
+                .unwrap(),
+            1
+        );
+
+        // A nightly lands as v2 — `stable` must not budge. This is the property
+        // the whole model exists for.
+        register(&s, req(PARAMETERIZED)).await.unwrap();
+        assert_eq!(
+            resolve_version(&s, "tenant-sync", VersionSelector::stable())
+                .await
+                .unwrap(),
+            1,
+            "registering a build must not move the launched version"
+        );
+        assert_eq!(
+            resolve_version(&s, "tenant-sync", VersionSelector::newest())
+                .await
+                .unwrap(),
+            2,
+            "`newest` is how you reach the un-launched build"
+        );
+
+        // Launching is the deliberate act that moves them.
+        let out = launch(&s, "tenant-sync", VersionSelector::newest(), Some("alice"))
+            .await
+            .unwrap();
+        assert_eq!((out.version, out.replaced), (2, Some(1)));
+        assert!(!out.first_launch);
+        assert_eq!(
+            resolve_version(&s, "tenant-sync", VersionSelector::stable())
+                .await
+                .unwrap(),
+            2
+        );
+        // `previous` is now the version launched before it.
+        assert_eq!(
+            resolve_version(
+                &s,
+                "tenant-sync",
+                VersionSelector::Channel(VersionChannel::Previous)
+            )
+            .await
+            .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn draft_template_has_no_stable_and_says_how_to_fix_it() {
+        let s = store();
+        register(&s, req(PARAMETERIZED)).await.unwrap();
+        let state = template_state(&s, "tenant-sync").await.unwrap();
+        assert_eq!(state.status, TemplateStatus::Draft);
+
+        // Unpinned resolution fails with the exact command to run — never a
+        // silent fallback to the newest build.
+        let err = resolve_version(&s, "tenant-sync", VersionSelector::stable())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no launched version"), "{err}");
+        assert!(err.contains("faucet template launch"), "{err}");
+        // But explicit selectors work, so a draft is fully testable.
+        assert_eq!(
+            resolve_version(&s, "tenant-sync", VersionSelector::newest())
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            resolve_version(&s, "tenant-sync", VersionSelector::Pinned(1))
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn first_launch_flips_status_and_relaunch_is_a_noop() {
+        let s = store();
+        register(&s, req(PARAMETERIZED)).await.unwrap();
+        let out = launch(&s, "tenant-sync", VersionSelector::Pinned(1), None)
+            .await
+            .unwrap();
+        assert!(out.first_launch);
+        assert_eq!(out.replaced, None);
+        assert_eq!(
+            template_state(&s, "tenant-sync").await.unwrap().status,
+            TemplateStatus::Launched
+        );
+
+        // Re-launching what is already live changes nothing — and crucially does
+        // not append, which would make `previous` a duplicate of `stable`.
+        let again = launch(&s, "tenant-sync", VersionSelector::Pinned(1), None)
+            .await
+            .unwrap();
+        assert!(again.already_launched);
+        assert_eq!(s.template_launches("tenant-sync").await.unwrap().len(), 1);
+        let err = resolve_version(
+            &s,
+            "tenant-sync",
+            VersionSelector::Channel(VersionChannel::Previous),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("no previous version"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn rollback_returns_to_the_prior_launch() {
+        let s = store();
+        for _ in 0..3 {
+            register(&s, req(PARAMETERIZED)).await.unwrap();
+        }
+        launch(&s, "tenant-sync", VersionSelector::Pinned(1), None)
+            .await
+            .unwrap();
+        launch(&s, "tenant-sync", VersionSelector::Pinned(3), None)
+            .await
+            .unwrap();
+
+        let out = rollback(&s, "tenant-sync", Some("oncall")).await.unwrap();
+        assert_eq!(out.version, 1, "rollback re-launches `previous`");
+        assert_eq!(out.replaced, Some(3));
+        let state = template_state(&s, "tenant-sync").await.unwrap();
+        assert_eq!(state.stable, Some(1));
+        assert_eq!(
+            state.previous,
+            Some(3),
+            "previous now points at what we left"
+        );
+
+        // The launch log is the audit trail: v1, v3, v1, newest first.
+        let log = s.template_launches("tenant-sync").await.unwrap();
+        assert_eq!(
+            log.iter().map(|l| l.version).collect::<Vec<_>>(),
+            vec![1, 3, 1]
+        );
+        assert_eq!(log[0].launched_by.as_deref(), Some("oncall"));
+    }
+
+    #[tokio::test]
+    async fn deprecation_is_template_wide_and_reversible() {
+        let s = store();
+        register(&s, req_launched(PARAMETERIZED)).await.unwrap();
+
+        let status = set_deprecated(
+            &s,
+            "tenant-sync",
+            Some("superseded".into()),
+            Some("bob"),
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, TemplateStatus::Deprecated);
+        let state = template_state(&s, "tenant-sync").await.unwrap();
+        assert_eq!(state.status, TemplateStatus::Deprecated);
+        assert_eq!(
+            state.deprecation.as_ref().unwrap().reason.as_deref(),
+            Some("superseded")
+        );
+        // Retiring must not break existing callers: `stable` still resolves.
+        assert_eq!(
+            resolve_version(&s, "tenant-sync", VersionSelector::stable())
+                .await
+                .unwrap(),
+            1
+        );
+        // But launching into a retired template is refused — reviving it that way
+        // is almost certainly a mistake.
+        let err = launch(&s, "tenant-sync", VersionSelector::Pinned(1), None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("deprecated"), "{err}");
+
+        // `--undo` restores the prior status, derived rather than remembered.
+        let status = set_deprecated(&s, "tenant-sync", None, None, false)
+            .await
+            .unwrap();
+        assert_eq!(status, TemplateStatus::Launched);
+        assert!(
+            template_state(&s, "tenant-sync")
+                .await
+                .unwrap()
+                .deprecation
+                .is_none()
+        );
+        // Deprecating a template that does not exist is a typed error.
+        assert!(matches!(
+            set_deprecated(&s, "nope", None, None, true)
+                .await
+                .unwrap_err(),
+            CliError::UnknownPipelineTemplate { .. }
+        ));
     }
 
     #[tokio::test]
@@ -439,7 +885,6 @@ pipeline:
     #[tokio::test]
     async fn register_requires_an_id_source() {
         let s = store();
-        // No `name:` and no explicit id.
         let body = "version: 1\npipeline:\n  source: { type: csv, config: { path: a.csv } }\n  sink: { type: jsonl, config: { path: o.jsonl } }\n";
         let err = register(&s, req(body)).await.unwrap_err().to_string();
         assert!(err.contains("no template id"), "{err}");
@@ -448,9 +893,6 @@ pipeline:
     #[tokio::test]
     async fn register_rejects_a_structurally_invalid_config() {
         let s = store();
-        // Unknown connector kinds are caught by expand's registry lookup... but
-        // an unknown *field* is caught by the typed parse, which is the cheaper
-        // and more common failure. Either way registration must fail.
         let err = register(&s, req("version: 1\nname: x\nnope: 1\npipeline: {}\n"))
             .await
             .unwrap_err()
@@ -481,9 +923,12 @@ pipeline:
     #[tokio::test]
     async fn materialize_binds_params_and_defaults() {
         let s = store();
-        register(&s, req(PARAMETERIZED)).await.unwrap();
+        register(&s, req_launched(PARAMETERIZED)).await.unwrap();
         let supplied: SuppliedParams = [("tenant_id".to_string(), json!("acme"))].into();
-        let out = materialize(&s, "tenant-sync", None, &supplied, &BTreeMap::new())
+        let want = resolve_version(&s, "tenant-sync", VersionSelector::stable())
+            .await
+            .unwrap();
+        let out = materialize(&s, "tenant-sync", want, &supplied, &BTreeMap::new())
             .await
             .unwrap();
         assert_eq!(out.version, 1);
@@ -502,11 +947,11 @@ pipeline:
     #[tokio::test]
     async fn materialize_reports_missing_and_unknown_params() {
         let s = store();
-        register(&s, req(PARAMETERIZED)).await.unwrap();
+        register(&s, req_launched(PARAMETERIZED)).await.unwrap();
         let err = materialize(
             &s,
             "tenant-sync",
-            None,
+            1,
             &SuppliedParams::new(),
             &BTreeMap::new(),
         )
@@ -519,17 +964,17 @@ pipeline:
             ("bogus".to_string(), json!("b")),
         ]
         .into();
-        let err = materialize(&s, "tenant-sync", None, &supplied, &BTreeMap::new())
+        let err = materialize(&s, "tenant-sync", 1, &supplied, &BTreeMap::new())
             .await
             .unwrap_err();
         assert!(matches!(err, CliError::UnknownParam { .. }), "{err:?}");
     }
 
     #[tokio::test]
-    async fn materialize_reports_unknown_template_and_version() {
+    async fn unknown_template_and_version_are_typed_errors() {
         let s = store();
-        register(&s, req(PARAMETERIZED)).await.unwrap();
-        let err = materialize(&s, "nope", None, &SuppliedParams::new(), &BTreeMap::new())
+        register(&s, req_launched(PARAMETERIZED)).await.unwrap();
+        let err = resolve_version(&s, "nope", VersionSelector::stable())
             .await
             .unwrap_err();
         assert!(
@@ -537,7 +982,7 @@ pipeline:
             "{err:?}"
         );
         let supplied: SuppliedParams = [("tenant_id".to_string(), json!("a"))].into();
-        let err = materialize(&s, "tenant-sync", Some(9), &supplied, &BTreeMap::new())
+        let err = materialize(&s, "tenant-sync", 9, &supplied, &BTreeMap::new())
             .await
             .unwrap_err();
         assert!(
@@ -563,13 +1008,12 @@ pipeline:
   sink: { type: jsonl, config: { path: ./o.jsonl } }
 ";
         unsafe { std::env::set_var("FAUCET_TPL_REGION", "from-process") };
-        register(&s, req(body)).await.unwrap();
+        register(&s, req_launched(body)).await.unwrap();
 
-        // No override → the process environment.
         let out = materialize(
             &s,
             "env-template",
-            None,
+            1,
             &SuppliedParams::new(),
             &BTreeMap::new(),
         )
@@ -581,10 +1025,9 @@ pipeline:
             "https://x/from-process"
         );
 
-        // Override wins, without mutating the process environment.
         let overrides: BTreeMap<String, String> =
             [("FAUCET_TPL_REGION".to_string(), "from-request".to_string())].into();
-        let out = materialize(&s, "env-template", None, &SuppliedParams::new(), &overrides)
+        let out = materialize(&s, "env-template", 1, &SuppliedParams::new(), &overrides)
             .await
             .unwrap();
         let doc: Value = serde_json::from_str(&out.body).unwrap();
@@ -612,16 +1055,14 @@ pipeline:
       auth: { type: bearer, config: { token: \"${param.api_token}\" } }
   sink: { type: jsonl, config: { path: ./o.jsonl } }
 ";
-        register(&s, req(body)).await.unwrap();
+        register(&s, req_launched(body)).await.unwrap();
         let supplied: SuppliedParams =
             [("api_token".to_string(), json!("tok-abcdefghijklmnop"))].into();
-        let out = materialize(&s, "secret-template", None, &supplied, &BTreeMap::new())
+        let out = materialize(&s, "secret-template", 1, &supplied, &BTreeMap::new())
             .await
             .unwrap();
         assert!(out.used_secret_params);
         assert_eq!(out.params_redacted["api_token"], json!("***"));
-        // The value IS in the materialized body (the pipeline needs it) but is
-        // registered for redaction, so it can never reach a log or an API error.
         assert!(out.body.contains("tok-abcdefghijklmnop"));
         assert_eq!(
             crate::secrets::registry::redact("token=tok-abcdefghijklmnop"),
@@ -630,31 +1071,14 @@ pipeline:
     }
 
     #[tokio::test]
-    async fn delete_removes_one_version_or_all() {
+    async fn channels_are_promoted_independently_of_launching() {
         let s = store();
-        register(&s, req(PARAMETERIZED)).await.unwrap();
-        register(&s, req(PARAMETERIZED)).await.unwrap();
-        assert_eq!(s.template_delete("tenant-sync", Some(1)).await.unwrap(), 1);
-        assert_eq!(s.template_versions("tenant-sync").await.unwrap(), vec![2]);
-        assert_eq!(s.template_delete("tenant-sync", None).await.unwrap(), 1);
-        assert!(s.template_list().await.unwrap().is_empty());
-        // Deleting what isn't there is 0, not an error.
-        assert_eq!(s.template_delete("tenant-sync", None).await.unwrap(), 0);
-        assert_eq!(s.template_delete("tenant-sync", Some(3)).await.unwrap(), 0);
-    }
+        register(&s, req_launched(PARAMETERIZED)).await.unwrap(); // v1 live
+        register(&s, req(PARAMETERIZED)).await.unwrap(); // v2 draft build
+        let mut tagged = req(PARAMETERIZED);
+        tagged.tags = vec![VersionChannel::Dev];
+        register(&s, tagged).await.unwrap(); // v3, dev=v3
 
-    #[tokio::test]
-    async fn channels_point_at_versions_and_promote() {
-        let s = store();
-        // Register three versions; `dev` rides the newest via `--tag` on register.
-        register(&s, req(PARAMETERIZED)).await.unwrap();
-        let mut with_tag = req(PARAMETERIZED);
-        with_tag.tags = vec![VersionChannel::Dev];
-        let v2 = register(&s, with_tag).await.unwrap();
-        assert_eq!(v2.version, 2);
-        register(&s, req(PARAMETERIZED)).await.unwrap(); // v3, untagged
-
-        // `dev` still names v2 even though v3 exists — that is the whole point.
         assert_eq!(
             resolve_version(
                 &s,
@@ -663,102 +1087,63 @@ pipeline:
             )
             .await
             .unwrap(),
-            Some(2)
+            3
         );
-        // `latest` stays derived → `None`, i.e. "whatever is newest".
-        assert_eq!(
-            resolve_version(&s, "tenant-sync", VersionSelector::latest())
-                .await
-                .unwrap(),
-            None
-        );
-
-        // Promote `prod` to an exact version, then move it by copying another
-        // channel's current target.
+        // Promoting an environment channel never touches what is live.
         assert_eq!(
             promote(
                 &s,
                 "tenant-sync",
-                VersionChannel::Prod,
-                VersionSelector::Pinned(1)
-            )
-            .await
-            .unwrap(),
-            1
-        );
-        assert_eq!(
-            promote(
-                &s,
-                "tenant-sync",
-                VersionChannel::Prod,
+                VersionChannel::PreProd,
                 VersionSelector::Channel(VersionChannel::Dev)
-            )
-            .await
-            .unwrap(),
-            2,
-            "promoting from another channel copies its current target"
-        );
-        // Promoting from `latest` resolves to the concrete newest, so the pointer
-        // does not silently follow future registrations.
-        assert_eq!(
-            promote(
-                &s,
-                "tenant-sync",
-                VersionChannel::Stable,
-                VersionSelector::latest()
             )
             .await
             .unwrap(),
             3
         );
-        let tags = s.template_tags("tenant-sync").await.unwrap();
-        assert_eq!(tags["dev"], 2);
-        assert_eq!(tags["prod"], 2);
-        assert_eq!(tags["stable"], 3);
-        assert!(
-            !tags.contains_key("latest"),
-            "latest is derived, never stored"
-        );
+        let state = template_state(&s, "tenant-sync").await.unwrap();
+        assert_eq!(state.stable, Some(1), "promote must not move `stable`");
+        assert_eq!(state.tags["dev"], 3);
+        assert_eq!(state.tags["pre-prod"], 3);
+        assert!(!state.tags.contains_key("stable"), "derived, never stored");
+
+        // Launching *from* a channel is the promotion pipeline's last step.
+        let out = launch(
+            &s,
+            "tenant-sync",
+            VersionSelector::Channel(VersionChannel::PreProd),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!((out.version, out.replaced), (3, Some(1)));
     }
 
     #[tokio::test]
-    async fn latest_cannot_be_assigned_and_unknown_channels_are_rejected() {
+    async fn derived_channels_cannot_be_promoted() {
         let s = store();
-        register(&s, req(PARAMETERIZED)).await.unwrap();
-
-        let err = promote(
-            &s,
-            "tenant-sync",
-            VersionChannel::Latest,
-            VersionSelector::Pinned(1),
-        )
-        .await
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("derived"), "{err}");
-
+        register(&s, req_launched(PARAMETERIZED)).await.unwrap();
+        for (tag, needle) in [
+            (VersionChannel::Stable, "launch"),
+            (VersionChannel::Previous, "launched before"),
+            (VersionChannel::Newest, "highest version"),
+        ] {
+            let err = promote(&s, "tenant-sync", tag, VersionSelector::Pinned(1))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("derived"), "{tag}: {err}");
+            assert!(err.contains(needle), "{tag}: {err}");
+        }
         // Same guard on the register path, before anything is written.
         let mut bad = req(PARAMETERIZED);
-        bad.tags = vec![VersionChannel::Latest];
+        bad.tags = vec![VersionChannel::Stable];
         assert!(register(&s, bad).await.is_err());
         assert_eq!(
             s.template_versions("tenant-sync").await.unwrap(),
             vec![1],
             "the rejected register must not have appended a version"
         );
-
-        // An unset channel is an error naming what *is* set, not a silent
-        // fallback to latest — running the wrong code is the failure to avoid.
-        let err = resolve_version(
-            &s,
-            "tenant-sync",
-            VersionSelector::Channel(VersionChannel::Prod),
-        )
-        .await
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("no `prod` version"), "{err}");
-        assert!(err.contains("(none)"), "{err}");
     }
 
     #[tokio::test]
@@ -783,9 +1168,8 @@ pipeline:
             ),
             "{err:?}"
         );
-        // An unknown template id is likewise a typed error.
         assert!(matches!(
-            promote(&s, "nope", VersionChannel::Prod, VersionSelector::latest())
+            promote(&s, "nope", VersionChannel::Prod, VersionSelector::Pinned(1))
                 .await
                 .unwrap_err(),
             CliError::UnknownPipelineTemplate { .. }
@@ -793,10 +1177,16 @@ pipeline:
     }
 
     #[tokio::test]
-    async fn deleting_a_version_drops_channels_aimed_at_it() {
+    async fn deleting_a_version_drops_pointers_aimed_at_it() {
         let s = store();
         register(&s, req(PARAMETERIZED)).await.unwrap();
         register(&s, req(PARAMETERIZED)).await.unwrap();
+        launch(&s, "tenant-sync", VersionSelector::Pinned(1), None)
+            .await
+            .unwrap();
+        launch(&s, "tenant-sync", VersionSelector::Pinned(2), None)
+            .await
+            .unwrap();
         promote(
             &s,
             "tenant-sync",
@@ -805,71 +1195,31 @@ pipeline:
         )
         .await
         .unwrap();
-        promote(
-            &s,
-            "tenant-sync",
-            VersionChannel::Dev,
-            VersionSelector::Pinned(2),
-        )
-        .await
-        .unwrap();
 
+        // Deleting v1 must leave neither a channel nor a launch entry pointing at
+        // it — otherwise `previous` or `prod` would resolve to a missing version.
         assert_eq!(s.template_delete("tenant-sync", Some(1)).await.unwrap(), 1);
-        let tags = s.template_tags("tenant-sync").await.unwrap();
-        assert!(
-            !tags.contains_key("prod"),
-            "a channel must never dangle at a deleted version: {tags:?}"
-        );
-        assert_eq!(tags["dev"], 2);
+        let state = template_state(&s, "tenant-sync").await.unwrap();
+        assert!(!state.tags.contains_key("prod"), "{:?}", state.tags);
+        assert_eq!(state.stable, Some(2));
+        assert_eq!(state.previous, None, "v1's launch entry went with it");
 
-        // Deleting the whole template clears the rest.
         s.template_delete("tenant-sync", None).await.unwrap();
+        assert!(s.template_launches("tenant-sync").await.unwrap().is_empty());
         assert!(s.template_tags("tenant-sync").await.unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn materialize_follows_a_promoted_channel() {
+    async fn delete_removes_one_version_or_all() {
         let s = store();
         register(&s, req(PARAMETERIZED)).await.unwrap();
         register(&s, req(PARAMETERIZED)).await.unwrap();
-        promote(
-            &s,
-            "tenant-sync",
-            VersionChannel::Prod,
-            VersionSelector::Pinned(1),
-        )
-        .await
-        .unwrap();
-
-        let supplied: SuppliedParams = [("tenant_id".to_string(), json!("acme"))].into();
-        let pinned = resolve_version(
-            &s,
-            "tenant-sync",
-            VersionSelector::Channel(VersionChannel::Prod),
-        )
-        .await
-        .unwrap();
-        let out = materialize(&s, "tenant-sync", pinned, &supplied, &BTreeMap::new())
-            .await
-            .unwrap();
-        assert_eq!(out.version, 1, "prod still points at v1");
-    }
-
-    #[tokio::test]
-    async fn store_url_grammar() {
-        assert!(resolve_store_url("memory").await.is_ok());
-        // `RunHistory` is not Debug, so match rather than `unwrap_err`.
-        match resolve_store_url("mysql://nope").await {
-            Ok(_) => panic!("an unrecognised scheme must be rejected"),
-            Err(e) => assert!(e.to_string().contains("template store"), "{e}"),
-        }
-        // SQL schemes are recognised even without the build feature — the error
-        // then names the missing feature rather than the URL grammar.
-        let dir = tempfile::tempdir().unwrap();
-        let url = format!("sqlite:{}", dir.path().join("t.db").display());
-        if let Err(e) = resolve_store_url(&url).await {
-            assert!(e.to_string().contains("serve-history-sqlite"), "{e}");
-        }
+        assert_eq!(s.template_delete("tenant-sync", Some(1)).await.unwrap(), 1);
+        assert_eq!(s.template_versions("tenant-sync").await.unwrap(), vec![2]);
+        assert_eq!(s.template_delete("tenant-sync", None).await.unwrap(), 1);
+        assert!(s.template_list().await.unwrap().is_empty());
+        assert_eq!(s.template_delete("tenant-sync", None).await.unwrap(), 0);
+        assert_eq!(s.template_delete("tenant-sync", Some(3)).await.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -891,12 +1241,12 @@ pipeline:
   edges:
     - { from: src, to: w }
 ";
-        let rec = register(&s, req(body)).await.unwrap();
+        let rec = register(&s, req_launched(body)).await.unwrap();
         assert_eq!(rec.id, "topo-template");
         let out = materialize(
             &s,
             "topo-template",
-            None,
+            1,
             &SuppliedParams::new(),
             &BTreeMap::new(),
         )
@@ -920,5 +1270,22 @@ pipeline:
         assert_eq!(versions.len(), VERSION_RETAIN);
         assert_eq!(versions[0], (VERSION_RETAIN + 3) as u32, "newest kept");
         assert!(!versions.contains(&1), "oldest pruned");
+    }
+
+    #[tokio::test]
+    async fn store_url_grammar() {
+        assert!(resolve_store_url("memory").await.is_ok());
+        // `RunHistory` is not Debug, so match rather than `unwrap_err`.
+        match resolve_store_url("mysql://nope").await {
+            Ok(_) => panic!("an unrecognised scheme must be rejected"),
+            Err(e) => assert!(e.to_string().contains("template store"), "{e}"),
+        }
+        // SQL schemes are recognised even without the build feature — the error
+        // then names the missing feature rather than the URL grammar.
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite:{}", dir.path().join("t.db").display());
+        if let Err(e) = resolve_store_url(&url).await {
+            assert!(e.to_string().contains("serve-history-sqlite"), "{e}");
+        }
     }
 }

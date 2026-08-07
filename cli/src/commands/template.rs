@@ -7,8 +7,9 @@
 //! the control plane share one registry, not two.
 
 use crate::cli::{
-    TemplateArgs, TemplateCommand, TemplateDeleteArgs, TemplateListArgs, TemplatePromoteArgs,
-    TemplateRegisterArgs, TemplateRunArgs, TemplateShowArgs, TemplateStoreArgs,
+    TemplateArgs, TemplateCommand, TemplateDeleteArgs, TemplateDeprecateArgs, TemplateLaunchArgs,
+    TemplateListArgs, TemplatePromoteArgs, TemplateRegisterArgs, TemplateRollbackArgs,
+    TemplateRunArgs, TemplateShowArgs, TemplateStoreArgs,
 };
 use crate::error::{CliError, CliResult};
 use crate::serve::history::templates::{
@@ -23,6 +24,9 @@ pub async fn run(args: TemplateArgs) -> CliResult<()> {
         TemplateCommand::Register(a) => register(a).await,
         TemplateCommand::List(a) => list(a).await,
         TemplateCommand::Show(a) => show(a).await,
+        TemplateCommand::Launch(a) => launch(a).await,
+        TemplateCommand::Rollback(a) => rollback(a).await,
+        TemplateCommand::Deprecate(a) => deprecate(a).await,
         TemplateCommand::Promote(a) => promote(a).await,
         TemplateCommand::Delete(a) => delete(a).await,
         TemplateCommand::Run(a) => run_template(a).await,
@@ -82,6 +86,7 @@ async fn register(args: TemplateRegisterArgs) -> CliResult<()> {
             format,
             description: args.description.clone(),
             tags: tags.clone(),
+            launch: args.launch,
             created_by: None,
         },
     )
@@ -159,10 +164,7 @@ fn print_params(summary: &TemplateSummary) {
 
 async fn list(args: TemplateListArgs) -> CliResult<()> {
     let store = connect(&args.common).await?;
-    let templates = store
-        .template_list()
-        .await
-        .map_err(|e| CliError::Internal(format!("template registry read: {e}")))?;
+    let templates = crate::templates::list_with_state(&store).await?;
     if args.common.json {
         println!(
             "{}",
@@ -174,19 +176,29 @@ async fn list(args: TemplateListArgs) -> CliResult<()> {
         println!("no templates registered in this store — add one with `faucet template register`");
         return Ok(());
     }
-    // Every row IS the latest version of its id, so the column is labelled as
-    // such — `list` never shows a superseded version.
+    // LIVE is what an unpinned run gets; NEWEST is the build tip. Showing both
+    // side by side is the whole point of the model — a nightly can sit at v7 while
+    // production still rides v4.
     println!(
-        "{:<28}  {:<8}  {:>6}  {:<20}  DESCRIPTION",
-        "ID", "LATEST", "PARAMS", "REGISTERED"
+        "{:<26}  {:<11}  {:<6}  {:<7}  {:>6}  DESCRIPTION",
+        "ID", "STATUS", "LIVE", "NEWEST", "PARAMS"
     );
     for t in &templates {
+        let (status, live, newest) = match &t.state {
+            Some(st) => (
+                st.status.to_string(),
+                st.stable.map(|v| format!("v{v}")).unwrap_or("—".into()),
+                st.newest.map(|v| format!("v{v}")).unwrap_or("—".into()),
+            ),
+            None => ("?".into(), "?".into(), format!("v{}", t.version)),
+        };
         println!(
-            "{:<28}  {:<8}  {:>6}  {:<20}  {}",
+            "{:<26}  {:<11}  {:<6}  {:<7}  {:>6}  {}",
             t.id,
-            format!("v{}", t.version),
+            status,
+            live,
+            newest,
             t.params.len(),
-            t.created_at.format("%Y-%m-%dT%H:%M:%SZ"),
             t.description.as_deref().unwrap_or("")
         );
     }
@@ -209,55 +221,26 @@ async fn show(args: TemplateShowArgs) -> CliResult<()> {
     let store = connect(&args.common).await?;
     let selector = VersionSelector::parse(&args.version)?;
     let want = crate::templates::resolve_version(&store, &args.id, selector).await?;
-    let record = fetch(&store, &args.id, want).await?;
-    let versions = store
-        .template_versions(&args.id)
+    let record = fetch(&store, &args.id, Some(want)).await?;
+    let state = crate::templates::template_state(&store, &args.id).await?;
+    let launches = store
+        .template_launches(&args.id)
         .await
-        .map_err(|e| CliError::Internal(format!("template registry read: {e}")))?;
-    let tags = store
-        .template_tags(&args.id)
-        .await
-        .map_err(|e| CliError::Internal(format!("template channel read: {e}")))?;
-    let latest = versions.first().copied().unwrap_or(record.version);
+        .map_err(|e| CliError::Internal(format!("template launch read: {e}")))?;
 
     if args.common.json {
         println!(
             "{}",
             to_pretty(&serde_json::json!({
                 "template": record,
-                "versions": versions,
-                "latest_version": latest,
-                "is_latest": record.version == latest,
-                "tags": tags,
+                "state": state,
+                "is_stable": state.stable == Some(record.version),
+                "launches": launches,
             }))?
         );
         return Ok(());
     }
-    println!("template  {}", record.id);
-    println!(
-        "version   {}{}   (stored: {})",
-        record.version,
-        if record.version == latest {
-            "  [latest]"
-        } else {
-            ""
-        },
-        versions
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-    println!(
-        "channels {}",
-        if tags.is_empty() {
-            format!("latest=v{latest}  (no other channel promoted yet)")
-        } else {
-            let mut rendered = vec![format!("latest=v{latest}")];
-            rendered.extend(tags.iter().map(|(t, v)| format!("{t}=v{v}")));
-            rendered.join("  ")
-        }
-    );
+    println!("template  {}   [{}]", record.id, state.status);
     if let Some(name) = &record.name {
         println!("name      {name}");
     }
@@ -272,6 +255,70 @@ async fn show(args: TemplateShowArgs) -> CliResult<()> {
             None => String::new(),
         }
     );
+    println!(
+        "showing   v{}{}",
+        record.version,
+        if state.stable == Some(record.version) {
+            "  (live)"
+        } else {
+            ""
+        }
+    );
+    // One row per version with its channels — the version-first view, which is
+    // how you actually think about "what is v3 tagged as?".
+    println!("\nversions:");
+    for v in &state.versions {
+        let mut marks: Vec<String> = Vec::new();
+        if state.stable == Some(*v) {
+            marks.push("live".into());
+        }
+        if state.previous == Some(*v) {
+            marks.push("previous".into());
+        }
+        if state.newest == Some(*v) {
+            marks.push("newest".into());
+        }
+        marks.extend(
+            state
+                .tags
+                .iter()
+                .filter(|(_, pointed)| *pointed == v)
+                .map(|(t, _)| t.clone()),
+        );
+        println!(
+            "  v{:<4} {}",
+            v,
+            if marks.is_empty() {
+                String::from("—")
+            } else {
+                marks.join(", ")
+            }
+        );
+    }
+    if let Some(d) = &state.deprecation {
+        println!(
+            "\ndeprecated {}{}",
+            d.deprecated_at.format("%Y-%m-%dT%H:%M:%SZ"),
+            match &d.reason {
+                Some(r) => format!("  — {r}"),
+                None => String::new(),
+            }
+        );
+    }
+    if !launches.is_empty() {
+        println!("\nlaunch history (newest first):");
+        for l in launches.iter().take(10) {
+            println!(
+                "  v{:<4} {}{}",
+                l.version,
+                l.launched_at.format("%Y-%m-%dT%H:%M:%SZ"),
+                match &l.launched_by {
+                    Some(by) => format!("  by {by}"),
+                    None => String::new(),
+                }
+            );
+        }
+    }
     print_params(&record.summary());
     println!("\nconfig ({:?}, stored verbatim):", record.format);
     for line in record.body.lines() {
@@ -285,24 +332,12 @@ async fn delete(args: TemplateDeleteArgs) -> CliResult<()> {
     // No `--version` deletes the whole template; a selector deletes one version.
     let pinned = match args.version.as_deref() {
         None => None,
-        Some(raw) => {
-            let selector = VersionSelector::parse(raw)?;
-            Some(
-                match crate::templates::resolve_version(&store, &args.id, selector).await? {
-                    Some(v) => v,
-                    // `latest` means "newest" — resolve it to a concrete number so
-                    // the delete removes one version rather than all of them.
-                    None => store
-                        .template_versions(&args.id)
-                        .await
-                        .map_err(|e| CliError::Internal(format!("template registry read: {e}")))?
-                        .first()
-                        .copied()
-                        // Nothing stored → the delete below reports 0 → 404.
-                        .unwrap_or(u32::MAX),
-                },
-            )
-        }
+        // A selector always resolves to a concrete version, so `--version stable`
+        // removes just the launched one rather than the whole template.
+        Some(raw) => Some(
+            crate::templates::resolve_version(&store, &args.id, VersionSelector::parse(raw)?)
+                .await?,
+        ),
     };
     let removed = store
         .template_delete(&args.id, pinned)
@@ -322,6 +357,79 @@ async fn delete(args: TemplateDeleteArgs) -> CliResult<()> {
         return Ok(());
     }
     println!("deleted {removed} version(s) of template '{}'", args.id);
+    Ok(())
+}
+
+/// Render a launch/rollback outcome.
+fn report_launch(
+    id: &str,
+    outcome: &crate::templates::LaunchOutcome,
+    json: bool,
+    verb: &str,
+) -> CliResult<()> {
+    if json {
+        println!(
+            "{}",
+            to_pretty(&serde_json::json!({
+                "id": id,
+                "version": outcome.version,
+                "replaced": outcome.replaced,
+                "already_launched": outcome.already_launched,
+                "first_launch": outcome.first_launch,
+            }))?
+        );
+        return Ok(());
+    }
+    if outcome.already_launched {
+        println!(
+            "template '{id}': v{} was already live — nothing changed",
+            outcome.version
+        );
+        return Ok(());
+    }
+    println!(
+        "template '{id}': {verb} v{}{}",
+        outcome.version,
+        match outcome.replaced {
+            Some(prev) => format!(" (was v{prev}; previous → v{prev})"),
+            None => String::from(" — first launch, template is now `launched`"),
+        }
+    );
+    Ok(())
+}
+
+async fn launch(args: TemplateLaunchArgs) -> CliResult<()> {
+    let store = connect(&args.common).await?;
+    let target = VersionSelector::parse(&args.version)?;
+    let outcome = crate::templates::launch(&store, &args.id, target, None).await?;
+    report_launch(&args.id, &outcome, args.common.json, "launched")
+}
+
+async fn rollback(args: TemplateRollbackArgs) -> CliResult<()> {
+    let store = connect(&args.common).await?;
+    let outcome = crate::templates::rollback(&store, &args.id, None).await?;
+    report_launch(&args.id, &outcome, args.common.json, "rolled back to")
+}
+
+async fn deprecate(args: TemplateDeprecateArgs) -> CliResult<()> {
+    let store = connect(&args.common).await?;
+    let status =
+        crate::templates::set_deprecated(&store, &args.id, args.reason.clone(), None, !args.undo)
+            .await?;
+    if args.common.json {
+        println!(
+            "{}",
+            to_pretty(&serde_json::json!({ "id": args.id, "status": status.as_str() }))?
+        );
+        return Ok(());
+    }
+    println!("template '{}' is now {status}", args.id);
+    if !args.undo {
+        println!(
+            "  existing callers keep working (pinned runs and `stable` still resolve) but every \
+             trigger warns — use `faucet template delete` for a hard stop"
+        );
+    }
     Ok(())
 }
 
@@ -419,7 +527,7 @@ pipeline:
     /// Without the SQL backend feature the whole test is skipped.
     #[cfg(feature = "serve-history-sqlite")]
     #[tokio::test]
-    async fn register_list_show_run_round_trip() {
+    async fn register_launch_promote_run_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let input = dir.path().join("in.csv");
         std::fs::write(&input, "id,name\n1,alice\n2,bob\n").unwrap();
@@ -432,49 +540,51 @@ pipeline:
         )
         .unwrap();
         let store = format!("sqlite:{}", dir.path().join("registry.db").display());
-
-        register(TemplateRegisterArgs {
+        let reg = |launch: bool, tag: Vec<String>| TemplateRegisterArgs {
             config: cfg_path.clone(),
             id: None,
             description: Some("round trip".into()),
-            tag: vec!["dev".into()],
+            tag,
+            launch,
             common: common(&store, false),
-        })
-        .await
-        .expect("register");
+        };
 
+        // A plain register is inert: the template is a draft.
+        register(reg(false, vec!["dev".into()]))
+            .await
+            .expect("register v1");
         list(TemplateListArgs {
             common: common(&store, true),
         })
         .await
         .expect("list");
 
-        show(TemplateShowArgs {
-            id: "cli-tpl".into(),
-            version: "latest".into(),
-            common: common(&store, false),
-        })
-        .await
-        .expect("show");
-
-        // A required param is enforced.
+        // An unpinned run refuses, naming the launch command.
         let err = run_template(TemplateRunArgs {
             id: "cli-tpl".into(),
-            version: "latest".into(),
-            param: vec![],
+            version: "stable".into(),
+            param: vec!["tag=alpha".into()],
             param_env: vec![],
             dry_run: true,
             limit: None,
-            common: common(&store, true),
+            common: common(&store, false),
         })
         .await
-        .unwrap_err();
-        assert!(matches!(err, CliError::MissingParam { .. }), "{err:?}");
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("no launched version"), "{err}");
 
-        // Supplying it runs the pipeline for real.
+        // Launching makes it live; then an unpinned run works.
+        launch(TemplateLaunchArgs {
+            id: "cli-tpl".into(),
+            version: "newest".into(),
+            common: common(&store, false),
+        })
+        .await
+        .expect("launch");
         run_template(TemplateRunArgs {
             id: "cli-tpl".into(),
-            version: "latest".into(),
+            version: "stable".into(),
             param: vec!["tag=alpha".into()],
             param_env: vec![],
             dry_run: false,
@@ -483,94 +593,92 @@ pipeline:
         })
         .await
         .expect("run");
+        assert_eq!(
+            std::fs::read_to_string(&output).unwrap().lines().count(),
+            2,
+            "the launched version's pipeline wrote both records"
+        );
 
-        // `register --tag dev` pointed `dev` at v1; promote `prod` from it, then
-        // run *by channel* rather than by number.
+        // Register v2 (a build) — the live version must not move.
+        register(reg(false, vec![])).await.expect("register v2");
+        show(TemplateShowArgs {
+            id: "cli-tpl".into(),
+            version: "stable".into(),
+            common: common(&store, false),
+        })
+        .await
+        .expect("show");
         promote(TemplatePromoteArgs {
             id: "cli-tpl".into(),
-            tag: "prod".into(),
-            version: "dev".into(),
+            tag: "pre-prod".into(),
+            version: "newest".into(),
             common: common(&store, false),
         })
         .await
         .expect("promote");
-        run_template(TemplateRunArgs {
+        // Launch from the channel, then roll back.
+        launch(TemplateLaunchArgs {
             id: "cli-tpl".into(),
-            version: "prod".into(),
-            param: vec!["tag=viachannel".into()],
-            param_env: vec![],
-            dry_run: true,
-            limit: None,
+            version: "pre-prod".into(),
             common: common(&store, true),
         })
         .await
-        .expect("run via channel");
-
-        // `show` renders the channel map (and marks `[latest]`).
-        show(TemplateShowArgs {
+        .expect("launch from channel");
+        rollback(TemplateRollbackArgs {
             id: "cli-tpl".into(),
-            version: "prod".into(),
-            common: common(&store, true),
-        })
-        .await
-        .expect("show pinned via channel");
-
-        // `latest` and an invented channel are rejected on promote.
-        assert!(
-            promote(TemplatePromoteArgs {
-                id: "cli-tpl".into(),
-                tag: "latest".into(),
-                version: "1".into(),
-                common: common(&store, false),
-            })
-            .await
-            .is_err(),
-            "`latest` is derived and must not be assignable"
-        );
-        assert!(
-            promote(TemplatePromoteArgs {
-                id: "cli-tpl".into(),
-                tag: "prd".into(),
-                version: "1".into(),
-                common: common(&store, false),
-            })
-            .await
-            .is_err(),
-            "channels are a closed set"
-        );
-
-        // `--version latest` deletes only the newest version, unlike an omitted
-        // `--version` (which removes the whole template, below).
-        register(TemplateRegisterArgs {
-            config: cfg_path.clone(),
-            id: None,
-            description: None,
-            tag: vec![],
             common: common(&store, false),
         })
         .await
-        .expect("register v2");
+        .expect("rollback");
+
+        // Derived channels and invented names are refused on promote.
+        for tag in ["stable", "previous", "newest", "prd", "latest"] {
+            assert!(
+                promote(TemplatePromoteArgs {
+                    id: "cli-tpl".into(),
+                    tag: tag.into(),
+                    version: "1".into(),
+                    common: common(&store, false),
+                })
+                .await
+                .is_err(),
+                "`{tag}` must not be promotable"
+            );
+        }
+
+        // Deprecate → revive.
+        deprecate(TemplateDeprecateArgs {
+            id: "cli-tpl".into(),
+            reason: Some("superseded".into()),
+            undo: false,
+            common: common(&store, false),
+        })
+        .await
+        .expect("deprecate");
+        deprecate(TemplateDeprecateArgs {
+            id: "cli-tpl".into(),
+            reason: None,
+            undo: true,
+            common: common(&store, true),
+        })
+        .await
+        .expect("undeprecate");
+
+        // Delete a single version, then the whole template.
         delete(TemplateDeleteArgs {
             id: "cli-tpl".into(),
-            version: Some("latest".into()),
+            version: Some("newest".into()),
             common: common(&store, false),
         })
         .await
-        .expect("delete latest");
-        assert_eq!(
-            std::fs::read_to_string(&output).unwrap().lines().count(),
-            2,
-            "the template's pipeline wrote both records"
-        );
-
-        // Delete, then confirm the id is gone.
+        .expect("delete newest");
         delete(TemplateDeleteArgs {
             id: "cli-tpl".into(),
             version: None,
             common: common(&store, true),
         })
         .await
-        .expect("delete");
+        .expect("delete all");
         let err = delete(TemplateDeleteArgs {
             id: "cli-tpl".into(),
             version: None,
@@ -598,7 +706,7 @@ pipeline:
         let err = promote(TemplatePromoteArgs {
             id: "nope".into(),
             tag: "prod".into(),
-            version: "latest".into(),
+            version: "newest".into(),
             common: common("memory", false),
         })
         .await
@@ -651,6 +759,7 @@ pipeline:
             },
         );
         let summary = TemplateSummary {
+            state: None,
             id: "t".into(),
             version: 1,
             name: None,
@@ -675,6 +784,7 @@ pipeline:
             id: None,
             description: None,
             tag: vec![],
+            launch: false,
             common: common("memory", false),
         })
         .await
@@ -686,6 +796,7 @@ pipeline:
             id: None,
             description: None,
             tag: vec![],
+            launch: false,
             common: common("memory", false),
         })
         .await

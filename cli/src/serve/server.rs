@@ -77,7 +77,19 @@ pub fn build_router(
                 get(templates::get_template).delete(templates::delete_template),
             )
             .route("/v1/templates/{id}/runs", post(templates::trigger_template))
-            .route("/v1/templates/{id}/tags", post(templates::promote_template));
+            .route("/v1/templates/{id}/tags", post(templates::promote_template))
+            .route(
+                "/v1/templates/{id}/launch",
+                post(templates::launch_template),
+            )
+            .route(
+                "/v1/templates/{id}/rollback",
+                post(templates::rollback_template),
+            )
+            .route(
+                "/v1/templates/{id}/deprecate",
+                post(templates::deprecate_template),
+            );
     }
     // MCP endpoint (#420): mounted only with `--mcp`. Placed on `api` so it
     // inherits the bearer-auth + RBAC route-layer below; the per-request

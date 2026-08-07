@@ -842,6 +842,27 @@ fn shipped_example_yamls_pass_validate() {
     // directive can resolve.
     let workdir = TempDir::new().unwrap();
     fs::write(workdir.path().join("snowflake_key.pem"), "dummy-key").unwrap();
+    // `validate` compiles every transform chain, and some transforms read files
+    // at compile time — the `sql` transform resolves its reference relations, the
+    // `wasm` transform loads its module. Those examples name the fixtures by a
+    // repo-relative path, so stage the fixture trees at the same relative paths
+    // under the temp cwd. Add to this list if a new example references a
+    // compile-time fixture; a missing entry fails loudly below rather than
+    // silently skipping the example.
+    let repo_root = std::path::Path::new(manifest_dir).parent().unwrap();
+    for rel in ["cli/examples/data", "examples/wasm-transforms"] {
+        let src_dir = repo_root.join(rel);
+        let dst_dir = workdir.path().join(rel);
+        fs::create_dir_all(&dst_dir).unwrap();
+        for entry in fs::read_dir(&src_dir)
+            .unwrap_or_else(|e| panic!("fixture dir {} is missing: {e}", src_dir.display()))
+        {
+            let src = entry.unwrap().path();
+            if src.is_file() {
+                fs::copy(&src, dst_dir.join(src.file_name().unwrap())).unwrap();
+            }
+        }
+    }
 
     let mut count = 0;
     for entry in fs::read_dir(&examples_dir).unwrap() {
@@ -891,6 +912,23 @@ fn shipped_example_yamls_pass_validate() {
         {
             let yaml_text = fs::read_to_string(&path).unwrap_or_default();
             if yaml_text.contains("\ncatalog:") || yaml_text.starts_with("catalog:") {
+                continue;
+            }
+        }
+        // The `sql` / `wasm` transforms are feature-gated, and `validate` now
+        // compiles every transform chain — so an example using one cannot
+        // validate in a build that lacks it.
+        #[cfg(not(feature = "transform-sql"))]
+        {
+            let yaml_text = fs::read_to_string(&path).unwrap_or_default();
+            if yaml_text.contains("type: sql") {
+                continue;
+            }
+        }
+        #[cfg(not(feature = "transform-wasm"))]
+        {
+            let yaml_text = fs::read_to_string(&path).unwrap_or_default();
+            if yaml_text.contains("type: wasm") {
                 continue;
             }
         }

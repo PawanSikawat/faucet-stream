@@ -63,6 +63,9 @@ const ROUTES_TEMPLATES: &[(&str, &str)] = &[
     ("DELETE", "/v1/templates/{id}"),
     ("POST", "/v1/templates/{id}/runs"),
     ("POST", "/v1/templates/{id}/tags"),
+    ("POST", "/v1/templates/{id}/launch"),
+    ("POST", "/v1/templates/{id}/rollback"),
+    ("POST", "/v1/templates/{id}/deprecate"),
 ];
 
 /// Returns the full canonical route set for the current feature configuration.

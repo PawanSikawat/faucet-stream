@@ -58,6 +58,11 @@ pub struct MemoryHistory {
     /// the same lock as `templates` would be if it mattered; a separate `Mutex` is
     /// fine because a tag is only ever written after its version exists.
     template_tags: Mutex<std::collections::HashMap<String, BTreeMap<String, u32>>>,
+    /// Append-only launch log per template, newest first. Source of truth for
+    /// `stable` / `previous` and for the derived template status.
+    template_launches: Mutex<std::collections::HashMap<String, Vec<templates::LaunchRecord>>>,
+    /// Deprecation markers — the only *stored* part of the lifecycle status.
+    template_deprecations: Mutex<std::collections::HashMap<String, templates::DeprecationRecord>>,
     /// Retention window for idempotency claims (separate from run retention).
     idem_retention: Duration,
 }
@@ -71,6 +76,8 @@ impl MemoryHistory {
             catalog: Mutex::new(CatalogState::default()),
             templates: Mutex::new(std::collections::HashMap::new()),
             template_tags: Mutex::new(std::collections::HashMap::new()),
+            template_launches: Mutex::new(std::collections::HashMap::new()),
+            template_deprecations: Mutex::new(std::collections::HashMap::new()),
             idem_retention,
         }
     }
@@ -475,9 +482,20 @@ impl RunHistory for MemoryHistory {
             .template_tags
             .lock()
             .map_err(|_| HistoryError::Backend("template tag lock poisoned".into()))?;
+        let mut launches = self
+            .template_launches
+            .lock()
+            .map_err(|_| HistoryError::Backend("template launch lock poisoned".into()))?;
         match version {
             None => {
                 tags.remove(id);
+                launches.remove(id);
+                self.template_deprecations
+                    .lock()
+                    .map_err(|_| {
+                        HistoryError::Backend("template deprecation lock poisoned".into())
+                    })?
+                    .remove(id);
                 Ok(store.remove(id).map(|v| v.len()).unwrap_or(0))
             }
             Some(v) => {
@@ -488,11 +506,22 @@ impl RunHistory for MemoryHistory {
                 if versions.is_empty() {
                     store.remove(id);
                     tags.remove(id);
-                } else if let Some(t) = tags.get_mut(id) {
-                    // A channel must never dangle at a deleted version.
-                    t.retain(|_, pointed| *pointed != v);
-                    if t.is_empty() {
-                        tags.remove(id);
+                    launches.remove(id);
+                } else {
+                    if let Some(t) = tags.get_mut(id) {
+                        // A channel must never dangle at a deleted version.
+                        t.retain(|_, pointed| *pointed != v);
+                        if t.is_empty() {
+                            tags.remove(id);
+                        }
+                    }
+                    // Likewise the launch log: a `stable` / `previous` pointer must
+                    // never resolve to a version that no longer exists.
+                    if let Some(log) = launches.get_mut(id) {
+                        log.retain(|l| l.version != v);
+                        if log.is_empty() {
+                            launches.remove(id);
+                        }
                     }
                 }
                 Ok(removed)
@@ -537,6 +566,77 @@ impl RunHistory for MemoryHistory {
             tags.remove(id);
         }
         Ok(existed)
+    }
+
+    async fn template_launch(
+        &self,
+        id: &str,
+        version: u32,
+        launched_by: Option<&str>,
+    ) -> Result<Option<u32>, HistoryError> {
+        let mut launches = self
+            .template_launches
+            .lock()
+            .map_err(|_| HistoryError::Backend("template launch lock poisoned".into()))?;
+        let log = launches.entry(id.to_string()).or_default();
+        // Re-launching what is already stable is a no-op: appending would make
+        // `previous` a duplicate of `stable` and destroy the rollback target.
+        if templates::stable_version(log) == Some(version) {
+            return Ok(None);
+        }
+        let seq = log.first().map(|l| l.seq).unwrap_or(0) + 1;
+        log.insert(
+            0,
+            templates::LaunchRecord {
+                seq,
+                version,
+                launched_at: Utc::now(),
+                launched_by: launched_by.map(str::to_string),
+            },
+        );
+        Ok(Some(seq))
+    }
+
+    async fn template_launches(
+        &self,
+        id: &str,
+    ) -> Result<Vec<templates::LaunchRecord>, HistoryError> {
+        let launches = self
+            .template_launches
+            .lock()
+            .map_err(|_| HistoryError::Backend("template launch lock poisoned".into()))?;
+        Ok(launches.get(id).cloned().unwrap_or_default())
+    }
+
+    async fn template_set_deprecation(
+        &self,
+        id: &str,
+        record: Option<&templates::DeprecationRecord>,
+    ) -> Result<(), HistoryError> {
+        let mut deprecations = self
+            .template_deprecations
+            .lock()
+            .map_err(|_| HistoryError::Backend("template deprecation lock poisoned".into()))?;
+        match record {
+            Some(r) => {
+                deprecations.insert(id.to_string(), r.clone());
+            }
+            None => {
+                deprecations.remove(id);
+            }
+        }
+        Ok(())
+    }
+
+    async fn template_deprecation(
+        &self,
+        id: &str,
+    ) -> Result<Option<templates::DeprecationRecord>, HistoryError> {
+        let deprecations = self
+            .template_deprecations
+            .lock()
+            .map_err(|_| HistoryError::Backend("template deprecation lock poisoned".into()))?;
+        Ok(deprecations.get(id).cloned())
     }
 
     fn degraded(&self) -> bool {

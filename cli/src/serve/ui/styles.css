@@ -292,6 +292,13 @@ button { font-family: inherit; }
 }
 .btn-danger:hover { background: var(--fail); color: #fff; }
 
+.btn-primary:disabled, .btn-ghost:disabled, .btn-danger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
 /* ============================================================================
    filters
    ========================================================================== */
@@ -786,3 +793,98 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 .lineage-node text { fill: var(--ink); font-family: var(--font-mono); font-size: 12px; }
 .lineage-node:hover rect { stroke: var(--running, #4a9eda); }
 .lineage-root rect { stroke: var(--ok); stroke-width: 2.5; }
+
+/* ============================================================================
+   pipeline templates (#444)
+   ========================================================================== */
+.tpl-row { grid-template-columns: 120px 1fr auto auto auto; }
+.tpl-row-id { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.tpl-row-id b { font-weight: 600; font-size: 0.95rem; }
+.tpl-row-desc {
+  font-size: 0.8rem;
+  color: var(--ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tpl-h2 { margin: 26px 0 10px; font-size: 0.95rem; color: var(--ink-dim); }
+.tpl-desc { color: var(--ink-dim); font-size: 0.88rem; margin: 12px 0 0; }
+
+.tpl-notice {
+  margin: 14px 0 0;
+  padding: 11px 14px;
+  font-size: 0.86rem;
+  color: var(--ink-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--queued);
+  border-radius: var(--r-sm);
+}
+.tpl-notice b { color: var(--ink); }
+.tpl-notice code { font-family: var(--font-mono); font-size: 0.82rem; }
+.tpl-notice-warn { border-left-color: var(--cancelled); }
+
+.tpl-register {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-1);
+}
+.tpl-register textarea { min-height: 220px; }
+
+.tpl-versions { display: flex; flex-direction: column; gap: 6px; }
+.tpl-version {
+  display: grid;
+  grid-template-columns: 52px 1fr auto auto auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+.tpl-version-live { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); }
+.tpl-vnum { font-weight: 700; font-size: 0.9rem; }
+.tpl-vchannels { display: flex; flex-wrap: wrap; gap: 5px; }
+.tpl-assign { max-width: 160px; }
+.tpl-version .btn-ghost, .tpl-version .btn-danger { padding: 5px 11px; font-size: 0.8rem; }
+.tpl-body {
+  grid-column: 1 / -1;
+  margin: 6px 0 0;
+  max-height: 340px;
+  overflow: auto;
+  padding: 13px 15px;
+  background: var(--term-bg);
+  color: var(--term-ink);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.6;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.tpl-trigger {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+.tpl-params { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px 18px; }
+.tpl-param { display: flex; flex-direction: column; gap: 5px; }
+.tpl-param-name { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 0.82rem; }
+
+@media (max-width: 760px) {
+  .tpl-version { grid-template-columns: 52px 1fr; row-gap: 8px; }
+  .tpl-version .tpl-assign { max-width: none; }
+}

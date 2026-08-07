@@ -158,6 +158,24 @@ pub const DDL: &[&str] = &[
         version TEXT NOT NULL,\
         updated_at TEXT NOT NULL,\
         PRIMARY KEY (id, tag))",
+    // Append-only launch log (#444): the source of truth for `stable` (newest
+    // entry) and `previous` (the one before it), the derived template status, and
+    // the launch/rollback audit trail. `seq` is an integer stored as TEXT (cast on
+    // ORDER BY), matching the version/estimate convention elsewhere.
+    "CREATE TABLE IF NOT EXISTS faucet_template_launches (\
+        id TEXT NOT NULL,\
+        seq TEXT NOT NULL,\
+        version TEXT NOT NULL,\
+        launched_at TEXT NOT NULL,\
+        launched_by TEXT,\
+        PRIMARY KEY (id, seq))",
+    // Deprecation markers — the only *stored* part of a template's lifecycle
+    // status (`draft` vs `launched` derives from the launch log).
+    "CREATE TABLE IF NOT EXISTS faucet_template_deprecations (\
+        id TEXT PRIMARY KEY,\
+        deprecated_at TEXT NOT NULL,\
+        deprecated_by TEXT,\
+        reason TEXT)",
 ];
 
 /// SQL placeholder dialect.
@@ -323,6 +341,22 @@ pub struct Stmts {
     pub template_delete_tags_all: String,
     /// Delete the channel pointers aimed at one version. Params: id, version.
     pub template_delete_tags_for_version: String,
+    /// Highest launch seq for a template (0 when never launched). Param: id.
+    pub template_max_launch_seq: String,
+    /// Append one launch entry. Params: id, seq, version, launched_at, launched_by.
+    pub template_insert_launch: String,
+    /// The launch log for a template, newest first. Param: id.
+    pub template_select_launches: String,
+    /// Delete every launch entry for a template. Param: id.
+    pub template_delete_launches_all: String,
+    /// Delete the launch entries naming one version. Params: id, version.
+    pub template_delete_launches_for_version: String,
+    /// Upsert the deprecation marker. Params: id, deprecated_at, deprecated_by, reason.
+    pub template_upsert_deprecation: String,
+    /// Read the deprecation marker. Param: id.
+    pub template_select_deprecation: String,
+    /// Clear the deprecation marker. Param: id.
+    pub template_delete_deprecation: String,
 }
 
 impl Stmts {
@@ -578,6 +612,28 @@ impl Stmts {
             template_delete_tags_all: "DELETE FROM faucet_template_tags WHERE id=$1".into(),
             template_delete_tags_for_version:
                 "DELETE FROM faucet_template_tags WHERE id=$1 AND version=$2".into(),
+            template_max_launch_seq: "SELECT COALESCE(MAX(CAST(seq AS BIGINT)), 0) AS v \
+                FROM faucet_template_launches WHERE id=$1"
+                .into(),
+            template_insert_launch: "INSERT INTO faucet_template_launches \
+                (id, seq, version, launched_at, launched_by) VALUES ($1,$2,$3,$4,$5)"
+                .into(),
+            template_select_launches: "SELECT seq, version, launched_at, launched_by \
+                FROM faucet_template_launches WHERE id=$1 ORDER BY CAST(seq AS BIGINT) DESC"
+                .into(),
+            template_delete_launches_all: "DELETE FROM faucet_template_launches WHERE id=$1".into(),
+            template_delete_launches_for_version:
+                "DELETE FROM faucet_template_launches WHERE id=$1 AND version=$2".into(),
+            template_upsert_deprecation: "INSERT INTO faucet_template_deprecations \
+                (id, deprecated_at, deprecated_by, reason) VALUES ($1,$2,$3,$4) \
+                ON CONFLICT (id) DO UPDATE SET deprecated_at=excluded.deprecated_at, \
+                deprecated_by=excluded.deprecated_by, reason=excluded.reason"
+                .into(),
+            template_select_deprecation: "SELECT deprecated_at, deprecated_by, reason \
+                FROM faucet_template_deprecations WHERE id=$1"
+                .into(),
+            template_delete_deprecation: "DELETE FROM faucet_template_deprecations WHERE id=$1"
+                .into(),
         }
     }
 
@@ -817,6 +873,28 @@ impl Stmts {
             template_delete_tags_all: "DELETE FROM faucet_template_tags WHERE id=?".into(),
             template_delete_tags_for_version:
                 "DELETE FROM faucet_template_tags WHERE id=? AND version=?".into(),
+            template_max_launch_seq: "SELECT COALESCE(MAX(CAST(seq AS INTEGER)), 0) AS v \
+                FROM faucet_template_launches WHERE id=?"
+                .into(),
+            template_insert_launch: "INSERT INTO faucet_template_launches \
+                (id, seq, version, launched_at, launched_by) VALUES (?,?,?,?,?)"
+                .into(),
+            template_select_launches: "SELECT seq, version, launched_at, launched_by \
+                FROM faucet_template_launches WHERE id=? ORDER BY CAST(seq AS INTEGER) DESC"
+                .into(),
+            template_delete_launches_all: "DELETE FROM faucet_template_launches WHERE id=?".into(),
+            template_delete_launches_for_version:
+                "DELETE FROM faucet_template_launches WHERE id=? AND version=?".into(),
+            template_upsert_deprecation: "INSERT INTO faucet_template_deprecations \
+                (id, deprecated_at, deprecated_by, reason) VALUES (?,?,?,?) \
+                ON CONFLICT (id) DO UPDATE SET deprecated_at=excluded.deprecated_at, \
+                deprecated_by=excluded.deprecated_by, reason=excluded.reason"
+                .into(),
+            template_select_deprecation: "SELECT deprecated_at, deprecated_by, reason \
+                FROM faucet_template_deprecations WHERE id=?"
+                .into(),
+            template_delete_deprecation: "DELETE FROM faucet_template_deprecations WHERE id=?"
+                .into(),
         }
     }
 }
@@ -825,9 +903,30 @@ impl Stmts {
 /// purged concurrently between the insert attempt and the read-back).
 pub const CLAIM_ATTEMPTS: usize = 4;
 
+/// Sleep before a read-max-then-insert retry (no-op on the first attempt).
+///
+/// The retry exists for lost races, and under real contention an immediate retry
+/// tends to lose the same race again — SQLite in particular serializes writers, so
+/// a few milliseconds of stagger is the difference between converging and
+/// exhausting the attempt budget.
+pub async fn retry_backoff(attempt: usize) {
+    if attempt > 1 {
+        tokio::time::sleep(std::time::Duration::from_millis(5 * (attempt as u64 - 1))).await;
+    }
+}
+
 /// Fixed-width RFC3339 (nanoseconds + `Z`) — lexicographically sortable.
 pub fn fmt_ts(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+}
+
+/// Inverse of [`fmt_ts`]. An unparseable value falls back to *now* rather than
+/// failing the read: a single corrupt timestamp must not make a whole template or
+/// audit row unusable, and every caller uses the value for display/ordering only.
+pub fn parse_ts(raw: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(raw)
+        .map(|d| d.to_utc())
+        .unwrap_or_else(|_| Utc::now())
 }
 
 /// True when a claim timestamped `claimed_at` (RFC3339) is older than `window`.
@@ -1997,9 +2096,7 @@ macro_rules! impl_sql_history {
                 let mut out = Vec::with_capacity(rows.len());
                 for r in &rows {
                     let ts: String = r.try_get("ts").map_err(backend)?;
-                    let timestamp = chrono::DateTime::parse_from_rfc3339(&ts)
-                        .map(|d| d.to_utc())
-                        .unwrap_or_else(|_| chrono::Utc::now());
+                    let timestamp = $crate::serve::history::sql::parse_ts(&ts);
                     out.push(AuditEntry {
                         id: r.try_get("id").map_err(backend)?,
                         timestamp,
@@ -2274,12 +2371,42 @@ macro_rules! impl_sql_history {
                 // retry picks up the winner's version — so a register never
                 // silently overwrites another (F: lost-update).
                 for attempt in 1..=sql::CLAIM_ATTEMPTS {
-                    let mut tx = self.pool.begin().await.map_err(backend)?;
-                    let row = sqlx::query(&self.stmts.template_max_version)
+                    sql::retry_backoff(attempt).await;
+                    // Opening the transaction and reading the current max are as
+                    // contention-prone as the insert itself (SQLite answers a
+                    // write-write overlap with `database is locked` immediately,
+                    // since waiting would deadlock). Feed those failures into the
+                    // same retry rather than aborting the register.
+                    let mut tx = match self.pool.begin().await {
+                        Ok(tx) => tx,
+                        Err(e) if attempt < sql::CLAIM_ATTEMPTS => {
+                            tracing::debug!(
+                                template = %id, attempt, error = %e,
+                                "template version transaction lost a race; retrying"
+                            );
+                            continue;
+                        }
+                        Err(e) => return Err(backend(e)),
+                    };
+                    let row = match sqlx::query(&self.stmts.template_max_version)
                         .bind(&id)
                         .fetch_one(&mut *tx)
                         .await
-                        .map_err(backend)?;
+                    {
+                        Ok(row) => row,
+                        Err(e) if attempt < sql::CLAIM_ATTEMPTS => {
+                            let _ = tx.rollback().await;
+                            tracing::debug!(
+                                template = %id, attempt, error = %e,
+                                "template version read lost a race; retrying"
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            let _ = tx.rollback().await;
+                            return Err(backend(e));
+                        }
+                    };
                     let max: i64 = row.try_get("v").map_err(backend)?;
                     let next = (max as u32).saturating_add(1);
                     let record = templates::TemplateRecord {
@@ -2419,9 +2546,15 @@ macro_rules! impl_sql_history {
                 let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
                 let result = match version {
                     Some(v) => {
-                        // Drop channels aimed at this version first, so a pointer
-                        // can never outlive what it points at.
+                        // Drop channels + launch entries aimed at this version
+                        // first, so no pointer can outlive what it points at.
                         sqlx::query(&self.stmts.template_delete_tags_for_version)
+                            .bind(id)
+                            .bind(v.to_string())
+                            .execute(&self.pool)
+                            .await
+                            .map_err(backend)?;
+                        sqlx::query(&self.stmts.template_delete_launches_for_version)
                             .bind(id)
                             .bind(v.to_string())
                             .execute(&self.pool)
@@ -2434,11 +2567,17 @@ macro_rules! impl_sql_history {
                             .await
                     }
                     None => {
-                        sqlx::query(&self.stmts.template_delete_tags_all)
-                            .bind(id)
-                            .execute(&self.pool)
-                            .await
-                            .map_err(backend)?;
+                        for stmt in [
+                            &self.stmts.template_delete_tags_all,
+                            &self.stmts.template_delete_launches_all,
+                            &self.stmts.template_delete_deprecation,
+                        ] {
+                            sqlx::query(stmt)
+                                .bind(id)
+                                .execute(&self.pool)
+                                .await
+                                .map_err(backend)?;
+                        }
                         sqlx::query(&self.stmts.template_delete_all)
                             .bind(id)
                             .execute(&self.pool)
@@ -2509,6 +2648,167 @@ macro_rules! impl_sql_history {
                     .await
                     .map_err(backend)?;
                 Ok(result.rows_affected() > 0)
+            }
+
+            async fn template_launch(
+                &self,
+                id: &str,
+                version: u32,
+                launched_by: Option<&str>,
+            ) -> Result<Option<u32>, $crate::serve::history::HistoryError> {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::{sql, templates};
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+
+                // Re-launching what is already stable is a no-op: appending would
+                // make `previous` a duplicate of `stable` and destroy the rollback
+                // target.
+                let existing = self.template_launches(id).await?;
+                if templates::stable_version(&existing) == Some(version) {
+                    return Ok(None);
+                }
+                // Read-max-then-insert with a bounded PK-conflict retry, exactly
+                // like version assignment: two concurrent launches must produce
+                // two distinct entries, never a lost write.
+                for attempt in 1..=sql::CLAIM_ATTEMPTS {
+                    sql::retry_backoff(attempt).await;
+                    // As in `template_register`: a contended *read* is transient,
+                    // so let the loop retry instead of failing the launch.
+                    let row = match sqlx::query(&self.stmts.template_max_launch_seq)
+                        .bind(id)
+                        .fetch_one(&self.pool)
+                        .await
+                    {
+                        Ok(row) => row,
+                        Err(e) if attempt < sql::CLAIM_ATTEMPTS => {
+                            tracing::debug!(
+                                template = %id, attempt, error = %e,
+                                "launch-log seq read lost a race; retrying"
+                            );
+                            continue;
+                        }
+                        Err(e) => return Err(backend(e)),
+                    };
+                    let max: i64 = row.try_get("v").map_err(backend)?;
+                    let seq = (max as u32).saturating_add(1);
+                    let insert = sqlx::query(&self.stmts.template_insert_launch)
+                        .bind(id)
+                        .bind(seq.to_string())
+                        .bind(version.to_string())
+                        .bind(sql::fmt_ts(chrono::Utc::now()))
+                        .bind(launched_by)
+                        .execute(&self.pool)
+                        .await;
+                    match insert {
+                        Ok(_) => return Ok(Some(seq)),
+                        Err(e) if attempt < sql::CLAIM_ATTEMPTS => {
+                            tracing::debug!(
+                                template = %id, attempt, error = %e,
+                                "launch-log insert lost a race; retrying with the next seq"
+                            );
+                        }
+                        Err(e) => return Err(backend(e)),
+                    }
+                }
+                Err(HistoryError::Backend(format!(
+                    "could not append a launch for template '{id}' after {} attempts",
+                    sql::CLAIM_ATTEMPTS
+                )))
+            }
+
+            async fn template_launches(
+                &self,
+                id: &str,
+            ) -> Result<
+                Vec<$crate::serve::history::templates::LaunchRecord>,
+                $crate::serve::history::HistoryError,
+            > {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::{sql, templates};
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let rows = sqlx::query(&self.stmts.template_select_launches)
+                    .bind(id)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                let mut out = Vec::with_capacity(rows.len());
+                for r in &rows {
+                    let seq: String = r.try_get("seq").map_err(backend)?;
+                    let version: String = r.try_get("version").map_err(backend)?;
+                    let launched_at: String = r.try_get("launched_at").map_err(backend)?;
+                    let launched_by: Option<String> = r.try_get("launched_by").map_err(backend)?;
+                    // Skip an unparseable row rather than failing the whole read —
+                    // a corrupt entry must not make a template unusable.
+                    let (Ok(seq), Ok(version)) = (seq.parse::<u32>(), version.parse::<u32>()) else {
+                        continue;
+                    };
+                    out.push(templates::LaunchRecord {
+                        seq,
+                        version,
+                        launched_at: sql::parse_ts(&launched_at),
+                        launched_by,
+                    });
+                }
+                Ok(out)
+            }
+
+            async fn template_set_deprecation(
+                &self,
+                id: &str,
+                record: Option<&$crate::serve::history::templates::DeprecationRecord>,
+            ) -> Result<(), $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                match record {
+                    Some(r) => {
+                        sqlx::query(&self.stmts.template_upsert_deprecation)
+                            .bind(id)
+                            .bind(sql::fmt_ts(r.deprecated_at))
+                            .bind(r.deprecated_by.as_deref())
+                            .bind(r.reason.as_deref())
+                            .execute(&self.pool)
+                            .await
+                            .map_err(backend)?;
+                    }
+                    None => {
+                        sqlx::query(&self.stmts.template_delete_deprecation)
+                            .bind(id)
+                            .execute(&self.pool)
+                            .await
+                            .map_err(backend)?;
+                    }
+                }
+                Ok(())
+            }
+
+            async fn template_deprecation(
+                &self,
+                id: &str,
+            ) -> Result<
+                Option<$crate::serve::history::templates::DeprecationRecord>,
+                $crate::serve::history::HistoryError,
+            > {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::{sql, templates};
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let Some(row) = sqlx::query(&self.stmts.template_select_deprecation)
+                    .bind(id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(backend)?
+                else {
+                    return Ok(None);
+                };
+                let at: String = row.try_get("deprecated_at").map_err(backend)?;
+                Ok(Some(templates::DeprecationRecord {
+                    deprecated_at: sql::parse_ts(&at),
+                    deprecated_by: row.try_get("deprecated_by").map_err(backend)?,
+                    reason: row.try_get("reason").map_err(backend)?,
+                }))
             }
 
             fn degraded(&self) -> bool {

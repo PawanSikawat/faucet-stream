@@ -129,24 +129,61 @@ feature.
 *identical* path as `faucet run` — observability, lineage, notifications, the
 catalog, SLA evaluation and row selection all behave the same.
 
-### Versions and named channels
+### Versions, launching, and channels
 
-Every `register` appends a **new numeric version**, auto-incrementing from 1 —
-iterating a template never overwrites what is already running. On top of the
-numbers sits a **closed set of named channels**: movable pointers you promote
-between versions, exactly like container image tags.
+Every `register` appends a **new numeric version**, auto-incrementing from 1 — and
+that is *all* it does. **Registering never moves existing callers.** A nightly
+build, a feature branch, a half-tested experiment: they all land as a new version
+while everyone who did not pin one keeps running exactly what they ran yesterday.
 
-| Channel | Meaning |
+Making a version live is a separate, deliberate step: **`launch`**.
+
+```bash
+faucet template register tenant-sync.yaml          # v4 exists; nobody is affected
+faucet template launch   tenant-sync               # v4 is live — this moves callers
+```
+
+That split is the whole point. A deploy can register freely; promoting a build to
+"what production runs" stays a decision somebody makes on purpose.
+
+#### Template status
+
+A template is in exactly one of three states, and the state is **derived** from
+what has actually happened, so it can never disagree with the registry:
+
+| Status | Meaning |
 |---|---|
-| `latest` | **Derived** — always the newest registration. Never assignable. |
+| `draft` | Registered but never launched — the work-in-progress state. An unpinned run is refused (there is no blessed version); explicit selectors still work, so a draft is fully testable. |
+| `launched` | A version has been launched. Unpinned runs resolve to it. |
+| `deprecated` | Explicitly retired. Unpinned runs **still work** — retiring must not hard-break callers — but every trigger warns and listings mark it. `delete` is the hard stop. |
+
+```bash
+faucet template register tenant-sync.yaml --launch   # skip the draft stage
+faucet template deprecate tenant-sync --reason "superseded by tenant-sync-v2"
+faucet template deprecate tenant-sync --undo         # revive it
+```
+
+#### Channels
+
+On top of the numbers sit **named channels**: pointers at one numeric version.
+Three are **derived** — computed from the launch log, never assigned:
+
+| Derived channel | Resolves to |
+|---|---|
+| `stable` | The launched version. **The default when no version is given.** Moves only via `launch`. |
+| `previous` | The version launched *before* the current one — the rollback target. Unset until a second launch. |
+| `newest` | The highest version number, launched or not. The build tip. |
+
+The rest are **assignable** — you point them wherever you like with `promote`:
+
+| Assignable channel | Meaning |
+|---|---|
 | `dev` | Day-to-day development |
 | `test` | QA / integration testing |
 | `staging` | Staging |
 | `pre-prod` | Pre-production / release-candidate soak |
 | `canary` | Partial-traffic canary ahead of `prod` |
-| `stable` | The version blessed as known-good |
 | `prod` | Production |
-| `previous` | The previously-blessed version, for a one-step rollback |
 
 The set is **closed on purpose**: an open-ended tag namespace becomes a second,
 unreviewable naming system in which a typo (`prd`) silently creates a channel
@@ -155,91 +192,163 @@ forgiving about spelling — `pre-prod`, `pre_prod`, `PreProd`, and `preprod` ar
 one channel — and if you need a free-form label, put it in the run's `labels`,
 not in the registry.
 
-A version is selected in one of three ways:
+> **There is no `latest`.** It reads as both "the newest build" and "the current
+> stable release", and those are exactly the two things this model keeps apart. Ask
+> for it and faucet says so rather than guessing:
+>
+> ```text
+> `latest` is not a version channel here because it is ambiguous. Did you mean
+> `stable` (the launched version — also the default when no version is given), or
+> `newest` (the highest version number, launched or not)?
+> ```
+
+#### Selecting a version
 
 | Selector | Resolves to |
 |---|---|
-| *(omitted)* | the newest version |
-| a channel name (`latest`, `prod`, `dev`, …) | whatever that channel points at |
+| *(omitted)* | `stable` — the launched version |
+| a channel name (`prod`, `newest`, `previous`, …) | whatever that channel points at |
 | a number (`2`) | exactly that version |
 
 ```bash
-faucet template run tenant-sync --param tenant_id=acme            # latest
-faucet template run tenant-sync --version latest --param …        # same thing
-faucet template run tenant-sync --version prod   --param …        # whatever prod names
-faucet template run tenant-sync --version 2      --param …        # pinned
+faucet template run tenant-sync --param tenant_id=acme            # stable
+faucet template run tenant-sync --version prod    --param …       # whatever prod names
+faucet template run tenant-sync --version newest  --param …       # the build tip
+faucet template run tenant-sync --version 2       --param …       # pinned
 ```
 
-`latest` is derived, so it can never be assigned or moved; the others start unset
-and stay wherever you last promoted them. Asking for an unset channel is an error
-naming the channels that *are* set — silently falling back to `latest` would run
-the wrong code.
+Asking for an unset channel is an error phrased for *that* channel, because the
+fix differs: `stable` needs a launch, `previous` needs a second launch, an
+environment channel needs a promote. Silently falling back would run the wrong
+code.
 
-#### Promoting
-
-Tag on register, or promote afterwards:
+#### Promoting and launching
 
 ```bash
-# Register v4 and point `dev` at it in one step.
+# Register v5 and point `dev` at it in one step.
 faucet template register tenant-sync.yaml --tag dev
 
-# Promote by copying another channel's current target — the usual pipeline.
+# Walk it up the channels — each promote copies another channel's current target.
 faucet template promote tenant-sync --tag test     --version dev
 faucet template promote tenant-sync --tag pre-prod --version test
 faucet template promote tenant-sync --tag prod     --version pre-prod
+# → template 'tenant-sync': prod → v5
 
-# Or point at an exact version (a rollback).
-faucet template promote tenant-sync --tag prod --version 3
+# Bless whatever soaked in pre-prod as the new stable.
+faucet template launch tenant-sync --version pre-prod
+# → template 'tenant-sync': launched v5 (was v4; previous → v4)
 ```
+
+`launch` defaults to `newest`, since launching what you just registered is the
+common case. Re-launching the already-live version is a no-op — which is what
+keeps `previous` a real rollback target rather than a copy of the current version.
+A promote *from* a channel resolves to a concrete version at that moment, so a
+pointer never silently follows future registrations. Derived channels cannot be
+assigned: `faucet template promote … --tag stable` is rejected and tells you to
+use `launch`.
+
+#### Rolling back
 
 ```bash
-curl -sX POST localhost:8080/v1/templates/tenant-sync/tags \
-  -H "Authorization: Bearer $TOKEN" -d '{"tag":"prod","version":"stable"}'
-# → 200 {"id":"tenant-sync","tag":"prod","version":7}
+faucet template rollback tenant-sync
+# → template 'tenant-sync': rolled back to v4 (was v5; previous → v5)
 ```
 
-Promoting *from* `latest` resolves to the concrete newest version at that moment,
-so the pointer does not silently follow future registrations.
+Rollback re-launches `previous`, and it is an ordinary launch under the hood — so
+the launch log keeps the full audit trail and `previous` becomes the version you
+just rolled off (roll back twice and you are where you started).
+
+```bash
+curl -sX POST localhost:8080/v1/templates/tenant-sync/launch \
+  -H "Authorization: Bearer $TOKEN" -d '{"version":"pre-prod"}'
+# → 200 {"id":"tenant-sync","version":5,"replaced":4,"already_launched":false,"status":"launched"}
+
+curl -sX POST localhost:8080/v1/templates/tenant-sync/rollback \
+  -H "Authorization: Bearer $TOKEN" -d '{}'
+```
 
 #### Inspecting
 
-`GET /v1/templates/{id}` (and `faucet template show`) reports the whole picture,
-so a client can pin, promote, or roll back without a second call:
+`faucet template list` shows one row per id — its status, what is live, and the
+build tip:
+
+```text
+ID                          STATUS       LIVE    NEWEST   PARAMS  DESCRIPTION
+orders-export               launched     v2      v2            4  Nightly export of an orders table.
+```
+
+`faucet template show` reports one version in the context of the whole release
+state — every version with the channels pointing at it, and who launched what:
+
+```text
+template  orders-export   [launched]
+name      orders-export
+about     Nightly export of an orders table.
+created   2026-08-07T14:34:05Z
+showing   v2  (live)
+
+versions:
+  v2    live, newest, dev, staging
+  v1    previous
+
+launch history (newest first):
+  v2    2026-08-07T14:34:05Z
+  v1    2026-08-07T14:34:05Z
+```
+
+A description describes the *template*, so it carries forward: re-registering
+without `--description` keeps the previous one rather than blanking the listing.
+
+`GET /v1/templates/{id}` returns the same picture as JSON, so a client can pin,
+promote, launch, or roll back without a second call:
 
 ```jsonc
 {
   "id": "tenant-sync", "version": 2,      // the version returned
+  "status": "launched",                   // draft | launched | deprecated
   "versions": [3, 2, 1],                  // everything stored, newest first
-  "latest_version": 3,                    // what `latest` resolves to now
-  "is_latest": false,                     // ⇒ this response is a pinned older one
-  "tags": { "dev": 3, "prod": 1 },        // channel pointers (never `latest`)
+  "stable": 2,                            // the launched version (unpinned runs)
+  "previous": 1,                          // the rollback target
+  "newest": 3,                            // the build tip
+  "is_stable": true,                      // the returned version is the live one
+  "tags": { "dev": 3, "prod": 1 },        // assignable channels only
+  "launches": [ { "seq": 2, "version": 2, "launched_at": "…", "launched_by": "ci" } ],
   "body": "version: 1\nname: tenant-sync\n…"
 }
 ```
 
-`faucet template list` shows one row per id — always its **latest** version —
-and `faucet template show` marks the returned version `[latest]` when it is and
-prints the channel map.
+Pass `?version=newest` to open a `draft` template — it has no `stable` version yet.
+
+#### In the console
+
+The web console (`serve-ui`) has a **Templates** view built around exactly this:
+a list showing each template's status, live version, and build tip, and a
+per-template **versions page** with one row per version, the channels currently
+pointing at it, an assign-channel dropdown, and Launch / Config / Delete —
+plus Roll back, Deprecate, and a typed trigger form generated from the template's
+`params:`.
 
 #### Wire shapes and cleanup
 
 `version` accepts a channel name (`"prod"`), a numeric string (`"2"`), or a bare
 number (`2`), so a query string, a JSON body, and an MCP tool argument all mean
-the same thing. `0` and unknown names are rejected rather than silently falling
-back.
+the same thing. `0`, `latest`, and unknown names are rejected rather than silently
+falling back.
 
 Deleting: `--version <N|channel>` removes one version;
 `faucet template delete <id>` with no `--version` removes the template entirely.
-A channel pointing at a deleted version is dropped with it, so a pointer never
-dangles. Runs already produced are untouched.
+Channels pointing at a deleted version — and its launch-log entries — are dropped
+with it, so no pointer outlives its target. Runs already produced are untouched.
 
 The 20 most recent versions of each id are kept, so a template re-registered on
 every deploy keeps a useful rollback window without growing without bound.
 
-**Practical pattern.** Let deploys `register --tag dev` freely; walk a version up
-the channels (`dev` → `test` → `pre-prod` → `prod`) as it earns trust; point
-scheduled jobs at a channel (`--version prod`) rather than `latest`, so a deploy
-never silently changes what production runs.
+**Practical pattern.** Let deploys `register --tag dev` freely — nothing moves.
+Walk a version up the channels (`dev` → `test` → `pre-prod` → `prod`) as it earns
+trust. Bless it with `launch` when it should become what unpinned callers get, and
+keep `rollback` one command away. Point scheduled jobs at a channel
+(`--version prod`) when they must be pinned to a specific promotion train, and
+leave everything else unpinned so `launch` is your single release lever.
 
 ## Triggering over HTTP
 
