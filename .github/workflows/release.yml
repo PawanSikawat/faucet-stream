@@ -55,26 +55,36 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # The release job builds the whole workspace at once (cargo-release runs
-      # `cargo publish` per crate). Reclaim ~25 GB of preinstalled toolchains
-      # first, or the all-features build exhausts the runner's ~14 GB disk
-      # ("No space left on device") — validation is already sharded across CI.
-      - name: Free up disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
-                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
-          sudo docker image prune --all --force || true
-          df -h /
+      # ── DISABLED 2026-08-07 ──────────────────────────────────────────────
+      # This job no longer compiles the workspace (fmt/clippy/test were removed
+      # and publishing uses `cargo publish --no-verify`), so nothing fills the
+      # disk. Kept commented — re-enable verbatim if a build/verify step that
+      # exhausts the runner's ~14 GB disk is ever added back to this workflow.
+      #
+      # - name: Free up disk space
+      #   run: |
+      #     sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+      #                 /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+      #     sudo docker image prune --all --force || true
+      #     df -h /
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96.0"
 
-      - name: Install librdkafka prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
+      # ── DISABLED 2026-08-07 ──────────────────────────────────────────────
+      # Needed only to compile the `rdkafka` crate (librdkafka from source).
+      # Nothing in this job builds the Kafka connectors anymore (no test step;
+      # `cargo publish --no-verify` skips the per-crate build). `ubuntu-latest`
+      # already ships build-essential/libssl-dev/cmake for `cargo install
+      # cargo-release`. Kept commented — re-enable if a build/verify step that
+      # compiles the Kafka crates is added back.
+      #
+      # - name: Install librdkafka prerequisites
+      #   run: |
+      #     sudo apt-get update
+      #     sudo apt-get install -y libsasl2-dev libssl-dev libcurl4-openssl-dev cmake build-essential
 
       - name: Install cargo-release
         run: cargo install cargo-release --locked
