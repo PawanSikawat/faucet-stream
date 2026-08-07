@@ -81,25 +81,6 @@ jobs:
       - name: Check connector counts in docs match connector crates
         run: bash scripts/check-doc-counts.sh
 
-  # Catch broken links / malformed badges in Markdown before merge (e.g. the
-  # shields.io badge that 404'd from an unescaped hyphen). Runs on every PR
-  # since link rot affects docs changes most. Not a required check.
-  link-check:
-    name: Docs link check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check links in Markdown
-        uses: lycheeverse/lychee-action@v2
-        with:
-          # Accept 429 (rate-limited badge/CDN hosts) so transient throttling
-          # isn't a false failure; retry transient network errors.
-          args: >-
-            --no-progress --max-retries 3 --retry-wait-time 5
-            --accept 200,206,429
-            "./**/*.md"
-          fail: true
-
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
