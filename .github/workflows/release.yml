@@ -53,7 +53,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # Check out (and thus push commits/tags) with an admin PAT, not the
+          # bot GITHUB_TOKEN. Two reasons:
+          #  1. GitHub suppresses workflow triggers from GITHUB_TOKEN-pushed
+          #     refs, so tags pushed here would NOT trigger release-binaries.yml
+          #     (no CLI binaries / Homebrew update). A PAT-pushed tag does.
+          #  2. With a `main` ruleset bypass for this token/App, the version-bump
+          #     commit can push to protected `main` without disabling protection.
+          # Falls back to GITHUB_TOKEN if the PAT secret is unset.
+          token: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
 
       # ── DISABLED 2026-08-07 ──────────────────────────────────────────────
       # This job no longer compiles the workspace (fmt/clippy/test were removed
