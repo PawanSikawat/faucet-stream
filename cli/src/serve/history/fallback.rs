@@ -334,6 +334,41 @@ impl RunHistory for FallbackHistory {
     async fn template_delete_tag(&self, id: &str, tag: &str) -> Result<bool, HistoryError> {
         via!(self, p => p.template_delete_tag(id, tag), f => f.template_delete_tag(id, tag))
     }
+    async fn template_launch(
+        &self,
+        id: &str,
+        version: u32,
+        launched_by: Option<&str>,
+    ) -> Result<Option<u32>, HistoryError> {
+        via!(
+            self,
+            p => p.template_launch(id, version, launched_by),
+            f => f.template_launch(id, version, launched_by)
+        )
+    }
+    async fn template_launches(
+        &self,
+        id: &str,
+    ) -> Result<Vec<crate::serve::history::templates::LaunchRecord>, HistoryError> {
+        via!(self, p => p.template_launches(id), f => f.template_launches(id))
+    }
+    async fn template_set_deprecation(
+        &self,
+        id: &str,
+        record: Option<&crate::serve::history::templates::DeprecationRecord>,
+    ) -> Result<(), HistoryError> {
+        via!(
+            self,
+            p => p.template_set_deprecation(id, record),
+            f => f.template_set_deprecation(id, record)
+        )
+    }
+    async fn template_deprecation(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::serve::history::templates::DeprecationRecord>, HistoryError> {
+        via!(self, p => p.template_deprecation(id), f => f.template_deprecation(id))
+    }
 
     fn degraded(&self) -> bool {
         self.is_degraded()

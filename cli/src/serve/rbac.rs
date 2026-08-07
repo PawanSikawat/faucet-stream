@@ -271,6 +271,9 @@ pub fn required_permission(method: &Method, matched_path: &str) -> Option<Permis
         (&Method::DELETE, "/v1/templates/{id}") => Some(TemplateWrite),
         (&Method::POST, "/v1/templates/{id}/runs") => Some(RunWrite),
         (&Method::POST, "/v1/templates/{id}/tags") => Some(TemplateWrite),
+        (&Method::POST, "/v1/templates/{id}/launch") => Some(TemplateWrite),
+        (&Method::POST, "/v1/templates/{id}/rollback") => Some(TemplateWrite),
+        (&Method::POST, "/v1/templates/{id}/deprecate") => Some(TemplateWrite),
         (&Method::POST, "/v1/reload") => Some(Reload),
         // MCP endpoint (#420): baseline access needs only a read scope (Viewer+);
         // the mutating `run_pipeline` tool is separately gated on RunWrite inside
@@ -307,6 +310,9 @@ pub fn audit_action(method: &Method, matched_path: &str) -> &'static str {
         (&Method::DELETE, "/v1/templates/{id}") => "template.delete",
         (&Method::POST, "/v1/templates/{id}/runs") => "template.run",
         (&Method::POST, "/v1/templates/{id}/tags") => "template.promote",
+        (&Method::POST, "/v1/templates/{id}/launch") => "template.launch",
+        (&Method::POST, "/v1/templates/{id}/rollback") => "template.rollback",
+        (&Method::POST, "/v1/templates/{id}/deprecate") => "template.deprecate",
         (&Method::POST, "/v1/reload") => "config.reload",
         (&Method::POST, "/mcp") => "mcp",
         _ => "unknown",
@@ -453,6 +459,9 @@ mod tests {
             (Method::DELETE, "/v1/templates/{id}", TemplateWrite),
             (Method::POST, "/v1/templates/{id}/runs", RunWrite),
             (Method::POST, "/v1/templates/{id}/tags", TemplateWrite),
+            (Method::POST, "/v1/templates/{id}/launch", TemplateWrite),
+            (Method::POST, "/v1/templates/{id}/rollback", TemplateWrite),
+            (Method::POST, "/v1/templates/{id}/deprecate", TemplateWrite),
             (Method::POST, "/v1/reload", Reload),
         ] {
             assert_eq!(required_permission(&m, path), Some(want), "{m} {path}");

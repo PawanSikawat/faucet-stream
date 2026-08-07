@@ -119,9 +119,44 @@ pub fn tool_defs(ctx: &McpContext) -> Vec<ToolDef> {
                         "config": { "type": "string", "description": "The pipeline config document (YAML or JSON), stored verbatim." },
                         "id": { "type": "string", "description": "Template id. Derived from the config's `name:` when omitted." },
                         "description": { "type": "string" },
-                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Named channels to point at the new version (dev/test/staging/pre-prod/canary/stable/prod/previous). The version number always auto-increments; `latest` is derived and rejected." }
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Named environment channels to point at the new version (dev/test/staging/pre-prod/canary/prod). Derived channels (stable/previous/newest) are rejected." },
+                        "launch": { "type": "boolean", "description": "Make the new version live immediately. Off by default: a register is inert, so a new build never moves existing callers until it is launched." }
                     },
                     "required": ["config"]
+                }),
+            });
+            defs.push(ToolDef {
+                name: "launch_template",
+                description: "Make a template version live — what unpinned runs will use. MUTATING. This is the only action that moves existing callers; registering a build does not.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "version": { "description": "Version to launch: a number, or a channel whose current target to copy. Defaults to \"newest\".", "oneOf": [{ "type": "integer" }, { "type": "string" }] }
+                    },
+                    "required": ["id"]
+                }),
+            });
+            defs.push(ToolDef {
+                name: "rollback_template",
+                description: "Re-launch a template's previously launched version. MUTATING.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": { "id": { "type": "string" } },
+                    "required": ["id"]
+                }),
+            });
+            defs.push(ToolDef {
+                name: "deprecate_template",
+                description: "Retire a template (or revive it with undo:true). MUTATING. A deprecated template keeps serving existing callers but every trigger warns.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "reason": { "type": "string" },
+                        "undo": { "type": "boolean" }
+                    },
+                    "required": ["id"]
                 }),
             });
             defs.push(ToolDef {
@@ -171,6 +206,30 @@ pub async fn call_tool(ctx: &McpContext, name: &str, args: &Value) -> Value {
                 Err(MUTATION_GATE.to_string())
             } else {
                 register_template(ctx, args).await
+            }
+        }
+        #[cfg(feature = "templates")]
+        "launch_template" => {
+            if !ctx.allow_mutations {
+                Err(MUTATION_GATE.to_string())
+            } else {
+                launch_template(ctx, args).await
+            }
+        }
+        #[cfg(feature = "templates")]
+        "rollback_template" => {
+            if !ctx.allow_mutations {
+                Err(MUTATION_GATE.to_string())
+            } else {
+                rollback_template(ctx, args).await
+            }
+        }
+        #[cfg(feature = "templates")]
+        "deprecate_template" => {
+            if !ctx.allow_mutations {
+                Err(MUTATION_GATE.to_string())
+            } else {
+                deprecate_template(ctx, args).await
             }
         }
         #[cfg(feature = "templates")]
@@ -441,7 +500,9 @@ fn template_store(ctx: &McpContext) -> Result<&crate::templates::TemplateStore, 
 #[cfg(feature = "templates")]
 async fn list_templates(ctx: &McpContext) -> Result<String, String> {
     let store = template_store(ctx)?;
-    let templates = store.template_list().await.map_err(|e| e.to_string())?;
+    let templates = crate::templates::list_with_state(store)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(pretty(&json!({
         "count": templates.len(),
         "templates": templates,
@@ -467,7 +528,7 @@ async fn resolved_version_arg(
     store: &crate::templates::TemplateStore,
     id: &str,
     args: &Value,
-) -> Result<Option<u32>, String> {
+) -> Result<u32, String> {
     crate::templates::resolve_version(store, id, version_arg(args)?)
         .await
         .map_err(|e| e.to_string())
@@ -479,22 +540,22 @@ async fn get_template(ctx: &McpContext, args: &Value) -> Result<String, String> 
     let id = str_arg(args, "id")?;
     let version = resolved_version_arg(store, id, args).await?;
     let record = store
-        .template_get(id, version)
+        .template_get(id, Some(version))
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("no pipeline template '{id}'"))?;
-    let versions = store
-        .template_versions(id)
+    let launches = store
+        .template_launches(id)
         .await
         .map_err(|e| e.to_string())?;
-    let tags = store.template_tags(id).await.map_err(|e| e.to_string())?;
-    let latest = versions.first().copied().unwrap_or(record.version);
+    let state = crate::templates::template_state(store, id)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(pretty(&json!({
         "template": record,
-        "versions": versions,
-        "latest_version": latest,
-        "is_latest": record.version == latest,
-        "tags": tags,
+        "state": state,
+        "is_stable": state.stable == Some(record.version),
+        "launches": launches,
     })))
 }
 
@@ -531,6 +592,7 @@ async fn register_template(ctx: &McpContext, args: &Value) -> Result<String, Str
                 .and_then(Value::as_str)
                 .map(str::to_string),
             tags: tags_arg(args)?,
+            launch: args.get("launch").and_then(Value::as_bool).unwrap_or(false),
             created_by: Some("mcp".to_string()),
         },
     )
@@ -539,6 +601,56 @@ async fn register_template(ctx: &McpContext, args: &Value) -> Result<String, Str
     Ok(pretty(&json!({
         "registered": record.summary(),
     })))
+}
+
+#[cfg(feature = "templates")]
+async fn launch_template(ctx: &McpContext, args: &Value) -> Result<String, String> {
+    use crate::serve::history::templates::VersionSelector;
+    let store = template_store(ctx)?;
+    let id = str_arg(args, "id")?;
+    let target = match args.get("version") {
+        None | Some(Value::Null) => VersionSelector::newest(),
+        Some(_) => version_arg(args)?,
+    };
+    let outcome = crate::templates::launch(store, id, target, Some("mcp"))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(pretty(&json!({
+        "id": id,
+        "version": outcome.version,
+        "replaced": outcome.replaced,
+        "already_launched": outcome.already_launched,
+        "first_launch": outcome.first_launch,
+    })))
+}
+
+#[cfg(feature = "templates")]
+async fn rollback_template(ctx: &McpContext, args: &Value) -> Result<String, String> {
+    let store = template_store(ctx)?;
+    let id = str_arg(args, "id")?;
+    let outcome = crate::templates::rollback(store, id, Some("mcp"))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(pretty(&json!({
+        "id": id,
+        "version": outcome.version,
+        "replaced": outcome.replaced,
+    })))
+}
+
+#[cfg(feature = "templates")]
+async fn deprecate_template(ctx: &McpContext, args: &Value) -> Result<String, String> {
+    let store = template_store(ctx)?;
+    let id = str_arg(args, "id")?;
+    let undo = args.get("undo").and_then(Value::as_bool).unwrap_or(false);
+    let reason = args
+        .get("reason")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let status = crate::templates::set_deprecated(store, id, reason, Some("mcp"), !undo)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(pretty(&json!({ "id": id, "status": status.as_str() })))
 }
 
 #[cfg(feature = "templates")]
@@ -907,8 +1019,9 @@ mod tests {
         #[tokio::test]
         async fn tools_are_hidden_without_a_store() {
             let names: Vec<&str> = tool_defs(&ctx(true)).iter().map(|t| t.name).collect();
-            assert!(!names.contains(&"list_templates"), "{names:?}");
-            assert!(!names.contains(&"register_template"), "{names:?}");
+            for t in ["list_templates", "register_template", "launch_template"] {
+                assert!(!names.contains(&t), "{t} must be hidden: {names:?}");
+            }
             // Calling one anyway is a clear tool error, not a panic.
             let out = call_tool(&ctx(true), "list_templates", &json!({})).await;
             assert_eq!(out["isError"], true);
@@ -923,18 +1036,24 @@ mod tests {
         #[tokio::test]
         async fn read_tools_are_ungated_and_write_tools_are_gated() {
             let ro: Vec<&str> = tool_defs(&tpl_ctx(false)).iter().map(|t| t.name).collect();
-            assert!(ro.contains(&"list_templates"), "{ro:?}");
-            assert!(ro.contains(&"get_template"), "{ro:?}");
-            assert!(!ro.contains(&"register_template"), "{ro:?}");
-            assert!(!ro.contains(&"run_template"), "{ro:?}");
-
+            for t in ["list_templates", "get_template"] {
+                assert!(ro.contains(&t), "{t} should be read-only: {ro:?}");
+            }
+            let mutating = [
+                "register_template",
+                "run_template",
+                "launch_template",
+                "rollback_template",
+                "deprecate_template",
+            ];
+            for t in mutating {
+                assert!(!ro.contains(&t), "{t} must be gated: {ro:?}");
+            }
             let rw: Vec<&str> = tool_defs(&tpl_ctx(true)).iter().map(|t| t.name).collect();
-            assert!(rw.contains(&"register_template"), "{rw:?}");
-            assert!(rw.contains(&"run_template"), "{rw:?}");
-
-            for tool in ["register_template", "run_template"] {
-                let out = call_tool(&tpl_ctx(false), tool, &json!({"id":"x","config":"y"})).await;
-                assert_eq!(out["isError"], true, "{tool} must be gated");
+            for t in mutating {
+                assert!(rw.contains(&t), "{t} should appear with mutations: {rw:?}");
+                let out = call_tool(&tpl_ctx(false), t, &json!({"id":"x","config":"y"})).await;
+                assert_eq!(out["isError"], true, "{t} must be gated");
                 assert!(
                     out["content"][0]["text"]
                         .as_str()
@@ -949,24 +1068,30 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let ctx = tpl_ctx(true);
 
+            // `launch: true` registers and goes live in one step.
             let out = call_tool(
                 &ctx,
                 "register_template",
-                &json!({ "config": body(dir.path()) }),
+                &json!({ "config": body(dir.path()), "launch": true }),
             )
             .await;
             assert_eq!(out["isError"], false, "{}", out["content"][0]["text"]);
-            let text = out["content"][0]["text"].as_str().unwrap();
-            assert!(text.contains("mcp-tpl"), "{text}");
+            assert!(
+                out["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("mcp-tpl")
+            );
 
             let out = call_tool(&ctx, "list_templates", &json!({})).await;
             let text = out["content"][0]["text"].as_str().unwrap();
             assert!(text.contains("\"count\": 1"), "{text}");
+            assert!(text.contains("\"launched\""), "status is surfaced: {text}");
 
             let out = call_tool(&ctx, "get_template", &json!({"id":"mcp-tpl"})).await;
             assert_eq!(out["isError"], false);
             let text = out["content"][0]["text"].as_str().unwrap();
-            assert!(text.contains("\"versions\""), "{text}");
+            assert!(text.contains("\"launches\""), "{text}");
             assert!(text.contains("${param.tag}"), "body is verbatim: {text}");
 
             let out = call_tool(&ctx, "get_template", &json!({"id":"nope"})).await;
@@ -985,8 +1110,12 @@ mod tests {
             )
             .await;
             assert_eq!(out["isError"], false, "{}", out["content"][0]["text"]);
-            let text = out["content"][0]["text"].as_str().unwrap();
-            assert!(text.contains("\"dry_run\": true"), "{text}");
+            assert!(
+                out["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("\"dry_run\": true")
+            );
             assert!(!dir.path().join("out-dry.jsonl").exists());
 
             // The real run writes through the ordinary pipeline path.
@@ -997,8 +1126,12 @@ mod tests {
             )
             .await;
             assert_eq!(out["isError"], false, "{}", out["content"][0]["text"]);
-            let text = out["content"][0]["text"].as_str().unwrap();
-            assert!(text.contains("\"records_written\": 2"), "{text}");
+            assert!(
+                out["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("\"records_written\": 2")
+            );
             assert_eq!(
                 std::fs::read_to_string(dir.path().join("out-real.jsonl"))
                     .unwrap()
@@ -1009,19 +1142,10 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn register_with_tags_and_run_by_channel() {
+        async fn a_draft_template_is_not_runnable_unpinned() {
             let dir = tempfile::tempdir().unwrap();
             let ctx = tpl_ctx(true);
-
-            // Register v1 with `dev`, then v2 untagged, so `dev` and `latest`
-            // point at different versions.
-            let out = call_tool(
-                &ctx,
-                "register_template",
-                &json!({ "config": body(dir.path()), "tags": ["dev"] }),
-            )
-            .await;
-            assert_eq!(out["isError"], false, "{}", out["content"][0]["text"]);
+            // No `launch` — the work-in-progress state.
             call_tool(
                 &ctx,
                 "register_template",
@@ -1029,13 +1153,123 @@ mod tests {
             )
             .await;
 
+            let out = call_tool(
+                &ctx,
+                "run_template",
+                &json!({"id":"mcp-tpl","params":{"tag":"x"},"dry_run":true}),
+            )
+            .await;
+            assert_eq!(out["isError"], true);
+            let text = out["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("no launched version"), "{text}");
+
+            // An explicit build still runs, so a draft is testable.
+            let out = call_tool(
+                &ctx,
+                "run_template",
+                &json!({"id":"mcp-tpl","params":{"tag":"x"},"version":"newest","dry_run":true}),
+            )
+            .await;
+            assert_eq!(out["isError"], false, "{}", out["content"][0]["text"]);
+        }
+
+        #[tokio::test]
+        async fn launch_rollback_and_deprecate_tools() {
+            let dir = tempfile::tempdir().unwrap();
+            let ctx = tpl_ctx(true);
+            call_tool(
+                &ctx,
+                "register_template",
+                &json!({ "config": body(dir.path()), "launch": true }),
+            )
+            .await; // v1 live
+            call_tool(
+                &ctx,
+                "register_template",
+                &json!({ "config": body(dir.path()) }),
+            )
+            .await; // v2 build
+
+            // Launch defaults to `newest`.
+            let out = call_tool(&ctx, "launch_template", &json!({"id":"mcp-tpl"})).await;
+            assert_eq!(out["isError"], false, "{}", out["content"][0]["text"]);
+            let text = out["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("\"version\": 2"), "{text}");
+            assert!(text.contains("\"replaced\": 1"), "{text}");
+
+            // Rollback returns to v1.
+            let out = call_tool(&ctx, "rollback_template", &json!({"id":"mcp-tpl"})).await;
+            assert_eq!(out["isError"], false, "{}", out["content"][0]["text"]);
+            assert!(
+                out["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("\"version\": 1")
+            );
+
+            // Deprecate, then revive.
+            let out = call_tool(
+                &ctx,
+                "deprecate_template",
+                &json!({"id":"mcp-tpl","reason":"superseded"}),
+            )
+            .await;
+            assert!(
+                out["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("deprecated")
+            );
+            // Launching into a retired template is refused.
+            let out = call_tool(&ctx, "launch_template", &json!({"id":"mcp-tpl"})).await;
+            assert_eq!(out["isError"], true);
+            let out = call_tool(
+                &ctx,
+                "deprecate_template",
+                &json!({"id":"mcp-tpl","undo":true}),
+            )
+            .await;
+            assert!(
+                out["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("launched")
+            );
+        }
+
+        #[tokio::test]
+        async fn register_with_tags_and_run_by_channel() {
+            let dir = tempfile::tempdir().unwrap();
+            let ctx = tpl_ctx(true);
+
+            // v1 live; v2 tagged `dev` but not launched.
+            call_tool(
+                &ctx,
+                "register_template",
+                &json!({ "config": body(dir.path()), "launch": true }),
+            )
+            .await;
+            let out = call_tool(
+                &ctx,
+                "register_template",
+                &json!({ "config": body(dir.path()), "tags": ["dev"] }),
+            )
+            .await;
+            assert_eq!(out["isError"], false, "{}", out["content"][0]["text"]);
+
             let out = call_tool(&ctx, "get_template", &json!({"id":"mcp-tpl"})).await;
             let text = out["content"][0]["text"].as_str().unwrap();
-            assert!(text.contains("\"latest_version\": 2"), "{text}");
-            assert!(text.contains("\"dev\": 1"), "{text}");
+            assert!(text.contains("\"stable\": 1"), "{text}");
+            assert!(text.contains("\"newest\": 2"), "{text}");
+            assert!(text.contains("\"dev\": 2"), "{text}");
 
-            // Running by channel picks v1; by `latest` (omitted) picks v2.
-            for (version, want) in [(json!("dev"), 1), (json!("latest"), 2), (json!(1), 1)] {
+            // Each selector resolves to its own version.
+            for (version, want) in [
+                (json!("stable"), 1),
+                (json!("dev"), 2),
+                (json!("newest"), 2),
+                (json!(1), 1),
+            ] {
                 let out = call_tool(
                     &ctx,
                     "run_template",
@@ -1053,55 +1287,20 @@ mod tests {
             // A channel outside the closed set is a tool error, on both paths.
             for args in [
                 json!({ "config": body(dir.path()), "tags": ["prd"] }),
-                json!({ "config": body(dir.path()), "tags": ["latest"] }),
+                json!({ "config": body(dir.path()), "tags": ["stable"] }),
             ] {
                 let out = call_tool(&ctx, "register_template", &args).await;
                 assert_eq!(out["isError"], true, "{args}");
             }
-            let out = call_tool(
-                &ctx,
-                "run_template",
-                &json!({"id":"mcp-tpl","params":{"tag":"c"},"version":"nope"}),
-            )
-            .await;
-            assert_eq!(out["isError"], true);
-            // An unset channel is refused rather than falling back to latest.
-            let out = call_tool(
-                &ctx,
-                "run_template",
-                &json!({"id":"mcp-tpl","params":{"tag":"c"},"version":"canary"}),
-            )
-            .await;
-            assert_eq!(out["isError"], true);
-            assert!(
-                out["content"][0]["text"]
-                    .as_str()
-                    .unwrap()
-                    .contains("no `canary` version")
-            );
-        }
-
-        #[tokio::test]
-        async fn secret_params_are_redacted_in_the_response() {
-            let dir = tempfile::tempdir().unwrap();
-            let ctx = tpl_ctx(true);
-            let csv = dir.path().join("in.csv");
-            std::fs::write(&csv, "id\n1\n").unwrap();
-            let cfg = format!(
-                "version: 1\nname: mcp-secret\nparams:\n  token: {{ required: true, secret: true }}\npipeline:\n  source:\n    type: csv\n    config:\n      path: {}\n  sink:\n    type: jsonl\n    config:\n      path: {}\n",
-                csv.display(),
-                dir.path().join("out.jsonl").display()
-            );
-            call_tool(&ctx, "register_template", &json!({ "config": cfg })).await;
-            let out = call_tool(
-                &ctx,
-                "run_template",
-                &json!({"id":"mcp-secret","params":{"token":"top-secret-token-value"},"dry_run":true}),
-            )
-            .await;
-            let text = out["content"][0]["text"].as_str().unwrap();
-            assert!(text.contains("\"***\""), "{text}");
-            assert!(!text.contains("top-secret-token-value"), "leaked: {text}");
+            for bad in ["nope", "latest", "canary"] {
+                let out = call_tool(
+                    &ctx,
+                    "run_template",
+                    &json!({"id":"mcp-tpl","params":{"tag":"c"},"version":bad}),
+                )
+                .await;
+                assert_eq!(out["isError"], true, "version={bad} must be refused");
+            }
         }
 
         #[tokio::test]
@@ -1126,7 +1325,12 @@ mod tests {
                 csv.display(),
                 dir.path().display()
             );
-            call_tool(&ctx, "register_template", &json!({ "config": cfg })).await;
+            call_tool(
+                &ctx,
+                "register_template",
+                &json!({ "config": cfg, "launch": true }),
+            )
+            .await;
             let out = call_tool(
                 &ctx,
                 "run_template",

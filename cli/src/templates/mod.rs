@@ -9,22 +9,34 @@
 //! | MCP (`--mcp` / `faucet mcp`) | `register_template` | `list_templates` / `get_template` | `run_template` |
 //! | CLI | `faucet template register` | `faucet template list` / `show` | `faucet template run` |
 //!
-//! [`register`] validates a submitted config and appends a new version;
-//! [`promote`] moves a named channel; [`resolve_version`] turns a selector into a
-//! concrete version; [`materialize`] turns `{id, version, params, env}` back into
+//! [`register`] appends a version; [`launch`] makes one live; [`rollback`] returns
+//! to the one before it; [`promote`] moves an environment channel;
+//! [`set_deprecated`] retires a template; [`resolve_version`] turns a selector into
+//! a concrete version; [`materialize`] turns `{id, version, params, env}` back into
 //! a ready-to-run config document.
 //!
-//! ## Versions and channels
+//! ## Builds, releases, and lifecycle
 //!
 //! Versions are **numeric and auto-incrementing** — every register appends
-//! `max + 1`, so iterating a template never disturbs what is already running.
-//! On top of that sits a **closed set of named channels**
-//! ([`VersionChannel`](crate::serve::history::templates::VersionChannel)):
-//! `latest` (derived — always the newest, never assignable) plus the movable
-//! pointers `dev`, `test`, `staging`, `pre-prod`, `canary`, `stable`, `prod`, and
-//! `previous`. The set is closed on purpose: an open tag namespace becomes a
-//! second, unreviewable naming system in which `prd` silently creates a channel
-//! nobody watches. Everything downstream of `materialize` is the ordinary run
+//! `max + 1` and is otherwise **inert**. Registering a nightly or a feature build
+//! moves nobody; only an explicit [`launch`] does. That separation is the point of
+//! the model: unpinned callers ride the *blessed* release, not the most recent
+//! upload.
+//!
+//! Over the numbers sits a **closed set of channels**
+//! ([`VersionChannel`](crate::serve::history::templates::VersionChannel)) —
+//! three derived (`stable` = the launched version and the default, `previous` =
+//! the one launched before it, `newest` = the highest number) plus the assignable
+//! environments `dev`, `test`, `staging`, `pre-prod`, `canary`, `prod`. The set is
+//! closed on purpose: an open tag namespace becomes a second, unreviewable naming
+//! system in which `prd` silently creates a channel nobody watches. `latest` is
+//! rejected outright as ambiguous between `stable` and `newest`.
+//!
+//! A **template** (not a version) carries the lifecycle status
+//! ([`TemplateStatus`](crate::serve::history::templates::TemplateStatus)):
+//! `draft` until something is launched, then `launched`, or `deprecated` once
+//! retired. It is derived from the launch log plus a deprecation marker, so it can
+//! never disagree with the registry's contents. Everything downstream of `materialize` is the ordinary run
 //! path (`load_submission` → `expand` → `run_expanded`), so templates inherit
 //! every existing guarantee — matrix/topology expansion, the exactly-once gate,
 //! idempotency keys, RBAC, and the audit log — for free.
@@ -41,6 +53,7 @@
 pub mod store;
 
 pub use store::{
-    MaterializedConfig, RegisterRequest, TemplateStore, materialize, promote, register,
-    resolve_store_url, resolve_version,
+    LaunchOutcome, MaterializedConfig, RegisterRequest, TemplateStore, launch, list_with_state,
+    materialize, promote, register, resolve_store_url, resolve_version, rollback, set_deprecated,
+    template_state,
 };

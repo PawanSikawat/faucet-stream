@@ -12,7 +12,7 @@
 use crate::params::SuppliedParams;
 use crate::serve::error::ServeError;
 use crate::serve::history::templates::{
-    TemplateRecord, TemplateSummary, VersionChannel, VersionSelector,
+    TemplateRecord, TemplateState, TemplateSummary, VersionChannel, VersionSelector,
 };
 use crate::serve::rbac::AuthContext;
 use crate::serve::runner::{self, ConfigFormatWire, SubmitRequest, SubmitResponse};
@@ -61,11 +61,14 @@ pub struct RegisterBody {
     pub config_format: ConfigFormatWire,
     #[serde(default)]
     pub description: Option<String>,
-    /// Named channels to point at the newly registered version (`dev`,
-    /// `pre-prod`, …). The version number always auto-increments; these are the
-    /// pointers moved onto it. `latest` is derived and rejected.
+    /// Named environment channels to point at the newly registered version
+    /// (`dev`, `pre-prod`, …). Derived channels are rejected.
     #[serde(default)]
     pub tags: Vec<VersionChannel>,
+    /// Launch the new version immediately, making it `stable`. Off by default: a
+    /// register is inert so a new build never moves existing callers.
+    #[serde(default)]
+    pub launch: bool,
 }
 
 /// `POST /v1/templates` → 201 with the newly registered version's summary.
@@ -82,6 +85,7 @@ pub async fn register_template(
             format: body.config_format.into(),
             description: body.description,
             tags: body.tags,
+            launch: body.launch,
             created_by: Some(actor.principal.clone()),
         },
     )
@@ -126,17 +130,17 @@ pub struct ListResponse {
 pub async fn list_templates(
     State(state): State<ServerState>,
 ) -> Result<Json<ListResponse>, ServeError> {
-    let templates = store(&state)
-        .template_list()
+    let templates = crate::templates::list_with_state(&store(&state))
         .await
-        .map_err(|e| ServeError::Internal(e.to_string()))?;
+        .map_err(map_err)?;
     Ok(Json(ListResponse { templates }))
 }
 
 // ── GET /v1/templates/{id} ──────────────────────────────────────────────────
 
-/// Optional `?version=` selector shared by get + delete. Accepts `latest` (the
-/// default when omitted) or an exact version number.
+/// Optional `?version=` selector shared by get + delete. Accepts a channel name
+/// (`stable` — the default when omitted — `newest`, `previous`, `prod`, …) or an
+/// exact version number.
 #[derive(Debug, Default, Deserialize)]
 pub struct VersionQuery {
     #[serde(default)]
@@ -144,28 +148,27 @@ pub struct VersionQuery {
 }
 
 impl VersionQuery {
-    /// The selector to act on, defaulting to `latest`.
+    /// The selector to act on, defaulting to `stable` (the launched version).
     fn selector(&self) -> VersionSelector {
         self.version.unwrap_or_default()
     }
 }
 
-/// `GET /v1/templates/{id}` response body: one version plus the version list and
-/// which of them is `latest`, so a client can pin or roll back without a second
-/// request.
+/// `GET /v1/templates/{id}` response body: one version, plus the template's whole
+/// release state — so a client can pin, promote, launch, or roll back without a
+/// second request.
 #[derive(Debug, Serialize)]
 pub struct GetResponse {
     #[serde(flatten)]
     pub template: TemplateRecord,
-    /// Every stored version, newest first.
-    pub versions: Vec<u32>,
-    /// The version the `latest` tag resolves to right now.
-    pub latest_version: u32,
-    /// Whether the returned version *is* the latest (false ⇒ a pinned older one).
-    pub is_latest: bool,
-    /// Named channel pointers for this template (`{tag: version}`). Excludes the
-    /// derived `latest`, which is always `latest_version`.
-    pub tags: BTreeMap<String, u32>,
+    /// Status, every stored version, the `stable` / `previous` / `newest`
+    /// pointers, channel assignments, and any deprecation.
+    #[serde(flatten)]
+    pub state: TemplateState,
+    /// Whether the returned version is the currently launched one.
+    pub is_stable: bool,
+    /// The launch log, newest first — who blessed which build, and when.
+    pub launches: Vec<crate::serve::history::templates::LaunchRecord>,
 }
 
 /// `GET /v1/templates/{id}[?version=N]` → 200 / 404.
@@ -179,28 +182,23 @@ pub async fn get_template(
         .await
         .map_err(map_err)?;
     let template = s
-        .template_get(&id, want)
+        .template_get(&id, Some(want))
         .await
         .map_err(|e| ServeError::Internal(e.to_string()))?
         .ok_or(ServeError::NotFound)?;
-    let versions = s
-        .template_versions(&id)
+    let state = crate::templates::template_state(&s, &id)
+        .await
+        .map_err(map_err)?;
+    let launches = s
+        .template_launches(&id)
         .await
         .map_err(|e| ServeError::Internal(e.to_string()))?;
-    let tags = s
-        .template_tags(&id)
-        .await
-        .map_err(|e| ServeError::Internal(e.to_string()))?;
-    // `template_versions` is newest-first, and the record above exists, so the
-    // list is non-empty; fall back to the record's own version defensively.
-    let latest_version = versions.first().copied().unwrap_or(template.version);
-    let is_latest = template.version == latest_version;
+    let is_stable = state.stable == Some(template.version);
     Ok(Json(GetResponse {
         template,
-        versions,
-        latest_version,
-        is_latest,
-        tags,
+        state,
+        is_stable,
+        launches,
     }))
 }
 
@@ -222,23 +220,12 @@ pub async fn delete_template(
     // collapsing to the "all versions" `None`.
     let target = match q.version {
         None => None,
+        // A selector always resolves to a concrete version, so `--version stable`
+        // removes just the launched one rather than collapsing to "all versions".
         Some(selector) => Some(
-            match crate::templates::resolve_version(&s, &id, selector)
+            crate::templates::resolve_version(&s, &id, selector)
                 .await
-                .map_err(map_err)?
-            {
-                Some(v) => v,
-                // `latest` resolves to "newest" — turn that into a concrete
-                // number so the delete removes one version, not all of them.
-                None => s
-                    .template_versions(&id)
-                    .await
-                    .map_err(|e| ServeError::Internal(e.to_string()))?
-                    .first()
-                    .copied()
-                    // Nothing stored → fall through to a 0-row delete, i.e. 404.
-                    .unwrap_or(u32::MAX),
-            },
+                .map_err(map_err)?,
         ),
     };
     let removed = s
@@ -316,6 +303,141 @@ pub async fn promote_template(
     }))
 }
 
+// ── POST /v1/templates/{id}/launch  ·  /rollback  ·  /deprecate ─────────────
+
+/// `POST /v1/templates/{id}/launch` request body.
+#[derive(Debug, Default, Deserialize)]
+pub struct LaunchBody {
+    /// Which version to make live: a number, or a channel whose current target to
+    /// copy. Defaults to `newest` — launching what you just registered is the
+    /// common case.
+    #[serde(default)]
+    pub version: Option<VersionSelector>,
+}
+
+/// Response for launch / rollback.
+#[derive(Debug, Serialize)]
+pub struct LaunchResponse {
+    pub id: String,
+    /// The version now live.
+    pub version: u32,
+    /// The version it replaced — the new `previous`. `None` on a first launch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replaced: Option<u32>,
+    /// True when the version was already live, so nothing changed.
+    pub already_launched: bool,
+    /// The template's status after the launch.
+    pub status: String,
+}
+
+/// `POST /v1/templates/{id}/launch` → 200 / 404 / 422.
+///
+/// The one operation that moves unpinned callers. Registering a build does not;
+/// that separation is what lets a nightly land without dragging anyone along.
+pub async fn launch_template(
+    State(state): State<ServerState>,
+    Extension(actor): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Json(body): Json<LaunchBody>,
+) -> Result<Json<LaunchResponse>, ServeError> {
+    let target = body.version.unwrap_or_else(VersionSelector::newest);
+    let outcome = crate::templates::launch(&store(&state), &id, target, Some(&actor.principal))
+        .await
+        .map_err(map_err)?;
+    finish_launch(&state, &actor, &id, outcome, "template.launch").await
+}
+
+/// `POST /v1/templates/{id}/rollback` → 200 / 404 / 422. Re-launches `previous`.
+pub async fn rollback_template(
+    State(state): State<ServerState>,
+    Extension(actor): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Json<LaunchResponse>, ServeError> {
+    let outcome = crate::templates::rollback(&store(&state), &id, Some(&actor.principal))
+        .await
+        .map_err(map_err)?;
+    finish_launch(&state, &actor, &id, outcome, "template.rollback").await
+}
+
+/// Shared tail for launch + rollback: log, audit, and shape the response.
+async fn finish_launch(
+    state: &ServerState,
+    actor: &AuthContext,
+    id: &str,
+    outcome: crate::templates::LaunchOutcome,
+    action: &str,
+) -> Result<Json<LaunchResponse>, ServeError> {
+    let status = crate::templates::template_state(&store(state), id)
+        .await
+        .map_err(map_err)?
+        .status;
+    tracing::info!(
+        principal = %actor.principal,
+        template = %id,
+        version = outcome.version,
+        replaced = ?outcome.replaced,
+        already_launched = outcome.already_launched,
+        action,
+        "pipeline template launch"
+    );
+    crate::serve::audit::write(state, actor, action, None, None, "ok").await;
+    Ok(Json(LaunchResponse {
+        id: id.to_string(),
+        version: outcome.version,
+        replaced: outcome.replaced,
+        already_launched: outcome.already_launched,
+        status: status.as_str().to_string(),
+    }))
+}
+
+/// `POST /v1/templates/{id}/deprecate` request body.
+#[derive(Debug, Default, Deserialize)]
+pub struct DeprecateBody {
+    /// Why it is being retired, surfaced to anyone who triggers it.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Revive instead of retire.
+    #[serde(default)]
+    pub undo: bool,
+}
+
+/// `POST /v1/templates/{id}/deprecate` → 200 / 404.
+///
+/// Deprecation is template-wide. A deprecated template keeps serving callers who
+/// pin or ride `stable` — retiring must not hard-break them — but every trigger
+/// warns and listings mark it. `DELETE` is the hard stop.
+pub async fn deprecate_template(
+    State(state): State<ServerState>,
+    Extension(actor): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Json(body): Json<DeprecateBody>,
+) -> Result<Json<serde_json::Value>, ServeError> {
+    let status = crate::templates::set_deprecated(
+        &store(&state),
+        &id,
+        body.reason.clone(),
+        Some(&actor.principal),
+        !body.undo,
+    )
+    .await
+    .map_err(map_err)?;
+    let action = if body.undo {
+        "template.undeprecate"
+    } else {
+        "template.deprecate"
+    };
+    tracing::info!(
+        principal = %actor.principal,
+        template = %id,
+        status = status.as_str(),
+        "pipeline template deprecation changed"
+    );
+    crate::serve::audit::write(&state, &actor, action, None, None, "ok").await;
+    Ok(Json(
+        serde_json::json!({ "id": id, "status": status.as_str() }),
+    ))
+}
+
 // ── POST /v1/templates/{id}/runs ────────────────────────────────────────────
 
 /// `POST /v1/templates/{id}/runs` request body. Everything after `params`/`env`
@@ -359,6 +481,10 @@ pub struct TriggerResponse {
     pub template_version: u32,
     /// Bound params with every `secret: true` value replaced by `"***"`.
     pub params: BTreeMap<String, Value>,
+    /// Present only when the template is deprecated — the run still started, but
+    /// the caller should migrate. Silently succeeding would hide the retirement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecated: Option<String>,
 }
 
 /// Label keys stamped on a template-triggered run, so `GET /v1/runs` can filter
@@ -374,13 +500,30 @@ pub async fn trigger_template(
     Json(body): Json<TriggerBody>,
 ) -> Result<(StatusCode, Json<TriggerResponse>), ServeError> {
     let supplied: SuppliedParams = body.params.into_iter().collect();
-    // Resolve through the registry, not `VersionSelector::pinned()` — a named
-    // channel needs a lookup, and `pinned()` would collapse it to `None`
-    // (i.e. silently run `latest`, the exact failure this API must not have).
+    // Resolve through the registry: a channel needs a lookup, and an unpinned
+    // request means `stable` — the *launched* version, never "the newest build".
     let s = store(&state);
     let want = crate::templates::resolve_version(&s, &id, body.version.unwrap_or_default())
         .await
         .map_err(map_err)?;
+
+    // A deprecated template still runs — retiring must not hard-break callers —
+    // but every trigger says so, loudly enough to show up in the operator's logs.
+    let tstate = crate::templates::template_state(&s, &id)
+        .await
+        .map_err(map_err)?;
+    if tstate.status == crate::serve::history::templates::TemplateStatus::Deprecated {
+        tracing::warn!(
+            template = %id,
+            version = want,
+            reason = tstate
+                .deprecation
+                .as_ref()
+                .and_then(|d| d.reason.as_deref())
+                .unwrap_or("(none given)"),
+            "triggering a DEPRECATED pipeline template"
+        );
+    }
     let materialized = crate::templates::materialize(&s, &id, want, &supplied, &body.env)
         .await
         .map_err(map_err)?;
@@ -439,6 +582,15 @@ pub async fn trigger_template(
             template_id: materialized.template_id,
             template_version: materialized.version,
             params: materialized.params_redacted,
+            deprecated: (tstate.status
+                == crate::serve::history::templates::TemplateStatus::Deprecated)
+                .then(|| {
+                    tstate
+                        .deprecation
+                        .as_ref()
+                        .and_then(|d| d.reason.clone())
+                        .unwrap_or_else(|| "this template is deprecated".to_string())
+                }),
         }),
     ))
 }
@@ -466,7 +618,11 @@ mod tests {
         )
     }
 
-    async fn register_demo(state: &ServerState, out: &std::path::Path) -> TemplateSummary {
+    async fn register_demo_opts(
+        state: &ServerState,
+        out: &std::path::Path,
+        launch: bool,
+    ) -> TemplateSummary {
         register_template(
             State(state.clone()),
             Extension(actor()),
@@ -476,12 +632,28 @@ mod tests {
                 config_format: ConfigFormatWire::Yaml,
                 description: Some("demo".into()),
                 tags: vec![],
+                launch,
             }),
         )
         .await
         .expect("register")
         .1
         .0
+    }
+
+    /// Register **and launch**, for tests that just need a usable template.
+    async fn register_demo(state: &ServerState, out: &std::path::Path) -> TemplateSummary {
+        register_demo_opts(state, out, true).await
+    }
+
+    async fn get(
+        state: &ServerState,
+        id: &str,
+        q: VersionQuery,
+    ) -> Result<GetResponse, ServeError> {
+        get_template(State(state.clone()), Path(id.into()), Query(q))
+            .await
+            .map(|j| j.0)
     }
 
     #[tokio::test]
@@ -496,37 +668,34 @@ mod tests {
 
         let listed = list_templates(State(state.clone())).await.unwrap().0;
         assert_eq!(listed.templates.len(), 1);
+        let st = listed.templates[0]
+            .state
+            .as_ref()
+            .expect("state on list rows");
+        assert_eq!(st.status.as_str(), "launched");
+        assert_eq!(st.stable, Some(1));
 
-        let got = get_template(
-            State(state.clone()),
-            Path("tpl-demo".into()),
-            Query(VersionQuery::default()),
-        )
-        .await
-        .unwrap()
-        .0;
+        let got = get(&state, "tpl-demo", VersionQuery::default())
+            .await
+            .unwrap();
         assert_eq!(got.template.version, 1);
-        assert_eq!(got.versions, vec![1]);
+        assert_eq!(got.state.versions, vec![1]);
+        assert!(got.is_stable);
+        assert_eq!(got.launches.len(), 1, "the launch is recorded");
         // The stored body is verbatim, so the interpolation token survives.
         assert!(got.template.body.contains("${param.tag}"));
 
-        // 404s.
         assert!(matches!(
-            get_template(
-                State(state.clone()),
-                Path("nope".into()),
-                Query(VersionQuery::default())
-            )
-            .await,
+            get(&state, "nope", VersionQuery::default()).await,
             Err(ServeError::NotFound)
         ));
         assert!(matches!(
-            get_template(
-                State(state.clone()),
-                Path("tpl-demo".into()),
-                Query(VersionQuery {
-                    version: Some(VersionSelector::Pinned(9))
-                })
+            get(
+                &state,
+                "tpl-demo",
+                VersionQuery {
+                    version: Some(VersionSelector::Pinned(9)),
+                },
             )
             .await,
             Err(ServeError::NotFound)
@@ -552,11 +721,10 @@ mod tests {
             Err(ServeError::NotFound)
         ));
 
-        // Both mutations were audited.
         let entries = state
             .history()
             .list_audit(&AuditFilter {
-                limit: 10,
+                limit: 20,
                 ..Default::default()
             })
             .await
@@ -578,6 +746,7 @@ mod tests {
                 config_format: ConfigFormatWire::Yaml,
                 description: None,
                 tags: vec![],
+                launch: false,
             }),
         )
         .await
@@ -607,8 +776,8 @@ mod tests {
         assert_eq!(resp.0.template_version, 1);
         assert_eq!(resp.0.params["tag"], json!("alpha"));
         assert_eq!(resp.0.params["page"], json!(7));
+        assert!(resp.0.deprecated.is_none());
 
-        // The run carries the template provenance labels and the config name.
         let rec = state
             .history()
             .get(&resp.0.run.run_id)
@@ -619,7 +788,6 @@ mod tests {
         assert_eq!(rec.labels[LABEL_TEMPLATE_VERSION], "1");
         assert_eq!(rec.name.as_deref(), Some("tpl-demo"));
 
-        // The trigger is audited in its own right, linked to the run it started.
         let entries = state
             .history()
             .list_audit(&AuditFilter {
@@ -637,38 +805,306 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trigger_reports_missing_params_and_unknown_template() {
+    async fn a_draft_template_cannot_be_triggered_unpinned() {
         let dir = tempfile::tempdir().unwrap();
         let state = test_state();
-        register_demo(&state, &dir.path().join("o.jsonl")).await;
+        // Registered but NOT launched — the work-in-progress state.
+        register_demo_opts(&state, &dir.path().join("o.jsonl"), false).await;
 
-        // `tag` is required.
         let err = trigger_template(
             State(state.clone()),
             Extension(actor()),
             Path("tpl-demo".into()),
-            Json(TriggerBody::default()),
+            Json(TriggerBody {
+                params: [("tag".to_string(), json!("x"))].into(),
+                ..Default::default()
+            }),
         )
         .await
         .unwrap_err();
         match err {
             ServeError::Unprocessable { message, .. } => {
-                assert!(message.contains("tag"), "{message}")
+                assert!(message.contains("no launched version"), "{message}");
+                assert!(message.contains("launch"), "{message}");
             }
             other => panic!("expected 422, got {other:?}"),
         }
 
-        // Unknown id → 404.
-        assert!(matches!(
-            trigger_template(
-                State(state.clone()),
-                Extension(actor()),
-                Path("nope".into()),
-                Json(TriggerBody::default())
-            )
-            .await,
-            Err(ServeError::NotFound)
-        ));
+        // …but an explicit selector runs it, so a draft is testable.
+        let resp = trigger_template(
+            State(state.clone()),
+            Extension(actor()),
+            Path("tpl-demo".into()),
+            Json(TriggerBody {
+                params: [("tag".to_string(), json!("x"))].into(),
+                version: Some(VersionSelector::newest()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("explicit newest runs a draft")
+        .1
+        .0;
+        assert_eq!(resp.template_version, 1);
+    }
+
+    #[tokio::test]
+    async fn launch_moves_callers_and_registering_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state();
+        register_demo(&state, &dir.path().join("v1.jsonl")).await; // v1, launched
+        register_demo_opts(&state, &dir.path().join("v2.jsonl"), false).await; // v2, a build
+
+        // An unpinned trigger still runs v1 — this is the whole point.
+        let trigger = |version: Option<VersionSelector>| {
+            let state = state.clone();
+            async move {
+                trigger_template(
+                    State(state),
+                    Extension(actor()),
+                    Path("tpl-demo".into()),
+                    Json(TriggerBody {
+                        params: [("tag".to_string(), json!("x"))].into(),
+                        version,
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .expect("trigger")
+                .1
+                .0
+            }
+        };
+        assert_eq!(trigger(None).await.template_version, 1);
+        assert_eq!(
+            trigger(Some(VersionSelector::newest()))
+                .await
+                .template_version,
+            2
+        );
+
+        // Launching v2 is the deliberate act that moves them.
+        let resp = launch_template(
+            State(state.clone()),
+            Extension(actor()),
+            Path("tpl-demo".into()),
+            Json(LaunchBody::default()),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!((resp.version, resp.replaced), (2, Some(1)));
+        assert_eq!(resp.status, "launched");
+        assert!(!resp.already_launched);
+        assert_eq!(trigger(None).await.template_version, 2);
+
+        // Rollback returns to v1.
+        let resp = rollback_template(
+            State(state.clone()),
+            Extension(actor()),
+            Path("tpl-demo".into()),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!((resp.version, resp.replaced), (1, Some(2)));
+        assert_eq!(trigger(None).await.template_version, 1);
+
+        // Both are audited under their own action.
+        for action in ["template.launch", "template.rollback"] {
+            let entries = state
+                .history()
+                .list_audit(&AuditFilter {
+                    action: Some(action.into()),
+                    limit: 10,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(entries.len(), 1, "{action}");
+        }
+    }
+
+    #[tokio::test]
+    async fn deprecation_warns_but_keeps_serving() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state();
+        register_demo(&state, &dir.path().join("o.jsonl")).await;
+
+        let body = deprecate_template(
+            State(state.clone()),
+            Extension(actor()),
+            Path("tpl-demo".into()),
+            Json(DeprecateBody {
+                reason: Some("superseded by tenant-sync-v2".into()),
+                undo: false,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(body["status"], "deprecated");
+
+        // Existing callers keep working — retiring must not hard-break them — but
+        // the response says so, so the deprecation cannot pass unnoticed.
+        let resp = trigger_template(
+            State(state.clone()),
+            Extension(actor()),
+            Path("tpl-demo".into()),
+            Json(TriggerBody {
+                params: [("tag".to_string(), json!("x"))].into(),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("a deprecated template still runs")
+        .1
+        .0;
+        assert_eq!(resp.template_version, 1);
+        assert_eq!(
+            resp.deprecated.as_deref(),
+            Some("superseded by tenant-sync-v2")
+        );
+
+        // Launching into a retired template is refused until it is revived.
+        let err = launch_template(
+            State(state.clone()),
+            Extension(actor()),
+            Path("tpl-demo".into()),
+            Json(LaunchBody::default()),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ServeError::Unprocessable { .. }), "{err:?}");
+
+        // `undo` restores the derived status.
+        let body = deprecate_template(
+            State(state.clone()),
+            Extension(actor()),
+            Path("tpl-demo".into()),
+            Json(DeprecateBody {
+                reason: None,
+                undo: true,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(body["status"], "launched");
+    }
+
+    #[tokio::test]
+    async fn promote_moves_a_channel_without_touching_what_is_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state();
+        register_demo(&state, &dir.path().join("v1.jsonl")).await; // v1 live
+        register_demo_opts(&state, &dir.path().join("v2.jsonl"), false).await; // v2 build
+
+        let resp = promote_template(
+            State(state.clone()),
+            Extension(actor()),
+            Path("tpl-demo".into()),
+            Json(PromoteBody {
+                tag: VersionChannel::PreProd,
+                version: Some(VersionSelector::newest()),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!((resp.tag.as_str(), resp.version), ("pre-prod", 2));
+
+        let got = get(&state, "tpl-demo", VersionQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(got.state.stable, Some(1), "promote must not move `stable`");
+        assert_eq!(got.state.tags["pre-prod"], 2);
+        assert!(
+            !got.state.tags.contains_key("stable"),
+            "derived, never stored"
+        );
+
+        // A derived channel is not a promote target; `latest` is not a channel.
+        let err = promote_template(
+            State(state.clone()),
+            Extension(actor()),
+            Path("tpl-demo".into()),
+            Json(PromoteBody {
+                tag: VersionChannel::Stable,
+                version: Some(VersionSelector::Pinned(1)),
+            }),
+        )
+        .await
+        .unwrap_err();
+        match err {
+            ServeError::Unprocessable { message, .. } => {
+                assert!(message.contains("derived"), "{message}")
+            }
+            other => panic!("expected 422, got {other:?}"),
+        }
+        assert!(
+            serde_json::from_value::<PromoteBody>(json!({"tag": "latest", "version": 1})).is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn selecting_an_unset_channel_is_unprocessable() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state();
+        register_demo(&state, &dir.path().join("v1.jsonl")).await;
+        // Never falls back to `stable` — running the wrong version silently is the
+        // failure mode this guards.
+        let err = get(
+            &state,
+            "tpl-demo",
+            VersionQuery {
+                version: Some(VersionSelector::Channel(VersionChannel::Canary)),
+            },
+        )
+        .await
+        .unwrap_err();
+        match err {
+            ServeError::Unprocessable { message, .. } => {
+                assert!(message.contains("no `canary` version"), "{message}")
+            }
+            other => panic!("expected 422, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_by_selector_removes_one_version_but_omitted_removes_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state();
+        register_demo(&state, &dir.path().join("v1.jsonl")).await; // v1 launched
+        register_demo_opts(&state, &dir.path().join("v2.jsonl"), false).await;
+        register_demo_opts(&state, &dir.path().join("v3.jsonl"), false).await;
+
+        // `?version=newest` peels off only v3.
+        delete_template(
+            State(state.clone()),
+            Extension(actor()),
+            Path("tpl-demo".into()),
+            Query(VersionQuery {
+                version: Some(VersionSelector::newest()),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            state.history().template_versions("tpl-demo").await.unwrap(),
+            vec![2, 1]
+        );
+
+        // No selector removes the whole template.
+        delete_template(
+            State(state.clone()),
+            Extension(actor()),
+            Path("tpl-demo".into()),
+            Query(VersionQuery::default()),
+        )
+        .await
+        .unwrap();
+        assert!(state.history().template_list().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -688,6 +1124,7 @@ mod tests {
                 config_format: ConfigFormatWire::Yaml,
                 description: None,
                 tags: vec![],
+                launch: true,
             }),
         )
         .await
@@ -713,290 +1150,32 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn latest_tag_and_omitted_version_agree() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = test_state();
-        register_demo(&state, &dir.path().join("v1.jsonl")).await;
-        register_demo(&state, &dir.path().join("v2.jsonl")).await;
-        register_demo(&state, &dir.path().join("v3.jsonl")).await;
-
-        // Omitted, `latest`, and the explicit newest number are three spellings
-        // of one thing.
-        for q in [
-            VersionQuery::default(),
-            VersionQuery {
-                version: Some(VersionSelector::latest()),
-            },
-            VersionQuery {
-                version: Some(VersionSelector::Pinned(3)),
-            },
-        ] {
-            let got = get_template(State(state.clone()), Path("tpl-demo".into()), Query(q))
-                .await
-                .unwrap()
-                .0;
-            assert_eq!(got.template.version, 3);
-            assert_eq!(got.latest_version, 3);
-            assert!(got.is_latest);
-            assert!(got.template.body.contains("v3.jsonl"));
-            assert_eq!(got.versions, vec![3, 2, 1]);
-        }
-
-        // A pinned older version reports itself as *not* latest, while still
-        // naming what latest resolves to.
-        let got = get_template(
-            State(state.clone()),
-            Path("tpl-demo".into()),
-            Query(VersionQuery {
-                version: Some(VersionSelector::Pinned(1)),
-            }),
-        )
-        .await
-        .unwrap()
-        .0;
-        assert_eq!(got.template.version, 1);
-        assert_eq!(got.latest_version, 3);
-        assert!(!got.is_latest);
-
-        // Triggering with `latest` runs the newest body; pinning runs the older.
-        let trigger = |version: Option<VersionSelector>| {
-            let state = state.clone();
-            async move {
-                trigger_template(
-                    State(state),
-                    Extension(actor()),
-                    Path("tpl-demo".into()),
-                    Json(TriggerBody {
-                        params: [("tag".to_string(), json!("v"))].into(),
-                        version,
-                        ..Default::default()
-                    }),
-                )
-                .await
-                .expect("trigger")
-                .1
-                .0
-            }
-        };
-        assert_eq!(trigger(None).await.template_version, 3);
-        assert_eq!(
-            trigger(Some(VersionSelector::latest()))
-                .await
-                .template_version,
-            3
-        );
-        assert_eq!(
-            trigger(Some(VersionSelector::Pinned(2)))
-                .await
-                .template_version,
-            2
-        );
-    }
-
-    #[tokio::test]
-    async fn delete_latest_removes_one_version_but_omitted_removes_all() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = test_state();
-        register_demo(&state, &dir.path().join("v1.jsonl")).await;
-        register_demo(&state, &dir.path().join("v2.jsonl")).await;
-        register_demo(&state, &dir.path().join("v3.jsonl")).await;
-
-        // `?version=latest` peels off only the newest — the distinction that
-        // makes it different from an omitted selector here.
-        delete_template(
-            State(state.clone()),
-            Extension(actor()),
-            Path("tpl-demo".into()),
-            Query(VersionQuery {
-                version: Some(VersionSelector::latest()),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            state.history().template_versions("tpl-demo").await.unwrap(),
-            vec![2, 1]
-        );
-
-        // No selector removes the whole template.
-        delete_template(
-            State(state.clone()),
-            Extension(actor()),
-            Path("tpl-demo".into()),
-            Query(VersionQuery::default()),
-        )
-        .await
-        .unwrap();
-        assert!(state.history().template_list().await.unwrap().is_empty());
-
-        // `latest` on a template that no longer exists is a 404, not a panic.
-        assert!(matches!(
-            delete_template(
-                State(state.clone()),
-                Extension(actor()),
-                Path("tpl-demo".into()),
-                Query(VersionQuery {
-                    version: Some(VersionSelector::latest()),
-                }),
-            )
-            .await,
-            Err(ServeError::NotFound)
-        ));
-    }
-
-    #[tokio::test]
-    async fn promote_moves_a_channel_and_refuses_latest() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = test_state();
-        register_demo(&state, &dir.path().join("v1.jsonl")).await;
-        register_demo(&state, &dir.path().join("v2.jsonl")).await;
-
-        // Pin `prod` at v1.
-        let resp = promote_template(
-            State(state.clone()),
-            Extension(actor()),
-            Path("tpl-demo".into()),
-            Json(PromoteBody {
-                tag: VersionChannel::Prod,
-                version: Some(VersionSelector::Pinned(1)),
-            }),
-        )
-        .await
-        .unwrap()
-        .0;
-        assert_eq!((resp.tag.as_str(), resp.version), ("prod", 1));
-
-        // A trigger naming the channel runs that version, not the newest.
-        let run = trigger_template(
-            State(state.clone()),
-            Extension(actor()),
-            Path("tpl-demo".into()),
-            Json(TriggerBody {
-                params: [("tag".to_string(), json!("x"))].into(),
-                version: Some(VersionSelector::Channel(VersionChannel::Prod)),
-                ..Default::default()
-            }),
-        )
-        .await
-        .unwrap()
-        .1
-        .0;
-        assert_eq!(run.template_version, 1);
-
-        // Omitting `version` promotes from `latest`, resolved to a concrete
-        // number so the pointer does not follow future registrations.
-        let resp = promote_template(
-            State(state.clone()),
-            Extension(actor()),
-            Path("tpl-demo".into()),
-            Json(PromoteBody {
-                tag: VersionChannel::Stable,
-                version: None,
-            }),
-        )
-        .await
-        .unwrap()
-        .0;
-        assert_eq!(resp.version, 2);
-
-        // `GET` surfaces the pointer map.
-        let got = get_template(
-            State(state.clone()),
-            Path("tpl-demo".into()),
-            Query(VersionQuery::default()),
-        )
-        .await
-        .unwrap()
-        .0;
-        assert_eq!(got.tags["prod"], 1);
-        assert_eq!(got.tags["stable"], 2);
-        assert!(!got.tags.contains_key("latest"), "latest is derived");
-
-        // `latest` is derived → 422; an unknown template → 404.
-        let err = promote_template(
-            State(state.clone()),
-            Extension(actor()),
-            Path("tpl-demo".into()),
-            Json(PromoteBody {
-                tag: VersionChannel::Latest,
-                version: Some(VersionSelector::Pinned(1)),
-            }),
-        )
-        .await
-        .unwrap_err();
-        match err {
-            ServeError::Unprocessable { message, .. } => {
-                assert!(message.contains("derived"), "{message}")
-            }
-            other => panic!("expected 422, got {other:?}"),
-        }
-        assert!(matches!(
-            promote_template(
-                State(state.clone()),
-                Extension(actor()),
-                Path("nope".into()),
-                Json(PromoteBody {
-                    tag: VersionChannel::Prod,
-                    version: None,
-                }),
-            )
-            .await,
-            Err(ServeError::NotFound)
-        ));
-
-        // Promotion is audited.
-        let entries = state
-            .history()
-            .list_audit(&AuditFilter {
-                action: Some("template.promote".into()),
-                limit: 10,
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(entries.len(), 2, "two successful promotions");
-    }
-
-    #[tokio::test]
-    async fn selecting_an_unset_channel_is_unprocessable() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = test_state();
-        register_demo(&state, &dir.path().join("v1.jsonl")).await;
-        // Never falls back to `latest` — running the wrong version silently is
-        // the failure mode this guards.
-        let err = get_template(
-            State(state.clone()),
-            Path("tpl-demo".into()),
-            Query(VersionQuery {
-                version: Some(VersionSelector::Channel(VersionChannel::Canary)),
-            }),
-        )
-        .await
-        .unwrap_err();
-        match err {
-            ServeError::Unprocessable { message, .. } => {
-                assert!(message.contains("no `canary` version"), "{message}")
-            }
-            other => panic!("expected 422, got {other:?}"),
-        }
-    }
-
     #[test]
-    fn version_query_deserializes_latest_and_numbers() {
+    fn version_query_deserializes_channels_and_numbers() {
         // A query string decodes every value as a string, so that is the shape
         // that matters here; a JSON body may send a bare number.
-        let cases: &[(Value, Option<u32>)] = &[
-            (json!({}), None),
-            (json!({ "version": "latest" }), None),
-            (json!({ "version": "2" }), Some(2)),
-            (json!({ "version": 2 }), Some(2)),
-        ];
-        for (wire, want) in cases {
+        assert!(
+            serde_json::from_value::<VersionQuery>(json!({}))
+                .unwrap()
+                .selector()
+                .is_stable(),
+            "an omitted selector means `stable`"
+        );
+        assert!(
+            serde_json::from_value::<VersionQuery>(json!({ "version": "stable" }))
+                .unwrap()
+                .selector()
+                .is_stable()
+        );
+        for wire in [json!({ "version": "2" }), json!({ "version": 2 })] {
             let q: VersionQuery = serde_json::from_value(wire.clone()).unwrap();
-            assert_eq!(q.selector().pinned(), *want, "{wire}");
+            assert_eq!(q.selector().pinned(), Some(2), "{wire}");
         }
-        for bad in [json!({ "version": "nope" }), json!({ "version": 0 })] {
+        for bad in [
+            json!({ "version": "nope" }),
+            json!({ "version": 0 }),
+            json!({ "version": "latest" }),
+        ] {
             assert!(
                 serde_json::from_value::<VersionQuery>(bad.clone()).is_err(),
                 "{bad} should be rejected"
@@ -1023,7 +1202,8 @@ mod tests {
         .unwrap()
         .0;
         assert!(got.template.body.contains("v1.jsonl"));
-        assert_eq!(got.versions, vec![2, 1]);
+        assert_eq!(got.state.versions, vec![2, 1]);
+        assert!(!got.is_stable, "v2 is live, so a pinned v1 is not");
 
         // Deleting one version leaves the other.
         delete_template(

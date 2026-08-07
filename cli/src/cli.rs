@@ -363,7 +363,14 @@ pub enum TemplateCommand {
     List(TemplateListArgs),
     /// Show one template: its params, config body, and versions.
     Show(TemplateShowArgs),
-    /// Point a named channel (`prod`, `dev`, …) at a version.
+    /// Make a version live — what unpinned runs will use. The one action that
+    /// moves existing callers; registering a build never does.
+    Launch(TemplateLaunchArgs),
+    /// Re-launch the previously launched version.
+    Rollback(TemplateRollbackArgs),
+    /// Retire a template (or revive one with `--undo`).
+    Deprecate(TemplateDeprecateArgs),
+    /// Point a named environment channel (`prod`, `staging`, …) at a version.
     Promote(TemplatePromoteArgs),
     /// Delete one version, or every version, of a template.
     Delete(TemplateDeleteArgs),
@@ -417,6 +424,11 @@ pub struct TemplateRegisterArgs {
     /// names the newest version, so it cannot be assigned.
     #[arg(long = "tag", value_name = "CHANNEL")]
     pub tag: Vec<String>,
+    /// Launch the new version immediately, making it the one unpinned runs use.
+    /// Without this the version is registered but inert — a new build never moves
+    /// existing callers until you launch it.
+    #[arg(long)]
+    pub launch: bool,
     #[command(flatten)]
     pub common: TemplateStoreArgs,
 }
@@ -427,14 +439,57 @@ pub struct TemplateRegisterArgs {
 pub struct TemplatePromoteArgs {
     /// Template id.
     pub id: String,
-    /// Channel to move: `dev`, `test`, `staging`, `pre-prod`, `canary`,
-    /// `stable`, `prod`, or `previous`. `latest` is derived and cannot be moved.
+    /// Channel to move: `dev`, `test`, `staging`, `pre-prod`, `canary`, or
+    /// `prod`. The derived channels (`stable`, `previous`, `newest`) cannot be
+    /// promoted — `stable` moves with `faucet template launch`.
     #[arg(long = "tag", value_name = "CHANNEL")]
     pub tag: String,
     /// What to point it at: a version number, or another channel whose current
-    /// target should be copied (`--tag prod --version stable`). Default `latest`.
-    #[arg(long, default_value = "latest")]
+    /// target should be copied (`--tag prod --version pre-prod`). Defaults to
+    /// `stable`, the currently launched version.
+    #[arg(long, default_value = "stable")]
     pub version: String,
+    #[command(flatten)]
+    pub common: TemplateStoreArgs,
+}
+
+/// `faucet template launch <id>` arguments.
+#[cfg(feature = "templates")]
+#[derive(Debug, Parser)]
+pub struct TemplateLaunchArgs {
+    /// Template id.
+    pub id: String,
+    /// Which version to make live: a number, or a channel whose current target to
+    /// copy (`--version pre-prod` launches whatever passed pre-prod). Defaults to
+    /// `newest` — launching what you just registered is the common case.
+    #[arg(long, default_value = "newest")]
+    pub version: String,
+    #[command(flatten)]
+    pub common: TemplateStoreArgs,
+}
+
+/// `faucet template rollback <id>` arguments.
+#[cfg(feature = "templates")]
+#[derive(Debug, Parser)]
+pub struct TemplateRollbackArgs {
+    /// Template id.
+    pub id: String,
+    #[command(flatten)]
+    pub common: TemplateStoreArgs,
+}
+
+/// `faucet template deprecate <id>` arguments.
+#[cfg(feature = "templates")]
+#[derive(Debug, Parser)]
+pub struct TemplateDeprecateArgs {
+    /// Template id.
+    pub id: String,
+    /// Why it is being retired — shown to anyone who triggers it.
+    #[arg(long)]
+    pub reason: Option<String>,
+    /// Revive a deprecated template instead of retiring it.
+    #[arg(long)]
+    pub undo: bool,
     #[command(flatten)]
     pub common: TemplateStoreArgs,
 }
@@ -453,9 +508,9 @@ pub struct TemplateListArgs {
 pub struct TemplateShowArgs {
     /// Template id.
     pub id: String,
-    /// Version to show: a number, or a named channel (`latest` — the default —
-    /// `prod`, `pre-prod`, `dev`, …).
-    #[arg(long, default_value = "latest")]
+    /// Version to show: a number, or a named channel (`stable` — the default,
+    /// i.e. the launched version — `newest`, `previous`, `prod`, `dev`, …).
+    #[arg(long, default_value = "stable")]
     pub version: String,
     #[command(flatten)]
     pub common: TemplateStoreArgs,
@@ -482,10 +537,10 @@ pub struct TemplateDeleteArgs {
 pub struct TemplateRunArgs {
     /// Template id.
     pub id: String,
-    /// Version to run: a number, or a named channel (`latest` — the default —
-    /// `prod`, `pre-prod`, `dev`, …). Naming a channel is how a scheduled job
-    /// stays on a promoted version while newer ones land.
-    #[arg(long, default_value = "latest")]
+    /// Version to run: a number, or a named channel. Defaults to `stable` — the
+    /// launched version — so an unpinned run never picks up a build that has not
+    /// been launched. Use `newest` to run the most recent build regardless.
+    #[arg(long, default_value = "stable")]
     pub version: String,
     /// Supply a declared param: `--param tenant_id=acme`. Repeatable.
     #[arg(long = "param", value_name = "NAME=VALUE")]
