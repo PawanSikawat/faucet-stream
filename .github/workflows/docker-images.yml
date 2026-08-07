@@ -92,3 +92,73 @@ jobs:
           cache-from: type=gha,scope=faucet-${{ matrix.profile }}
           cache-to: type=gha,mode=max,scope=faucet-${{ matrix.profile }}
           provenance: false
+
+  # Publish the Helm chart as an OCI artifact on GHCR and attach a
+  # Dockerfile+chart deploy bundle to the release. Gated to the faucet-cli
+  # release so the chart gets ONE version per app release (not one per crate
+  # tag). Manual runs use the chart's appVersion and only push when push=true.
+  helm:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'faucet-cli-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # upload the release asset
+      packages: write   # push the OCI chart
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.2
+
+      - name: Derive version
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            v="${GITHUB_REF_NAME#faucet-cli-v}"; v="${v#v}"
+          else
+            v="$(sed -n 's/^appVersion:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}/\1/p' deploy/helm/faucet-stream/Chart.yaml)"
+          fi
+          echo "v=$v" >>"$GITHUB_OUTPUT"
+
+      - name: Package chart
+        run: |
+          helm package deploy/helm/faucet-stream \
+            --version "${{ steps.v.outputs.v }}" \
+            --app-version "${{ steps.v.outputs.v }}"
+
+      - name: Push chart to GHCR (OCI)
+        if: github.event_name == 'release' || inputs.push
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login "${REGISTRY}" -u "${{ github.actor }}" --password-stdin
+          helm push "faucet-stream-${{ steps.v.outputs.v }}.tgz" \
+            "oci://${REGISTRY}/${GITHUB_REPOSITORY_OWNER}/charts"
+
+      - name: Build deploy bundle (Dockerfile + chart + README)
+        run: |
+          root="faucet-stream-deploy-${{ steps.v.outputs.v }}"
+          mkdir -p "bundle/${root}"
+          cp Dockerfile "bundle/${root}/"
+          cp -r deploy/helm/faucet-stream "bundle/${root}/helm-chart"
+          cat > "bundle/${root}/README.md" <<MD
+          # faucet-stream deployment bundle (v${{ steps.v.outputs.v }})
+
+          Self-contained Dockerfile + Helm chart.
+
+          ## Container image (prebuilt, GHCR)
+              docker pull ${REGISTRY}/${GITHUB_REPOSITORY_OWNER}/faucet-stream:${{ steps.v.outputs.v }}
+
+          ## Helm chart (OCI, GHCR)
+              helm install faucet oci://${REGISTRY}/${GITHUB_REPOSITORY_OWNER}/charts/faucet-stream --version ${{ steps.v.outputs.v }}
+
+          ## Or from this bundle
+              helm install faucet ./helm-chart
+              # (build the image yourself from ./Dockerfile if you don't use GHCR)
+          MD
+          tar czf "${root}.tar.gz" -C bundle "${root}"
+
+      - name: Attach bundle to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" "faucet-stream-deploy-${{ steps.v.outputs.v }}.tar.gz" --clobber
