@@ -21,10 +21,50 @@ env:
   CARGO_NET_RETRY: "10"
   CARGO_HTTP_MULTIPLEXING: "false"
 
+# Cancel superseded runs on the same ref (PR branch / main) so stale builds
+# don't keep holding runner slots — important on a shared/capacity-limited pool.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # Detect whether a PR touches anything that can affect the build/tests. When a
+  # PR only changes docs / workflows / assets, the heavy (non-required) jobs
+  # below skip. Pushes to main always run everything (the `github.event_name`
+  # guard on each job), so main stays fully verified and coverage still uploads.
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # 'every' quantifier: a changed file counts toward `code` only if it
+          # matches ALL these negations — i.e. it is NOT a doc/workflow/asset
+          # file. So `code` is true iff at least one real source/build file
+          # changed. If detection is ever uncertain, paths-filter errs toward
+          # "changed" (fail-safe → run everything).
+          predicate-quantifier: 'every'
+          filters: |
+            code:
+              - '!**/*.md'
+              - '!docs/**'
+              - '!.github/**'
+              - '!LICENSE*'
+              - '!**/*.png'
+              - '!**/*.svg'
+              - '!**/*.jpg'
+
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -95,6 +135,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     # Drop debug info for this job. The all-features workspace binary plus the
     # serve-ui isolation test binaries are enormous; with full DWARF the final
     # `ld` intermittently dies with `signal 7 [Bus error]` (an out-of-memory
@@ -170,6 +212,8 @@ jobs:
   feature-check:
     name: Feature isolation
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -376,7 +420,8 @@ jobs:
   observability-bench:
     name: Observability bench (5% regression budget)
     runs-on: ubuntu-latest
-    needs: [test]
+    needs: [test, changes]
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -399,6 +444,8 @@ jobs:
   kafka-integration:
     name: Kafka integration tests (Docker)
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
@@ -454,6 +501,8 @@ jobs:
   supply-chain:
     name: Supply chain (cargo-deny)
     runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     steps:
       - uses: actions/checkout@v4
       # Hard gate: licenses, banned crates, and dependency sources are
