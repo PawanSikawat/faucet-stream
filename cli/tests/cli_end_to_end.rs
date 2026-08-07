@@ -842,15 +842,25 @@ fn shipped_example_yamls_pass_validate() {
     // directive can resolve.
     let workdir = TempDir::new().unwrap();
     fs::write(workdir.path().join("snowflake_key.pem"), "dummy-key").unwrap();
-    // `validate` compiles every transform chain, and the `sql` transform resolves
-    // its reference-relation files at compile time — so the examples' data files
-    // have to exist at the same relative paths the configs use.
-    let staged_data = workdir.path().join("cli/examples/data");
-    fs::create_dir_all(&staged_data).unwrap();
-    for entry in fs::read_dir(examples_dir.join("data")).unwrap() {
-        let src = entry.unwrap().path();
-        if src.is_file() {
-            fs::copy(&src, staged_data.join(src.file_name().unwrap())).unwrap();
+    // `validate` compiles every transform chain, and some transforms read files
+    // at compile time — the `sql` transform resolves its reference relations, the
+    // `wasm` transform loads its module. Those examples name the fixtures by a
+    // repo-relative path, so stage the fixture trees at the same relative paths
+    // under the temp cwd. Add to this list if a new example references a
+    // compile-time fixture; a missing entry fails loudly below rather than
+    // silently skipping the example.
+    let repo_root = std::path::Path::new(manifest_dir).parent().unwrap();
+    for rel in ["cli/examples/data", "examples/wasm-transforms"] {
+        let src_dir = repo_root.join(rel);
+        let dst_dir = workdir.path().join(rel);
+        fs::create_dir_all(&dst_dir).unwrap();
+        for entry in fs::read_dir(&src_dir)
+            .unwrap_or_else(|e| panic!("fixture dir {} is missing: {e}", src_dir.display()))
+        {
+            let src = entry.unwrap().path();
+            if src.is_file() {
+                fs::copy(&src, dst_dir.join(src.file_name().unwrap())).unwrap();
+            }
         }
     }
 
