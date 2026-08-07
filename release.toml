@@ -18,7 +18,12 @@ shared-version = false
 tag-prefix = ""
 tag-name = "{{crate_name}}-v{{version}}"
 
-# Commit message format
-pre-release-commit-message = "release: {{crate_name}} v{{version}}"
+# Commit message format. Must be a STATIC string: this workspace releases many
+# crates in one consolidated commit (shared-version = false, and scope=all in
+# release.yml), so per-crate placeholders like {{crate_name}}/{{version}} are
+# ambiguous for a multi-crate commit and cargo-release leaves them un-rendered
+# (that's how a literal "release: {{crate_name}} v{{version}}" landed on main).
+# Per-crate identity still lives in the tags (tag-name above).
+pre-release-commit-message = "chore: release"
 
 push-remote = "origin"
