@@ -96,7 +96,7 @@ jobs:
           # isn't a false failure; retry transient network errors.
           args: >-
             --no-progress --max-retries 3 --retry-wait-time 5
-            --accept 200,206,429 --exclude-mail
+            --accept 200,206,429
             "./**/*.md"
           fail: true
 
