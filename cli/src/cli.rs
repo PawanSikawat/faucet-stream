@@ -930,7 +930,7 @@ pub struct McpArgs {
 /// `faucet run` arguments.
 ///
 /// `Default` is derived so callers that execute an already-loaded config through
-/// [`crate::commands::run::execute`] (notably `faucet template run`) can build a
+/// `commands::run::execute` (notably `faucet template run`) can build a
 /// plain-run argument set without restating every flag.
 #[derive(Debug, Parser, Default)]
 pub struct RunArgs {

@@ -1009,6 +1009,79 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn register_with_tags_and_run_by_channel() {
+            let dir = tempfile::tempdir().unwrap();
+            let ctx = tpl_ctx(true);
+
+            // Register v1 with `dev`, then v2 untagged, so `dev` and `latest`
+            // point at different versions.
+            let out = call_tool(
+                &ctx,
+                "register_template",
+                &json!({ "config": body(dir.path()), "tags": ["dev"] }),
+            )
+            .await;
+            assert_eq!(out["isError"], false, "{}", out["content"][0]["text"]);
+            call_tool(
+                &ctx,
+                "register_template",
+                &json!({ "config": body(dir.path()) }),
+            )
+            .await;
+
+            let out = call_tool(&ctx, "get_template", &json!({"id":"mcp-tpl"})).await;
+            let text = out["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("\"latest_version\": 2"), "{text}");
+            assert!(text.contains("\"dev\": 1"), "{text}");
+
+            // Running by channel picks v1; by `latest` (omitted) picks v2.
+            for (version, want) in [(json!("dev"), 1), (json!("latest"), 2), (json!(1), 1)] {
+                let out = call_tool(
+                    &ctx,
+                    "run_template",
+                    &json!({"id":"mcp-tpl","params":{"tag":"c"},"version":version,"dry_run":true}),
+                )
+                .await;
+                assert_eq!(out["isError"], false, "{}", out["content"][0]["text"]);
+                let text = out["content"][0]["text"].as_str().unwrap();
+                assert!(
+                    text.contains(&format!("\"template_version\": {want}")),
+                    "{version} should resolve to v{want}: {text}"
+                );
+            }
+
+            // A channel outside the closed set is a tool error, on both paths.
+            for args in [
+                json!({ "config": body(dir.path()), "tags": ["prd"] }),
+                json!({ "config": body(dir.path()), "tags": ["latest"] }),
+            ] {
+                let out = call_tool(&ctx, "register_template", &args).await;
+                assert_eq!(out["isError"], true, "{args}");
+            }
+            let out = call_tool(
+                &ctx,
+                "run_template",
+                &json!({"id":"mcp-tpl","params":{"tag":"c"},"version":"nope"}),
+            )
+            .await;
+            assert_eq!(out["isError"], true);
+            // An unset channel is refused rather than falling back to latest.
+            let out = call_tool(
+                &ctx,
+                "run_template",
+                &json!({"id":"mcp-tpl","params":{"tag":"c"},"version":"canary"}),
+            )
+            .await;
+            assert_eq!(out["isError"], true);
+            assert!(
+                out["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("no `canary` version")
+            );
+        }
+
+        #[tokio::test]
         async fn secret_params_are_redacted_in_the_response() {
             let dir = tempfile::tempdir().unwrap();
             let ctx = tpl_ctx(true);

@@ -42,19 +42,15 @@ pub fn validate_topology_spec(cfg: &PipelineConfig) -> CliResult<()> {
         return Err(CliError::MatrixAndNodesBothPresent);
     }
     let spec = &cfg.pipeline;
+    let mut known: Vec<String> = spec.nodes.keys().cloned().collect();
+    known.sort_unstable();
     for edge in &spec.edges {
-        for (endpoint, label) in [(&edge.from, "from"), (&edge.to, "to")] {
+        for endpoint in [&edge.from, &edge.to] {
             if !spec.nodes.contains_key(endpoint) {
-                let mut known: Vec<&str> = spec.nodes.keys().map(String::as_str).collect();
-                known.sort_unstable();
-                return Err(CliError::Config(format!(
-                    "topology edge `{label}: {endpoint}` names no node. Declared nodes: {}",
-                    if known.is_empty() {
-                        String::from("(none)")
-                    } else {
-                        known.join(", ")
-                    }
-                )));
+                return Err(CliError::EdgeEndpointMissing {
+                    name: endpoint.clone(),
+                    known: known.clone(),
+                });
             }
         }
     }
@@ -194,21 +190,9 @@ pub async fn build_topology(cfg: &PipelineConfig, auth: &AuthCatalog) -> CliResu
         builder = builder.node((*id).clone(), kind);
     }
 
-    // Validate edge endpoints up front for a friendly error, then wire them.
-    let known: Vec<String> = node_ids.iter().map(|s| (*s).clone()).collect();
+    // Edge endpoints were already validated by `validate_topology_spec` above —
+    // before any connector was constructed — so just wire them.
     for e in &spec.edges {
-        if !spec.nodes.contains_key(&e.from) {
-            return Err(CliError::EdgeEndpointMissing {
-                name: e.from.clone(),
-                known: known.clone(),
-            });
-        }
-        if !spec.nodes.contains_key(&e.to) {
-            return Err(CliError::EdgeEndpointMissing {
-                name: e.to.clone(),
-                known: known.clone(),
-            });
-        }
         builder = match &e.label {
             Some(label) => builder.labelled_edge(e.from.clone(), e.to.clone(), label.clone()),
             None => builder.edge(e.from.clone(), e.to.clone()),

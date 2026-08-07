@@ -483,6 +483,80 @@ pipeline:
         })
         .await
         .expect("run");
+
+        // `register --tag dev` pointed `dev` at v1; promote `prod` from it, then
+        // run *by channel* rather than by number.
+        promote(TemplatePromoteArgs {
+            id: "cli-tpl".into(),
+            tag: "prod".into(),
+            version: "dev".into(),
+            common: common(&store, false),
+        })
+        .await
+        .expect("promote");
+        run_template(TemplateRunArgs {
+            id: "cli-tpl".into(),
+            version: "prod".into(),
+            param: vec!["tag=viachannel".into()],
+            param_env: vec![],
+            dry_run: true,
+            limit: None,
+            common: common(&store, true),
+        })
+        .await
+        .expect("run via channel");
+
+        // `show` renders the channel map (and marks `[latest]`).
+        show(TemplateShowArgs {
+            id: "cli-tpl".into(),
+            version: "prod".into(),
+            common: common(&store, true),
+        })
+        .await
+        .expect("show pinned via channel");
+
+        // `latest` and an invented channel are rejected on promote.
+        assert!(
+            promote(TemplatePromoteArgs {
+                id: "cli-tpl".into(),
+                tag: "latest".into(),
+                version: "1".into(),
+                common: common(&store, false),
+            })
+            .await
+            .is_err(),
+            "`latest` is derived and must not be assignable"
+        );
+        assert!(
+            promote(TemplatePromoteArgs {
+                id: "cli-tpl".into(),
+                tag: "prd".into(),
+                version: "1".into(),
+                common: common(&store, false),
+            })
+            .await
+            .is_err(),
+            "channels are a closed set"
+        );
+
+        // `--version latest` deletes only the newest version, unlike an omitted
+        // `--version` (which removes the whole template, below).
+        register(TemplateRegisterArgs {
+            config: cfg_path.clone(),
+            id: None,
+            description: None,
+            tag: vec![],
+            common: common(&store, false),
+        })
+        .await
+        .expect("register v2");
+        delete(TemplateDeleteArgs {
+            id: "cli-tpl".into(),
+            version: Some("latest".into()),
+            common: common(&store, false),
+        })
+        .await
+        .expect("delete latest");
         assert_eq!(
             std::fs::read_to_string(&output).unwrap().lines().count(),
             2,
@@ -517,6 +591,20 @@ pipeline:
         let err = fetch(&store, "nope", None).await.unwrap_err();
         assert!(
             matches!(err, CliError::UnknownPipelineTemplate { ref id, .. } if id == "nope"),
+            "{err:?}"
+        );
+        // Promoting a channel on a template that does not exist is the same
+        // typed error, not a silently-created pointer.
+        let err = promote(TemplatePromoteArgs {
+            id: "nope".into(),
+            tag: "prod".into(),
+            version: "latest".into(),
+            common: common("memory", false),
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, CliError::UnknownPipelineTemplate { .. }),
             "{err:?}"
         );
     }

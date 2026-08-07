@@ -1003,7 +1003,9 @@ where
 /// composed config document **after parsing** rather than on the raw text.
 ///
 /// The document is parsed into an untyped value (by file extension), each string
-/// scalar is interpolated in place via [`interpolate_value`], and the tree is
+/// scalar is interpolated in place via
+/// [`interpolate_value_with_env`](crate::interpolate::interpolate_value_with_env)
+/// (and `${param.*}` bound by [`crate::params::bind_document`]), and the tree is
 /// re-serialised back into the same format for the typed parse that follows.
 /// Resolving post-parse means a resolved value can never inject or break the
 /// document's structure (F43) — an env/file value containing `:`, a newline, or

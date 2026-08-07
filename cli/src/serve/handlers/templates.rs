@@ -374,15 +374,16 @@ pub async fn trigger_template(
     Json(body): Json<TriggerBody>,
 ) -> Result<(StatusCode, Json<TriggerResponse>), ServeError> {
     let supplied: SuppliedParams = body.params.into_iter().collect();
-    let materialized = crate::templates::materialize(
-        &store(&state),
-        &id,
-        body.version.unwrap_or_default().pinned(),
-        &supplied,
-        &body.env,
-    )
-    .await
-    .map_err(map_err)?;
+    // Resolve through the registry, not `VersionSelector::pinned()` — a named
+    // channel needs a lookup, and `pinned()` would collapse it to `None`
+    // (i.e. silently run `latest`, the exact failure this API must not have).
+    let s = store(&state);
+    let want = crate::templates::resolve_version(&s, &id, body.version.unwrap_or_default())
+        .await
+        .map_err(map_err)?;
+    let materialized = crate::templates::materialize(&s, &id, want, &supplied, &body.env)
+        .await
+        .map_err(map_err)?;
 
     // A clustered submit persists the raw config so any instance can re-run it.
     // A `secret: true` param value would therefore be written to the shared
@@ -842,6 +843,143 @@ mod tests {
             .await,
             Err(ServeError::NotFound)
         ));
+    }
+
+    #[tokio::test]
+    async fn promote_moves_a_channel_and_refuses_latest() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state();
+        register_demo(&state, &dir.path().join("v1.jsonl")).await;
+        register_demo(&state, &dir.path().join("v2.jsonl")).await;
+
+        // Pin `prod` at v1.
+        let resp = promote_template(
+            State(state.clone()),
+            Extension(actor()),
+            Path("tpl-demo".into()),
+            Json(PromoteBody {
+                tag: VersionChannel::Prod,
+                version: Some(VersionSelector::Pinned(1)),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!((resp.tag.as_str(), resp.version), ("prod", 1));
+
+        // A trigger naming the channel runs that version, not the newest.
+        let run = trigger_template(
+            State(state.clone()),
+            Extension(actor()),
+            Path("tpl-demo".into()),
+            Json(TriggerBody {
+                params: [("tag".to_string(), json!("x"))].into(),
+                version: Some(VersionSelector::Channel(VersionChannel::Prod)),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap()
+        .1
+        .0;
+        assert_eq!(run.template_version, 1);
+
+        // Omitting `version` promotes from `latest`, resolved to a concrete
+        // number so the pointer does not follow future registrations.
+        let resp = promote_template(
+            State(state.clone()),
+            Extension(actor()),
+            Path("tpl-demo".into()),
+            Json(PromoteBody {
+                tag: VersionChannel::Stable,
+                version: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(resp.version, 2);
+
+        // `GET` surfaces the pointer map.
+        let got = get_template(
+            State(state.clone()),
+            Path("tpl-demo".into()),
+            Query(VersionQuery::default()),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(got.tags["prod"], 1);
+        assert_eq!(got.tags["stable"], 2);
+        assert!(!got.tags.contains_key("latest"), "latest is derived");
+
+        // `latest` is derived → 422; an unknown template → 404.
+        let err = promote_template(
+            State(state.clone()),
+            Extension(actor()),
+            Path("tpl-demo".into()),
+            Json(PromoteBody {
+                tag: VersionChannel::Latest,
+                version: Some(VersionSelector::Pinned(1)),
+            }),
+        )
+        .await
+        .unwrap_err();
+        match err {
+            ServeError::Unprocessable { message, .. } => {
+                assert!(message.contains("derived"), "{message}")
+            }
+            other => panic!("expected 422, got {other:?}"),
+        }
+        assert!(matches!(
+            promote_template(
+                State(state.clone()),
+                Extension(actor()),
+                Path("nope".into()),
+                Json(PromoteBody {
+                    tag: VersionChannel::Prod,
+                    version: None,
+                }),
+            )
+            .await,
+            Err(ServeError::NotFound)
+        ));
+
+        // Promotion is audited.
+        let entries = state
+            .history()
+            .list_audit(&AuditFilter {
+                action: Some("template.promote".into()),
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 2, "two successful promotions");
+    }
+
+    #[tokio::test]
+    async fn selecting_an_unset_channel_is_unprocessable() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state();
+        register_demo(&state, &dir.path().join("v1.jsonl")).await;
+        // Never falls back to `latest` — running the wrong version silently is
+        // the failure mode this guards.
+        let err = get_template(
+            State(state.clone()),
+            Path("tpl-demo".into()),
+            Query(VersionQuery {
+                version: Some(VersionSelector::Channel(VersionChannel::Canary)),
+            }),
+        )
+        .await
+        .unwrap_err();
+        match err {
+            ServeError::Unprocessable { message, .. } => {
+                assert!(message.contains("no `canary` version"), "{message}")
+            }
+            other => panic!("expected 422, got {other:?}"),
+        }
     }
 
     #[test]
