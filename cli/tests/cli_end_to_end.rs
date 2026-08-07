@@ -842,6 +842,17 @@ fn shipped_example_yamls_pass_validate() {
     // directive can resolve.
     let workdir = TempDir::new().unwrap();
     fs::write(workdir.path().join("snowflake_key.pem"), "dummy-key").unwrap();
+    // `validate` compiles every transform chain, and the `sql` transform resolves
+    // its reference-relation files at compile time — so the examples' data files
+    // have to exist at the same relative paths the configs use.
+    let staged_data = workdir.path().join("cli/examples/data");
+    fs::create_dir_all(&staged_data).unwrap();
+    for entry in fs::read_dir(examples_dir.join("data")).unwrap() {
+        let src = entry.unwrap().path();
+        if src.is_file() {
+            fs::copy(&src, staged_data.join(src.file_name().unwrap())).unwrap();
+        }
+    }
 
     let mut count = 0;
     for entry in fs::read_dir(&examples_dir).unwrap() {

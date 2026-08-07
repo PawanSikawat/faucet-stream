@@ -319,7 +319,7 @@ pub fn scan_path_refs(
     scan_path_refs_with(path, profile, &crate::config::RunInputs::default())
 }
 
-/// [`scan_path_refs`] with caller-supplied [`RunInputs`] (#444).
+/// [`scan_path_refs`] with caller-supplied [`crate::config::RunInputs`] (#444).
 ///
 /// The pre-scan is a *structural* load, so it must bind `${param.*}` the same way
 /// the caller's real load will. Without this a bare `faucet validate` on a config

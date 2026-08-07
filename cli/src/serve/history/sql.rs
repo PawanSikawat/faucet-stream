@@ -903,6 +903,18 @@ impl Stmts {
 /// purged concurrently between the insert attempt and the read-back).
 pub const CLAIM_ATTEMPTS: usize = 4;
 
+/// Sleep before a read-max-then-insert retry (no-op on the first attempt).
+///
+/// The retry exists for lost races, and under real contention an immediate retry
+/// tends to lose the same race again — SQLite in particular serializes writers, so
+/// a few milliseconds of stagger is the difference between converging and
+/// exhausting the attempt budget.
+pub async fn retry_backoff(attempt: usize) {
+    if attempt > 1 {
+        tokio::time::sleep(std::time::Duration::from_millis(5 * (attempt as u64 - 1))).await;
+    }
+}
+
 /// Fixed-width RFC3339 (nanoseconds + `Z`) — lexicographically sortable.
 pub fn fmt_ts(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
@@ -2359,12 +2371,42 @@ macro_rules! impl_sql_history {
                 // retry picks up the winner's version — so a register never
                 // silently overwrites another (F: lost-update).
                 for attempt in 1..=sql::CLAIM_ATTEMPTS {
-                    let mut tx = self.pool.begin().await.map_err(backend)?;
-                    let row = sqlx::query(&self.stmts.template_max_version)
+                    sql::retry_backoff(attempt).await;
+                    // Opening the transaction and reading the current max are as
+                    // contention-prone as the insert itself (SQLite answers a
+                    // write-write overlap with `database is locked` immediately,
+                    // since waiting would deadlock). Feed those failures into the
+                    // same retry rather than aborting the register.
+                    let mut tx = match self.pool.begin().await {
+                        Ok(tx) => tx,
+                        Err(e) if attempt < sql::CLAIM_ATTEMPTS => {
+                            tracing::debug!(
+                                template = %id, attempt, error = %e,
+                                "template version transaction lost a race; retrying"
+                            );
+                            continue;
+                        }
+                        Err(e) => return Err(backend(e)),
+                    };
+                    let row = match sqlx::query(&self.stmts.template_max_version)
                         .bind(&id)
                         .fetch_one(&mut *tx)
                         .await
-                        .map_err(backend)?;
+                    {
+                        Ok(row) => row,
+                        Err(e) if attempt < sql::CLAIM_ATTEMPTS => {
+                            let _ = tx.rollback().await;
+                            tracing::debug!(
+                                template = %id, attempt, error = %e,
+                                "template version read lost a race; retrying"
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            let _ = tx.rollback().await;
+                            return Err(backend(e));
+                        }
+                    };
                     let max: i64 = row.try_get("v").map_err(backend)?;
                     let next = (max as u32).saturating_add(1);
                     let record = templates::TemplateRecord {
@@ -2630,11 +2672,24 @@ macro_rules! impl_sql_history {
                 // like version assignment: two concurrent launches must produce
                 // two distinct entries, never a lost write.
                 for attempt in 1..=sql::CLAIM_ATTEMPTS {
-                    let row = sqlx::query(&self.stmts.template_max_launch_seq)
+                    sql::retry_backoff(attempt).await;
+                    // As in `template_register`: a contended *read* is transient,
+                    // so let the loop retry instead of failing the launch.
+                    let row = match sqlx::query(&self.stmts.template_max_launch_seq)
                         .bind(id)
                         .fetch_one(&self.pool)
                         .await
-                        .map_err(backend)?;
+                    {
+                        Ok(row) => row,
+                        Err(e) if attempt < sql::CLAIM_ATTEMPTS => {
+                            tracing::debug!(
+                                template = %id, attempt, error = %e,
+                                "launch-log seq read lost a race; retrying"
+                            );
+                            continue;
+                        }
+                        Err(e) => return Err(backend(e)),
+                    };
                     let max: i64 = row.try_get("v").map_err(backend)?;
                     let seq = (max as u32).saturating_add(1);
                     let insert = sqlx::query(&self.stmts.template_insert_launch)

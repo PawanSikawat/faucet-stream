@@ -680,3 +680,218 @@ async fn cross_instance_cancel_flag_and_pickup() {
     // A running run is not pending → false.
     assert!(!a.cancel_pending("r1").await.unwrap());
 }
+
+// ── pipeline template registry (#444) ────────────────────────────────────────
+//
+// The template lifecycle has two independent implementations — the in-memory
+// backend and the shared SQL machinery in `history::sql` — so the memory-backed
+// unit tests say nothing about the SQL launch log, its read-max-seq-then-insert
+// retry, or the delete cascade. These exercise the SQL side against a real
+// database file.
+
+#[cfg(feature = "templates")]
+mod templates {
+    use super::*;
+    use faucet_cli::serve::history::templates::{
+        DeprecationRecord, TemplateDraft, TemplateId, TemplateStatus,
+    };
+    use faucet_cli::serve::load::ConfigFormat;
+
+    fn draft(id: &str, description: Option<&str>) -> TemplateDraft {
+        TemplateDraft {
+            id: TemplateId::parse(id).unwrap(),
+            name: Some(id.to_string()),
+            description: description.map(str::to_string),
+            body: format!("version: 1\nname: {id}\n"),
+            format: ConfigFormat::Yaml,
+            params: Default::default(),
+            created_by: Some("tester".into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn launch_log_drives_stable_previous_and_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(&dir, "tpl-launch.db").await;
+
+        for _ in 0..3 {
+            s.template_register(&draft("orders", Some("about orders")))
+                .await
+                .unwrap();
+        }
+        assert_eq!(s.template_versions("orders").await.unwrap(), vec![3, 2, 1]);
+
+        // Registering is inert: three versions exist, the template is a draft.
+        let st = s.template_state("orders").await.unwrap();
+        assert_eq!(st.status, TemplateStatus::Draft);
+        assert_eq!((st.stable, st.previous, st.newest), (None, None, Some(3)));
+
+        // First launch: stable moves, previous stays unset (nothing to go back
+        // to). The return is the assigned launch-log sequence number.
+        assert_eq!(
+            s.template_launch("orders", 1, Some("ci")).await.unwrap(),
+            Some(1)
+        );
+        let st = s.template_state("orders").await.unwrap();
+        assert_eq!(st.status, TemplateStatus::Launched);
+        assert_eq!((st.stable, st.previous), (Some(1), None));
+
+        // Re-launching what is already live is a no-op (`None`) — appending would
+        // make `previous` a duplicate of `stable` and destroy the rollback target.
+        assert_eq!(s.template_launch("orders", 1, None).await.unwrap(), None);
+        assert_eq!(s.template_launches("orders").await.unwrap().len(), 1);
+
+        // Launching a different version advances stable; the old one becomes
+        // `previous`.
+        assert_eq!(
+            s.template_launch("orders", 3, Some("ci")).await.unwrap(),
+            Some(2)
+        );
+        let st = s.template_state("orders").await.unwrap();
+        assert_eq!(
+            (st.stable, st.previous, st.newest),
+            (Some(3), Some(1), Some(3))
+        );
+
+        // The log is append-only and newest-first, with provenance.
+        let log = s.template_launches("orders").await.unwrap();
+        assert_eq!(
+            log.iter().map(|l| (l.seq, l.version)).collect::<Vec<_>>(),
+            vec![(2, 3), (1, 1)]
+        );
+        assert_eq!(log[0].launched_by.as_deref(), Some("ci"));
+
+        // Rolling back is an ordinary launch, so the log keeps growing and
+        // `previous` becomes the version just rolled off.
+        assert_eq!(s.template_launch("orders", 1, None).await.unwrap(), Some(3));
+        let st = s.template_state("orders").await.unwrap();
+        assert_eq!((st.stable, st.previous), (Some(1), Some(3)));
+        assert_eq!(s.template_launches("orders").await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn deprecation_marker_round_trips_and_clears() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(&dir, "tpl-deprecate.db").await;
+        s.template_register(&draft("legacy", None)).await.unwrap();
+        s.template_launch("legacy", 1, None).await.unwrap();
+
+        assert!(s.template_deprecation("legacy").await.unwrap().is_none());
+
+        let marker = DeprecationRecord {
+            deprecated_at: Utc::now(),
+            deprecated_by: Some("admin".into()),
+            reason: Some("superseded".into()),
+        };
+        s.template_set_deprecation("legacy", Some(&marker))
+            .await
+            .unwrap();
+        let st = s.template_state("legacy").await.unwrap();
+        assert_eq!(st.status, TemplateStatus::Deprecated);
+        let stored = st.deprecation.expect("marker present in state");
+        assert_eq!(stored.reason.as_deref(), Some("superseded"));
+        assert_eq!(stored.deprecated_by.as_deref(), Some("admin"));
+        // A deprecated template still serves `stable` — retiring must not break
+        // existing callers.
+        assert_eq!(st.stable, Some(1));
+
+        s.template_set_deprecation("legacy", None).await.unwrap();
+        let st = s.template_state("legacy").await.unwrap();
+        assert_eq!(st.status, TemplateStatus::Launched);
+        assert!(st.deprecation.is_none());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_version_cascades_to_channels_and_launch_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(&dir, "tpl-cascade.db").await;
+        for _ in 0..2 {
+            s.template_register(&draft("orders", None)).await.unwrap();
+        }
+        s.template_set_tag("orders", "prod", 1).await.unwrap();
+        s.template_set_tag("orders", "dev", 2).await.unwrap();
+        s.template_launch("orders", 1, None).await.unwrap();
+        s.template_launch("orders", 2, None).await.unwrap();
+
+        // Dropping v1 must take its channel *and* its launch-log entries with it,
+        // so no pointer outlives its target.
+        assert_eq!(s.template_delete("orders", Some(1)).await.unwrap(), 1);
+        assert_eq!(
+            s.template_tags("orders")
+                .await
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![("dev".to_string(), 2)]
+        );
+        let log = s.template_launches("orders").await.unwrap();
+        assert_eq!(log.iter().map(|l| l.version).collect::<Vec<_>>(), vec![2]);
+        let st = s.template_state("orders").await.unwrap();
+        assert_eq!((st.stable, st.previous), (Some(2), None));
+
+        // Deleting the whole template clears everything.
+        assert_eq!(s.template_delete("orders", None).await.unwrap(), 1);
+        assert!(s.template_versions("orders").await.unwrap().is_empty());
+        assert!(s.template_tags("orders").await.unwrap().is_empty());
+        assert!(s.template_launches("orders").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn concurrent_registers_and_launches_never_lose_a_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = std::sync::Arc::new(store(&dir, "tpl-concurrent.db").await);
+
+        // Version assignment and launch-seq assignment both read-max-then-insert,
+        // so they need the PK-conflict retry to be correct under contention.
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..6 {
+            let s = s.clone();
+            set.spawn(async move { s.template_register(&draft("orders", None)).await.unwrap() });
+        }
+        let mut versions: Vec<u32> = Vec::new();
+        while let Some(r) = set.join_next().await {
+            versions.push(r.unwrap().version);
+        }
+        versions.sort_unstable();
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6], "no lost registers");
+
+        let mut set = tokio::task::JoinSet::new();
+        for v in 1..=6u32 {
+            let s = s.clone();
+            set.spawn(async move { s.template_launch("orders", v, None).await.unwrap() });
+        }
+        while let Some(r) = set.join_next().await {
+            r.unwrap();
+        }
+        let log = s.template_launches("orders").await.unwrap();
+        let mut seqs: Vec<u32> = log.iter().map(|l| l.seq).collect();
+        seqs.sort_unstable();
+        assert_eq!(
+            seqs,
+            vec![1, 2, 3, 4, 5, 6],
+            "no lost launches, no duplicate seq"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_folds_to_the_newest_version_per_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(&dir, "tpl-list.db").await;
+        s.template_register(&draft("a", Some("about a")))
+            .await
+            .unwrap();
+        s.template_register(&draft("a", Some("about a")))
+            .await
+            .unwrap();
+        s.template_register(&draft("b", None)).await.unwrap();
+
+        let listed = s.template_list().await.unwrap();
+        let mut rows: Vec<(String, u32)> = listed.into_iter().map(|t| (t.id, t.version)).collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            vec![("a".to_string(), 2), ("b".to_string(), 1)],
+            "one row per id, at its newest version"
+        );
+    }
+}
