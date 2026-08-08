@@ -25,7 +25,7 @@ use crate::config::{ExecutionSpec, PipelineConfig};
 use crate::error::{CliError, CliResult};
 use crate::executor::{ExecuteOptions, run_expanded};
 use crate::expand::{ExpandedNode, expand};
-use chrono::{DateTime, Duration, FixedOffset};
+use chrono::{DateTime, FixedOffset};
 use faucet_core::{FaucetError, StateStore, Stream, StreamPage, json_gt};
 use serde::Serialize;
 use serde_json::Value;
