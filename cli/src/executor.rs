@@ -1444,13 +1444,16 @@ async fn run_one_invocation(
             pipeline: obs_labels.pipeline.to_string(),
             row: obs_labels.row.to_string(),
             recorded_at: chrono::Utc::now(),
-            source: DatasetObservation {
+            // A matrix invocation is always one source → one sink; the vector
+            // shape exists for topology graphs, where a sink can be fed by several
+            // (#459).
+            sources: vec![DatasetObservation {
                 uri: canonicalize_uri(&source_dataset_uri, &node.source.config, opts.clock),
                 kind: node.source.kind.clone(),
                 role: DatasetRole::Source,
                 schema: source_schema,
                 records: records_read,
-            },
+            }],
             sink: DatasetObservation {
                 uri: canonicalize_uri(&sink_dataset_uri, &node.sink.config, opts.clock),
                 kind: node.sink.kind.clone(),
