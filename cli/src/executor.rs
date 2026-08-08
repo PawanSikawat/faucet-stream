@@ -1173,10 +1173,10 @@ async fn run_one_invocation(
                 job_name,
                 run_id: run_id.clone(),
                 parent: lc.parent_job.clone(),
-                input: faucet_lineage::DatasetRef {
+                inputs: vec![faucet_lineage::DatasetRef {
                     namespace: lc.namespace.clone(),
                     name: source.dataset_uri(),
-                },
+                }],
                 output: faucet_lineage::DatasetRef {
                     namespace: lc.namespace.clone(),
                     name: sink.dataset_uri(),
@@ -1185,7 +1185,7 @@ async fn run_one_invocation(
                 finished_at: None,
                 records: 0,
                 error: None,
-                input_schema: None,
+                input_schemas: Vec::new(),
                 output_schema: None,
                 column_lineage: None,
                 source_code: None,
@@ -1276,7 +1276,7 @@ async fn run_one_invocation(
                 .map(|l| l.include_schema_facet)
                 .unwrap_or(false)
             {
-                ctx.input_schema = Some(in_schema);
+                ctx.input_schemas = vec![Some(in_schema)];
             }
         }
         let ev = match &result {

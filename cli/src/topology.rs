@@ -58,40 +58,23 @@ impl TopologyRunOptions {
     }
 }
 
-/// Config blocks that topology mode does not (yet) act on.
+/// Top-level blocks that topology mode parses but does **not** act on.
 ///
-/// Returned as `(block, consequence)` pairs so both `faucet validate` and the run
-/// path can say exactly what is inert and why it matters. Silence here was the
-/// original defect: a config could declare a policy, validate as "valid", and run
-/// with the policy doing nothing (#456 M2).
+/// Empty — every top-level block is now applied to a node graph: the per-page
+/// governance passes and `resilience:` per sink node (#456 C3), and `sla:` /
+/// `notifications:` / `lineage:` / `catalog:` per sink node in
+/// [`post_run_observability`] (#459).
+///
+/// The mechanism is kept deliberately. A declared-but-inert block is the worst
+/// kind of silence — the operator believes a guarantee is in force when nothing
+/// is enforcing it — so if a future block lands in matrix mode before topology
+/// mode, list it here and `faucet validate` will say so out loud rather than
+/// printing a clean bill of health.
 pub fn inert_blocks(cfg: &PipelineConfig) -> Vec<(&'static str, &'static str)> {
-    let mut out = Vec::new();
-    #[cfg(feature = "notify")]
-    if !cfg.notifications.is_empty() {
-        out.push((
-            "notifications",
-            "no alert is sent when the run fails or breaches an SLA",
-        ));
-    }
-    #[cfg(feature = "lineage")]
-    if cfg.lineage.is_some() {
-        out.push(("lineage", "no OpenLineage events are emitted"));
-    }
-    #[cfg(feature = "catalog")]
-    if cfg.catalog.is_some() {
-        out.push((
-            "catalog",
-            "no datasets, schemas, or lineage edges are recorded",
-        ));
-    }
-    if cfg.sla.is_some() {
-        out.push((
-            "sla",
-            "freshness and volume are not evaluated after the run",
-        ));
-    }
-    out
+    let _ = cfg;
+    Vec::new()
 }
+
 
 /// Config-level graph validation: the checks that need only the `nodes:` /
 /// `edges:` spec, no connectors. Run as a fail-fast prelude to
@@ -298,6 +281,34 @@ pub async fn build_topology(cfg: &PipelineConfig, auth: &AuthCatalog) -> CliResu
     build_topology_with(cfg, auth, &TopologyRunOptions::default()).await
 }
 
+/// Identity of one source/sink node, captured while the graph is built.
+///
+/// `dataset_uri` is a method on the *built* connector, and the graph is consumed
+/// by the run — so lineage and catalog need this recorded up front (#459).
+#[derive(Debug, Clone)]
+pub struct NodeIdentity {
+    /// Connector kind (`"csv"`, `"postgres"`, …).
+    pub kind: String,
+    /// Raw dataset URI, before canonicalization.
+    pub dataset_uri: String,
+    /// The node's resolved connector config, for `${now.*}` folding.
+    pub config: Value,
+}
+
+/// Per-node identities, keyed by node id. Only source and sink nodes appear.
+pub type NodeIdentities = std::collections::HashMap<String, NodeIdentity>;
+
+/// [`build_topology_with`] that also reports each source/sink node's identity.
+pub async fn build_topology_meta(
+    cfg: &PipelineConfig,
+    auth: &AuthCatalog,
+    opts: &TopologyRunOptions,
+) -> CliResult<(Topology, NodeIdentities)> {
+    let mut ids = NodeIdentities::new();
+    let topo = build_topology_inner(cfg, auth, opts, Some(&mut ids)).await?;
+    Ok((topo, ids))
+}
+
 /// Build a [`faucet_core::Topology`], honouring the run options.
 ///
 /// Two things happen here that the matrix path does per invocation in
@@ -313,6 +324,15 @@ pub async fn build_topology_with(
     cfg: &PipelineConfig,
     auth: &AuthCatalog,
     opts: &TopologyRunOptions,
+) -> CliResult<Topology> {
+    build_topology_inner(cfg, auth, opts, None).await
+}
+
+async fn build_topology_inner(
+    cfg: &PipelineConfig,
+    auth: &AuthCatalog,
+    opts: &TopologyRunOptions,
+    mut identities: Option<&mut NodeIdentities>,
 ) -> CliResult<Topology> {
     // Cheap graph checks first, so a wiring typo never costs a connector build.
     validate_topology_spec(cfg)?;
@@ -585,7 +605,7 @@ pub async fn run_topology(
         );
     }
 
-    let topo = build_topology_with(cfg, auth, &run).await?;
+    let (topo, identities) = build_topology_meta(cfg, auth, &run).await?;
 
     let pipeline_name = cfg.name.clone().unwrap_or_else(|| "unnamed".to_string());
     let run_id = uuid::Uuid::now_v7().to_string();
@@ -596,7 +616,7 @@ pub async fn run_topology(
     };
 
     let mut opts = TopologyOptions::new(pipeline_name.clone()).with_on_error(on_error);
-    opts.run_id = run_id;
+    opts.run_id = run_id.clone();
 
     if let Some(state) = &cfg.pipeline.state {
         let store = crate::state::build_state_store(state).await?;
@@ -619,6 +639,30 @@ pub async fn run_topology(
         opts = opts.with_cancel(c);
     }
 
+    // Lineage START, one per sink node — a topology's analogue of an invocation.
+    // Built before the run so a crash still leaves a START on record.
+    #[cfg(feature = "lineage")]
+    let lineage = crate::lineage_glue::build_emitter(cfg.lineage.as_ref())
+        .map_err(|e| CliError::Config(format!("lineage: {e}")))?;
+    #[cfg(feature = "lineage")]
+    let reaching_for_lineage = reaching_sources(cfg);
+    #[cfg(feature = "lineage")]
+    if let (Some(em), Some(lc)) = (lineage.as_ref(), cfg.lineage.as_ref()) {
+        for (node_id, _) in cfg
+            .pipeline
+            .nodes
+            .iter()
+            .filter(|(_, n)| matches!(n, NodeSpec::Sink { .. }))
+        {
+            if let Some(ctx) = lineage_ctx(
+                cfg, &pipeline_name, &run_id, node_id, &identities,
+                &reaching_for_lineage, lc, 0, None,
+            ) {
+                em.emit(faucet_lineage::EventType::Start, &ctx).await;
+            }
+        }
+    }
+
     // `run_reported` rather than `run_with`: the post-run pass below emits one
     // notification and evaluates one SLA per **sink node**, which needs to know
     // which node failed (#459).
@@ -631,7 +675,19 @@ pub async fn run_topology(
     // so the SLA and notification passes key off it, reusing the same standalone
     // functions the executor calls rather than a parallel implementation.
     if !run.is_preview() && !cancelled {
-        post_run_observability(cfg, &pipeline_name, &reported, state_store.as_ref()).await;
+        post_run_observability(
+            cfg,
+            &pipeline_name,
+            &reported,
+            state_store.as_ref(),
+            &identities,
+            &reaching_sources(cfg),
+            run.clock(),
+            &run_id,
+            #[cfg(feature = "lineage")]
+            lineage.as_ref(),
+        )
+        .await;
     }
 
     let mut invocations: Vec<InvocationOutcome> = reported
@@ -663,7 +719,107 @@ pub async fn run_topology(
     Ok(RunSummary { invocations })
 }
 
-/// Freshness/volume SLAs and notifications, once per sink node.
+
+
+/// Build the lineage context for one sink node: every source that reaches it as
+/// an input, the sink as the output.
+///
+/// `None` when the node has no identity or no reaching source — there is nothing
+/// truthful to emit in that case, and OpenLineage would rather have no event than
+/// one naming a dataset that does not exist.
+#[cfg(feature = "lineage")]
+#[allow(clippy::too_many_arguments)]
+fn lineage_ctx(
+    _cfg: &PipelineConfig,
+    pipeline_name: &str,
+    run_id: &str,
+    node_id: &str,
+    identities: &NodeIdentities,
+    reaching: &std::collections::HashMap<String, Vec<String>>,
+    lc: &faucet_lineage::LineageConfig,
+    records: u64,
+    error: Option<String>,
+) -> Option<faucet_lineage::RunLifecycle> {
+    let sink = identities.get(node_id)?;
+    let inputs: Vec<faucet_lineage::DatasetRef> = reaching
+        .get(node_id)?
+        .iter()
+        .filter_map(|src| {
+            let ident = identities.get(src)?;
+            Some(faucet_lineage::DatasetRef {
+                namespace: lc.namespace.clone(),
+                name: ident.dataset_uri.clone(),
+            })
+        })
+        .collect();
+    if inputs.is_empty() {
+        return None;
+    }
+    Some(faucet_lineage::RunLifecycle {
+        job_namespace: lc.namespace.clone(),
+        // One OpenLineage job per sink node, so a graph shows up as several
+        // related jobs rather than one opaque run.
+        job_name: format!("{pipeline_name}.{node_id}"),
+        run_id: run_id.to_string(),
+        parent: lc.parent_job.clone(),
+        inputs,
+        output: faucet_lineage::DatasetRef {
+            namespace: lc.namespace.clone(),
+            name: sink.dataset_uri.clone(),
+        },
+        started_at: chrono::Utc::now(),
+        finished_at: None,
+        records,
+        error,
+        input_schemas: Vec::new(),
+        output_schema: None,
+        // Derived from a single transform chain, which a graph's per-node chains
+        // are not — omitted rather than fabricated.
+        column_lineage: None,
+        source_code: None,
+    })
+}
+
+/// For each **sink** node, the source nodes that reach it, in deterministic order.
+///
+/// A linear or tee graph gives one source per sink; a merge or join gives several,
+/// which is why lineage and catalog model a list of inputs (#459). Pure reverse
+/// reachability over the declared edges — no connectors involved.
+pub fn reaching_sources(cfg: &PipelineConfig) -> std::collections::HashMap<String, Vec<String>> {
+    use std::collections::{HashMap, HashSet};
+    let mut rev: HashMap<&str, Vec<&str>> = HashMap::new();
+    for e in &cfg.pipeline.edges {
+        rev.entry(e.to.as_str()).or_default().push(e.from.as_str());
+    }
+    let is_source = |id: &str| matches!(cfg.pipeline.nodes.get(id), Some(NodeSpec::Source { .. }));
+
+    let mut out = HashMap::new();
+    for (id, node) in &cfg.pipeline.nodes {
+        if !matches!(node, NodeSpec::Sink { .. }) {
+            continue;
+        }
+        // Walk upstream; a DAG so a seen-set is enough to terminate.
+        let mut found: Vec<String> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut stack: Vec<&str> = rev.get(id.as_str()).cloned().unwrap_or_default();
+        while let Some(n) = stack.pop() {
+            if !seen.insert(n) {
+                continue;
+            }
+            if is_source(n) {
+                found.push(n.to_string());
+            }
+            if let Some(ups) = rev.get(n) {
+                stack.extend(ups.iter().copied());
+            }
+        }
+        found.sort();
+        out.insert(id.clone(), found);
+    }
+    out
+}
+
+/// Freshness/volume SLAs, notifications, lineage, and catalog — once per sink node.
 ///
 /// Deliberately a thin adapter: `sla::evaluate_post_run` and the `NotifyEvent`
 /// constructors are already standalone, so topology mode calls exactly what the
@@ -674,7 +830,25 @@ async fn post_run_observability(
     pipeline_name: &str,
     reported: &faucet_core::topology::TopologyRun,
     state_store: Option<&std::sync::Arc<dyn faucet_core::StateStore>>,
+    identities: &NodeIdentities,
+    reaching: &std::collections::HashMap<String, Vec<String>>,
+    clock: DateTime<FixedOffset>,
+    run_id: &str,
+    #[cfg(feature = "lineage")] lineage: Option<&std::sync::Arc<faucet_lineage::LineageEmitter>>,
 ) {
+    #[cfg(feature = "catalog")]
+    let catalog = match cfg.catalog.as_ref() {
+        Some(spec) => match crate::catalog::connect_from_spec(spec).await {
+            Ok(h) => Some(h),
+            Err(e) => {
+                // Recording is best-effort; a bad catalog URL must not retro-fail
+                // a run whose data is already written.
+                tracing::error!(error = %e, "catalog connect failed; not recording");
+                None
+            }
+        },
+        None => None,
+    };
     #[cfg(feature = "notify")]
     let notifier = match crate::notify::Notifier::from_specs(&cfg.notifications) {
         Ok(n) => n,
@@ -751,5 +925,346 @@ async fn post_run_observability(
         }
         #[cfg(not(feature = "notify"))]
         let _ = &violations;
+
+        // ── OpenLineage terminal event (#459) ────────────────────────────────
+        #[cfg(feature = "lineage")]
+        if let (Some(em), Some(lc)) = (lineage, cfg.lineage.as_ref())
+            && let Some(ctx) = lineage_ctx(
+                cfg,
+                pipeline_name,
+                run_id,
+                row,
+                identities,
+                reaching,
+                lc,
+                node.records as u64,
+                node.error.clone(),
+            )
+        {
+            let ev = match node.error {
+                None => faucet_lineage::EventType::Complete,
+                Some(_) => faucet_lineage::EventType::Fail,
+            };
+            em.emit(ev, &ctx).await;
+        }
+
+        // ── Data Movement Catalog (#279 / #459) ──────────────────────────────
+        // One record per sink node: every source that reaches it as an input,
+        // plus the sink itself. A successful node only — a failed one's partial
+        // volume is not a signal, matching the matrix path.
+        #[cfg(feature = "catalog")]
+        if node.error.is_none()
+            && let Some(handle) = catalog.as_ref()
+            && let Some(sink_id) = identities.get(row)
+        {
+            use crate::catalog::model::canonicalize_uri;
+            use crate::serve::history::catalog::{
+                CatalogUpdate, DatasetObservation, DatasetRole,
+            };
+
+            let sources: Vec<DatasetObservation> = reaching
+                .get(row)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|src| {
+                    let ident = identities.get(src)?;
+                    Some(DatasetObservation {
+                        uri: canonicalize_uri(&ident.dataset_uri, &ident.config, clock),
+                        kind: ident.kind.clone(),
+                        role: DatasetRole::Source,
+                        // Each input reports what *it* read, so a merge's edge
+                        // volumes sum to the sink instead of repeating its total.
+                        records: reported
+                            .nodes
+                            .iter()
+                            .find(|n| &n.node_id == src)
+                            .map(|n| n.records as u64)
+                            .unwrap_or(0),
+                        schema: None,
+                    })
+                })
+                .collect();
+
+            if sources.is_empty() {
+                tracing::debug!(node = %row, "no source reaches this sink; nothing to catalog");
+            } else {
+                let update = CatalogUpdate {
+                    run_id: run_id.to_string(),
+                    pipeline: pipeline_name.to_string(),
+                    row: row.to_string(),
+                    recorded_at: chrono::Utc::now(),
+                    sources,
+                    sink: DatasetObservation {
+                        uri: canonicalize_uri(&sink_id.dataset_uri, &sink_id.config, clock),
+                        kind: sink_id.kind.clone(),
+                        role: DatasetRole::Sink,
+                        schema: None,
+                        records: node.records as u64,
+                    },
+                    // Column lineage is derived from a single transform chain; a
+                    // graph's per-node chains are not that, so it is left absent
+                    // rather than fabricated.
+                    column_lineage: None,
+                };
+                crate::catalog::record(handle, &update).await;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(yaml: &str) -> PipelineConfig {
+        serde_yaml::from_str(yaml).expect("valid config")
+    }
+
+    #[cfg(feature = "lineage")]
+    fn lineage_cfg() -> faucet_lineage::LineageConfig {
+        serde_json::from_value(serde_json::json!({
+            "namespace": "ns",
+            "transport": { "type": "file", "config": { "path": "/tmp/ol.jsonl" } },
+        }))
+        .expect("valid lineage config")
+    }
+
+    const LINEAR: &str = r#"version: 1
+name: p
+pipeline:
+  sources:
+    a: { type: csv, config: { path: /tmp/a.csv } }
+  sinks:
+    o: { type: jsonl, config: { path: /tmp/o.jsonl } }
+  nodes:
+    s: { kind: source, ref: a }
+    w: { kind: sink, ref: o }
+  edges:
+    - { from: s, to: w }
+"#;
+
+    /// The invariant #459 exists to hold: nothing is parsed-but-ignored, so
+    /// `validate` has nothing to warn about. If this fails because a block was
+    /// added to the list, wire the block instead of updating the assertion.
+    #[test]
+    fn no_block_is_inert() {
+        let mut c = cfg(LINEAR);
+        c.sla = Some(
+            serde_json::from_value(serde_json::json!({ "max_staleness_secs": 60 })).unwrap(),
+        );
+        assert!(inert_blocks(&c).is_empty());
+    }
+
+    /// Kind precedence: an inline `type` on the node wins over its template, so
+    /// the exactly-once gate classifies the connector the run will actually build.
+    #[test]
+    fn resolved_kind_prefers_inline_type_over_template() {
+        let c = cfg(
+            r#"version: 1
+name: p
+pipeline:
+  sinks:
+    o: { type: jsonl, config: { path: /tmp/o.jsonl } }
+  nodes:
+    s: { kind: source, type: csv, config: { path: /tmp/a.csv } }
+    w: { kind: sink, ref: o, type: stdout, config: {} }
+  edges:
+    - { from: s, to: w }
+"#,
+        );
+        assert_eq!(
+            resolved_node_kind(&c, &c.pipeline.nodes["w"]).as_deref(),
+            Some("stdout")
+        );
+        assert_eq!(
+            resolved_node_kind(&c, &c.pipeline.nodes["s"]).as_deref(),
+            Some("csv")
+        );
+    }
+
+    /// A non-connector node has no kind — the gate must skip it rather than
+    /// treating an empty string as an unsupported connector.
+    #[test]
+    fn resolved_kind_is_none_for_a_structural_node() {
+        let c = cfg(
+            r#"version: 1
+name: p
+pipeline:
+  sources:
+    a: { type: csv, config: { path: /tmp/a.csv } }
+  sinks:
+    o: { type: jsonl, config: { path: /tmp/o.jsonl } }
+  nodes:
+    s: { kind: source, ref: a }
+    f: { kind: tee, fanout: 1 }
+    w: { kind: sink, ref: o }
+  edges:
+    - { from: s, to: f }
+    - { from: f, to: w }
+"#,
+        );
+        assert!(resolved_node_kind(&c, &c.pipeline.nodes["f"]).is_none());
+    }
+
+    /// A sink with no reaching source produces no lineage event. Emitting one
+    /// would name an input dataset the run never read.
+    #[cfg(feature = "lineage")]
+    #[test]
+    fn lineage_ctx_is_none_without_a_reaching_source() {
+        let c = cfg(LINEAR);
+        let mut identities = NodeIdentities::new();
+        identities.insert(
+            "w".to_string(),
+            NodeIdentity {
+                kind: "jsonl".into(),
+                dataset_uri: "file:///tmp/o.jsonl".into(),
+                config: Value::Null,
+            },
+        );
+        let lc = lineage_cfg();
+        // `reaching` deliberately empty: the sink is in the graph but no source
+        // reaches it.
+        let ctx = lineage_ctx(
+            &c,
+            "p",
+            "run-1",
+            "w",
+            &identities,
+            &std::collections::HashMap::new(),
+            &lc,
+            0,
+            None,
+        );
+        assert!(ctx.is_none());
+    }
+
+    /// A merge sink's event carries every reaching source as an input, and
+    /// deliberately no column lineage — the per-column derivation is not knowable
+    /// from the graph, so it is omitted rather than guessed.
+    #[cfg(feature = "lineage")]
+    #[test]
+    fn lineage_ctx_carries_all_inputs_and_no_column_lineage() {
+        let c = cfg(LINEAR);
+        let mut identities = NodeIdentities::new();
+        for (id, uri) in [
+            ("sa", "file:///tmp/a.csv"),
+            ("sb", "file:///tmp/b.csv"),
+            ("w", "file:///tmp/o.jsonl"),
+        ] {
+            identities.insert(
+                id.to_string(),
+                NodeIdentity {
+                    kind: "csv".into(),
+                    dataset_uri: uri.into(),
+                    config: Value::Null,
+                },
+            );
+        }
+        let lc = lineage_cfg();
+        let reaching = std::collections::HashMap::from([(
+            "w".to_string(),
+            vec!["sa".to_string(), "sb".to_string()],
+        )]);
+        let ctx = lineage_ctx(&c, "p", "run-1", "w", &identities, &reaching, &lc, 7, None)
+            .expect("both sources known");
+        assert_eq!(ctx.job_name, "p.w");
+        assert_eq!(
+            ctx.inputs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+            vec!["file:///tmp/a.csv", "file:///tmp/b.csv"]
+        );
+        assert_eq!(ctx.output.name, "file:///tmp/o.jsonl");
+        assert_eq!(ctx.records, 7);
+        assert!(ctx.column_lineage.is_none());
+    }
+
+    /// An input whose identity was never recorded is dropped, not rendered as an
+    /// empty dataset name.
+    #[cfg(feature = "lineage")]
+    #[test]
+    fn lineage_ctx_skips_an_unknown_input() {
+        let c = cfg(LINEAR);
+        let mut identities = NodeIdentities::new();
+        for (id, uri) in [("sa", "file:///tmp/a.csv"), ("w", "file:///tmp/o.jsonl")] {
+            identities.insert(
+                id.to_string(),
+                NodeIdentity {
+                    kind: "csv".into(),
+                    dataset_uri: uri.into(),
+                    config: Value::Null,
+                },
+            );
+        }
+        let lc = lineage_cfg();
+        let reaching = std::collections::HashMap::from([(
+            "w".to_string(),
+            vec!["sa".to_string(), "ghost".to_string()],
+        )]);
+        let ctx = lineage_ctx(&c, "p", "run-1", "w", &identities, &reaching, &lc, 1, None)
+            .expect("one known source is enough");
+        assert_eq!(ctx.inputs.len(), 1);
+    }
+
+    /// `reaching_sources` walks through structural nodes, so a join's two labelled
+    /// inputs both surface on the downstream sink.
+    #[test]
+    fn reaching_sources_traverses_a_join() {
+        let c = cfg(
+            r#"version: 1
+name: p
+pipeline:
+  sources:
+    a: { type: csv, config: { path: /tmp/a.csv } }
+    b: { type: csv, config: { path: /tmp/b.csv } }
+  sinks:
+    o: { type: jsonl, config: { path: /tmp/o.jsonl } }
+  nodes:
+    probe: { kind: source, ref: a }
+    build: { kind: source, ref: b }
+    j:
+      kind: join
+      mode: left
+      build: { edge: build_in, key: id }
+      probe: { edge: probe_in, key: id }
+    w: { kind: sink, ref: o }
+  edges:
+    - { from: probe, to: j, as: probe_in }
+    - { from: build, to: j, as: build_in }
+    - { from: j, to: w }
+"#,
+        );
+        let reaching = reaching_sources(&c);
+        assert_eq!(
+            reaching["w"],
+            vec!["build".to_string(), "probe".to_string()]
+        );
+    }
+
+    /// A cyclic edge set must not hang the traversal. Cycles are rejected by
+    /// graph validation, but this helper also runs from `validate`, so it has to
+    /// terminate on a config that has not been validated yet.
+    #[test]
+    fn reaching_sources_terminates_on_a_cycle() {
+        let c = cfg(
+            r#"version: 1
+name: p
+pipeline:
+  sources:
+    a: { type: csv, config: { path: /tmp/a.csv } }
+  sinks:
+    o: { type: jsonl, config: { path: /tmp/o.jsonl } }
+  nodes:
+    s: { kind: source, ref: a }
+    t1: { kind: transform, transforms: [ { type: flatten, config: {} } ] }
+    t2: { kind: transform, transforms: [ { type: flatten, config: {} } ] }
+    w: { kind: sink, ref: o }
+  edges:
+    - { from: s, to: t1 }
+    - { from: t1, to: t2 }
+    - { from: t2, to: t1 }
+    - { from: t2, to: w }
+"#,
+        );
+        assert_eq!(reaching_sources(&c)["w"], vec!["s".to_string()]);
     }
 }

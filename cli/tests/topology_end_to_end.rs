@@ -845,10 +845,12 @@ pipeline:
     );
 }
 
-/// #456 M2: blocks topology mode does not act on must be called out, not
-/// silently swallowed behind a "valid" line.
+/// #456 M2 + #459: `validate` must never print a clean bill of health for a
+/// block it does not enforce. Every top-level block is applied per sink node
+/// now, so the assertion inverts: none of them may be reported as ignored.
 #[test]
-fn validate_warns_about_blocks_topology_ignores() {
+#[cfg(feature = "lineage")]
+fn validate_reports_no_ignored_blocks() {
     let dir = TempDir::new().unwrap();
     let csv = orders_csv(dir.path());
     let cfg_path = dir.path().join("faucet.yaml");
@@ -859,7 +861,11 @@ fn validate_warns_about_blocks_topology_ignores() {
 name: inert
 sla:
   max_staleness_secs: 3600
+lineage:
+  namespace: test
+  transport: {{ type: file, config: {{ path: {ln} }} }}
 pipeline:
+  state: {{ type: file, config: {{ path: {st} }} }}
   sources:
     o: {{ type: csv, config: {{ path: {csv} }} }}
   sinks:
@@ -870,16 +876,21 @@ pipeline:
   edges:
     - {{ from: s, to: w }}
 "#,
-            csv = csv.display()
+            csv = csv.display(),
+            ln = dir.path().join("lineage.jsonl").display(),
+            st = dir.path().join("state").display()
         ),
     );
-    Command::cargo_bin("faucet")
+    let out = Command::cargo_bin("faucet")
         .unwrap()
         .args(["validate", cfg_path.to_str().unwrap()])
         .assert()
-        .success()
-        .stdout(contains("WARNING"))
-        .stdout(contains("sla"));
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+    assert!(
+        !stdout.contains("is ignored"),
+        "no block may be reported inert: {stdout}"
+    );
 }
 
 // ── #458 / #459: exactly-once + per-sink-node observability ─────────────────
@@ -1007,5 +1018,111 @@ pipeline:
     assert!(
         !stdout.contains("`resilience:` is ignored"),
         "resilience is wired; must not be reported as ignored: {stdout}"
+    );
+}
+
+/// #459: a sink's inputs are every source that reaches it — one for a linear or
+/// tee graph, several for a merge/join. This is what lineage and the catalog now
+/// model, so the traversal is asserted directly.
+#[test]
+fn reaching_sources_maps_each_sink_to_its_inputs() {
+    let cfg = parse(
+        r#"version: 1
+name: reach
+pipeline:
+  sources:
+    a: { type: csv, config: { path: /tmp/a.csv } }
+    b: { type: csv, config: { path: /tmp/b.csv } }
+  sinks:
+    one: { type: jsonl, config: { path: /tmp/1.jsonl } }
+    two: { type: jsonl, config: { path: /tmp/2.jsonl } }
+  nodes:
+    sa: { kind: source, ref: a }
+    sb: { kind: source, ref: b }
+    m: { kind: merge }
+    fan: { kind: tee, fanout: 2 }
+    w1: { kind: sink, ref: one }
+    w2: { kind: sink, ref: two }
+  edges:
+    - { from: sa, to: m }
+    - { from: sb, to: m }
+    - { from: m, to: fan }
+    - { from: fan, to: w1 }
+    - { from: fan, to: w2 }
+"#,
+    );
+    let reaching = faucet_cli::topology::reaching_sources(&cfg);
+    // Both sinks sit downstream of the merge, so both have two inputs.
+    assert_eq!(reaching["w1"], vec!["sa".to_string(), "sb".to_string()]);
+    assert_eq!(reaching["w2"], vec!["sa".to_string(), "sb".to_string()]);
+    // Only sink nodes are keyed.
+    assert!(!reaching.contains_key("m"));
+    assert!(!reaching.contains_key("sa"));
+}
+
+/// A linear graph gives exactly one input per sink — the shape every matrix
+/// pipeline has, and the one where column lineage stays expressible.
+#[test]
+fn reaching_sources_is_one_input_for_a_linear_graph() {
+    let cfg = parse(
+        r#"version: 1
+name: linear
+pipeline:
+  sources:
+    a: { type: csv, config: { path: /tmp/a.csv } }
+  sinks:
+    one: { type: jsonl, config: { path: /tmp/1.jsonl } }
+  nodes:
+    s: { kind: source, ref: a }
+    t: { kind: transform, transforms: [ { type: keys_case, config: { mode: snake } } ] }
+    w: { kind: sink, ref: one }
+  edges:
+    - { from: s, to: t }
+    - { from: t, to: w }
+"#,
+    );
+    let reaching = faucet_cli::topology::reaching_sources(&cfg);
+    assert_eq!(reaching["w"], vec!["s".to_string()]);
+}
+
+/// #459: with catalog and SLA wired, `validate` must no longer report them as
+/// ignored — only genuinely-unwired blocks may appear.
+#[test]
+fn validate_no_longer_claims_sla_is_ignored() {
+    let dir = TempDir::new().unwrap();
+    let csv = orders_csv(dir.path());
+    let cfg_path = dir.path().join("faucet.yaml");
+    write(
+        &cfg_path,
+        &format!(
+            r#"version: 1
+name: inert2
+sla:
+  max_staleness_secs: 3600
+pipeline:
+  state: {{ type: file, config: {{ path: {st} }} }}
+  sources:
+    o: {{ type: csv, config: {{ path: {csv} }} }}
+  sinks:
+    out: {{ type: stdout, config: {{}} }}
+  nodes:
+    s: {{ kind: source, ref: o }}
+    w: {{ kind: sink, ref: out }}
+  edges:
+    - {{ from: s, to: w }}
+"#,
+            csv = csv.display(),
+            st = dir.path().join("state").display()
+        ),
+    );
+    let out = Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["validate", cfg_path.to_str().unwrap()])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+    assert!(
+        !stdout.contains("`sla:` is ignored"),
+        "sla is wired per sink node now: {stdout}"
     );
 }

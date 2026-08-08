@@ -350,6 +350,8 @@ pub struct TopologyResult {
     pub per_sink: HashMap<String, usize>,
     /// Per-sink-node final bookmark, keyed by node id.
     pub bookmarks: HashMap<String, Option<Value>>,
+    /// Records emitted per **source** node, keyed by node id (#459).
+    pub per_source: HashMap<String, usize>,
     /// Node failures observed under [`TopologyOnError::Continue`] (empty under
     /// `Propagate`, which returns `Err` on the first failure instead).
     pub errors: Vec<String>,
@@ -380,6 +382,13 @@ enum NodeOutcome {
         node_id: String,
         records: usize,
         bookmark: Option<Value>,
+    },
+    /// A source node and how many records it emitted. Needed so a lineage /
+    /// catalog edge can report the volume *that input* contributed rather than
+    /// the sink's total, which would over-count a merge (#459).
+    Source {
+        node_id: String,
+        records: usize,
     },
     Other,
 }
@@ -710,7 +719,7 @@ impl Topology {
                 NodeKind::Source(source) => {
                     let sb = start_bookmark.clone();
                     let bs = opts.batch_size;
-                    Box::pin(run_source_node(source, sb, bs, node_outs, cancel))
+                    Box::pin(run_source_node(id, source, sb, bs, node_outs, cancel))
                 }
                 NodeKind::Transform(stages) => {
                     let rx = take_single(node_ins)
@@ -915,7 +924,12 @@ fn reports(
         .map(|(id, kind)| NodeReport {
             node_id: id.clone(),
             kind,
-            records: sinks.per_sink.get(id).copied().unwrap_or(0),
+            records: sinks
+                .per_sink
+                .get(id)
+                .or_else(|| sinks.per_source.get(id))
+                .copied()
+                .unwrap_or(0),
             bookmark: sinks.bookmarks.get(id).cloned().flatten(),
             error: errors
                 .iter()
@@ -929,15 +943,20 @@ fn reports(
 fn aggregate(outcomes: Vec<NodeOutcome>) -> TopologyResult {
     let mut result = TopologyResult::default();
     for o in outcomes {
-        if let NodeOutcome::Sink {
-            node_id,
-            records,
-            bookmark,
-        } = o
-        {
-            result.records_written += records;
-            result.per_sink.insert(node_id.clone(), records);
-            result.bookmarks.insert(node_id, bookmark);
+        match o {
+            NodeOutcome::Sink {
+                node_id,
+                records,
+                bookmark,
+            } => {
+                result.records_written += records;
+                result.per_sink.insert(node_id.clone(), records);
+                result.bookmarks.insert(node_id, bookmark);
+            }
+            NodeOutcome::Source { node_id, records } => {
+                result.per_source.insert(node_id, records);
+            }
+            NodeOutcome::Other => {}
         }
     }
     result
@@ -1116,6 +1135,7 @@ fn cancelled(cancel: &Option<CancellationToken>) -> bool {
 }
 
 async fn run_source_node(
+    node_id: String,
     source: Box<dyn Source>,
     start_bookmark: Option<Value>,
     batch_size: usize,
@@ -1127,16 +1147,18 @@ async fn run_source_node(
     }
     let ctx = std::collections::HashMap::new();
     let mut pages = source.stream_pages(&ctx, batch_size);
+    let mut records = 0usize;
     while let Some(item) = pages.next().await {
         if cancelled(&cancel) {
             break;
         }
         let page = item?;
+        records += page.records.len();
         if !broadcast(page, &mut outs).await {
             break;
         }
     }
-    Ok(NodeOutcome::Other)
+    Ok(NodeOutcome::Source { node_id, records })
 }
 
 async fn run_transform_node(
