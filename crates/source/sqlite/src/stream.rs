@@ -961,7 +961,7 @@ mod bind_overflow_tests {
     fn values_a_signed_column_can_hold_still_bind() {
         for v in [json!(0), json!(-1), json!(i64::MAX), json!(i64::MAX as u64)] {
             assert!(
-                bind_params(sqlx::query("SELECT 1"), &[v.clone()]).is_ok(),
+                bind_params(sqlx::query("SELECT 1"), std::slice::from_ref(&v)).is_ok(),
                 "{v} must still bind"
             );
         }
