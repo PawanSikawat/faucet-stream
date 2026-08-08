@@ -75,7 +75,6 @@ pub fn inert_blocks(cfg: &PipelineConfig) -> Vec<(&'static str, &'static str)> {
     Vec::new()
 }
 
-
 /// Config-level graph validation: the checks that need only the `nodes:` /
 /// `edges:` spec, no connectors. Run as a fail-fast prelude to
 /// [`build_topology`] (so a wiring typo is reported before any client is
@@ -700,8 +699,15 @@ pub async fn run_topology(
             .filter(|(_, n)| matches!(n, NodeSpec::Sink { .. }))
         {
             if let Some(ctx) = lineage_ctx(
-                cfg, &pipeline_name, &run_id, node_id, &identities,
-                &reaching_for_lineage, lc, 0, None,
+                cfg,
+                &pipeline_name,
+                &run_id,
+                node_id,
+                &identities,
+                &reaching_for_lineage,
+                lc,
+                0,
+                None,
             ) {
                 em.emit(faucet_lineage::EventType::Start, &ctx).await;
             }
@@ -765,8 +771,6 @@ pub async fn run_topology(
 
     Ok(RunSummary { invocations })
 }
-
-
 
 /// Build the lineage context for one sink node: every source that reaches it as
 /// an input, the sink as the output.
@@ -1018,9 +1022,7 @@ async fn post_run_observability(cfg: &PipelineConfig, ctx: PostRun<'_>) {
             && let Some(sink_id) = identities.get(row)
         {
             use crate::catalog::model::canonicalize_uri;
-            use crate::serve::history::catalog::{
-                CatalogUpdate, DatasetObservation, DatasetRole,
-            };
+            use crate::serve::history::catalog::{CatalogUpdate, DatasetObservation, DatasetRole};
 
             let sources: Vec<DatasetObservation> = reaching
                 .get(row)
@@ -1110,9 +1112,8 @@ pipeline:
     #[test]
     fn no_block_is_inert() {
         let mut c = cfg(LINEAR);
-        c.sla = Some(
-            serde_json::from_value(serde_json::json!({ "max_staleness_secs": 60 })).unwrap(),
-        );
+        c.sla =
+            Some(serde_json::from_value(serde_json::json!({ "max_staleness_secs": 60 })).unwrap());
         assert!(inert_blocks(&c).is_empty());
     }
 
@@ -1120,8 +1121,7 @@ pipeline:
     /// the exactly-once gate classifies the connector the run will actually build.
     #[test]
     fn resolved_kind_prefers_inline_type_over_template() {
-        let c = cfg(
-            r#"version: 1
+        let c = cfg(r#"version: 1
 name: p
 pipeline:
   sinks:
@@ -1131,8 +1131,7 @@ pipeline:
     w: { kind: sink, ref: o, type: stdout, config: {} }
   edges:
     - { from: s, to: w }
-"#,
-        );
+"#);
         assert_eq!(
             resolved_node_kind(&c, &c.pipeline.nodes["w"]).as_deref(),
             Some("stdout")
@@ -1147,8 +1146,7 @@ pipeline:
     /// treating an empty string as an unsupported connector.
     #[test]
     fn resolved_kind_is_none_for_a_structural_node() {
-        let c = cfg(
-            r#"version: 1
+        let c = cfg(r#"version: 1
 name: p
 pipeline:
   sources:
@@ -1162,8 +1160,7 @@ pipeline:
   edges:
     - { from: s, to: f }
     - { from: f, to: w }
-"#,
-        );
+"#);
         assert!(resolved_node_kind(&c, &c.pipeline.nodes["f"]).is_none());
     }
 
@@ -1230,7 +1227,10 @@ pipeline:
             .expect("both sources known");
         assert_eq!(ctx.job_name, "p.w");
         assert_eq!(
-            ctx.inputs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+            ctx.inputs
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["file:///tmp/a.csv", "file:///tmp/b.csv"]
         );
         assert_eq!(ctx.output.name, "file:///tmp/o.jsonl");
@@ -1269,8 +1269,7 @@ pipeline:
     /// inputs both surface on the downstream sink.
     #[test]
     fn reaching_sources_traverses_a_join() {
-        let c = cfg(
-            r#"version: 1
+        let c = cfg(r#"version: 1
 name: p
 pipeline:
   sources:
@@ -1291,8 +1290,7 @@ pipeline:
     - { from: probe, to: j, as: probe_in }
     - { from: build, to: j, as: build_in }
     - { from: j, to: w }
-"#,
-        );
+"#);
         let reaching = reaching_sources(&c);
         assert_eq!(
             reaching["w"],
@@ -1305,8 +1303,7 @@ pipeline:
     /// terminate on a config that has not been validated yet.
     #[test]
     fn reaching_sources_terminates_on_a_cycle() {
-        let c = cfg(
-            r#"version: 1
+        let c = cfg(r#"version: 1
 name: p
 pipeline:
   sources:
@@ -1323,8 +1320,7 @@ pipeline:
     - { from: t1, to: t2 }
     - { from: t2, to: t1 }
     - { from: t2, to: w }
-"#,
-        );
+"#);
         assert_eq!(reaching_sources(&c)["w"], vec!["s".to_string()]);
     }
 }

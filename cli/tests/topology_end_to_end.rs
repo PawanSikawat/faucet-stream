@@ -1378,7 +1378,10 @@ pipeline:
     assert_eq!(edges.len(), 2, "one edge per contributing source: {detail}");
     for e in edges {
         assert!(
-            e["dst_uri"].as_str().unwrap_or_default().ends_with("out.jsonl"),
+            e["dst_uri"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with("out.jsonl"),
             "both edges land on the sink: {e}"
         );
     }
