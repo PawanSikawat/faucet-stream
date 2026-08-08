@@ -36,13 +36,34 @@
 //! has a stored bookmark; otherwise the source replays in full. Sinks whose
 //! bookmarks have diverged must therefore be idempotent — a faster sink will
 //! re-see already-written pages.
+//!
+//! Resuming is deliberately conservative, because the only safe direction to err
+//! is *replay* (duplicates) and never *skip* (loss) — see [`start_bookmark`]:
+//!
+//! - **One source node only.** With two or more sources there is no way to tell
+//!   which source a given sink's bookmark came from, so applying one to all of
+//!   them would resume a source at a position that is not its own. Multi-source
+//!   graphs therefore replay in full.
+//! - **Comparable, agreeing bookmarks only.** Sink bookmarks are compared for
+//!   equality, not ordered. Resume positions are frequently structured (CDC LSN
+//!   maps, Kafka offset maps), and [`json_gt`]'s object arm orders by *serialized
+//!   text*, which is not the replication order — so a "minimum" picked that way
+//!   can sit ahead of the true minimum and skip records. Divergent bookmarks
+//!   therefore replay in full rather than guess.
+//!
+//! ## Governance passes
+//!
+//! Sink nodes reuse [`run_stream`], so the masking / quality / contract /
+//! schema-drift passes and the resilience policy apply exactly as they do to a
+//! single-source pipeline — supply them via
+//! [`TopologyOptions::with_governance`]. Masking is destination-scoped and is
+//! therefore keyed by sink node id.
 
 use crate::dlq::DlqConfig;
 use crate::error::FaucetError;
 use crate::join::HashJoin;
 use crate::observability::{Labels, RunStreamOptions, instrumented_apply_stages};
 use crate::pipeline::{DEFAULT_BATCH_SIZE, StreamPage, run_stream};
-use crate::replication::json_gt;
 use crate::stage::CompiledStage;
 use crate::state::StateStore;
 use crate::traits::{Sink, Source};
@@ -53,6 +74,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -155,6 +177,39 @@ pub enum TopologyOnError {
     Continue,
 }
 
+/// The per-run governance passes applied to every sink node.
+///
+/// These are the same passes [`crate::Pipeline`] applies in matrix mode; a
+/// topology wires them through [`run_stream`] per sink node so a graph pipeline
+/// gets identical enforcement. Masking is destination-scoped (a rule may name
+/// the sinks it applies to), so it is keyed by **sink node id** and compiled by
+/// the caller; the rest are pipeline-wide.
+#[derive(Clone, Default)]
+pub struct TopologyGovernance {
+    /// Compiled data-quality checks, applied per page in every sink node.
+    #[cfg(feature = "quality")]
+    pub quality: Option<Arc<crate::quality::CompiledQuality>>,
+    /// Compiled data contract, applied per page in every sink node.
+    #[cfg(feature = "contract")]
+    pub contract: Option<Arc<crate::contract::CompiledContract>>,
+    /// Compiled masking policy per sink node id. A sink node with no entry runs
+    /// no masking pass (the caller found no rule that applies to it).
+    #[cfg(feature = "masking")]
+    pub masking_by_sink: HashMap<String, Arc<crate::masking::CompiledMasking>>,
+    /// Compiled schema-drift policy, applied per page in every sink node.
+    pub schema_drift: Option<crate::drift::SchemaDriftPolicy>,
+    /// Resilience policy (retry / circuit breaker / poison) for sink-side
+    /// writes, flushes, and state puts.
+    pub resilience: Option<crate::resilience::ResiliencePolicy>,
+}
+
+impl TopologyGovernance {
+    /// A governance set with no passes configured.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 /// Per-run options for [`Topology::run`].
 #[derive(Clone)]
 pub struct TopologyOptions {
@@ -174,7 +229,20 @@ pub struct TopologyOptions {
     pub on_error: TopologyOnError,
     /// Default bounded-channel capacity for edges not fed by a tee.
     pub default_channel_capacity: usize,
+    /// Governance passes applied to every sink node (masking / quality /
+    /// contract / schema drift / resilience).
+    pub governance: TopologyGovernance,
+    /// How long a node gets to stop at its next page boundary and flush after
+    /// another node has failed under [`TopologyOnError::Propagate`]. Mirrors the
+    /// CLI executor's `on_error: stop` grace: without it a buffered sink is
+    /// dropped mid-write, orphaning a multipart upload or a footer-less Parquet
+    /// file (#146 H16).
+    pub stop_flush_grace: Duration,
 }
+
+/// Default grace granted to sibling nodes to flush after a node failure under
+/// [`TopologyOnError::Propagate`].
+pub const DEFAULT_STOP_FLUSH_GRACE: Duration = Duration::from_secs(30);
 
 impl Default for TopologyOptions {
     fn default() -> Self {
@@ -187,6 +255,8 @@ impl Default for TopologyOptions {
             cancel: None,
             on_error: TopologyOnError::default(),
             default_channel_capacity: DEFAULT_CHANNEL_CAPACITY,
+            governance: TopologyGovernance::default(),
+            stop_flush_grace: DEFAULT_STOP_FLUSH_GRACE,
         }
     }
 }
@@ -227,6 +297,19 @@ impl TopologyOptions {
     /// Set the batch-size hint.
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size;
+        self
+    }
+
+    /// Attach the governance passes applied to every sink node.
+    pub fn with_governance(mut self, governance: TopologyGovernance) -> Self {
+        self.governance = governance;
+        self
+    }
+
+    /// Override the post-failure flush grace (see
+    /// [`TopologyOptions::stop_flush_grace`]).
+    pub fn with_stop_flush_grace(mut self, grace: Duration) -> Self {
+        self.stop_flush_grace = grace;
         self
     }
 }
@@ -511,13 +594,15 @@ impl Topology {
             })
             .collect();
 
-        // Compute the source start bookmark = min across sink bookmarks.
+        // Resume point for the source node(s) — only when provably safe (see
+        // `start_bookmark`); otherwise every source replays in full.
         let sink_ids: Vec<String> = nodes
             .iter()
             .filter(|n| n.kind.is_sink())
             .map(|n| n.id.clone())
             .collect();
-        let start_bookmark = compute_start_bookmark(&opts, &sink_ids).await;
+        let source_count = nodes.iter().filter(|n| n.kind.is_source()).count();
+        let start_bookmark = compute_start_bookmark(&opts, &sink_ids, source_count).await;
 
         // Build channels.
         let mut outs: HashMap<String, Vec<mpsc::Sender<StreamPage>>> = HashMap::new();
@@ -536,8 +621,9 @@ impl Topology {
             });
         }
 
-        // Build one future per node.
-        type NodeFut = Pin<Box<dyn Future<Output = Result<NodeOutcome, FaucetError>>>>;
+        // Build one future per node. `Send + 'static` so each node can own a
+        // task (see the spawn below).
+        type NodeFut = Pin<Box<dyn Future<Output = Result<NodeOutcome, FaucetError>> + Send>>;
         let mut futs: Vec<NodeFut> = Vec::with_capacity(nodes.len());
 
         for node in nodes {
@@ -592,6 +678,17 @@ impl Topology {
                         state_store: opts.state_store.clone(),
                         dlq: opts.dlq.clone(),
                         cancel: cancel.clone(),
+                        // Masking is destination-scoped, so each sink node takes
+                        // the policy compiled for it (if any); the rest are
+                        // pipeline-wide.
+                        #[cfg(feature = "masking")]
+                        masking: opts.governance.masking_by_sink.get(&id).cloned(),
+                        #[cfg(feature = "quality")]
+                        quality: opts.governance.quality.clone(),
+                        #[cfg(feature = "contract")]
+                        contract: opts.governance.contract.clone(),
+                        schema_drift: opts.governance.schema_drift.clone(),
+                        resilience: opts.governance.resilience.clone(),
                     };
                     Box::pin(run_sink_node(id, sink, rx, sopts))
                 }
@@ -603,13 +700,103 @@ impl Topology {
         drop(outs);
         drop(ins);
 
+        // One task per node, so nodes run on the runtime's whole thread pool
+        // instead of sharing a single task. A synchronous stage (the DuckDB `sql`
+        // transform, a wasm transform) would otherwise occupy the one task and
+        // stall every other node including the sinks (#456 M5). A spawned node
+        // also isolates panics: they arrive as a `JoinError` we report, rather
+        // than unwinding the caller.
+        let handles: Vec<tokio::task::JoinHandle<Result<NodeOutcome, FaucetError>>> =
+            futs.into_iter().map(tokio::spawn).collect();
+        // Dropping a `JoinHandle` detaches the task rather than cancelling it, so
+        // every abandon path below aborts explicitly.
+        let aborts: Vec<tokio::task::AbortHandle> =
+            handles.iter().map(|h| h.abort_handle()).collect();
+        let abort_all = || {
+            for a in &aborts {
+                a.abort();
+            }
+        };
+        let joined = handles.into_iter().map(|h| async move {
+            match h.await {
+                Ok(r) => r,
+                Err(e) if e.is_panic() => {
+                    Err(FaucetError::Source(format!("topology node panicked: {e}")))
+                }
+                Err(e) => Err(FaucetError::Source(format!("topology node aborted: {e}"))),
+            }
+        });
+
         match opts.on_error {
             TopologyOnError::Propagate => {
-                let outcomes = futures::future::try_join_all(futs).await?;
-                Ok(aggregate(outcomes))
+                // Do NOT `try_join_all`: it returns on the first error and drops
+                // the remaining node futures where they stand, so a buffered sink
+                // never flushes — orphaning a multipart upload or writing a
+                // footer-less Parquet file. Instead signal the shared cancel
+                // token and let the siblings stop at their next page boundary and
+                // flush, exactly as the CLI executor's `on_error: stop` does
+                // (#146 H16, #456 M1). A node that does not stop within the grace
+                // window is still dropped, so a sink wedged mid-write cannot hang
+                // the run.
+                let coop = opts
+                    .cancel
+                    .clone()
+                    .unwrap_or_else(CancellationToken::new)
+                    .child_token();
+                let first_err: Arc<std::sync::Mutex<Option<FaucetError>>> =
+                    Arc::new(std::sync::Mutex::new(None));
+                let wrapped = joined.map(|f| {
+                    let coop = coop.clone();
+                    let slot = Arc::clone(&first_err);
+                    async move {
+                        match f.await {
+                            Ok(o) => Some(o),
+                            Err(e) => {
+                                tracing::error!(
+                                    error = %e,
+                                    "topology node failed; cancelling siblings so they flush"
+                                );
+                                let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
+                                if guard.is_none() {
+                                    *guard = Some(e);
+                                }
+                                coop.cancel();
+                                None
+                            }
+                        }
+                    }
+                });
+                // The grace window opens only once something has cancelled the
+                // token — a healthy run is never bounded by it.
+                let all = futures::future::join_all(wrapped);
+                let grace = opts.stop_flush_grace;
+                let deadline = {
+                    let coop = coop.clone();
+                    async move {
+                        coop.cancelled().await;
+                        tokio::time::sleep(grace).await;
+                    }
+                };
+                let outcomes = tokio::select! {
+                    biased;
+                    v = all => v,
+                    () = deadline => {
+                        tracing::warn!(
+                            grace_secs = grace.as_secs(),
+                            "topology: nodes did not stop within the flush grace after a failure; \
+                             aborting them"
+                        );
+                        abort_all();
+                        Vec::new()
+                    }
+                };
+                if let Some(e) = first_err.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                    return Err(e);
+                }
+                Ok(aggregate(outcomes.into_iter().flatten().collect()))
             }
             TopologyOnError::Continue => {
-                let results = futures::future::join_all(futs).await;
+                let results = futures::future::join_all(joined).await;
                 let mut ok = Vec::new();
                 let mut errs = Vec::new();
                 for r in results {
@@ -684,9 +871,16 @@ fn reaches_any(start: &str, adj: &HashMap<&str, Vec<&str>>, targets: &HashSet<&s
     false
 }
 
-/// Read every sink node's stored bookmark; return the minimum only when every
-/// sink has one (so the slowest sink is not skipped past on restart).
-async fn compute_start_bookmark(opts: &TopologyOptions, sink_ids: &[String]) -> Option<Value> {
+/// Read every sink node's stored bookmark and decide the source's resume point.
+///
+/// Returns `Some(bookmark)` only when it is provably safe to resume there;
+/// `None` means "replay in full", which costs duplicates on a non-idempotent
+/// sink but can never skip a record. See [`start_bookmark`] for the rules.
+async fn compute_start_bookmark(
+    opts: &TopologyOptions,
+    sink_ids: &[String],
+    source_count: usize,
+) -> Option<Value> {
     let store = opts.state_store.as_ref()?;
     if sink_ids.is_empty() {
         return None;
@@ -699,20 +893,48 @@ async fn compute_start_bookmark(opts: &TopologyOptions, sink_ids: &[String]) -> 
             _ => return None, // a sink with no bookmark → full replay.
         }
     }
-    min_bookmark(&values)
+    start_bookmark(&values, source_count)
 }
 
-/// The minimum of a set of bookmarks under the replication ordering.
-fn min_bookmark(vals: &[Value]) -> Option<Value> {
-    let mut min: Option<&Value> = None;
-    for v in vals {
-        match min {
-            None => min = Some(v),
-            Some(m) if json_gt(m, v) => min = Some(v),
-            _ => {}
+/// Pure resume-point decision: the bookmark every source node is started from,
+/// or `None` to replay in full.
+///
+/// Deliberately conservative — the only safe way to be wrong is to replay:
+///
+/// 1. **More than one source node → `None`.** A sink's bookmark records the
+///    position of whichever source fed its pages, and nothing in the graph
+///    records which one that was. Applying one source's position to another
+///    resumes it somewhere it has never been. (#456 H1)
+/// 2. **Sink bookmarks that are not all equal → `None`.** Bookmarks are compared
+///    for *equality*, never ordered: resume positions are routinely structured
+///    (CDC LSN maps, Kafka/Kinesis offset maps) and
+///    [`json_gt`](crate::replication::json_gt)'s object arm falls back to
+///    comparing serialized text, an order unrelated to replication progress. A
+///    "minimum" chosen that way can sit *ahead* of the true minimum and silently
+///    skip the lagging sink's records. (#456 H1)
+/// 3. **All sinks agree → resume there.** No ordering needed, so no guessing.
+pub fn start_bookmark(sink_bookmarks: &[Value], source_count: usize) -> Option<Value> {
+    if sink_bookmarks.is_empty() || source_count != 1 {
+        if source_count > 1 && !sink_bookmarks.is_empty() {
+            tracing::warn!(
+                sources = source_count,
+                "topology: multi-source graph cannot attribute a sink bookmark to a source; \
+                 replaying every source in full. Make the sinks idempotent \
+                 (`write_mode: upsert`) or split the graph into one pipeline per source."
+            );
         }
+        return None;
     }
-    min.cloned()
+    let first = &sink_bookmarks[0];
+    if sink_bookmarks.iter().any(|v| v != first) {
+        tracing::warn!(
+            "topology: sink bookmarks have diverged and resume positions are not safely \
+             ordered; replaying the source in full so no sink is skipped past. Faster sinks \
+             will re-see already-written pages — make them idempotent."
+        );
+        return None;
+    }
+    Some(first.clone())
 }
 
 /// Send `page` to every live output, moving into the last and cloning for the
@@ -906,6 +1128,15 @@ struct SinkNodeOpts {
     state_store: Option<Arc<dyn StateStore>>,
     dlq: Option<DlqConfig>,
     cancel: Option<CancellationToken>,
+    /// Masking policy compiled for *this* sink node (destination-scoped).
+    #[cfg(feature = "masking")]
+    masking: Option<Arc<crate::masking::CompiledMasking>>,
+    #[cfg(feature = "quality")]
+    quality: Option<Arc<crate::quality::CompiledQuality>>,
+    #[cfg(feature = "contract")]
+    contract: Option<Arc<crate::contract::CompiledContract>>,
+    schema_drift: Option<crate::drift::SchemaDriftPolicy>,
+    resilience: Option<crate::resilience::ResiliencePolicy>,
 }
 
 async fn run_sink_node(
@@ -933,6 +1164,27 @@ async fn run_sink_node(
     }
     if let Some(cancel) = opts.cancel {
         run_opts = run_opts.with_cancel(cancel);
+    }
+    // Governance passes, in the same order `Pipeline` applies them: masking
+    // first (so nothing downstream — sink, DLQ, lineage sample — ever sees
+    // unmasked PII), then quality, contract, and drift.
+    #[cfg(feature = "masking")]
+    if let Some(m) = opts.masking {
+        run_opts = run_opts.with_masking(m);
+    }
+    #[cfg(feature = "quality")]
+    if let Some(q) = opts.quality {
+        run_opts = run_opts.with_quality(q);
+    }
+    #[cfg(feature = "contract")]
+    if let Some(c) = opts.contract {
+        run_opts = run_opts.with_contract(c);
+    }
+    if let Some(d) = opts.schema_drift {
+        run_opts.schema_drift = Some(d);
+    }
+    if let Some(r) = opts.resilience {
+        run_opts.resilience = Some(r);
     }
 
     let result = run_stream(pages, sink.as_ref(), run_opts).await?;
@@ -1131,6 +1383,22 @@ mod tests {
     impl Sink for FailingSink {
         async fn write_batch(&self, _records: &[Value]) -> Result<usize, FaucetError> {
             Err(FaucetError::Sink("sink boom".into()))
+        }
+    }
+
+    /// A sink that records whether `flush` was called — the observable proof that
+    /// a node was allowed to finish cooperatively rather than being dropped.
+    struct FlushTrackingSink {
+        flushed: Arc<Mutex<bool>>,
+    }
+    #[async_trait]
+    impl Sink for FlushTrackingSink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            Ok(records.len())
+        }
+        async fn flush(&self) -> Result<(), FaucetError> {
+            *self.flushed.lock().unwrap() = true;
+            Ok(())
         }
     }
 
@@ -1500,10 +1768,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_min_bookmark_applied_to_source() {
+    async fn state_agreeing_bookmarks_resume_the_source() {
         let store = Arc::new(MemoryStateStore::new());
-        // Two sinks with diverged bookmarks; source must resume from min.
-        store.put("p::a", &json!(250)).await.unwrap();
+        // Both sinks committed the same page → that position is a safe resume.
+        store.put("p::a", &json!(100)).await.unwrap();
         store.put("p::b", &json!(100)).await.unwrap();
         let applied = Arc::new(Mutex::new(None));
         let src = RecordingSource {
@@ -1525,6 +1793,74 @@ mod tests {
         let opts = TopologyOptions::new("p").with_state_store(store.clone());
         topo.run(opts).await.unwrap();
         assert_eq!(*applied.lock().unwrap(), Some(json!(100)));
+    }
+
+    #[tokio::test]
+    async fn state_diverged_bookmarks_replay_in_full() {
+        // #456 H1: bookmarks are compared for equality, never ordered — an
+        // ordered "minimum" over structured positions can sit ahead of the true
+        // minimum and skip the lagging sink's records. Diverged → full replay.
+        let store = Arc::new(MemoryStateStore::new());
+        store.put("p::a", &json!(250)).await.unwrap();
+        store.put("p::b", &json!(100)).await.unwrap();
+        let applied = Arc::new(Mutex::new(None));
+        let src = RecordingSource {
+            records: recs(1),
+            applied: applied.clone(),
+        };
+        let (s1, _) = CollectSink::new();
+        let (s2, _) = CollectSink::new();
+        let topo = Topology::builder()
+            .source("s", Box::new(src))
+            .tee("t", 4, Some(2))
+            .sink("a", Box::new(s1))
+            .sink("b", Box::new(s2))
+            .edge("s", "t")
+            .edge("t", "a")
+            .edge("t", "b")
+            .build()
+            .unwrap();
+        let opts = TopologyOptions::new("p").with_state_store(store.clone());
+        topo.run(opts).await.unwrap();
+        assert_eq!(
+            *applied.lock().unwrap(),
+            None,
+            "diverged bookmarks must replay, never guess an order"
+        );
+    }
+
+    #[tokio::test]
+    async fn state_multi_source_never_cross_applies_a_bookmark() {
+        // #456 H1: nothing records which source a sink's bookmark came from, so
+        // applying one to every source would resume a source somewhere it has
+        // never been. Multi-source graphs replay in full.
+        let store = Arc::new(MemoryStateStore::new());
+        store.put("p::k", &json!(500)).await.unwrap();
+        let a_applied = Arc::new(Mutex::new(None));
+        let b_applied = Arc::new(Mutex::new(None));
+        let a = RecordingSource {
+            records: recs(1),
+            applied: a_applied.clone(),
+        };
+        let b = RecordingSource {
+            records: recs(1),
+            applied: b_applied.clone(),
+        };
+        let (sink, _) = CollectSink::new();
+        let topo = Topology::builder()
+            .source("a", Box::new(a))
+            .source("b", Box::new(b))
+            .merge("m")
+            .sink("k", Box::new(sink))
+            .edge("a", "m")
+            .edge("b", "m")
+            .edge("m", "k")
+            .build()
+            .unwrap();
+        let opts = TopologyOptions::new("p").with_state_store(store.clone());
+        topo.run(opts).await.unwrap();
+        assert_eq!(*a_applied.lock().unwrap(), None);
+        assert_eq!(*b_applied.lock().unwrap(), None);
     }
 
     #[tokio::test]
@@ -1570,6 +1906,75 @@ mod tests {
         assert_eq!(store.get("p::k").await.unwrap(), Some(json!("v9")));
     }
 
+    /// #456 M1: a node failure under `Propagate` must let its siblings stop at a
+    /// page boundary and **flush**, not drop them where they stand (which
+    /// orphans a multipart upload / writes a footer-less file).
+    #[tokio::test]
+    async fn propagate_lets_siblings_flush_before_returning_the_error() {
+        let flushed = Arc::new(Mutex::new(false));
+        let tracker = FlushTrackingSink {
+            flushed: flushed.clone(),
+        };
+        let topo = Topology::builder()
+            .source("s", VecSource::boxed(recs(64)))
+            .tee("t", 4, Some(2))
+            .sink("bad", Box::new(FailingSink))
+            .sink("good", Box::new(tracker))
+            .edge("s", "t")
+            .edge("t", "bad")
+            .edge("t", "good")
+            .build()
+            .unwrap();
+        let opts = TopologyOptions::new("p")
+            .with_on_error(TopologyOnError::Propagate)
+            .with_stop_flush_grace(Duration::from_secs(5));
+        let err = topo.run(opts).await.unwrap_err();
+        assert!(matches!(err, FaucetError::Sink(_)), "{err:?}");
+        assert!(
+            *flushed.lock().unwrap(),
+            "the healthy sink node must be flushed, not dropped mid-write"
+        );
+    }
+
+    /// #456 C3: the governance passes must apply to a topology's sink nodes, or a
+    /// config declaring masking writes PII in the clear.
+    #[cfg(feature = "masking")]
+    #[tokio::test]
+    async fn masking_applies_to_a_sink_node() {
+        use crate::masking::{CompiledMasking, MaskingSpec};
+
+        let spec: MaskingSpec = serde_json::from_value(json!({
+            "rules": [{
+                "name": "hide-email",
+                "match": { "fields": ["email"] },
+                "action": { "type": "redact", "mask": "***" }
+            }]
+        }))
+        .unwrap();
+        let compiled = Arc::new(CompiledMasking::compile(&spec).unwrap());
+
+        let (sink, store) = CollectSink::new();
+        let topo = Topology::builder()
+            .source(
+                "s",
+                VecSource::boxed(vec![json!({"id": 1, "email": "a@b.c"})]),
+            )
+            .sink("k", Box::new(sink))
+            .edge("s", "k")
+            .build()
+            .unwrap();
+
+        let mut governance = TopologyGovernance::new();
+        governance.masking_by_sink.insert("k".to_string(), compiled);
+        let opts = TopologyOptions::new("p").with_governance(governance);
+        topo.run(opts).await.unwrap();
+
+        let written = store.lock().unwrap();
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0]["email"], json!("***"), "PII must be masked");
+        assert_eq!(written[0]["id"], json!(1));
+    }
+
     #[tokio::test]
     async fn cancellation_stops_the_run() {
         let cancel = CancellationToken::new();
@@ -1589,12 +1994,41 @@ mod tests {
     }
 
     #[test]
-    fn min_bookmark_picks_smallest() {
+    fn start_bookmark_only_resumes_when_provably_safe() {
+        // Every sink agrees, single source → resume there.
         assert_eq!(
-            min_bookmark(&[json!(250), json!(100), json!(300)]),
+            start_bookmark(&[json!(100), json!(100)], 1),
             Some(json!(100))
         );
-        assert_eq!(min_bookmark(&[]), None);
+        // Structured positions that agree are fine too — no ordering needed.
+        let lsn = json!({"slot": "s", "lsn": "0/16B3748"});
+        assert_eq!(
+            start_bookmark(&[lsn.clone(), lsn.clone()], 1),
+            Some(lsn.clone())
+        );
+
+        // Diverged scalars → replay. The old code returned `min` = 100 here;
+        // for the structured case below that "minimum" was text-ordered and
+        // could sit ahead of the true minimum (#456 H1).
+        assert_eq!(start_bookmark(&[json!(250), json!(100)], 1), None);
+        // The exact shape that made a text-ordered minimum unsafe: "0/9…" sorts
+        // above "0/10…" lexicographically while being *behind* it numerically.
+        assert_eq!(
+            start_bookmark(
+                &[
+                    json!({"lsn": "0/9FFFFFF"}),
+                    json!({"lsn": "0/10000000"}),
+                ],
+                1
+            ),
+            None
+        );
+
+        // More than one source → never cross-apply.
+        assert_eq!(start_bookmark(&[json!(100), json!(100)], 2), None);
+        // No sinks / no bookmarks → nothing to resume from.
+        assert_eq!(start_bookmark(&[], 1), None);
+        assert_eq!(start_bookmark(&[], 3), None);
     }
 
     #[test]
