@@ -322,6 +322,33 @@ with `matrix:` — both non-empty is a load-time error. `faucet run` / `validate
 [Topology mode](../cookbook/topology.md) for the full grammar, the `join:`
 node, state semantics, and runnable examples.
 
+**What applies in topology mode.** The per-page governance passes behave exactly
+as they do for a matrix pipeline — `pipeline.masking`, `pipeline.quality`,
+`pipeline.contract`, and `schema:` are enforced per sink node, and `resilience:`
+applies to sink-side writes. So do `--dry-run` / `--limit`, `${now.*}` /
+`--clock`, `state:`, and `dlq:`.
+
+Two things differ, and both are reported rather than silent:
+
+- **`delivery: exactly_once` is rejected.** A node graph has no per-sink
+  atomic commit-token path, so the config is refused at load time instead of
+  running at-least-once under an exactly-once label. Use the matrix form, or make
+  the sinks idempotent with `write_mode: upsert`.
+- **`notifications:`, `lineage:`, `catalog:`, and `sla:` are not applied.**
+  `faucet validate` prints a `WARNING:` line naming each one it finds, and the run
+  logs the same, so a declared-but-inert block is never silent.
+
+**Resume semantics are deliberately conservative.** Each sink node owns a
+bookmark under `{pipeline}::{node_id}`. The source resumes from a stored position
+only when the graph has **exactly one source node** and **every sink's bookmark is
+identical**; otherwise it replays in full (with a warning). Bookmarks are compared
+for equality, never ordered — a resume position is often structured (a CDC LSN
+map, a Kafka offset map), and an ordered "minimum" over those can sit *ahead* of
+the true minimum and skip the lagging sink's records. Replaying costs duplicates
+on a non-idempotent sink; skipping would lose data, so the trade is made in that
+direction. Use `write_mode: upsert` on the sinks when a graph is resumed
+routinely.
+
 ## Row selection
 
 Register many rows, run a few. Selection resolves **after** expansion and never
