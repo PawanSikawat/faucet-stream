@@ -1583,7 +1583,7 @@ fn faucet_error_kind(err: &FaucetError) -> &'static str {
 /// `faucet backfill`, which substitutes them per window unit before the
 /// executor runs. Reaching here means another runtime picked up a
 /// window-scoped config.
-fn reject_unresolved_backfill_tokens(value: &Value, owner: &str) -> CliResult<()> {
+pub(crate) fn reject_unresolved_backfill_tokens(value: &Value, owner: &str) -> CliResult<()> {
     fn walk(value: &Value, owner: &str) -> CliResult<()> {
         match value {
             Value::String(s) if s.contains("${backfill.") => Err(CliError::Config(format!(
@@ -1642,8 +1642,8 @@ fn resolve_inplace(value: &mut Value, ctx: &HashMap<String, Value>) -> CliResult
 /// (audit #321 H1; for postgres-cdc it also lets Postgres recycle WAL for
 /// undelivered changes). Reads still pass through so the preview faithfully
 /// resumes from the existing bookmark.
-struct ReadOnlyStateStore {
-    inner: Arc<dyn StateStore>,
+pub(crate) struct ReadOnlyStateStore {
+    pub(crate) inner: Arc<dyn StateStore>,
 }
 
 #[async_trait]
@@ -1824,13 +1824,13 @@ impl Sink for CapturingSink {
 
 /// Cap on records written. Each `write_batch` call truncates `records` to the
 /// remaining budget before delegating.
-struct LimitedSink {
+pub(crate) struct LimitedSink {
     inner: Box<dyn Sink>,
     remaining: AtomicUsize,
 }
 
 impl LimitedSink {
-    fn wrap(inner: Box<dyn Sink>, cap: usize) -> Self {
+    pub(crate) fn wrap(inner: Box<dyn Sink>, cap: usize) -> Self {
         Self {
             inner,
             remaining: AtomicUsize::new(cap),
@@ -1865,12 +1865,12 @@ impl Sink for LimitedSink {
 
 /// No-op sink used in `--dry-run`. Counts records seen so the rest of the
 /// pipeline (transforms, source) still runs.
-struct CountingSink {
+pub(crate) struct CountingSink {
     seen: AtomicUsize,
 }
 
 impl CountingSink {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             seen: AtomicUsize::new(0),
         }

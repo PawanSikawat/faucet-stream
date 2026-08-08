@@ -185,7 +185,17 @@ pub(crate) async fn execute(
     // surfaces (`--output text|json|ndjson`), then return.
     if crate::topology::is_topology(&cfg) {
         let started_at = Utc::now();
-        let summary = crate::topology::run_topology(&cfg, &auth, None).await?;
+        let summary = crate::topology::run_topology(
+            &cfg,
+            &auth,
+            crate::topology::TopologyRunOptions {
+                cancel: None,
+                dry_run: args.dry_run,
+                limit: args.limit,
+                clock: Some(resolve_run_clock(args.clock.as_deref())?),
+            },
+        )
+        .await?;
         let finished_at = Utc::now();
         return finish_topology_run(
             &pipeline_name,
