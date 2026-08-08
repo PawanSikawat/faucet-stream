@@ -46,7 +46,8 @@
 //!   graphs therefore replay in full.
 //! - **Comparable, agreeing bookmarks only.** Sink bookmarks are compared for
 //!   equality, not ordered. Resume positions are frequently structured (CDC LSN
-//!   maps, Kafka offset maps), and [`json_gt`]'s object arm orders by *serialized
+//!   maps, Kafka offset maps), and [`json_gt`](crate::replication::json_gt)'s
+//!   object arm orders by *serialized
 //!   text*, which is not the replication order — so a "minimum" picked that way
 //!   can sit ahead of the true minimum and skip records. Divergent bookmarks
 //!   therefore replay in full rather than guess.
