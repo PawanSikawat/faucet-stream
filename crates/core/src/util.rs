@@ -834,3 +834,63 @@ mod tests {
         );
     }
 }
+
+/// Narrow a JSON `u64` to the `i64` a **signed** 64-bit column can hold, or fail.
+///
+/// A `serde_json::Number` that reports `is_u64()` but not `is_i64()` is above
+/// `i64::MAX`. Casting it with `as i64` *wraps* — `9223372036854775808u64`
+/// becomes `-9223372036854775808` — so a large unsigned id would be written, or
+/// compared against, as a large negative number with nothing raised. Two ways
+/// that bites: a sink silently corrupts the value, and a source binding an
+/// incremental-replication bookmark compares against a negative bound, so rows
+/// are re-read or skipped (#462).
+///
+/// Backends with a native unsigned type (MySQL's `UNSIGNED BIGINT`) must **not**
+/// use this — they bind the `u64` directly and round-trip losslessly.
+///
+/// `context` names what is being bound (a column, or `parameter N`) so the error
+/// tells an operator where to look.
+pub fn u64_to_signed(value: u64, context: &str) -> Result<i64, crate::FaucetError> {
+    i64::try_from(value).map_err(|_| {
+        crate::FaucetError::Config(format!(
+            "{context}: {value} exceeds the maximum a signed 64-bit column can hold \
+             ({}). This backend has no unsigned integer type — store the value in a \
+             NUMERIC/TEXT column, or convert it with a `cast` transform. It is not \
+             silently truncated because the wrapped value would be negative",
+            i64::MAX
+        ))
+    })
+}
+
+#[cfg(test)]
+mod u64_to_signed_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_everything_a_signed_column_can_hold() {
+        assert_eq!(u64_to_signed(0, "c").unwrap(), 0);
+        assert_eq!(u64_to_signed(42, "c").unwrap(), 42);
+        assert_eq!(
+            u64_to_signed(i64::MAX as u64, "c").unwrap(),
+            i64::MAX,
+            "the boundary itself fits"
+        );
+    }
+
+    #[test]
+    fn rejects_above_the_boundary_instead_of_wrapping() {
+        // The exact value that `as i64` would turn into i64::MIN.
+        let just_over = i64::MAX as u64 + 1;
+        let err = match u64_to_signed(just_over, "column \"id\"") {
+            Err(e) => e,
+            Ok(v) => panic!("must not accept {just_over} (as i64 would be {})", v),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("column \"id\""), "{msg}");
+        assert!(msg.contains(&just_over.to_string()), "{msg}");
+        // The wrapped form must never appear as if it were the value.
+        assert!(!msg.contains("-9223372036854775808"), "{msg}");
+
+        assert!(u64_to_signed(u64::MAX, "c").is_err());
+    }
+}

@@ -74,9 +74,26 @@ back at `faucet backfill`.)
 `backfill.window` default) the whole range runs as a single unit. Windows are
 contiguous half-open slices of `[from, to)` — the last one truncates at `--to`.
 Date boundaries like `--from 2026-06-01` are midnight in `--timezone` (IANA
-name; default UTC), and window arithmetic is absolute, so units never gap or
-overlap — including across DST transitions. A plan above 1,000 units warns;
+name; default UTC). Units never gap or overlap. A plan above 1,000 units warns;
 above 10,000 it is rejected (use a larger window).
+
+**`1d`/`1w` are calendar steps; `24h`/`168h` are elapsed time.** The two are
+identical except across a DST transition, where they deliberately differ:
+
+| window | across US spring-forward (2026-03-08) |
+|---|---|
+| `1d` | every unit starts at **local midnight**; 03-08 is 23 elapsed hours |
+| `24h` | units drift — 03-09 onward start at **01:00** local |
+
+Use `1d` for date-partitioned backfills, so `${backfill.start_date}` always
+names exactly the local day its window covers. Use `24h` when you want a fixed
+amount of elapsed time regardless of the calendar. A fall-back (repeated) hour
+resolves to the earliest instant, matching how `--from`/`--to` dates resolve.
+
+> Changing between `1d` and `24h` changes the unit boundaries, so it also changes
+> the progress-marker hash — an in-flight backfill will not resume across that
+> switch. Absolute windows keep the hash they had before calendar stepping
+> existed, so upgrades do not disturb a running backfill.
 
 ## Progress, resume, restart
 

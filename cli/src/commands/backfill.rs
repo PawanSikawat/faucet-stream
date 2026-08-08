@@ -95,7 +95,7 @@ fn build_range(
     from_bookmark: &Option<String>,
     to_bookmark: &Option<String>,
     bookmark_field: Option<String>,
-    window: Option<chrono::Duration>,
+    window: Option<crate::backfill::plan::WindowStep>,
     tz: chrono_tz::Tz,
 ) -> CliResult<BackfillRange> {
     match (from, to, from_bookmark) {

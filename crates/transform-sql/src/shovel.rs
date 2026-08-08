@@ -6,7 +6,6 @@ use arrow::array::RecordBatch;
 use arrow::datatypes::{Schema, SchemaRef};
 use faucet_core::FaucetError;
 use serde_json::{Map, Value};
-use std::sync::Arc;
 
 /// Map any display-able error into a `FaucetError::Transform` with context.
 fn te<E: std::fmt::Display>(ctx: &str, e: E) -> FaucetError {
@@ -17,13 +16,17 @@ fn te<E: std::fmt::Display>(ctx: &str, e: E) -> FaucetError {
 ///
 /// Each element must be a JSON object. Returns the inferred schema wrapped in
 /// an [`Arc`]. On an empty slice the result is a schema with no fields.
+///
+/// Delegates to [`faucet_core::columnar::infer_arrow_schema`] rather than calling
+/// `arrow-json` directly. The two used to be independent copies of the same call,
+/// which is how the wide-integer bug (#460) existed in both: an integer above
+/// `i64::MAX` was inferred as `Float64` and silently lost its exact value. One
+/// implementation means one place to fix.
 pub fn infer_schema(records: &[Value]) -> Result<SchemaRef, FaucetError> {
-    let iter = records
-        .iter()
-        .map(|v| Ok::<_, arrow::error::ArrowError>(v.clone()));
-    let schema = arrow_json::reader::infer_json_schema_from_iterator(iter)
-        .map_err(|e| te("schema inference", e))?;
-    Ok(Arc::new(schema))
+    // Re-wrap so the message still names the thing the operator configured (a
+    // `sql` transform) rather than only the shared shim it delegates to.
+    faucet_core::columnar::infer_arrow_schema(records)
+        .map_err(|e| FaucetError::Transform(format!("sql transform: {e}")))
 }
 
 /// Encode a slice of JSON records into a single [`RecordBatch`] against `schema`.

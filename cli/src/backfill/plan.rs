@@ -25,9 +25,59 @@ pub struct BackfillUnit {
     pub end: DateTime<FixedOffset>,
 }
 
+/// How a window advances the cursor.
+///
+/// The distinction matters only in a timezone that observes DST, and only for
+/// day/week windows: stepping a "day" by a fixed 24 hours drifts off local
+/// midnight after a transition, so the unit labelled `2026-03-08` would cover
+/// 00:00 → *next day* 01:00 (25 local hours) and every later unit would start an
+/// hour late. Sub-day windows have no such expectation — an hour is an hour — so
+/// they stay absolute (#461).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowStep {
+    /// A fixed elapsed duration (`s` / `m` / `h`, or a bare integer = seconds).
+    Absolute(Duration),
+    /// N calendar days in the backfill timezone.
+    Days(i64),
+    /// N calendar weeks in the backfill timezone.
+    Weeks(i64),
+}
+
+impl std::fmt::Display for WindowStep {
+    /// Stable form used in the range-hash descriptor that keys the progress
+    /// marker.
+    ///
+    /// An absolute window renders as its **seconds**, exactly as before this type
+    /// existed, so a backfill already in flight keeps its marker and resumes. A
+    /// calendar window renders as `Nd` / `Nw`, which deliberately hashes
+    /// differently: its unit boundaries are not the ones the old plan produced, so
+    /// resuming against a marker from that plan would mix two different unit sets.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Absolute(d) => write!(f, "{}", d.num_seconds()),
+            Self::Days(n) => write!(f, "{n}d"),
+            Self::Weeks(n) => write!(f, "{n}w"),
+        }
+    }
+}
+
+impl WindowStep {
+    /// The nominal duration, for logging and for the absolute fallback.
+    fn nominal(self) -> Duration {
+        match self {
+            Self::Absolute(d) => d,
+            Self::Days(n) => Duration::days(n),
+            Self::Weeks(n) => Duration::weeks(n),
+        }
+    }
+}
+
 /// Parse a `--window` duration: `45s`, `30m`, `6h`, `1d`, `1w` (or a bare
 /// integer = seconds). Must be positive.
-pub fn parse_window(s: &str) -> CliResult<Duration> {
+///
+/// `d` / `w` yield **calendar** steps; everything else is absolute. So `1d` and
+/// `24h` differ across a DST transition, deliberately.
+pub fn parse_window(s: &str) -> CliResult<WindowStep> {
     let s = s.trim();
     let err = || {
         CliError::Config(format!(
@@ -45,15 +95,38 @@ pub fn parse_window(s: &str) -> CliResult<Duration> {
             "window '{s}' must be a positive duration"
         )));
     }
-    let dur = match unit {
-        "s" => Duration::seconds(n),
-        "m" => Duration::minutes(n),
-        "h" => Duration::hours(n),
-        "d" => Duration::days(n),
-        "w" => Duration::weeks(n),
+    let step = match unit {
+        "s" => WindowStep::Absolute(Duration::seconds(n)),
+        "m" => WindowStep::Absolute(Duration::minutes(n)),
+        "h" => WindowStep::Absolute(Duration::hours(n)),
+        "d" => WindowStep::Days(n),
+        "w" => WindowStep::Weeks(n),
         _ => return Err(err()),
     };
-    Ok(dur)
+    Ok(step)
+}
+
+/// Advance `cursor` by a calendar amount in `tz`, keeping the local wall-clock
+/// time (so a day stays a day and midnight stays midnight across a DST change).
+///
+/// The naive local time is advanced first — naive arithmetic has no DST, so this
+/// *is* calendar arithmetic — then re-resolved in `tz`. A spring-forward gap
+/// (the wall-clock time does not exist that day) has no valid instant, so the
+/// time is nudged forward an hour at a time until it does; a fall-back
+/// (ambiguous, repeated) hour resolves to the **earliest** instant, matching
+/// [`parse_boundary`].
+fn advance_calendar(cursor: DateTime<Utc>, tz: chrono_tz::Tz, days: i64) -> Option<DateTime<Utc>> {
+    let naive = cursor
+        .with_timezone(&tz)
+        .naive_local()
+        .checked_add_signed(Duration::days(days))?;
+    for extra_hours in 0..=3 {
+        let candidate = naive.checked_add_signed(Duration::hours(extra_hours))?;
+        if let Some(local) = tz.from_local_datetime(&candidate).earliest() {
+            return Some(local.with_timezone(&Utc));
+        }
+    }
+    None
 }
 
 /// Parse a `--from` / `--to` boundary: RFC3339 (`2026-06-01T00:00:00Z`) or a
@@ -88,7 +161,7 @@ pub fn parse_boundary(s: &str, tz: chrono_tz::Tz) -> CliResult<DateTime<FixedOff
 pub fn plan_windows(
     from: DateTime<FixedOffset>,
     to: DateTime<FixedOffset>,
-    window: Option<Duration>,
+    window: Option<WindowStep>,
     tz: chrono_tz::Tz,
 ) -> CliResult<Vec<BackfillUnit>> {
     if from >= to {
@@ -99,7 +172,7 @@ pub fn plan_windows(
     let mut units = Vec::new();
     let mut cursor = from.with_timezone(&Utc);
     let end = to.with_timezone(&Utc);
-    let step = window.unwrap_or_else(|| end - cursor);
+    let step = window.unwrap_or(WindowStep::Absolute(end - cursor));
     while cursor < end {
         if units.len() >= MAX_UNITS {
             return Err(CliError::Config(format!(
@@ -107,7 +180,25 @@ pub fn plan_windows(
                  use a larger window"
             )));
         }
-        let unit_end = (cursor + step).min(end);
+        // Calendar steps keep the local wall clock; absolute steps add elapsed
+        // time. Either way the next boundary must be strictly ahead of the
+        // cursor, or the loop could not terminate — fall back to the nominal
+        // duration if a zone quirk ever produced a non-advancing instant.
+        let next = match step {
+            WindowStep::Absolute(d) => cursor + d,
+            WindowStep::Days(n) => {
+                advance_calendar(cursor, tz, n).unwrap_or(cursor + step.nominal())
+            }
+            WindowStep::Weeks(n) => {
+                advance_calendar(cursor, tz, n * 7).unwrap_or(cursor + step.nominal())
+            }
+        };
+        let next = if next > cursor {
+            next
+        } else {
+            cursor + step.nominal()
+        };
+        let unit_end = next.min(end);
         units.push(BackfillUnit {
             id: cursor.format("%Y%m%dT%H%M%SZ").to_string(),
             start: cursor.with_timezone(&tz).fixed_offset(),
@@ -188,6 +279,7 @@ pub fn range_hash(descriptor: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Timelike;
     use serde_json::json;
 
     fn tz(name: &str) -> chrono_tz::Tz {
@@ -196,12 +288,26 @@ mod tests {
 
     #[test]
     fn window_durations_parse() {
-        assert_eq!(parse_window("45s").unwrap(), Duration::seconds(45));
-        assert_eq!(parse_window("30m").unwrap(), Duration::minutes(30));
-        assert_eq!(parse_window("6h").unwrap(), Duration::hours(6));
-        assert_eq!(parse_window("1d").unwrap(), Duration::days(1));
-        assert_eq!(parse_window("2w").unwrap(), Duration::weeks(2));
-        assert_eq!(parse_window("3600").unwrap(), Duration::seconds(3600));
+        // Sub-day units are absolute elapsed time…
+        assert_eq!(
+            parse_window("45s").unwrap(),
+            WindowStep::Absolute(Duration::seconds(45))
+        );
+        assert_eq!(
+            parse_window("30m").unwrap(),
+            WindowStep::Absolute(Duration::minutes(30))
+        );
+        assert_eq!(
+            parse_window("6h").unwrap(),
+            WindowStep::Absolute(Duration::hours(6))
+        );
+        assert_eq!(
+            parse_window("3600").unwrap(),
+            WindowStep::Absolute(Duration::seconds(3600))
+        );
+        // …while day/week units are calendar steps (#461).
+        assert_eq!(parse_window("1d").unwrap(), WindowStep::Days(1));
+        assert_eq!(parse_window("2w").unwrap(), WindowStep::Weeks(2));
         assert!(parse_window("0d").is_err());
         assert!(parse_window("-1h").is_err());
         assert!(parse_window("soon").is_err());
@@ -227,7 +333,7 @@ mod tests {
         let utc = tz("UTC");
         let from = parse_boundary("2026-06-01", utc).unwrap();
         let to = parse_boundary("2026-07-02", utc).unwrap();
-        let units = plan_windows(from, to, Some(Duration::days(1)), utc).unwrap();
+        let units = plan_windows(from, to, Some(WindowStep::Days(1)), utc).unwrap();
         assert_eq!(units.len(), 31);
         assert_eq!(units[0].id, "20260601T000000Z");
         assert_eq!(units[0].start.to_rfc3339(), "2026-06-01T00:00:00+00:00");
@@ -244,7 +350,13 @@ mod tests {
         let utc = tz("UTC");
         let from = parse_boundary("2026-06-01T00:00:00Z", utc).unwrap();
         let to = parse_boundary("2026-06-01T05:30:00Z", utc).unwrap();
-        let units = plan_windows(from, to, Some(Duration::hours(2)), utc).unwrap();
+        let units = plan_windows(
+            from,
+            to,
+            Some(WindowStep::Absolute(Duration::hours(2))),
+            utc,
+        )
+        .unwrap();
         assert_eq!(units.len(), 3);
         assert_eq!(units[2].start.to_rfc3339(), "2026-06-01T04:00:00+00:00");
         assert_eq!(units[2].end.to_rfc3339(), "2026-06-01T05:30:00+00:00");
@@ -261,6 +373,94 @@ mod tests {
         assert_eq!(units[0].end, to);
     }
 
+    /// #461: a calendar day must stay a calendar day. Absolute 24h stepping used
+    /// to drift off local midnight after a DST change — the unit labelled
+    /// 2026-03-08 covered 00:00 → *next day* 01:00 (25 local hours) and every
+    /// later unit started an hour late, so `${backfill.start_date}` no longer
+    /// described the window it named.
+    #[test]
+    fn calendar_day_windows_stay_on_local_midnight_across_dst() {
+        let ny = tz("America/New_York");
+        let from = parse_boundary("2026-03-07", ny).unwrap();
+        let to = parse_boundary("2026-03-11", ny).unwrap();
+        let units = plan_windows(from, to, Some(WindowStep::Days(1)), ny).unwrap();
+
+        assert_eq!(units.len(), 4, "four calendar days");
+        for u in &units {
+            assert_eq!(
+                (u.start.hour(), u.start.minute()),
+                (0, 0),
+                "unit {} must start at local midnight, got {}",
+                u.id,
+                u.start
+            );
+        }
+        // Contiguous, and each unit's label matches the day it covers.
+        for w in units.windows(2) {
+            assert_eq!(w[0].end, w[1].start, "no gap/overlap");
+        }
+        let dates: Vec<String> = units
+            .iter()
+            .map(|u| u.start.format("%Y-%m-%d").to_string())
+            .collect();
+        assert_eq!(
+            dates,
+            ["2026-03-07", "2026-03-08", "2026-03-09", "2026-03-10"]
+        );
+        // The spring-forward day is genuinely 23 hours of elapsed time.
+        let spring_forward = &units[1];
+        assert_eq!(
+            (spring_forward.end - spring_forward.start).num_hours(),
+            23,
+            "2026-03-08 loses an hour"
+        );
+    }
+
+    /// Fall-back (an hour repeats) must also stay on midnight, at 25 elapsed hours.
+    #[test]
+    fn calendar_day_windows_handle_fall_back() {
+        let ny = tz("America/New_York");
+        let from = parse_boundary("2026-10-31", ny).unwrap();
+        let to = parse_boundary("2026-11-03", ny).unwrap();
+        let units = plan_windows(from, to, Some(WindowStep::Days(1)), ny).unwrap();
+        for u in &units {
+            assert_eq!((u.start.hour(), u.start.minute()), (0, 0), "{}", u.id);
+        }
+        // 2026-11-01 is the fall-back day: 25 hours.
+        let long_day = units
+            .iter()
+            .find(|u| u.start.format("%Y-%m-%d").to_string() == "2026-11-01")
+            .expect("the fall-back day is planned");
+        assert_eq!((long_day.end - long_day.start).num_hours(), 25);
+    }
+
+    /// `1d` and `24h` are deliberately different across a transition: one is a
+    /// calendar day, the other is elapsed time.
+    #[test]
+    fn calendar_and_absolute_windows_differ_across_dst() {
+        let ny = tz("America/New_York");
+        let from = parse_boundary("2026-03-07", ny).unwrap();
+        let to = parse_boundary("2026-03-10", ny).unwrap();
+        let cal = plan_windows(from, to, Some(parse_window("1d").unwrap()), ny).unwrap();
+        let abs = plan_windows(from, to, Some(parse_window("24h").unwrap()), ny).unwrap();
+        assert_eq!(cal[2].start.hour(), 0, "calendar stays on midnight");
+        assert_eq!(abs[2].start.hour(), 1, "absolute drifts by the DST delta");
+        assert_ne!(cal[2].start, abs[2].start);
+    }
+
+    /// The descriptor an absolute window contributes to the range hash is
+    /// unchanged, so a backfill already in flight keeps resuming.
+    #[test]
+    fn window_descriptor_is_stable_for_absolute_and_distinct_for_calendar() {
+        assert_eq!(
+            WindowStep::Absolute(Duration::hours(6)).to_string(),
+            "21600"
+        );
+        assert_eq!(WindowStep::Absolute(Duration::days(1)).to_string(), "86400");
+        assert_eq!(WindowStep::Days(1).to_string(), "1d");
+        assert_eq!(WindowStep::Weeks(2).to_string(), "2w");
+    }
+
     #[test]
     fn dst_transition_produces_no_gap_or_overlap() {
         // US spring-forward 2026: March 8, 02:00 EST → 03:00 EDT. Absolute
@@ -268,7 +468,8 @@ mod tests {
         let ny = tz("America/New_York");
         let from = parse_boundary("2026-03-07", ny).unwrap();
         let to = parse_boundary("2026-03-10T00:00:00-04:00", ny).unwrap();
-        let units = plan_windows(from, to, Some(Duration::days(1)), ny).unwrap();
+        let units =
+            plan_windows(from, to, Some(WindowStep::Absolute(Duration::days(1))), ny).unwrap();
         for w in units.windows(2) {
             assert_eq!(w[0].end, w[1].start, "no gap/overlap across DST");
         }
@@ -286,7 +487,13 @@ mod tests {
 
         let from = parse_boundary("2020-01-01", utc).unwrap();
         let to = parse_boundary("2026-01-01", utc).unwrap();
-        let err = plan_windows(from, to, Some(Duration::minutes(1)), utc).unwrap_err();
+        let err = plan_windows(
+            from,
+            to,
+            Some(WindowStep::Absolute(Duration::minutes(1))),
+            utc,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("larger window"), "{err}");
     }
 

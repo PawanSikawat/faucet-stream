@@ -197,7 +197,7 @@ impl Source for RedshiftSource {
         Box::pin(async_stream::try_stream! {
             let incr = self.incremental_ctx();
             let (query_str, binds) = self.resolve_query(context, incr.as_ref());
-            let query = bind_params(sqlx::query(&query_str), &binds);
+            let query = bind_params(sqlx::query(&query_str), &binds)?;
 
             let mut rows = query.fetch(&self.pool);
             let chunk = if batch_size == 0 { usize::MAX } else { batch_size };

@@ -116,7 +116,13 @@ mod tests {
         let utc: chrono_tz::Tz = "UTC".parse().unwrap();
         let from = parse_boundary("2026-06-01", utc).unwrap();
         let to = parse_boundary(&format!("2026-06-{:02}", n + 1), utc).unwrap();
-        plan_windows(from, to, Some(chrono::Duration::days(1)), utc).unwrap()
+        plan_windows(
+            from,
+            to,
+            Some(crate::backfill::plan::WindowStep::Days(1)),
+            utc,
+        )
+        .unwrap()
     }
 
     #[test]

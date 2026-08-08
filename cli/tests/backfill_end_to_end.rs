@@ -20,7 +20,10 @@ fn time_range(from: &str, to: &str, window_days: i64) -> BackfillRange {
     BackfillRange::Time {
         from: faucet_cli::backfill::plan::parse_boundary(from, utc()).unwrap(),
         to: faucet_cli::backfill::plan::parse_boundary(to, utc()).unwrap(),
-        window: Some(chrono::Duration::days(window_days)),
+        // `Days` (calendar) rather than an absolute 24h step — these ranges are
+        // UTC, where the two coincide, but the calendar form is what `--window 1d`
+        // now parses to (#461).
+        window: Some(faucet_cli::backfill::plan::WindowStep::Days(window_days)),
         tz: utc(),
     }
 }
