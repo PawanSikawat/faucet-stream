@@ -56,7 +56,7 @@
 //! Sink nodes reuse [`run_stream`], so the masking / quality / contract /
 //! schema-drift passes and the resilience policy apply exactly as they do to a
 //! single-source pipeline — supply them via
-//! [`TopologyOptions::with_governance`]. Masking is destination-scoped and is
+//! [`Topology::run_with`]. Masking is destination-scoped and is
 //! therefore keyed by sink node id.
 
 use crate::dlq::DlqConfig;
@@ -184,7 +184,13 @@ pub enum TopologyOnError {
 /// gets identical enforcement. Masking is destination-scoped (a rule may name
 /// the sinks it applies to), so it is keyed by **sink node id** and compiled by
 /// the caller; the rest are pipeline-wide.
+///
+/// `#[non_exhaustive]`: construct with [`TopologyGovernance::new`] (or
+/// `Default`) and assign the fields you need. This is deliberate — adding a pass
+/// later would otherwise be a major-version break for every downstream crate,
+/// which is exactly the trap `TopologyOptions` is already in.
 #[derive(Clone, Default)]
+#[non_exhaustive]
 pub struct TopologyGovernance {
     /// Compiled data-quality checks, applied per page in every sink node.
     #[cfg(feature = "quality")]
@@ -229,20 +235,16 @@ pub struct TopologyOptions {
     pub on_error: TopologyOnError,
     /// Default bounded-channel capacity for edges not fed by a tee.
     pub default_channel_capacity: usize,
-    /// Governance passes applied to every sink node (masking / quality /
-    /// contract / schema drift / resilience).
-    pub governance: TopologyGovernance,
-    /// How long a node gets to stop at its next page boundary and flush after
-    /// another node has failed under [`TopologyOnError::Propagate`]. Mirrors the
-    /// CLI executor's `on_error: stop` grace: without it a buffered sink is
-    /// dropped mid-write, orphaning a multipart upload or a footer-less Parquet
-    /// file (#146 H16).
-    pub stop_flush_grace: Duration,
 }
 
-/// Default grace granted to sibling nodes to flush after a node failure under
-/// [`TopologyOnError::Propagate`].
-pub const DEFAULT_STOP_FLUSH_GRACE: Duration = Duration::from_secs(30);
+/// How long a node gets to stop at its next page boundary and flush after another
+/// node has failed under [`TopologyOnError::Propagate`], before it is aborted.
+///
+/// Mirrors the CLI executor's `on_error: stop` grace: without it a buffered sink
+/// is dropped mid-write, orphaning a multipart upload or leaving a footer-less
+/// Parquet file (#146 H16, #456 M1). The window opens only once a failure has
+/// cancelled the run, so a healthy run is never bounded by it.
+pub const STOP_FLUSH_GRACE: Duration = Duration::from_secs(30);
 
 impl Default for TopologyOptions {
     fn default() -> Self {
@@ -255,8 +257,6 @@ impl Default for TopologyOptions {
             cancel: None,
             on_error: TopologyOnError::default(),
             default_channel_capacity: DEFAULT_CHANNEL_CAPACITY,
-            governance: TopologyGovernance::default(),
-            stop_flush_grace: DEFAULT_STOP_FLUSH_GRACE,
         }
     }
 }
@@ -297,19 +297,6 @@ impl TopologyOptions {
     /// Set the batch-size hint.
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size;
-        self
-    }
-
-    /// Attach the governance passes applied to every sink node.
-    pub fn with_governance(mut self, governance: TopologyGovernance) -> Self {
-        self.governance = governance;
-        self
-    }
-
-    /// Override the post-failure flush grace (see
-    /// [`TopologyOptions::stop_flush_grace`]).
-    pub fn with_stop_flush_grace(mut self, grace: Duration) -> Self {
-        self.stop_flush_grace = grace;
         self
     }
 }
@@ -579,8 +566,25 @@ impl Topology {
         Ok(())
     }
 
-    /// Run the topology to completion.
+    /// Run the topology to completion with no governance passes.
+    ///
+    /// Equivalent to [`Topology::run_with`] with a default
+    /// [`TopologyGovernance`] — kept as-is so existing callers are unaffected.
     pub async fn run(self, opts: TopologyOptions) -> Result<TopologyResult, FaucetError> {
+        self.run_with(opts, TopologyGovernance::default()).await
+    }
+
+    /// Run the topology to completion, applying `governance` to every sink node.
+    ///
+    /// Separate from [`Topology::run`] rather than a field on
+    /// [`TopologyOptions`]: that struct is exhaustively constructible through the
+    /// public API, so adding a field to it would be a major-version break for
+    /// every downstream crate. A new method is additive.
+    pub async fn run_with(
+        self,
+        opts: TopologyOptions,
+        governance: TopologyGovernance,
+    ) -> Result<TopologyResult, FaucetError> {
         self.validate()?;
         let Topology { nodes, edges } = self;
 
@@ -682,13 +686,13 @@ impl Topology {
                         // the policy compiled for it (if any); the rest are
                         // pipeline-wide.
                         #[cfg(feature = "masking")]
-                        masking: opts.governance.masking_by_sink.get(&id).cloned(),
+                        masking: governance.masking_by_sink.get(&id).cloned(),
                         #[cfg(feature = "quality")]
-                        quality: opts.governance.quality.clone(),
+                        quality: governance.quality.clone(),
                         #[cfg(feature = "contract")]
-                        contract: opts.governance.contract.clone(),
-                        schema_drift: opts.governance.schema_drift,
-                        resilience: opts.governance.resilience.clone(),
+                        contract: governance.contract.clone(),
+                        schema_drift: governance.schema_drift,
+                        resilience: governance.resilience.clone(),
                     };
                     Box::pin(run_sink_node(id, sink, rx, sopts))
                 }
@@ -765,7 +769,7 @@ impl Topology {
                 // The grace window opens only once something has cancelled the
                 // token — a healthy run is never bounded by it.
                 let all = futures::future::join_all(wrapped);
-                let grace = opts.stop_flush_grace;
+                let grace = STOP_FLUSH_GRACE;
                 let deadline = {
                     let coop = coop.clone();
                     async move {
@@ -1921,9 +1925,7 @@ mod tests {
             .edge("t", "good")
             .build()
             .unwrap();
-        let opts = TopologyOptions::new("p")
-            .with_on_error(TopologyOnError::Propagate)
-            .with_stop_flush_grace(Duration::from_secs(5));
+        let opts = TopologyOptions::new("p").with_on_error(TopologyOnError::Propagate);
         let err = topo.run(opts).await.unwrap_err();
         assert!(matches!(err, FaucetError::Sink(_)), "{err:?}");
         assert!(
@@ -1962,8 +1964,9 @@ mod tests {
 
         let mut governance = TopologyGovernance::new();
         governance.masking_by_sink.insert("k".to_string(), compiled);
-        let opts = TopologyOptions::new("p").with_governance(governance);
-        topo.run(opts).await.unwrap();
+        topo.run_with(TopologyOptions::new("p"), governance)
+            .await
+            .unwrap();
 
         let written = store.lock().unwrap();
         assert_eq!(written.len(), 1);

@@ -515,9 +515,8 @@ pub async fn run_topology(
     if let Some(c) = run.cancel.clone() {
         opts = opts.with_cancel(c);
     }
-    opts = opts.with_governance(build_governance(cfg)?);
 
-    let result = topo.run(opts).await?;
+    let result = topo.run_with(opts, build_governance(cfg)?).await?;
 
     let mut invocations: Vec<InvocationOutcome> = result
         .per_sink
