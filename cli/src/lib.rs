@@ -98,6 +98,15 @@ pub fn run_main(registry: PluginRegistry) -> std::process::ExitCode {
         return ExitCode::from(1);
     }
 
+    // Hand `faucet-core` the secret scrubber before anything can produce output.
+    // Core builds two things that leave the process and that it cannot redact on
+    // its own: the DLQ envelope's `error.message`, and error text a caller
+    // forwards on. Installed here, at the single entry point, so every subcommand
+    // and runtime gets it (#456 H5).
+    faucet_core::redact::install(Box::new(|s: &str| {
+        secrets::registry::redact(s).into_owned()
+    }));
+
     // Dynamic shell completion (#383): when the shell invokes us with the
     // `COMPLETE` env var set, compute and print candidates, then exit — before
     // any normal parsing/tracing/runtime setup. A no-op otherwise. The registry

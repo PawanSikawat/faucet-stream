@@ -35,6 +35,7 @@ pub mod observability;
 pub mod pipeline;
 #[cfg(feature = "quality")]
 pub mod quality;
+pub mod redact;
 pub mod replication;
 pub mod resilience;
 pub mod retry;

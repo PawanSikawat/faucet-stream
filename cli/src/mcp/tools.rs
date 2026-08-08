@@ -52,7 +52,14 @@ pub fn tool_defs(ctx: &McpContext) -> Vec<ToolDef> {
                 "required": ["source", "sink"]
             }),
         },
-        ToolDef {
+    ];
+    // `validate_config` and `preview` act on a caller-supplied config: they
+    // resolve `${env:}`/`${file:}`/`${secret:}` server-side and (for `preview`)
+    // build the described connector and return its records. That is a strictly
+    // higher capability than schema introspection, so it is separately gated
+    // (#456 C4) and not advertised when the caller may not use it.
+    if ctx.allow_config_execution {
+        defs.push(ToolDef {
             name: "validate_config",
             description: "Fully validate a pipeline YAML/JSON config (structure, templates, matrix/topology graph). Returns a per-node report or the validation error.",
             input_schema: json!({
@@ -62,8 +69,8 @@ pub fn tool_defs(ctx: &McpContext) -> Vec<ToolDef> {
                 },
                 "required": ["config"]
             }),
-        },
-        ToolDef {
+        });
+        defs.push(ToolDef {
             name: "preview",
             description: "Fetch a bounded sample of records from a config's first source (source side only; downstream sinks are not run). Capped at 100 rows.",
             input_schema: json!({
@@ -74,8 +81,8 @@ pub fn tool_defs(ctx: &McpContext) -> Vec<ToolDef> {
                 },
                 "required": ["config"]
             }),
-        },
-    ];
+        });
+    }
     if ctx.allow_mutations {
         defs.push(ToolDef {
             name: "run_pipeline",
@@ -94,7 +101,7 @@ pub fn tool_defs(ctx: &McpContext) -> Vec<ToolDef> {
     if ctx.templates.is_some() {
         defs.push(ToolDef {
             name: "list_templates",
-            description: "List registered pipeline templates (latest version of each) with the typed params each one takes.",
+            description: "List registered pipeline templates (newest version of each, plus its release status) with the typed params each one takes.",
             input_schema: json!({ "type": "object", "properties": {} }),
         });
         defs.push(ToolDef {
@@ -104,7 +111,7 @@ pub fn tool_defs(ctx: &McpContext) -> Vec<ToolDef> {
                 "type": "object",
                 "properties": {
                     "id": { "type": "string", "description": "Template id." },
-                    "version": { "description": "Version: a number, or a named channel (\"latest\" — the default — \"prod\", \"pre-prod\", \"staging\", \"canary\", \"stable\", \"test\", \"dev\", \"previous\").", "oneOf": [{ "type": "integer" }, { "type": "string" }] }
+                    "version": { "description": "Version: a number, or a named channel. Derived: \"stable\" (the launched version — the default), \"previous\", \"newest\". Assignable: \"dev\", \"test\", \"staging\", \"pre-prod\", \"canary\", \"prod\". Note \"latest\" is deliberately not a channel — use \"stable\" for the current release or \"newest\" for the highest version number.", "oneOf": [{ "type": "integer" }, { "type": "string" }] }
                 },
                 "required": ["id"]
             }),
@@ -166,7 +173,7 @@ pub fn tool_defs(ctx: &McpContext) -> Vec<ToolDef> {
                     "type": "object",
                     "properties": {
                         "id": { "type": "string" },
-                        "version": { "description": "Version: a number, or a named channel (\"latest\" — the default — \"prod\", \"pre-prod\", \"staging\", \"canary\", \"stable\", \"test\", \"dev\", \"previous\").", "oneOf": [{ "type": "integer" }, { "type": "string" }] },
+                        "version": { "description": "Version: a number, or a named channel. Derived: \"stable\" (the launched version — the default), \"previous\", \"newest\". Assignable: \"dev\", \"test\", \"staging\", \"pre-prod\", \"canary\", \"prod\". Note \"latest\" is deliberately not a channel — use \"stable\" for the current release or \"newest\" for the highest version number.", "oneOf": [{ "type": "integer" }, { "type": "string" }] },
                         "params": { "type": "object", "description": "Values for the template's declared params." },
                         "env": { "type": "object", "description": "Per-run overrides for ${env:VAR} resolution." },
                         "dry_run": { "type": "boolean", "description": "If true, materialize + validate only; do not write to any sink." }
@@ -187,8 +194,22 @@ pub async fn call_tool(ctx: &McpContext, name: &str, args: &Value) -> Value {
         "list_connectors" => list_connectors(args),
         "get_connector_schema" => get_connector_schema(args),
         "scaffold_config" => scaffold_config(args),
-        "validate_config" => validate_config(ctx, args).await,
-        "preview" => preview(ctx, args).await,
+        // Gated at call time as well as in the advertised list: an agent can
+        // always name a tool it was never offered.
+        "validate_config" => {
+            if !ctx.allow_config_execution {
+                Err(CONFIG_EXEC_GATE.to_string())
+            } else {
+                validate_config(ctx, args).await
+            }
+        }
+        "preview" => {
+            if !ctx.allow_config_execution {
+                Err(CONFIG_EXEC_GATE.to_string())
+            } else {
+                preview(ctx, args).await
+            }
+        }
         "run_pipeline" => {
             if !ctx.allow_mutations {
                 Err("run_pipeline is disabled; start the MCP server with --allow-mutations to enable mutating tools".to_string())
@@ -486,6 +507,13 @@ fn pretty(v: &Value) -> String {
 const MUTATION_GATE: &str =
     "this tool is disabled; start the MCP server with --allow-mutations to enable mutating tools";
 
+/// Refusal text for the config-executing tools when the caller lacks the scope.
+/// Phrased for the HTTP transport, which is the only place the gate closes.
+const CONFIG_EXEC_GATE: &str = "this tool acts on a config you supply — it resolves \
+     ${env:}/${file:}/${secret:} on the server and builds the connectors you name — so it \
+     requires the same scope as POST /v1/doctor (role `operator` or `admin`), not a read-only \
+     token";
+
 /// The wired template registry, or a tool error explaining how to wire one.
 #[cfg(feature = "templates")]
 fn template_store(ctx: &McpContext) -> Result<&crate::templates::TemplateStore, String> {
@@ -510,8 +538,9 @@ async fn list_templates(ctx: &McpContext) -> Result<String, String> {
 }
 
 /// Read the optional `version` argument: a number, or one of the closed set of
-/// named channels. Absent = `latest`, so an agent that never mentions versions
-/// always gets the newest registration.
+/// named channels. Absent = `stable` (the *launched* version), so an agent that
+/// never mentions versions rides releases rather than picking up every new
+/// registration.
 #[cfg(feature = "templates")]
 fn version_arg(args: &Value) -> Result<crate::serve::history::templates::VersionSelector, String> {
     use crate::serve::history::templates::VersionSelector;
@@ -521,8 +550,8 @@ fn version_arg(args: &Value) -> Result<crate::serve::history::templates::Version
     }
 }
 
-/// Resolve the `version` argument against the registry (a named channel needs a
-/// lookup). `Ok(None)` = the newest version.
+/// Resolve the `version` argument against the registry (every channel, derived or
+/// assigned, needs a lookup — nothing falls back to "the newest build").
 #[cfg(feature = "templates")]
 async fn resolved_version_arg(
     store: &crate::templates::TemplateStore,
@@ -677,7 +706,15 @@ async fn run_template(ctx: &McpContext, args: &Value) -> Result<String, String> 
         })
         .unwrap_or_default();
 
-    let materialized = crate::templates::materialize(store, id, version, &supplied, &env)
+    let materialized = crate::templates::materialize(
+        store,
+        id,
+        version,
+        &supplied,
+        &env,
+        // The MCP tool runs the pipeline in this process; nothing is persisted.
+        crate::templates::Materialize::Local,
+    )
         .await
         .map_err(|e| e.to_string())?;
 

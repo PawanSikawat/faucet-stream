@@ -53,7 +53,7 @@
 pub mod store;
 
 pub use store::{
-    LaunchOutcome, MaterializedConfig, RegisterRequest, TemplateStore, launch, list_with_state,
-    materialize, promote, register, resolve_store_url, resolve_version, rollback, set_deprecated,
-    template_state,
+    LaunchOutcome, Materialize, MaterializedConfig, RegisterRequest, TemplateStore, launch,
+    list_with_state, materialize, promote, register, resolve_store_url, resolve_version, rollback,
+    set_deprecated, template_state,
 };

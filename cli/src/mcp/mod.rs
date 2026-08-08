@@ -29,6 +29,18 @@ pub struct McpContext {
     /// Whether mutating tools (`run_pipeline`, `register_template`,
     /// `run_template`) are exposed and callable.
     pub allow_mutations: bool,
+    /// Whether tools that **act on a caller-supplied config** — `validate_config`
+    /// and `preview` — are exposed and callable.
+    ///
+    /// These are read-only in the sense that they write nothing, but they are not
+    /// harmless: `preview` constructs the connector the caller describes and
+    /// returns its records, and both resolve `${env:}` / `${file:}` /
+    /// `${secret:}` against the *server's* environment and filesystem. On the
+    /// HTTP transport that is server-side file read and outbound network reach,
+    /// so it requires the same scope as `POST /v1/doctor` (operator+) rather than
+    /// the schema-read scope the route's baseline uses (#456 C4). The stdio
+    /// transport runs as the local user and sets this `true`.
+    pub allow_config_execution: bool,
     /// The pipeline template registry (#444), when one is wired: `faucet serve
     /// --mcp` passes its own `--history` backend; `faucet mcp` needs
     /// `--template-store`. Absent = the template tools are not advertised at all,
@@ -38,13 +50,24 @@ pub struct McpContext {
 }
 
 impl McpContext {
+    /// A context for a **local** caller (the `faucet mcp` stdio transport), which
+    /// already runs with the user's own privileges: config-executing tools are
+    /// enabled, mutations follow `allow_mutations`.
     pub fn new(auth: AuthCatalog, allow_mutations: bool) -> Self {
         Self {
             auth,
             allow_mutations,
+            allow_config_execution: true,
             #[cfg(feature = "templates")]
             templates: None,
         }
+    }
+
+    /// Set whether `validate_config` / `preview` are available. The HTTP
+    /// transport passes the caller's RBAC decision here.
+    pub fn with_config_execution(mut self, allow: bool) -> Self {
+        self.allow_config_execution = allow;
+        self
     }
 
     /// Attach a template registry, enabling the template tools.
@@ -209,6 +232,41 @@ mod tests {
         assert!(names.contains(&"list_connectors".to_string()));
         assert!(names.contains(&"validate_config".to_string()));
         assert!(!names.contains(&"run_pipeline".to_string()));
+    }
+
+    /// #456 C4: a caller without the config-execution scope must neither see nor
+    /// be able to invoke the tools that build connectors from a config they
+    /// supply — that is server-side file read and outbound network reach.
+    #[tokio::test]
+    async fn config_executing_tools_are_hidden_and_refused_without_the_scope() {
+        let ctx = McpContext::new(
+            crate::auth_catalog::build_auth_catalog(None).unwrap(),
+            false,
+        )
+        .with_config_execution(false);
+
+        let listed = handle_message(&ctx, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
+            .await
+            .unwrap();
+        assert!(
+            !listed.contains("validate_config") && !listed.contains("\"preview\""),
+            "must not be advertised: {listed}"
+        );
+        // Still present: pure introspection needs no elevated scope.
+        assert!(listed.contains("list_connectors"), "{listed}");
+
+        // Naming an unadvertised tool must be refused, not executed.
+        for tool in ["validate_config", "preview"] {
+            let out = tools::call_tool(
+                &ctx,
+                tool,
+                &json!({ "config": "version: 1\npipeline: {}\n" }),
+            )
+            .await;
+            assert_eq!(out["isError"], true, "{tool} must be refused");
+            let text = out["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("operator"), "{tool}: {text}");
+        }
     }
 
     #[tokio::test]

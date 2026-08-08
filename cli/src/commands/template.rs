@@ -458,7 +458,16 @@ async fn run_template(args: TemplateRunArgs) -> CliResult<()> {
     let selector = VersionSelector::parse(&args.version)?;
     let want = crate::templates::resolve_version(&store, &args.id, selector).await?;
     let materialized =
-        crate::templates::materialize(&store, &args.id, want, &supplied, &env).await?;
+        crate::templates::materialize(
+            &store,
+            &args.id,
+            want,
+            &supplied,
+            &env,
+            // `faucet template run` executes locally; nothing is persisted.
+            crate::templates::Materialize::Local,
+        )
+        .await?;
 
     tracing::info!(
         template = %materialized.template_id,

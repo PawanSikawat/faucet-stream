@@ -29,6 +29,14 @@ pub async fn handle(
 ) -> axum::response::Response {
     // Mutating tools require BOTH the server flag and the caller's RunWrite scope.
     let can_mutate = flags.allow_mutations && actor.role.grants(Permission::RunWrite);
+    // The config-executing tools (`validate_config`, `preview`) build the
+    // connectors the caller describes and resolve `${env:}` / `${file:}` /
+    // `${secret:}` against this process's environment and filesystem. That is
+    // server-side file read plus outbound network reach, so it takes the same
+    // scope as `POST /v1/doctor` — which submits a config to be probed — rather
+    // than the route's baseline read scope. Without this a `viewer` token could
+    // read arbitrary server files via a `csv` source (#456 C4).
+    let can_execute_config = actor.role.grants(Permission::Doctor);
 
     let auth = match crate::auth_catalog::build_auth_catalog(None) {
         Ok(a) => a,
@@ -43,7 +51,7 @@ pub async fn handle(
     // The server's run-history backend doubles as the pipeline-template registry
     // (#444), so an agent on `/mcp` sees the same templates the `/v1/templates`
     // endpoints and `faucet template` do.
-    let ctx = crate::mcp::McpContext::new(auth, can_mutate);
+    let ctx = crate::mcp::McpContext::new(auth, can_mutate).with_config_execution(can_execute_config);
     #[cfg(feature = "templates")]
     let ctx = ctx.with_templates(state.history());
     let response = crate::mcp::handle_message(&ctx, &body).await;
@@ -110,6 +118,66 @@ mod tests {
         )
         .await;
         assert!(!body_text(resp).await.contains("run_pipeline"));
+    }
+
+    /// #456 C4: `/mcp`'s baseline scope is `SchemaRead` (Viewer), but `preview`
+    /// builds the source a caller names and returns its records — so a Viewer
+    /// could read any file the server can (`csv` with `path: /etc/passwd`) and
+    /// reach any host it can. Those two tools now need the `Doctor` scope, the
+    /// same one `POST /v1/doctor` requires for submitting a config to be probed.
+    #[tokio::test]
+    async fn viewer_cannot_reach_the_config_executing_tools() {
+        let state = test_state();
+        let resp = handle(
+            State(state),
+            Extension(actor(Role::Viewer)),
+            Extension(McpRouteFlags {
+                allow_mutations: false,
+            }),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_string(),
+        )
+        .await;
+        let body = body_text(resp).await;
+        assert!(!body.contains("validate_config"), "{body}");
+        assert!(!body.contains("\"preview\""), "{body}");
+        assert!(body.contains("list_connectors"), "{body}");
+    }
+
+    /// …and calling one anyway is refused rather than executed.
+    #[tokio::test]
+    async fn viewer_calling_preview_is_refused() {
+        let state = test_state();
+        let resp = handle(
+            State(state),
+            Extension(actor(Role::Viewer)),
+            Extension(McpRouteFlags {
+                allow_mutations: false,
+            }),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"preview","arguments":{"config":"version: 1\npipeline:\n  source: { type: csv, config: { path: /etc/passwd } }\n  sink: { type: stdout, config: {} }\n"}}}"#.to_string(),
+        )
+        .await;
+        let body = body_text(resp).await;
+        assert!(body.contains("\"isError\":true"), "{body}");
+        assert!(body.contains("operator"), "{body}");
+        assert!(!body.contains("root:"), "no file content may leak: {body}");
+    }
+
+    /// An operator holds `Doctor`, so the tools are available to them.
+    #[tokio::test]
+    async fn operator_can_see_the_config_executing_tools() {
+        let state = test_state();
+        let resp = handle(
+            State(state),
+            Extension(actor(Role::Operator)),
+            Extension(McpRouteFlags {
+                allow_mutations: false,
+            }),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_string(),
+        )
+        .await;
+        let body = body_text(resp).await;
+        assert!(body.contains("validate_config"), "{body}");
+        assert!(body.contains("preview"), "{body}");
     }
 
     #[tokio::test]

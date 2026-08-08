@@ -456,21 +456,45 @@ pub async fn set_deprecated(
     Ok(TemplateStatus::derive(state.stable.is_some(), deprecated))
 }
 
-/// Fetch a template (the launched version when `version` is `None`), binding the
-/// Fetch a template (latest version when `version` is `None`), binding the
-/// supplied params and env overrides into a runnable config document.
+/// Where the materialized config is going — which decides whether load-time
+/// directives may be resolved here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Materialize {
+    /// The body is executed by *this* process and never stored. Load-time
+    /// directives (`${env:}` / `${file:}` / `${secret:}`) are resolved here, so a
+    /// caller-supplied `env` overlay takes effect.
+    Local,
+    /// The body will be **persisted** for another instance to execute (a
+    /// clustered submit). Load-time directives are left as tokens for the
+    /// executing instance to resolve, so a resolved credential is never written
+    /// to the shared run-history database (#456 C5).
+    Persisted,
+}
+
+/// Fetch a template version and bind the supplied params into a runnable config
+/// document.
 ///
-/// Ordering matters and mirrors the file-load path exactly: `${env:}` /
-/// `${file:}` / `${secret:}` resolve **first** (with `env_overrides` taking
-/// precedence over the process environment), then `${param.*}` binds. A supplied
-/// param value is therefore never itself scanned for directives, so a caller
-/// cannot use a param to read the server's environment or secret store.
+/// Ordering mirrors the file-load path: `${env:}` / `${file:}` / `${secret:}`
+/// resolve **first** (with `env_overrides` taking precedence over the process
+/// environment), then `${param.*}` binds. A supplied param value is therefore
+/// never itself scanned for directives, so a caller cannot use a param to read
+/// the server's environment or secret store.
+///
+/// Under [`Materialize::Persisted`] the first step is **skipped**: the directives
+/// stay as tokens and are resolved later by `load_submission` on whichever
+/// instance runs the job. Resolving them here would serialise the *values* into
+/// the body that gets stored in the shared database — which is how a
+/// `${env:DB_PASSWORD}` in a template body ended up in plaintext there. The
+/// trade-off is that a typed (`int`/`float`/`bool`) param whose `default` is
+/// itself a directive cannot be coerced in this mode; it fails loudly at trigger
+/// time naming the param, rather than silently.
 pub async fn materialize(
     store: &TemplateStore,
     id: &str,
     version: u32,
     supplied: &SuppliedParams,
     env_overrides: &BTreeMap<String, String>,
+    mode: Materialize,
 ) -> CliResult<MaterializedConfig> {
     // Takes a concrete version, never an `Option`: "no version given" is resolved
     // by `resolve_version` against the registry, so there is no code path where a
@@ -485,11 +509,13 @@ pub async fn materialize(
         })?;
 
     let mut doc = parse_body(&record.body, record.format)?;
-    let overlay: crate::interpolate::EnvOverlay = env_overrides
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    crate::interpolate::interpolate_value_with_env(&mut doc, &overlay)?;
+    if mode == Materialize::Local {
+        let overlay: crate::interpolate::EnvOverlay = env_overrides
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        crate::interpolate::interpolate_value_with_env(&mut doc, &overlay)?;
+    }
     let bound = params::bind_document(&mut doc, supplied, BindMode::Strict)?;
     // Drop the declaration block: materialization is the moment params cease to
     // exist. Leaving it would make any later load re-run the bind pass with no
@@ -928,7 +954,7 @@ pipeline:
         let want = resolve_version(&s, "tenant-sync", VersionSelector::stable())
             .await
             .unwrap();
-        let out = materialize(&s, "tenant-sync", want, &supplied, &BTreeMap::new())
+        let out = materialize(&s, "tenant-sync", want, &supplied, &BTreeMap::new(), Materialize::Local)
             .await
             .unwrap();
         assert_eq!(out.version, 1);
@@ -954,6 +980,7 @@ pipeline:
             1,
             &SuppliedParams::new(),
             &BTreeMap::new(),
+            Materialize::Local,
         )
         .await
         .unwrap_err();
@@ -964,7 +991,7 @@ pipeline:
             ("bogus".to_string(), json!("b")),
         ]
         .into();
-        let err = materialize(&s, "tenant-sync", 1, &supplied, &BTreeMap::new())
+        let err = materialize(&s, "tenant-sync", 1, &supplied, &BTreeMap::new(), Materialize::Local)
             .await
             .unwrap_err();
         assert!(matches!(err, CliError::UnknownParam { .. }), "{err:?}");
@@ -982,7 +1009,7 @@ pipeline:
             "{err:?}"
         );
         let supplied: SuppliedParams = [("tenant_id".to_string(), json!("a"))].into();
-        let err = materialize(&s, "tenant-sync", 9, &supplied, &BTreeMap::new())
+        let err = materialize(&s, "tenant-sync", 9, &supplied, &BTreeMap::new(), Materialize::Local)
             .await
             .unwrap_err();
         assert!(
@@ -1016,6 +1043,7 @@ pipeline:
             1,
             &SuppliedParams::new(),
             &BTreeMap::new(),
+            Materialize::Local,
         )
         .await
         .unwrap();
@@ -1027,7 +1055,7 @@ pipeline:
 
         let overrides: BTreeMap<String, String> =
             [("FAUCET_TPL_REGION".to_string(), "from-request".to_string())].into();
-        let out = materialize(&s, "env-template", 1, &SuppliedParams::new(), &overrides)
+        let out = materialize(&s, "env-template", 1, &SuppliedParams::new(), &overrides, Materialize::Local)
             .await
             .unwrap();
         let doc: Value = serde_json::from_str(&out.body).unwrap();
@@ -1058,7 +1086,7 @@ pipeline:
         register(&s, req_launched(body)).await.unwrap();
         let supplied: SuppliedParams =
             [("api_token".to_string(), json!("tok-abcdefghijklmnop"))].into();
-        let out = materialize(&s, "secret-template", 1, &supplied, &BTreeMap::new())
+        let out = materialize(&s, "secret-template", 1, &supplied, &BTreeMap::new(), Materialize::Local)
             .await
             .unwrap();
         assert!(out.used_secret_params);
@@ -1249,6 +1277,7 @@ pipeline:
             1,
             &SuppliedParams::new(),
             &BTreeMap::new(),
+            Materialize::Local,
         )
         .await
         .unwrap();
