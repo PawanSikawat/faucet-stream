@@ -319,6 +319,7 @@ impl TopologyOptions {
 /// notifications and evaluates SLAs per **sink node**, which needs to know which
 /// node failed — [`TopologyResult::errors`] is a flat list of messages).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct NodeReport {
     /// Node id.
     pub node_id: String,
@@ -333,12 +334,20 @@ pub struct NodeReport {
 }
 
 /// A topology run with per-node attribution.
+///
+/// `#[non_exhaustive]`: this is an output callers read, never construct, so
+/// keeping it open means a future per-node field is a minor release rather than
+/// a breaking one — the mistake [`TopologyResult`] cannot now undo.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct TopologyRun {
     /// The aggregate result, identical to what [`Topology::run`] returns.
     pub result: TopologyResult,
     /// One entry per node, in the graph's deterministic (sorted-id) order.
     pub nodes: Vec<NodeReport>,
+    /// Records emitted per **source** node, keyed by node id (#459). Lives here
+    /// rather than on [`TopologyResult`] so adding it stays a minor change.
+    pub per_source: HashMap<String, usize>,
 }
 
 /// Outcome of a topology run.
@@ -350,8 +359,6 @@ pub struct TopologyResult {
     pub per_sink: HashMap<String, usize>,
     /// Per-sink-node final bookmark, keyed by node id.
     pub bookmarks: HashMap<String, Option<Value>>,
-    /// Records emitted per **source** node, keyed by node id (#459).
-    pub per_source: HashMap<String, usize>,
     /// Node failures observed under [`TopologyOnError::Continue`] (empty under
     /// `Propagate`, which returns `Err` on the first failure instead).
     pub errors: Vec<String>,
@@ -880,10 +887,14 @@ impl Topology {
                 if let Some(e) = first_err.lock().unwrap_or_else(|p| p.into_inner()).take() {
                     return Err(e);
                 }
-                let result = aggregate(outcomes.into_iter().flatten().collect());
+                let (result, per_source) = aggregate(outcomes.into_iter().flatten().collect());
                 let failed = failures.lock().unwrap_or_else(|p| p.into_inner()).clone();
-                let nodes = reports(&order, &result, &failed);
-                Ok(TopologyRun { result, nodes })
+                let nodes = reports(&order, &result, &per_source, &failed);
+                Ok(TopologyRun {
+                    result,
+                    nodes,
+                    per_source,
+                })
             }
             TopologyOnError::Continue => {
                 let results = futures::future::join_all(joined).await;
@@ -904,10 +915,14 @@ impl Topology {
                         }
                     }
                 }
-                let mut result = aggregate(ok);
+                let (mut result, per_source) = aggregate(ok);
                 result.errors = errs;
-                let nodes = reports(&order, &result, &failed);
-                Ok(TopologyRun { result, nodes })
+                let nodes = reports(&order, &result, &per_source, &failed);
+                Ok(TopologyRun {
+                    result,
+                    nodes,
+                    per_source,
+                })
             }
         }
     }
@@ -917,6 +932,7 @@ impl Topology {
 fn reports(
     order: &[(String, &'static str)],
     sinks: &TopologyResult,
+    per_source: &HashMap<String, usize>,
     errors: &[(String, String)],
 ) -> Vec<NodeReport> {
     order
@@ -927,7 +943,7 @@ fn reports(
             records: sinks
                 .per_sink
                 .get(id)
-                .or_else(|| sinks.per_source.get(id))
+                .or_else(|| per_source.get(id))
                 .copied()
                 .unwrap_or(0),
             bookmark: sinks.bookmarks.get(id).cloned().flatten(),
@@ -939,9 +955,11 @@ fn reports(
         .collect()
 }
 
-/// Aggregate node outcomes into a [`TopologyResult`].
-fn aggregate(outcomes: Vec<NodeOutcome>) -> TopologyResult {
+/// Aggregate node outcomes into a [`TopologyResult`] plus the per-source counts
+/// (which live on [`TopologyRun`], not the result).
+fn aggregate(outcomes: Vec<NodeOutcome>) -> (TopologyResult, HashMap<String, usize>) {
     let mut result = TopologyResult::default();
+    let mut per_source = HashMap::new();
     for o in outcomes {
         match o {
             NodeOutcome::Sink {
@@ -954,12 +972,12 @@ fn aggregate(outcomes: Vec<NodeOutcome>) -> TopologyResult {
                 result.bookmarks.insert(node_id, bookmark);
             }
             NodeOutcome::Source { node_id, records } => {
-                result.per_source.insert(node_id, records);
+                per_source.insert(node_id, records);
             }
             NodeOutcome::Other => {}
         }
     }
-    result
+    (result, per_source)
 }
 
 fn cfg(msg: impl Into<String>) -> FaucetError {
