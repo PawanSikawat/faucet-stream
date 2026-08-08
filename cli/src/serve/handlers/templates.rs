@@ -1180,7 +1180,7 @@ mod tests {
             "version: 1\nname: tpl-env\npipeline:\n  source:\n    type: csv\n    config:\n      path: \"${{env:SRC_PATH}}\"\n  sink:\n    type: jsonl\n    config:\n      path: {}\n",
             dir.path().join("o.jsonl").display()
         );
-        register_template(
+        let _registered = register_template(
             State(state.clone()),
             Extension(actor()),
             Json(RegisterBody {
