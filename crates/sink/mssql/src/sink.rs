@@ -13,6 +13,17 @@ use tiberius::ToSql;
 
 use faucet_common_mssql::{MssqlPool, MssqlPooledConnection, build_pool, quote_ident_mssql};
 
+/// Width of the watermark table's `scope` PRIMARY KEY column. SQL Server's index
+/// key budget is 900 bytes = 450 UTF-16 chars, so the column cannot be
+/// `NVARCHAR(MAX)`; a longer scope is shortened to a digest form rather than
+/// erroring or truncating onto another row's watermark (#456 L1).
+const SCOPE_COL_WIDTH: usize = 450;
+
+/// Fit a pipeline scope into [`SCOPE_COL_WIDTH`].
+fn scope_key(scope: &str) -> String {
+    faucet_core::idempotency::scope_key(scope, SCOPE_COL_WIDTH)
+}
+
 use crate::config::{MssqlColumnMapping, MssqlSinkConfig};
 use crate::encode::{
     BoundParam, auto_row_params, build_insert_sql, build_merge, build_merge_delete,
@@ -281,10 +292,11 @@ impl MssqlSink {
         // input in this string.
         let sql = format!(
             "IF OBJECT_ID(N'{tbl}', N'U') IS NULL \
-             CREATE TABLE [{tbl}] ([scope] NVARCHAR(450) PRIMARY KEY, \
+             CREATE TABLE [{tbl}] ([scope] NVARCHAR({w}) PRIMARY KEY, \
              [token] NVARCHAR(MAX) NOT NULL, \
              [updated_at] DATETIME2 DEFAULT SYSUTCDATETIME())",
             tbl = faucet_core::idempotency::COMMIT_TOKEN_TABLE,
+            w = SCOPE_COL_WIDTH,
         );
         control(conn, &sql).await
     }
@@ -839,7 +851,7 @@ impl Sink for MssqlSink {
     async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
         let mut conn = self.checkout().await?;
         self.ensure_commit_table(&mut conn).await?;
-        let scope_owned = scope.to_string();
+        let scope_owned = scope_key(scope);
         let rows = conn
             .query(
                 &format!(
@@ -942,7 +954,7 @@ impl Sink for MssqlSink {
              WHEN NOT MATCHED THEN INSERT ([scope], [token]) VALUES (s.[scope], s.[token]);",
             tbl = faucet_core::idempotency::COMMIT_TOKEN_TABLE,
         );
-        let (scope_owned, token_owned) = (scope.to_string(), token.to_string());
+        let (scope_owned, token_owned) = (scope_key(scope), token.to_string());
         let refs: Vec<&dyn ToSql> = vec![&scope_owned, &token_owned];
         if let Err(e) = conn.execute(merge.as_str(), &refs).await {
             let _ = control(&mut conn, "ROLLBACK TRAN").await;

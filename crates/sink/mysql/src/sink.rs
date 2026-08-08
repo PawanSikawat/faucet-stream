@@ -7,6 +7,17 @@ use serde_json::Value;
 use sqlx::mysql::MySqlPoolOptions;
 use sqlx::{MySqlConnection, MySqlPool, Row};
 
+/// Width of the watermark table's `scope` PRIMARY KEY column. MySQL cannot index
+/// an unbounded column, so a scope longer than this is shortened to a digest
+/// form rather than risking silent truncation onto another row's watermark
+/// (#456 L1).
+const SCOPE_COL_WIDTH: usize = 255;
+
+/// Fit a pipeline scope into [`SCOPE_COL_WIDTH`].
+fn scope_key(scope: &str) -> String {
+    faucet_core::idempotency::scope_key(scope, SCOPE_COL_WIDTH)
+}
+
 /// A sink that writes JSON records to a MySQL table.
 pub struct MysqlSink {
     config: MysqlSinkConfig,
@@ -594,10 +605,11 @@ impl MysqlSink {
     /// and broke exactly-once delivery (audit #321 C3).
     async fn ensure_commit_table(&self) -> Result<(), FaucetError> {
         let sql = format!(
-            "CREATE TABLE IF NOT EXISTS {t} ({s} VARCHAR(255) PRIMARY KEY, {k} TEXT NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+            "CREATE TABLE IF NOT EXISTS {t} ({s} VARCHAR({w}) PRIMARY KEY, {k} TEXT NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
             t = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_TABLE),
             s = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_SCOPE_COL),
             k = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL),
+            w = SCOPE_COL_WIDTH,
         );
         sqlx::query(&sql)
             .execute(&self.pool)
@@ -874,7 +886,7 @@ impl faucet_core::Sink for MysqlSink {
             s = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_SCOPE_COL),
         );
         let row = sqlx::query(&sql)
-            .bind(scope)
+            .bind(scope_key(scope))
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| FaucetError::Sink(format!("MySQL token read failed: {e}")))?;
@@ -946,7 +958,7 @@ impl faucet_core::Sink for MysqlSink {
             k = quote_ident_mysql(faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL),
         );
         sqlx::query(&upsert)
-            .bind(scope)
+            .bind(scope_key(scope))
             .bind(token)
             .execute(&mut *tx)
             .await

@@ -190,6 +190,13 @@ impl WasmInstance {
             return "wasm transform: module signalled an error (no error_ptr/error_len exports)"
                 .to_owned();
         };
+        // `error_ptr`/`error_len` are *guest* calls and so consume fuel. If the
+        // module errored with none left, both trap, we fall back to (0, 0), and the
+        // operator gets an empty message instead of the actual diagnosis — so name
+        // the real cause up front (#456 L5).
+        if let Some(msg) = out_of_fuel_message(self.store.get_fuel().ok(), self.fuel_limit) {
+            return msg;
+        }
         let ptr = ep.call(&mut self.store, ()).unwrap_or(0);
         let len = el.call(&mut self.store, ()).unwrap_or(0);
         let data = self.memory.data(&self.store);
@@ -229,4 +236,36 @@ fn trap_msg(ctx: &str, err: &wasmtime::Error) -> String {
     // WebAssembly", "out of bounds memory access", …) is preserved — the bare
     // `{}` display shows only the top-level backtrace line.
     format!("wasm transform: {ctx} failed: {err:?}")
+}
+
+/// The message to report when a module signalled an error with no fuel left.
+///
+/// Pure so the decision is testable: reproducing the state for real needs a
+/// module that returns the error sentinel at the exact instant its budget hits
+/// zero. `remaining` is `None` when fuel is not being metered (nothing to say).
+fn out_of_fuel_message(remaining: Option<u64>, limit: u64) -> Option<String> {
+    match remaining {
+        Some(0) => Some(format!(
+            "wasm transform: module signalled an error with no fuel left (budget {limit} units) — \
+             its error message could not be read back, because doing so calls into the module. \
+             Raise `fuel_per_record` or simplify the module"
+        )),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod fuel_message_tests {
+    use super::*;
+
+    #[test]
+    fn out_of_fuel_message_only_fires_when_the_budget_is_spent() {
+        let msg = out_of_fuel_message(Some(0), 10_000).expect("a message");
+        assert!(msg.contains("fuel"), "{msg}");
+        assert!(msg.contains("10000"), "names the budget: {msg}");
+
+        // Fuel left, or unmetered → let the normal error-export read proceed.
+        assert!(out_of_fuel_message(Some(1), 10_000).is_none());
+        assert!(out_of_fuel_message(None, 10_000).is_none());
+    }
 }

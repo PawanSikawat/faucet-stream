@@ -147,6 +147,23 @@ pub fn build_replay_node(
 
     let reader = DlqReaderSource::new(from_files, reason, decryptor);
     node.source_override = Some(SourceOverride::new(Box::new(reader)));
+
+    // A DLQ envelope's `payload` is the record as it entered the *write* path —
+    // i.e. already transformed and already masked (the masking pass runs first per
+    // page, so quarantine and write-failure envelopes both hold masked values).
+    // Re-running those two passes on replay would apply them a second time, and
+    // neither is idempotent: the `hash` transform and masking's `hash`/`tokenize`
+    // actions would produce H(H(x)), breaking the joinability masking exists to
+    // guarantee; `set` would re-stamp `${now.*}` with the replay time; `cast` /
+    // `json_parse` / `split` would re-run against already-converted values. So a
+    // replay skips both (#456 H3).
+    //
+    // The quality and contract passes are deliberately kept: they are pure
+    // predicates over the record, so re-checking is idempotent — and a replay is
+    // exactly when you want them re-enforced.
+    node.transforms.clear();
+    node.masking = None;
+
     // A replay reads the whole DLQ location once — no bookmarking, and never
     // exactly-once (the reader is not a deterministic-replay source).
     node.state = None;
@@ -340,5 +357,80 @@ mod tests {
             Some("quality"),
             None
         ));
+    }
+}
+
+#[cfg(test)]
+mod replay_shaping_tests {
+    use super::*;
+    use crate::config::PipelineConfig;
+
+    fn cfg(extra: &str) -> PipelineConfig {
+        let yaml = format!(
+            r#"version: 1
+name: replay-shape
+pipeline:
+{extra}  source: {{ type: csv, config: {{ path: ./in.csv }} }}
+  sink: {{ type: jsonl, config: {{ path: ./out.jsonl }} }}
+  dlq:
+    sink: {{ type: jsonl, config: {{ path: ./dlq.jsonl }} }}
+"#
+        );
+        PipelineConfig::from_text(&yaml, Path::new("test.yaml")).expect("parses")
+    }
+
+    /// #456 H3: a DLQ payload is already transformed and already masked, so a
+    /// replay must not run either pass again — `hash`, `set ${now.*}`, `cast`,
+    /// and masking's `hash`/`tokenize` are not idempotent, and re-applying them
+    /// writes values the original path would never have produced.
+    #[test]
+    fn replay_drops_the_transform_chain_and_masking() {
+        let cfg = cfg("  transforms:\n    - { type: keys_case, config: { mode: snake } }\n  masking:\n    rules:\n      - name: h\n        match: { fields: [email] }\n        action: { type: hash }\n");
+        // Sanity: the config really does declare both, so the assertions below are
+        // about the replay shaping and not about an empty config.
+        let expanded = crate::expand::expand(&cfg).unwrap();
+        assert_eq!(expanded[0].transforms.len(), 1);
+        assert!(expanded[0].masking.is_some());
+
+        let node = build_replay_node(
+            &cfg,
+            vec![PathBuf::from("./dlq.jsonl")],
+            None,
+            Path::new("./failed.jsonl"),
+            None,
+            DlqDecryptor::default(),
+        )
+        .expect("builds");
+
+        assert!(
+            node.transforms.is_empty(),
+            "the chain already ran before the payload was captured"
+        );
+        assert!(
+            node.masking.is_none(),
+            "the payload in the envelope is already masked"
+        );
+        // Pure predicates stay on: re-checking a replayed record is idempotent.
+        assert!(node.source_override.is_some());
+        assert_eq!(node.delivery, DeliveryMode::AtLeastOnce);
+        assert!(node.state.is_none());
+    }
+
+    /// Quality and contract are pure checks, so a replay keeps enforcing them.
+    #[test]
+    fn replay_keeps_quality_and_contract() {
+        let cfg = cfg(
+            "  quality:\n    record:\n      - { type: not_null, field: id, on_failure: abort }\n",
+        );
+        let node = build_replay_node(
+            &cfg,
+            vec![PathBuf::from("./dlq.jsonl")],
+            None,
+            Path::new("./failed.jsonl"),
+            None,
+            DlqDecryptor::default(),
+        )
+        .expect("builds");
+        assert!(node.quality.is_some(), "checks are idempotent; keep them");
     }
 }
