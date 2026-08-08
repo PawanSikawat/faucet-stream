@@ -764,8 +764,10 @@ pipeline:
     );
 }
 
-/// #456 H2: `delivery: exactly_once` has no watermark path in a node graph, so
-/// it must be rejected rather than silently downgraded to at-least-once.
+/// #456 H2: an exactly-once config that cannot be honoured must be rejected
+/// rather than silently downgraded to at-least-once. (Since #458 topology mode
+/// *does* support exactly-once — this asserts the refusal path still holds when a
+/// requirement is unmet.)
 #[tokio::test]
 async fn rejects_exactly_once_in_topology_mode() {
     let cfg = parse(
@@ -787,8 +789,12 @@ pipeline:
     let auth = build_auth_catalog(None).unwrap();
     let err = build_topology(&cfg, &auth).await.unwrap_err();
     let msg = err.to_string();
+    // The invariant #456 H2 is about: an unsupportable exactly-once config is
+    // *refused*, never silently downgraded to at-least-once. Since #458 the
+    // refusal is per-node and names the limiting side (here the csv source)
+    // instead of rejecting topology mode wholesale.
     assert!(msg.contains("exactly_once"), "{msg}");
-    assert!(msg.contains("topology mode"), "{msg}");
+    assert!(msg.contains("csv"), "names what is limiting: {msg}");
 }
 
 /// #456 H4: `${now.*}` was never resolved in topology mode, so the literal token
@@ -874,4 +880,132 @@ pipeline:
         .success()
         .stdout(contains("WARNING"))
         .stdout(contains("sla"));
+}
+
+// ── #458 / #459: exactly-once + per-sink-node observability ─────────────────
+
+/// #458: the four atomic-watermark requirements are checked per node at
+/// config-load time. The message must name the *limiting* side.
+#[tokio::test]
+async fn exactly_once_gate_names_the_limiting_side() {
+    // A non-deterministic source: csv cannot replay positionally.
+    let cfg = parse(
+        r#"version: 1
+name: eo
+delivery: exactly_once
+pipeline:
+  state: { type: file, config: { path: ./st } }
+  sources:
+    o: { type: csv, config: { path: /tmp/x.csv } }
+  sinks:
+    out: { type: sqlite, config: { connection_url: "sqlite::memory:", table: t } }
+  nodes:
+    s: { kind: source, ref: o }
+    w: { kind: sink, ref: out }
+  edges:
+    - { from: s, to: w }
+"#,
+    );
+    let auth = build_auth_catalog(None).unwrap();
+    let err = build_topology(&cfg, &auth).await.unwrap_err().to_string();
+    assert!(err.contains("csv"), "names the source: {err}");
+    assert!(err.contains("deterministic-replay"), "{err}");
+}
+
+/// A memory state store cannot carry a commit sequence across a restart.
+#[tokio::test]
+async fn exactly_once_requires_durable_state() {
+    let cfg = parse(
+        r#"version: 1
+name: eo
+delivery: exactly_once
+pipeline:
+  state: { type: memory, config: {} }
+  sources:
+    o: { type: postgres-cdc, config: { connection_url: "postgres://x/y", slot: s, publication: p } }
+  sinks:
+    out: { type: sqlite, config: { connection_url: "sqlite::memory:", table: t } }
+  nodes:
+    s: { kind: source, ref: o }
+    w: { kind: sink, ref: out }
+  edges:
+    - { from: s, to: w }
+"#,
+    );
+    let auth = build_auth_catalog(None).unwrap();
+    let err = build_topology(&cfg, &auth).await.unwrap_err().to_string();
+    assert!(err.contains("memory"), "{err}");
+    assert!(err.contains("durable"), "{err}");
+}
+
+/// Several sources means no sound resume anchor for a watermark, so the gate
+/// refuses and points at the keyed-upsert alternative.
+#[tokio::test]
+async fn exactly_once_refuses_a_multi_source_graph() {
+    let cfg = parse(
+        r#"version: 1
+name: eo
+delivery: exactly_once
+pipeline:
+  state: { type: file, config: { path: ./st } }
+  sources:
+    a: { type: postgres-cdc, config: { connection_url: "postgres://x/y", slot: s1, publication: p } }
+    b: { type: postgres-cdc, config: { connection_url: "postgres://x/y", slot: s2, publication: p } }
+  sinks:
+    out: { type: sqlite, config: { connection_url: "sqlite::memory:", table: t } }
+  nodes:
+    sa: { kind: source, ref: a }
+    sb: { kind: source, ref: b }
+    m: { kind: merge }
+    w: { kind: sink, ref: out }
+  edges:
+    - { from: sa, to: m }
+    - { from: sb, to: m }
+    - { from: m, to: w }
+"#,
+    );
+    let auth = build_auth_catalog(None).unwrap();
+    let err = build_topology(&cfg, &auth).await.unwrap_err().to_string();
+    assert!(err.contains("exactly one source node"), "{err}");
+    assert!(err.contains("upsert"), "offers the alternative: {err}");
+}
+
+/// #459: `resilience:` IS applied in topology mode (it rides the governance set),
+/// so it must not be listed as ignored — the earlier warning was wrong.
+#[test]
+fn validate_does_not_claim_resilience_is_ignored() {
+    let dir = TempDir::new().unwrap();
+    let csv = orders_csv(dir.path());
+    let cfg_path = dir.path().join("faucet.yaml");
+    write(
+        &cfg_path,
+        &format!(
+            r#"version: 1
+name: resil
+resilience:
+  retry: {{ max_attempts: 3 }}
+pipeline:
+  sources:
+    o: {{ type: csv, config: {{ path: {csv} }} }}
+  sinks:
+    out: {{ type: stdout, config: {{}} }}
+  nodes:
+    s: {{ kind: source, ref: o }}
+    w: {{ kind: sink, ref: out }}
+  edges:
+    - {{ from: s, to: w }}
+"#,
+            csv = csv.display()
+        ),
+    );
+    let out = Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["validate", cfg_path.to_str().unwrap()])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+    assert!(
+        !stdout.contains("`resilience:` is ignored"),
+        "resilience is wired; must not be reported as ignored: {stdout}"
+    );
 }

@@ -66,12 +66,6 @@ impl TopologyRunOptions {
 /// with the policy doing nothing (#456 M2).
 pub fn inert_blocks(cfg: &PipelineConfig) -> Vec<(&'static str, &'static str)> {
     let mut out = Vec::new();
-    if cfg.resilience.is_some() {
-        out.push((
-            "resilience",
-            "sink writes are not retried and the circuit breaker never trips",
-        ));
-    }
     #[cfg(feature = "notify")]
     if !cfg.notifications.is_empty() {
         out.push((
@@ -112,19 +106,13 @@ pub fn validate_topology_spec(cfg: &PipelineConfig) -> CliResult<()> {
     if !cfg.matrix.is_empty() {
         return Err(CliError::MatrixAndNodesBothPresent);
     }
-    // Exactly-once is not implemented for node graphs: there is no per-sink
-    // commit-token/watermark path here. The matrix path gates this combination in
-    // `expand`, which topology mode never runs — so without this check the run
-    // would silently execute at-least-once and duplicate on retry (#456 H2).
+    // Exactly-once in a node graph (#458). Each sink node commits under its own
+    // scope, so the requirements are the matrix ones applied per node — plus a
+    // single-source restriction, because nothing records which source a given
+    // sink's bookmark came from. Checked here, at config-load time, so an
+    // unsupported combination never runs *as if* it were exactly-once (#456 H2).
     if cfg.delivery == faucet_core::DeliveryMode::ExactlyOnce {
-        return Err(CliError::Config(
-            "`delivery: exactly_once` is not supported in topology mode (`pipeline.nodes`): a \
-             node graph has no atomic commit-token path, so the run would silently be \
-             at-least-once. Use the matrix form (`pipeline.source`/`sink` + `matrix:`) for \
-             exactly-once, or make the sinks idempotent with `write_mode: upsert` and set \
-             `delivery: at_least_once`"
-                .into(),
-        ));
+        validate_exactly_once(cfg)?;
     }
     let spec = &cfg.pipeline;
     let mut known: Vec<String> = spec.nodes.keys().cloned().collect();
@@ -138,6 +126,118 @@ pub fn validate_topology_spec(cfg: &PipelineConfig) -> CliResult<()> {
                 });
             }
         }
+    }
+    Ok(())
+}
+
+/// The connector kind a source/sink node resolves to, without building anything.
+///
+/// Mirrors [`resolve_connector`]'s kind precedence (inline `type` override, else
+/// the referenced template, else the legacy singular block) so the gate below and
+/// the builder can never disagree about what a node *is*.
+fn resolved_node_kind(cfg: &PipelineConfig, node: &NodeSpec) -> Option<String> {
+    let (template, kind, templates, legacy) = match node {
+        NodeSpec::Source { template, kind, .. } => {
+            (template, kind, &cfg.pipeline.sources, &cfg.pipeline.source)
+        }
+        NodeSpec::Sink { template, kind, .. } => {
+            (template, kind, &cfg.pipeline.sinks, &cfg.pipeline.sink)
+        }
+        _ => return None,
+    };
+    if let Some(k) = kind {
+        return Some(k.clone());
+    }
+    let name = template.as_deref().unwrap_or("default");
+    templates
+        .get(name)
+        .or(if name == "default" {
+            legacy.as_ref()
+        } else {
+            None
+        })
+        .map(|t| t.kind.clone())
+}
+
+/// The four atomic-watermark requirements, per node, plus the single-source rule.
+///
+/// Ordered so the message names the *limiting* side, and suggests the keyed-upsert
+/// alternative when the sinks could do it — the same shape as the matrix gate in
+/// `expand`, so an operator moving a pipeline between the two forms reads the same
+/// diagnosis.
+fn validate_exactly_once(cfg: &PipelineConfig) -> CliResult<()> {
+    let nodes = &cfg.pipeline.nodes;
+    let sources: Vec<(&String, String)> = nodes
+        .iter()
+        .filter(|(_, n)| matches!(n, NodeSpec::Source { .. }))
+        .map(|(id, n)| (id, resolved_node_kind(cfg, n).unwrap_or_default()))
+        .collect();
+    let sinks: Vec<(&String, String)> = nodes
+        .iter()
+        .filter(|(_, n)| matches!(n, NodeSpec::Sink { .. }))
+        .map(|(id, n)| (id, resolved_node_kind(cfg, n).unwrap_or_default()))
+        .collect();
+
+    // 1. One source. A sink's bookmark records the position of whichever source
+    //    fed its pages, and the graph does not record which one — so with several
+    //    sources there is no sound resume point to anchor the watermark against.
+    if sources.len() != 1 {
+        return Err(CliError::Config(format!(
+            "`delivery: exactly_once` needs exactly one source node; this graph has {}. A \
+             sink's commit watermark is only meaningful against a known source position, and \
+             nothing records which source fed a given page. Split the graph into one pipeline \
+             per source, or use `write_mode: upsert` + `key` on the sinks for keyed-upsert \
+             effectively-once with any number of sources",
+            sources.len()
+        )));
+    }
+    // 2. The source must replay deterministically.
+    let (src_id, src_kind) = &sources[0];
+    if !crate::registry::source_supports_exactly_once(src_kind) {
+        return Err(CliError::Config(format!(
+            "node '{src_id}': `delivery: exactly_once` is not supported by source '{src_kind}' \
+             (deterministic-replay sources only: {})",
+            crate::registry::EXACTLY_ONCE_SOURCE_KINDS.join(", ")
+        )));
+    }
+    // 3. Every sink must commit data + token atomically.
+    for (id, kind) in &sinks {
+        if !crate::registry::sink_supports_idempotent_writes(kind) {
+            return Err(CliError::Config(format!(
+                "node '{id}': `delivery: exactly_once` is not supported by sink '{kind}' \
+                 (sinks that commit a watermark atomically: {}). Every sink node must qualify — \
+                 each one keeps its own watermark",
+                crate::registry::IDEMPOTENT_SINK_KINDS.join(", ")
+            )));
+        }
+    }
+    // 4. Durable state — the per-node sequence has to survive a restart.
+    match cfg.pipeline.state.as_ref() {
+        None => {
+            return Err(CliError::Config(
+                "`delivery: exactly_once` requires a durable `state:` block: each sink node \
+                 persists its commit sequence there, and without it every restart would \
+                 re-commit from zero"
+                    .into(),
+            ));
+        }
+        Some(state) if state.kind == "memory" => {
+            return Err(CliError::Config(
+                "`delivery: exactly_once` requires a durable `state:` block, and `memory` does \
+                 not survive the process. Use `file`, `redis`, or `postgres`"
+                    .into(),
+            ));
+        }
+        Some(_) => {}
+    }
+    // 5. No DLQ — routing a row aside breaks the all-or-nothing page commit.
+    if cfg.pipeline.dlq.is_some() {
+        return Err(CliError::Config(
+            "`delivery: exactly_once` is incompatible with a `dlq:` block in this version: a \
+             page's rows and its commit token are written as one unit, so a partial page \
+             cannot be split off to a dead-letter queue"
+                .into(),
+        ));
     }
     Ok(())
 }
@@ -357,6 +457,9 @@ fn build_governance(cfg: &PipelineConfig) -> CliResult<TopologyGovernance> {
     if let Some(spec) = &cfg.resilience {
         g.resilience = Some(spec.to_policy()?);
     }
+    // Delivery guarantee (#458). `validate_topology_spec` has already checked the
+    // per-node requirements, so by here `exactly_once` is known to be supportable.
+    g.delivery = cfg.delivery;
 
     #[cfg(feature = "masking")]
     if let Some(spec) = &cfg.pipeline.masking {
@@ -492,7 +595,7 @@ pub async fn run_topology(
         _ => TopologyOnError::Continue,
     };
 
-    let mut opts = TopologyOptions::new(pipeline_name).with_on_error(on_error);
+    let mut opts = TopologyOptions::new(pipeline_name.clone()).with_on_error(on_error);
     opts.run_id = run_id;
 
     if let Some(state) = &cfg.pipeline.state {
@@ -516,30 +619,137 @@ pub async fn run_topology(
         opts = opts.with_cancel(c);
     }
 
-    let result = topo.run_with(opts, build_governance(cfg)?).await?;
+    // `run_reported` rather than `run_with`: the post-run pass below emits one
+    // notification and evaluates one SLA per **sink node**, which needs to know
+    // which node failed (#459).
+    let state_store = opts.state_store.clone();
+    let cancelled = run.cancel.as_ref().is_some_and(|c| c.is_cancelled());
+    let reported = topo.run_reported(opts, build_governance(cfg)?).await?;
 
-    let mut invocations: Vec<InvocationOutcome> = result
+    // Per-sink-node observability. A sink node is a topology's analogue of a
+    // matrix invocation — it owns a state key, a bookmark, and a record count —
+    // so the SLA and notification passes key off it, reusing the same standalone
+    // functions the executor calls rather than a parallel implementation.
+    if !run.is_preview() && !cancelled {
+        post_run_observability(cfg, &pipeline_name, &reported, state_store.as_ref()).await;
+    }
+
+    let mut invocations: Vec<InvocationOutcome> = reported
+        .result
         .per_sink
-        .into_iter()
+        .iter()
         .map(|(node_id, records)| InvocationOutcome {
-            row_id: node_id,
+            row_id: node_id.clone(),
             parent_record_key: None,
-            records_written: records,
+            records_written: *records,
             error: None,
             metrics: None,
         })
         .collect();
     invocations.sort_by(|a, b| a.row_id.cmp(&b.row_id));
 
-    for msg in result.errors {
+    // Failures, attributed to the node that produced them instead of a flat
+    // "topology" row (#459).
+    for n in reported.nodes.iter().filter(|n| n.error.is_some()) {
         invocations.push(InvocationOutcome {
-            row_id: "topology".to_string(),
+            row_id: n.node_id.clone(),
             parent_record_key: None,
             records_written: 0,
-            error: Some(msg),
+            error: n.error.clone(),
             metrics: None,
         });
     }
 
     Ok(RunSummary { invocations })
+}
+
+/// Freshness/volume SLAs and notifications, once per sink node.
+///
+/// Deliberately a thin adapter: `sla::evaluate_post_run` and the `NotifyEvent`
+/// constructors are already standalone, so topology mode calls exactly what the
+/// matrix executor calls. Neither can fail a run — an SLA violation is a signal
+/// and a notification is best-effort — so this returns nothing.
+async fn post_run_observability(
+    cfg: &PipelineConfig,
+    pipeline_name: &str,
+    reported: &faucet_core::topology::TopologyRun,
+    state_store: Option<&std::sync::Arc<dyn faucet_core::StateStore>>,
+) {
+    #[cfg(feature = "notify")]
+    let notifier = match crate::notify::Notifier::from_specs(&cfg.notifications) {
+        Ok(n) => n,
+        Err(e) => {
+            // A malformed block is a config error, but it must not fail a run that
+            // has already written its data.
+            tracing::error!(error = %e, "notifications config invalid; not notifying");
+            None
+        }
+    };
+    let now = chrono::Utc::now().timestamp();
+
+    for node in reported.nodes.iter().filter(|n| n.kind == "sink") {
+        let row = node.node_id.as_str();
+
+        // ── SLA (#202) ───────────────────────────────────────────────────────
+        let violations = match cfg.sla.as_ref() {
+            Some(spec) => {
+                let base_key = format!("{pipeline_name}::{row}");
+                let outcome = match &node.error {
+                    None => crate::sla::RunOutcome::Success {
+                        rows: node.records as u64,
+                    },
+                    Some(_) => crate::sla::RunOutcome::Failure,
+                };
+                let v = crate::sla::evaluate_post_run(
+                    spec,
+                    state_store,
+                    &base_key,
+                    pipeline_name,
+                    row,
+                    outcome,
+                    now,
+                )
+                .await;
+                for violation in &v {
+                    tracing::warn!(node = %row, kind = violation.kind(), "SLA violation: {violation}");
+                }
+                v
+            }
+            None => Vec::new(),
+        };
+
+        // ── Notifications (#280) ─────────────────────────────────────────────
+        #[cfg(feature = "notify")]
+        if let Some(notifier) = &notifier {
+            use crate::notify::NotifyEvent;
+            match &node.error {
+                None => {
+                    notifier
+                        .emit(NotifyEvent::run_success(
+                            pipeline_name,
+                            row,
+                            node.records as u64,
+                        ))
+                        .await;
+                }
+                Some(msg) => {
+                    notifier
+                        .emit(NotifyEvent::run_failure(pipeline_name, row, "sink", msg))
+                        .await;
+                }
+            }
+            for v in &violations {
+                notifier
+                    .emit(NotifyEvent::sla_breach(
+                        pipeline_name,
+                        row,
+                        v.kind(),
+                        v.to_string(),
+                    ))
+                    .await;
+            }
+        }
+        #[cfg(not(feature = "notify"))]
+        let _ = &violations;
+    }
 }
