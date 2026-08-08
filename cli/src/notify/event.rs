@@ -291,7 +291,11 @@ mod redaction_tests {
             "http",
             format!("HTTP error for url (https://api.example.com/v1?api_key={secret})"),
         );
-        assert!(!ev.message.contains(secret), "message leaked: {}", ev.message);
+        assert!(
+            !ev.message.contains(secret),
+            "message leaked: {}",
+            ev.message
+        );
         assert!(ev.message.contains("***"), "{}", ev.message);
 
         // Titles and string details go into the same payload.

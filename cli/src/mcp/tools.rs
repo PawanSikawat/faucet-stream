@@ -715,8 +715,8 @@ async fn run_template(ctx: &McpContext, args: &Value) -> Result<String, String> 
         // The MCP tool runs the pipeline in this process; nothing is persisted.
         crate::templates::Materialize::Local,
     )
-        .await
-        .map_err(|e| e.to_string())?;
+    .await
+    .map_err(|e| e.to_string())?;
 
     if dry_run {
         // Validate the materialized config without touching a sink, and never

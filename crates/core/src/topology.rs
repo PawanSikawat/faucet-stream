@@ -687,7 +687,7 @@ impl Topology {
                         quality: opts.governance.quality.clone(),
                         #[cfg(feature = "contract")]
                         contract: opts.governance.contract.clone(),
-                        schema_drift: opts.governance.schema_drift.clone(),
+                        schema_drift: opts.governance.schema_drift,
                         resilience: opts.governance.resilience.clone(),
                     };
                     Box::pin(run_sink_node(id, sink, rx, sopts))
@@ -738,11 +738,7 @@ impl Topology {
                 // (#146 H16, #456 M1). A node that does not stop within the grace
                 // window is still dropped, so a sink wedged mid-write cannot hang
                 // the run.
-                let coop = opts
-                    .cancel
-                    .clone()
-                    .unwrap_or_else(CancellationToken::new)
-                    .child_token();
+                let coop = opts.cancel.clone().unwrap_or_default().child_token();
                 let first_err: Arc<std::sync::Mutex<Option<FaucetError>>> =
                     Arc::new(std::sync::Mutex::new(None));
                 let wrapped = joined.map(|f| {
@@ -2015,10 +2011,7 @@ mod tests {
         // above "0/10…" lexicographically while being *behind* it numerically.
         assert_eq!(
             start_bookmark(
-                &[
-                    json!({"lsn": "0/9FFFFFF"}),
-                    json!({"lsn": "0/10000000"}),
-                ],
+                &[json!({"lsn": "0/9FFFFFF"}), json!({"lsn": "0/10000000"}),],
                 1
             ),
             None

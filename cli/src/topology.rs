@@ -48,7 +48,8 @@ pub struct TopologyRunOptions {
 impl TopologyRunOptions {
     /// The effective `${now.*}` clock.
     fn clock(&self) -> DateTime<FixedOffset> {
-        self.clock.unwrap_or_else(|| chrono::Utc::now().fixed_offset())
+        self.clock
+            .unwrap_or_else(|| chrono::Utc::now().fixed_offset())
     }
 
     /// Whether this is a non-writing preview, which must not persist bookmarks.
@@ -84,7 +85,10 @@ pub fn inert_blocks(cfg: &PipelineConfig) -> Vec<(&'static str, &'static str)> {
     }
     #[cfg(feature = "catalog")]
     if cfg.catalog.is_some() {
-        out.push(("catalog", "no datasets, schemas, or lineage edges are recorded"));
+        out.push((
+            "catalog",
+            "no datasets, schemas, or lineage edges are recorded",
+        ));
     }
     if cfg.sla.is_some() {
         out.push((

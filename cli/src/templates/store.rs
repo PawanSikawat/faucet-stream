@@ -954,9 +954,16 @@ pipeline:
         let want = resolve_version(&s, "tenant-sync", VersionSelector::stable())
             .await
             .unwrap();
-        let out = materialize(&s, "tenant-sync", want, &supplied, &BTreeMap::new(), Materialize::Local)
-            .await
-            .unwrap();
+        let out = materialize(
+            &s,
+            "tenant-sync",
+            want,
+            &supplied,
+            &BTreeMap::new(),
+            Materialize::Local,
+        )
+        .await
+        .unwrap();
         assert_eq!(out.version, 1);
         assert_eq!(out.name.as_deref(), Some("tenant-sync"));
         assert_eq!(out.format(), ConfigFormat::Json);
@@ -991,9 +998,16 @@ pipeline:
             ("bogus".to_string(), json!("b")),
         ]
         .into();
-        let err = materialize(&s, "tenant-sync", 1, &supplied, &BTreeMap::new(), Materialize::Local)
-            .await
-            .unwrap_err();
+        let err = materialize(
+            &s,
+            "tenant-sync",
+            1,
+            &supplied,
+            &BTreeMap::new(),
+            Materialize::Local,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, CliError::UnknownParam { .. }), "{err:?}");
     }
 
@@ -1009,9 +1023,16 @@ pipeline:
             "{err:?}"
         );
         let supplied: SuppliedParams = [("tenant_id".to_string(), json!("a"))].into();
-        let err = materialize(&s, "tenant-sync", 9, &supplied, &BTreeMap::new(), Materialize::Local)
-            .await
-            .unwrap_err();
+        let err = materialize(
+            &s,
+            "tenant-sync",
+            9,
+            &supplied,
+            &BTreeMap::new(),
+            Materialize::Local,
+        )
+        .await
+        .unwrap_err();
         assert!(
             matches!(
                 err,
@@ -1055,9 +1076,16 @@ pipeline:
 
         let overrides: BTreeMap<String, String> =
             [("FAUCET_TPL_REGION".to_string(), "from-request".to_string())].into();
-        let out = materialize(&s, "env-template", 1, &SuppliedParams::new(), &overrides, Materialize::Local)
-            .await
-            .unwrap();
+        let out = materialize(
+            &s,
+            "env-template",
+            1,
+            &SuppliedParams::new(),
+            &overrides,
+            Materialize::Local,
+        )
+        .await
+        .unwrap();
         let doc: Value = serde_json::from_str(&out.body).unwrap();
         assert_eq!(
             doc["pipeline"]["source"]["config"]["url"],
@@ -1086,9 +1114,16 @@ pipeline:
         register(&s, req_launched(body)).await.unwrap();
         let supplied: SuppliedParams =
             [("api_token".to_string(), json!("tok-abcdefghijklmnop"))].into();
-        let out = materialize(&s, "secret-template", 1, &supplied, &BTreeMap::new(), Materialize::Local)
-            .await
-            .unwrap();
+        let out = materialize(
+            &s,
+            "secret-template",
+            1,
+            &supplied,
+            &BTreeMap::new(),
+            Materialize::Local,
+        )
+        .await
+        .unwrap();
         assert!(out.used_secret_params);
         assert_eq!(out.params_redacted["api_token"], json!("***"));
         assert!(out.body.contains("tok-abcdefghijklmnop"));

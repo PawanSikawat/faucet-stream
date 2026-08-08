@@ -1278,7 +1278,11 @@ mod tests {
         )
         .await
         .expect("materialize");
-        assert!(local.body.contains("hunter2-should-not-persist"), "{}", local.body);
+        assert!(
+            local.body.contains("hunter2-should-not-persist"),
+            "{}",
+            local.body
+        );
         unsafe { std::env::remove_var("FAUCET_TEST_C5_SECRET") };
     }
 

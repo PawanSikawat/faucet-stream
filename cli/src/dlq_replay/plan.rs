@@ -385,7 +385,9 @@ pipeline:
     /// writes values the original path would never have produced.
     #[test]
     fn replay_drops_the_transform_chain_and_masking() {
-        let cfg = cfg("  transforms:\n    - { type: keys_case, config: { mode: snake } }\n  masking:\n    rules:\n      - name: h\n        match: { fields: [email] }\n        action: { type: hash }\n");
+        let cfg = cfg(
+            "  transforms:\n    - { type: keys_case, config: { mode: snake } }\n  masking:\n    rules:\n      - name: h\n        match: { fields: [email] }\n        action: { type: hash }\n",
+        );
         // Sanity: the config really does declare both, so the assertions below are
         // about the replay shaping and not about an empty config.
         let expanded = crate::expand::expand(&cfg).unwrap();
