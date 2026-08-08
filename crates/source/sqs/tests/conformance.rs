@@ -134,3 +134,94 @@ async fn conformance_bounded_memory() {
     faucet_conformance::assert_bounded_memory(&source, 250, 5_000).await;
     // _container stays alive to here
 }
+
+// ── #456 C1: deletion must not precede the downstream write ─────────────────
+
+/// Create a queue whose messages become visible again immediately, so a
+/// non-deleted message can be observed without waiting out a visibility timeout.
+async fn create_queue_visible_immediately(client: &aws_sdk_sqs::Client, name: &str) -> String {
+    use aws_sdk_sqs::types::QueueAttributeName;
+    for _ in 0..120 {
+        match client
+            .create_queue()
+            .queue_name(name)
+            .attributes(QueueAttributeName::VisibilityTimeout, "0")
+            .send()
+            .await
+        {
+            Ok(out) => return out.queue_url().expect("queue url").to_string(),
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+        }
+    }
+    panic!("localstack sqs never became ready");
+}
+
+/// Count the distinct message bodies still retrievable from the queue.
+async fn count_remaining(client: &aws_sdk_sqs::Client, queue_url: &str) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    // Several passes: SQS returns an arbitrary subset per call.
+    for _ in 0..10 {
+        let out = client
+            .receive_message()
+            .queue_url(queue_url)
+            .max_number_of_messages(10)
+            .wait_time_seconds(1)
+            .send()
+            .await
+            .expect("receive_message");
+        for m in out.messages() {
+            if let Some(b) = m.body() {
+                seen.insert(b.to_string());
+            }
+        }
+    }
+    seen.len()
+}
+
+/// A page's messages must still be in the queue after the page has been yielded
+/// but before the consumer comes back for the next one — that is the window in
+/// which the sink write happens, and deleting inside it turns SQS's at-least-once
+/// contract into at-most-once (#456 C1).
+///
+/// The test abandons the stream after one page, which is what a sink error or a
+/// crash looks like from the source's point of view.
+#[tokio::test(flavor = "multi_thread")]
+async fn messages_survive_a_downstream_failure_after_the_page_is_yielded() {
+    use faucet_core::Source as _;
+    use futures::StreamExt;
+
+    let (_container, endpoint) = start_localstack().await;
+    let client = raw_client(&endpoint).await;
+    let queue_url = create_queue_visible_immediately(&client, "ack-ordering").await;
+    seed(&client, &queue_url, 4).await;
+
+    let mut cfg = SqsSourceConfig::new(&queue_url);
+    cfg.region = Some("us-east-1".into());
+    cfg.endpoint_url = Some(endpoint.clone());
+    cfg.credentials = test_credentials();
+    cfg.wait_time_seconds = 1;
+    cfg.idle_timeout_secs = Some(5);
+    cfg.batch_size = 2;
+
+    let source = SqsSource::new(cfg).await.expect("source");
+    {
+        let ctx = std::collections::HashMap::new();
+        let mut pages = source.stream_pages(&ctx, 2);
+        let first = pages
+            .next()
+            .await
+            .expect("one page")
+            .expect("page is not an error");
+        assert_eq!(first.records.len(), 2, "batch_size pages the queue");
+        // Abandon the stream: the consumer never resumed us, so nothing this page
+        // carried was ever written. Its messages must NOT have been deleted.
+        drop(pages);
+    }
+
+    assert_eq!(
+        count_remaining(&client, &queue_url).await,
+        4,
+        "no message may be deleted before the page it belongs to is written \
+         downstream — every one must still be redeliverable"
+    );
+}

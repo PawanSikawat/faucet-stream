@@ -1,6 +1,21 @@
 //! The SQS `Source` implementation: long-poll `ReceiveMessage`, buffer to
-//! `batch_size`, delete each page's receipt handles right before yielding it,
-//! and terminate on `idle_timeout_secs` / `max_messages`.
+//! `batch_size`, delete each page's receipt handles **after** the page has been
+//! written downstream, and terminate on `idle_timeout_secs` / `max_messages`.
+//!
+//! ## Why deletion happens after the yield
+//!
+//! In an `async_stream` generator, statements before a `yield` run *before* the
+//! consumer sees the page; statements after it resume only once the consumer has
+//! come back for the next one — i.e. after the pipeline wrote the page to the
+//! sink and persisted it. Deleting on the near side of the `yield` would destroy
+//! the messages before anything durable had happened, so a sink error, an abort,
+//! or a crash would lose them permanently: at-most-once.
+//!
+//! So each page's receipt handles are parked in `pending` and deleted at the top
+//! of the following iteration (and once more after the final page resumes). A
+//! failure anywhere in between simply means the deletes never happen and SQS
+//! redelivers after the visibility timeout — at-least-once, as documented. This
+//! mirrors the Pub/Sub and NATS sources, which ack the same way (#456 C1).
 
 use crate::config::{MAX_RECEIVE_BATCH, SqsSourceConfig};
 use aws_sdk_sqs::Client;
@@ -120,10 +135,18 @@ impl faucet_core::Source for SqsSource {
             // redelivers it, preserving at-least-once).
             let mut buffer: Vec<Value> = Vec::new();
             let mut handles: Vec<Option<String>> = Vec::new();
+            // Receipt handles of pages already yielded but not yet deleted. Drained
+            // at the top of the next iteration — by then the consumer has resumed
+            // us, so the page is durable downstream (see the module docs).
+            let mut pending: Vec<String> = Vec::new();
             let mut total = 0usize;
             let mut last_activity = Instant::now();
 
             loop {
+                if !pending.is_empty() {
+                    self.delete_handles(&std::mem::take(&mut pending)).await?;
+                }
+
                 // Reached the message cap → stop.
                 let remaining = match max {
                     Some(m) if total >= m => break,
@@ -171,13 +194,15 @@ impl faucet_core::Source for SqsSource {
                     total += 1;
                 }
 
-                // Emit every full page, deleting its handles right before yield.
+                // Emit every full page. Its handles are parked, not deleted: the
+                // page is not durable until the consumer resumes us.
                 while buffer.len() >= chunk {
                     let page: Vec<Value> = buffer.drain(..chunk).collect();
                     let to_delete: Vec<String> =
                         handles.drain(..chunk).flatten().collect();
-                    self.delete_handles(&to_delete).await?;
                     yield StreamPage { records: page, bookmark: None };
+                    // Resumed ⇒ the page was written downstream; safe to delete.
+                    pending.extend(to_delete);
                 }
 
                 if let Some(m) = max
@@ -192,11 +217,18 @@ impl faucet_core::Source for SqsSource {
                 }
             }
 
-            // Flush whatever is left as a final (short) page.
+            // Flush whatever is left as a final (short) page, then delete the
+            // last two pages' handles: `pending` (yielded in the loop above) and
+            // this page's, which is durable once the consumer resumes us. If the
+            // consumer stops polling instead, nothing is deleted and SQS
+            // redelivers — the safe direction.
             if !buffer.is_empty() {
                 let to_delete: Vec<String> = handles.into_iter().flatten().collect();
-                self.delete_handles(&to_delete).await?;
                 yield StreamPage { records: buffer, bookmark: None };
+                pending.extend(to_delete);
+            }
+            if !pending.is_empty() {
+                self.delete_handles(&pending).await?;
             }
             tracing::info!(
                 queue = %self.config.queue_url,
