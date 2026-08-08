@@ -147,6 +147,26 @@ pub fn build_replay_node(
 
     let reader = DlqReaderSource::new(from_files, reason, decryptor);
     node.source_override = Some(SourceOverride::new(Box::new(reader)));
+
+    // A DLQ envelope's `payload` is the record as it entered the *write* path —
+    // i.e. already transformed and already masked (the masking pass runs first per
+    // page, so quarantine and write-failure envelopes both hold masked values).
+    // Re-running those two passes on replay would apply them a second time, and
+    // neither is idempotent: the `hash` transform and masking's `hash`/`tokenize`
+    // actions would produce H(H(x)), breaking the joinability masking exists to
+    // guarantee; `set` would re-stamp `${now.*}` with the replay time; `cast` /
+    // `json_parse` / `split` would re-run against already-converted values. So a
+    // replay skips both (#456 H3).
+    //
+    // The quality and contract passes are deliberately kept: they are pure
+    // predicates over the record, so re-checking is idempotent — and a replay is
+    // exactly when you want them re-enforced.
+    node.transforms.clear();
+    #[cfg(feature = "masking")]
+    {
+        node.masking = None;
+    }
+
     // A replay reads the whole DLQ location once — no bookmarking, and never
     // exactly-once (the reader is not a deterministic-replay source).
     node.state = None;
@@ -340,5 +360,95 @@ mod tests {
             Some("quality"),
             None
         ));
+    }
+}
+
+#[cfg(test)]
+mod replay_shaping_tests {
+    use super::*;
+    use crate::config::PipelineConfig;
+
+    /// Build the replay node for `cfg` with fixed paths.
+    fn replay_node(cfg: &PipelineConfig) -> ExpandedNode {
+        build_replay_node(
+            cfg,
+            vec![PathBuf::from("./dlq.jsonl")],
+            None,
+            Path::new("./failed.jsonl"),
+            None,
+            DlqDecryptor::default(),
+        )
+        .expect("builds")
+    }
+
+    fn cfg(extra: &str) -> PipelineConfig {
+        let yaml = format!(
+            r#"version: 1
+name: replay-shape
+pipeline:
+{extra}  source: {{ type: csv, config: {{ path: ./in.csv }} }}
+  sink: {{ type: jsonl, config: {{ path: ./out.jsonl }} }}
+  dlq:
+    sink: {{ type: jsonl, config: {{ path: ./dlq.jsonl }} }}
+"#
+        );
+        PipelineConfig::from_text(&yaml, Path::new("test.yaml")).expect("parses")
+    }
+
+    /// #456 H3: a DLQ payload is already transformed, so a replay must not run the
+    /// chain again — `hash`, `set ${now.*}`, `cast`, and `json_parse` are not
+    /// idempotent, and re-applying them writes values the original path would
+    /// never have produced.
+    #[test]
+    fn replay_drops_the_transform_chain() {
+        let cfg = cfg("  transforms:\n    - { type: keys_case, config: { mode: snake } }\n");
+        // Sanity: the config really does declare a chain, so the assertion below is
+        // about the replay shaping and not about an empty config.
+        let expanded = crate::expand::expand(&cfg).unwrap();
+        assert_eq!(expanded[0].transforms.len(), 1);
+
+        let node = replay_node(&cfg);
+        assert!(
+            node.transforms.is_empty(),
+            "the chain already ran before the payload was captured"
+        );
+        assert!(node.source_override.is_some());
+        assert_eq!(node.delivery, DeliveryMode::AtLeastOnce);
+        assert!(node.state.is_none());
+    }
+
+    /// …and the payload is already masked, so the masking pass is dropped too:
+    /// masking's `hash`/`tokenize` would produce H(H(x)), breaking the
+    /// joinability masking exists to guarantee.
+    #[cfg(feature = "masking")]
+    #[test]
+    fn replay_drops_masking() {
+        let cfg = cfg(
+            "  masking:\n    rules:\n      - name: h\n        match: { fields: [email] }\n        action: { type: hash }\n",
+        );
+        assert!(crate::expand::expand(&cfg).unwrap()[0].masking.is_some());
+        assert!(
+            replay_node(&cfg).masking.is_none(),
+            "the payload in the envelope is already masked"
+        );
+    }
+
+    /// Quality is a pure check, so a replay keeps enforcing it.
+    #[cfg(feature = "quality")]
+    #[test]
+    fn replay_keeps_quality() {
+        let cfg = cfg(
+            "  quality:\n    record:\n      - { type: not_null, field: id, on_failure: abort }\n",
+        );
+        let node = build_replay_node(
+            &cfg,
+            vec![PathBuf::from("./dlq.jsonl")],
+            None,
+            Path::new("./failed.jsonl"),
+            None,
+            DlqDecryptor::default(),
+        )
+        .expect("builds");
+        assert!(node.quality.is_some(), "checks are idempotent; keep them");
     }
 }

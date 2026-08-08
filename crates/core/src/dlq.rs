@@ -160,7 +160,11 @@ pub fn build_envelope(
     record_index: usize,
 ) -> Value {
     let kind = crate::observability::decorator::error_kind(error);
-    let message = error.to_string();
+    // The envelope is written to a file / object store, so it leaves the process:
+    // scrub any resolved secret the error text picked up (a `reqwest` error
+    // embeds the request URL, which may carry an API key in a query parameter).
+    // No-op unless the host installed a redactor (#456 H5).
+    let message = crate::redact::redact(&error.to_string());
     // `as_millis()` returns u128. Convert via TryFrom so we saturate at
     // i64::MAX instead of silently wrapping to a negative number. The
     // saturation ceiling (year ~292,000,000) is impossible in practice,

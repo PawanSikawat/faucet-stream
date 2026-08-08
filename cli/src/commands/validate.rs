@@ -101,6 +101,12 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         for n in topo.nodes() {
             println!("  - {} ({})", n.id, n.kind.kind_str());
         }
+        // Say what topology mode will *not* do. Printing "valid" while silently
+        // ignoring a declared block is how an operator ends up believing a policy
+        // is enforced when it is not (#456 M2).
+        for (block, consequence) in crate::topology::inert_blocks(&cfg) {
+            println!("  WARNING: `{block}:` is ignored in topology mode — {consequence}");
+        }
         return Ok(());
     }
 

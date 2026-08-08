@@ -46,12 +46,20 @@ valid JSON, otherwise as a JSON **string** of the raw body:
 
 ## Delivery semantics
 
-Each page's receipt handles are deleted (via `DeleteMessageBatch`) right before
-the page is yielded. Delivery is **at-least-once**: any message whose delete
-does not land — or whose visibility window elapses before a downstream commit —
-is redelivered on a later run. There is no resumable bookmark (`bookmark: None`
-on every page); the queue itself is the cursor. Key downstream consumers on a
-message field (e.g. an upsert sink) when replays must converge.
+Each page's receipt handles are deleted (via `DeleteMessageBatch`) **after** the
+page has been written downstream — the deletes for a page are issued once the
+pipeline comes back for the next page, so nothing is removed from the queue
+before it has been persisted. Delivery is therefore **at-least-once**: a sink
+error, an abort, or a crash between the write and the delete leaves the messages
+in the queue, and they are redelivered once the visibility window elapses.
+
+There is no resumable bookmark (`bookmark: None` on every page); the queue itself
+is the cursor. Key downstream consumers on a message field (e.g. an upsert sink)
+when replays must converge.
+
+Set `visibility_timeout` on the queue comfortably above the time it takes to
+write one page, or a slow sink will let a message reappear while it is still
+in flight.
 
 ## LocalStack
 

@@ -15,9 +15,10 @@ use crate::executor::{InvocationOutcome, RunSummary};
 use crate::merge::merge_value;
 use crate::registry::{build_sink, build_source};
 use crate::transforms::compile_transforms;
+use chrono::{DateTime, FixedOffset};
 use faucet_core::stage::compile_stage;
 use faucet_core::topology::{
-    JoinConfig, JoinNode, NodeKind, Topology, TopologyOnError, TopologyOptions,
+    JoinConfig, JoinNode, NodeKind, Topology, TopologyGovernance, TopologyOnError, TopologyOptions,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -26,6 +27,76 @@ use tokio_util::sync::CancellationToken;
 /// Whether the config selects topology mode (a non-empty `pipeline.nodes`).
 pub fn is_topology(cfg: &PipelineConfig) -> bool {
     !cfg.pipeline.nodes.is_empty()
+}
+
+/// Per-run knobs for topology mode, mirroring the matrix path's
+/// [`crate::executor::ExecuteOptions`] subset that applies to a node graph.
+#[derive(Default, Clone)]
+pub struct TopologyRunOptions {
+    /// External cancellation (serve run-cancel / timeout / shutdown, TUI quit).
+    pub cancel: Option<CancellationToken>,
+    /// Preview: build no real sinks, count records instead, and never persist a
+    /// bookmark (#456 C2).
+    pub dry_run: bool,
+    /// Preview: stop after this many records per sink, and never persist a
+    /// bookmark (#456 C2).
+    pub limit: Option<usize>,
+    /// Clock backing `${now.*}` in node configs. `None` = process start.
+    pub clock: Option<DateTime<FixedOffset>>,
+}
+
+impl TopologyRunOptions {
+    /// The effective `${now.*}` clock.
+    fn clock(&self) -> DateTime<FixedOffset> {
+        self.clock
+            .unwrap_or_else(|| chrono::Utc::now().fixed_offset())
+    }
+
+    /// Whether this is a non-writing preview, which must not persist bookmarks.
+    fn is_preview(&self) -> bool {
+        self.dry_run || self.limit.is_some()
+    }
+}
+
+/// Config blocks that topology mode does not (yet) act on.
+///
+/// Returned as `(block, consequence)` pairs so both `faucet validate` and the run
+/// path can say exactly what is inert and why it matters. Silence here was the
+/// original defect: a config could declare a policy, validate as "valid", and run
+/// with the policy doing nothing (#456 M2).
+pub fn inert_blocks(cfg: &PipelineConfig) -> Vec<(&'static str, &'static str)> {
+    let mut out = Vec::new();
+    if cfg.resilience.is_some() {
+        out.push((
+            "resilience",
+            "sink writes are not retried and the circuit breaker never trips",
+        ));
+    }
+    #[cfg(feature = "notify")]
+    if !cfg.notifications.is_empty() {
+        out.push((
+            "notifications",
+            "no alert is sent when the run fails or breaches an SLA",
+        ));
+    }
+    #[cfg(feature = "lineage")]
+    if cfg.lineage.is_some() {
+        out.push(("lineage", "no OpenLineage events are emitted"));
+    }
+    #[cfg(feature = "catalog")]
+    if cfg.catalog.is_some() {
+        out.push((
+            "catalog",
+            "no datasets, schemas, or lineage edges are recorded",
+        ));
+    }
+    if cfg.sla.is_some() {
+        out.push((
+            "sla",
+            "freshness and volume are not evaluated after the run",
+        ));
+    }
+    out
 }
 
 /// Config-level graph validation: the checks that need only the `nodes:` /
@@ -40,6 +111,20 @@ pub fn is_topology(cfg: &PipelineConfig) -> bool {
 pub fn validate_topology_spec(cfg: &PipelineConfig) -> CliResult<()> {
     if !cfg.matrix.is_empty() {
         return Err(CliError::MatrixAndNodesBothPresent);
+    }
+    // Exactly-once is not implemented for node graphs: there is no per-sink
+    // commit-token/watermark path here. The matrix path gates this combination in
+    // `expand`, which topology mode never runs — so without this check the run
+    // would silently execute at-least-once and duplicate on retry (#456 H2).
+    if cfg.delivery == faucet_core::DeliveryMode::ExactlyOnce {
+        return Err(CliError::Config(
+            "`delivery: exactly_once` is not supported in topology mode (`pipeline.nodes`): a \
+             node graph has no atomic commit-token path, so the run would silently be \
+             at-least-once. Use the matrix form (`pipeline.source`/`sink` + `matrix:`) for \
+             exactly-once, or make the sinks idempotent with `write_mode: upsert` and set \
+             `delivery: at_least_once`"
+                .into(),
+        ));
     }
     let spec = &cfg.pipeline;
     let mut known: Vec<String> = spec.nodes.keys().cloned().collect();
@@ -108,11 +193,31 @@ fn resolve_connector(
 }
 
 /// Build a [`faucet_core::Topology`] from the config's `pipeline.nodes` /
-/// `edges` block.
+/// `edges` block, with default run options (no preview, process-start clock).
 pub async fn build_topology(cfg: &PipelineConfig, auth: &AuthCatalog) -> CliResult<Topology> {
+    build_topology_with(cfg, auth, &TopologyRunOptions::default()).await
+}
+
+/// Build a [`faucet_core::Topology`], honouring the run options.
+///
+/// Two things happen here that the matrix path does per invocation in
+/// [`crate::executor`], and that topology mode used to skip entirely:
+///
+/// - **`${now.*}` is resolved** in every node's source/sink config, and a
+///   leftover `${backfill.*}` token is rejected. Without this the literal token
+///   string reached the connector, so a dated path became a directory named
+///   `${now.date}` (#456 H4).
+/// - **Preview modes wrap the sinks**: `--dry-run` swaps in a counting sink and
+///   `--limit` truncates, so neither performs a real write (#456 C2).
+pub async fn build_topology_with(
+    cfg: &PipelineConfig,
+    auth: &AuthCatalog,
+    opts: &TopologyRunOptions,
+) -> CliResult<Topology> {
     // Cheap graph checks first, so a wiring typo never costs a connector build.
     validate_topology_spec(cfg)?;
 
+    let clock = opts.clock();
     let spec = &cfg.pipeline;
     let mut builder = Topology::builder();
 
@@ -128,7 +233,7 @@ pub async fn build_topology(cfg: &PipelineConfig, auth: &AuthCatalog) -> CliResu
                 kind,
                 config,
             } => {
-                let (k, c) = resolve_connector(
+                let (k, mut c) = resolve_connector(
                     &spec.sources,
                     &spec.source,
                     template.as_deref(),
@@ -137,6 +242,8 @@ pub async fn build_topology(cfg: &PipelineConfig, auth: &AuthCatalog) -> CliResu
                     id,
                     "source",
                 )?;
+                crate::executor::resolve_now_inplace(&mut c, clock)?;
+                crate::executor::reject_unresolved_backfill_tokens(&c, "source")?;
                 NodeKind::Source(build_source(&k, c, auth, None).await?)
             }
             NodeSpec::Sink {
@@ -144,7 +251,7 @@ pub async fn build_topology(cfg: &PipelineConfig, auth: &AuthCatalog) -> CliResu
                 kind,
                 config,
             } => {
-                let (k, c) = resolve_connector(
+                let (k, mut c) = resolve_connector(
                     &spec.sinks,
                     &spec.sink,
                     template.as_deref(),
@@ -153,7 +260,19 @@ pub async fn build_topology(cfg: &PipelineConfig, auth: &AuthCatalog) -> CliResu
                     id,
                     "sink",
                 )?;
-                NodeKind::Sink(build_sink(&k, c, auth).await?)
+                crate::executor::resolve_now_inplace(&mut c, clock)?;
+                crate::executor::reject_unresolved_backfill_tokens(&c, "sink")?;
+                // Preview modes must never reach the real destination.
+                let sink: Box<dyn faucet_core::Sink> = if opts.dry_run {
+                    Box::new(crate::executor::CountingSink::new())
+                } else {
+                    build_sink(&k, c, auth).await?
+                };
+                let sink = match opts.limit {
+                    Some(n) => Box::new(crate::executor::LimitedSink::wrap(sink, n)) as Box<_>,
+                    None => sink,
+                };
+                NodeKind::Sink(sink)
             }
             NodeSpec::Transform { transforms } => {
                 let stages = compile_transforms(transforms)?;
@@ -202,6 +321,71 @@ pub async fn build_topology(cfg: &PipelineConfig, auth: &AuthCatalog) -> CliResu
     builder.build().map_err(|e| CliError::InvalidTopology {
         message: e.to_string(),
     })
+}
+
+/// Compile the config's governance blocks for a node graph.
+///
+/// Mirrors the matrix path in [`crate::executor`] so a topology enforces the same
+/// policies — before this existed, a config declaring `masking:` ran with no
+/// masking at all and PII reached every destination in the clear (#456 C3).
+///
+/// Masking is destination-scoped, so it is compiled **per sink node** against
+/// that node's identifiers (node id, template ref, connector kind) — any of which
+/// an `applies_to` rule may name. A sink for which no rule applies gets no entry,
+/// so the pass is skipped entirely for it.
+fn build_governance(cfg: &PipelineConfig) -> CliResult<TopologyGovernance> {
+    #[allow(unused_mut)]
+    let mut g = TopologyGovernance::new();
+
+    #[cfg(feature = "quality")]
+    if let Some(spec) = &cfg.pipeline.quality {
+        g.quality = Some(std::sync::Arc::new(
+            faucet_core::CompiledQuality::compile(spec)
+                .map_err(|e| CliError::Config(format!("quality: {e}")))?,
+        ));
+    }
+    #[cfg(feature = "contract")]
+    if let Some(spec) = &cfg.pipeline.contract {
+        g.contract = Some(std::sync::Arc::new(
+            faucet_core::CompiledContract::compile(spec)
+                .map_err(|e| CliError::Config(format!("contract: {e}")))?,
+        ));
+    }
+    if let Some(spec) = &cfg.pipeline.schema {
+        g.schema_drift = Some(faucet_core::SchemaDriftPolicy::compile(spec));
+    }
+    if let Some(spec) = &cfg.resilience {
+        g.resilience = Some(spec.to_policy()?);
+    }
+
+    #[cfg(feature = "masking")]
+    if let Some(spec) = &cfg.pipeline.masking {
+        for (node_id, node) in &cfg.pipeline.nodes {
+            let NodeSpec::Sink { template, kind, .. } = node else {
+                continue;
+            };
+            let template_ref = template.as_deref().unwrap_or("default");
+            // The node's own kind override, else the template's declared kind.
+            let resolved_kind = kind.clone().or_else(|| {
+                cfg.pipeline
+                    .sinks
+                    .get(template_ref)
+                    .or(cfg.pipeline.sink.as_ref())
+                    .map(|t| t.kind.clone())
+            });
+            let mut ids: Vec<&str> = vec![node_id.as_str(), template_ref];
+            if let Some(k) = resolved_kind.as_deref() {
+                ids.push(k);
+            }
+            let compiled = faucet_core::CompiledMasking::compile_for_sink(spec, &ids)
+                .map_err(|e| CliError::Config(format!("masking: {e}")))?;
+            if !compiled.is_empty() {
+                g.masking_by_sink
+                    .insert(node_id.clone(), std::sync::Arc::new(compiled));
+            }
+        }
+    }
+    Ok(g)
 }
 
 /// Collect a bounded preview of each `source` node's records (source side
@@ -289,9 +473,16 @@ pub async fn preview_to_string(
 pub async fn run_topology(
     cfg: &PipelineConfig,
     auth: &AuthCatalog,
-    cancel: Option<CancellationToken>,
+    run: TopologyRunOptions,
 ) -> CliResult<RunSummary> {
-    let topo = build_topology(cfg, auth).await?;
+    for (block, consequence) in inert_blocks(cfg) {
+        tracing::warn!(
+            block,
+            "`{block}:` is not applied in topology mode (`pipeline.nodes`) — {consequence}"
+        );
+    }
+
+    let topo = build_topology_with(cfg, auth, &run).await?;
 
     let pipeline_name = cfg.name.clone().unwrap_or_else(|| "unnamed".to_string());
     let run_id = uuid::Uuid::now_v7().to_string();
@@ -305,16 +496,27 @@ pub async fn run_topology(
     opts.run_id = run_id;
 
     if let Some(state) = &cfg.pipeline.state {
-        opts = opts.with_state_store(crate::state::build_state_store(state).await?);
+        let store = crate::state::build_state_store(state).await?;
+        // A preview must not advance a durable bookmark: the counting/truncating
+        // sinks return `Ok` without a real write, so a persisted bookmark would
+        // make the next real run resume past records nobody wrote (#456 C2,
+        // mirroring #321 H1 on the matrix path). Reads still pass through.
+        let store = if run.is_preview() {
+            std::sync::Arc::new(crate::executor::ReadOnlyStateStore { inner: store })
+                as std::sync::Arc<dyn faucet_core::StateStore>
+        } else {
+            store
+        };
+        opts = opts.with_state_store(store);
     }
     if let Some(dlq) = &cfg.pipeline.dlq {
         opts = opts.with_dlq(crate::executor::build_dlq_config(dlq).await?);
     }
-    if let Some(c) = cancel {
+    if let Some(c) = run.cancel.clone() {
         opts = opts.with_cancel(c);
     }
 
-    let result = topo.run(opts).await?;
+    let result = topo.run_with(opts, build_governance(cfg)?).await?;
 
     let mut invocations: Vec<InvocationOutcome> = result
         .per_sink

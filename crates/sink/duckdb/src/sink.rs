@@ -12,9 +12,31 @@ use duckdb::types::Value as DuckValue;
 use duckdb::{AccessMode, Config, Connection};
 use faucet_core::FaucetError;
 use faucet_core::util::quote_ident;
+
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+
+/// Quote a possibly schema-qualified table name, one segment at a time, so
+/// `analytics.events` becomes `"analytics"."events"` rather than the single
+/// identifier `"analytics.events"` (which names a table with a dot in it and can
+/// never resolve). Mirrors the ClickHouse sink's `quote_table` (#456 L3).
+fn quote_table(table: &str) -> String {
+    table
+        .split('.')
+        .map(quote_ident)
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// The bare table name of a possibly schema-qualified target, plus its schema —
+/// `information_schema.columns` stores the two separately.
+fn split_table(table: &str) -> (Option<&str>, &str) {
+    match table.rsplit_once('.') {
+        Some((schema, name)) => (Some(schema), name),
+        None => (None, table),
+    }
+}
 
 /// A sink that writes JSON records to a DuckDB table.
 pub struct DuckdbSink {
@@ -69,7 +91,7 @@ fn insert_json(
     let placeholders = vec!["(?)"; records.len()].join(", ");
     let sql = format!(
         "INSERT INTO {} ({}) VALUES {}",
-        quote_ident(table),
+        quote_table(table),
         quote_ident(column),
         placeholders
     );
@@ -98,17 +120,37 @@ fn insert_auto_map(
     }
 
     // Discover the table's columns (in declared order) via information_schema.
-    let mut cstmt = conn
-        .prepare(
-            "SELECT column_name FROM information_schema.columns \
-             WHERE table_name = ? ORDER BY ordinal_position",
-        )
-        .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?;
-    let cols: Vec<String> = cstmt
-        .query_map([table], |row| row.get::<_, String>(0))
-        .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?
-        .collect::<Result<Vec<String>, _>>()
-        .map_err(|e| FaucetError::Sink(format!("failed to decode table columns: {e}")))?;
+    // `table` may be schema-qualified, and information_schema keeps the schema and
+    // the name in separate columns — matching `table_name` against the whole
+    // dotted string would find nothing (#456 L3).
+    let (schema, name) = split_table(table);
+    let cols: Vec<String> = match schema {
+        Some(schema) => {
+            let mut cstmt = conn
+                .prepare(
+                    "SELECT column_name FROM information_schema.columns \
+                     WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
+                )
+                .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?;
+            cstmt
+                .query_map([schema, name], |row| row.get::<_, String>(0))
+                .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?
+                .collect::<Result<Vec<String>, _>>()
+        }
+        None => {
+            let mut cstmt = conn
+                .prepare(
+                    "SELECT column_name FROM information_schema.columns \
+                     WHERE table_name = ? ORDER BY ordinal_position",
+                )
+                .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?;
+            cstmt
+                .query_map([name], |row| row.get::<_, String>(0))
+                .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?
+                .collect::<Result<Vec<String>, _>>()
+        }
+    }
+    .map_err(|e| FaucetError::Sink(format!("failed to decode table columns: {e}")))?;
 
     if cols.is_empty() {
         return Err(FaucetError::Sink(format!(
@@ -155,7 +197,7 @@ fn insert_auto_map(
     let values = vec![row_ph.as_str(); rows.len()].join(", ");
     let sql = format!(
         "INSERT INTO {} ({}) VALUES {}",
-        quote_ident(table),
+        quote_table(table),
         col_list,
         values
     );
@@ -262,7 +304,7 @@ impl DuckdbSink {
     #[doc(hidden)]
     pub async fn scalar_count(&self, table: &str) -> Result<i64, FaucetError> {
         let conn = self.conn.clone();
-        let sql = format!("SELECT count(*) FROM {}", quote_ident(table));
+        let sql = format!("SELECT count(*) FROM {}", quote_table(table));
         tokio::task::spawn_blocking(move || {
             let guard = conn
                 .lock()
@@ -333,7 +375,7 @@ mod tests {
         let guard = sink.conn.lock().unwrap();
         guard
             .query_row(
-                &format!("SELECT count(*) FROM {}", quote_ident(table)),
+                &format!("SELECT count(*) FROM {}", quote_table(table)),
                 [],
                 |r| r.get::<_, i64>(0),
             )
@@ -397,5 +439,33 @@ mod tests {
         .await
         .unwrap();
         assert!(sink.write_batch(&[json!({"a": 1})]).await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod schema_qualified_tests {
+    use super::*;
+
+    /// #456 L3: a schema-qualified target must quote each segment, or it names a
+    /// table with a literal dot in it and can never resolve. The ClickHouse sink
+    /// already did this; DuckDB used a single `quote_ident`.
+    #[test]
+    fn quote_table_quotes_each_segment() {
+        assert_eq!(quote_table("events"), "\"events\"");
+        assert_eq!(quote_table("analytics.events"), "\"analytics\".\"events\"");
+    }
+
+    #[test]
+    fn split_table_separates_schema_from_name() {
+        assert_eq!(split_table("events"), (None, "events"));
+        assert_eq!(
+            split_table("analytics.events"),
+            (Some("analytics"), "events")
+        );
+        // Deepest qualifier wins (catalog.schema.table → schema is the prefix).
+        assert_eq!(
+            split_table("db.analytics.events"),
+            (Some("db.analytics"), "events")
+        );
     }
 }

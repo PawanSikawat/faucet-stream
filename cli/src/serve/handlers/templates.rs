@@ -524,23 +524,41 @@ pub async fn trigger_template(
             "triggering a DEPRECATED pipeline template"
         );
     }
-    let materialized = crate::templates::materialize(&s, &id, want, &supplied, &body.env)
+    // A clustered submit persists the materialized config so any instance can
+    // re-run it, so nothing secret may be baked into that body. In cluster mode we
+    // therefore materialize in `Persisted` mode: `${env:}` / `${file:}` /
+    // `${secret:}` stay as tokens and are resolved by the executing instance
+    // (#456 C5). What cannot be deferred is a value the *caller* supplied, so
+    // those are refused below.
+    let clustered = state.cluster().enabled();
+    let mode = if clustered {
+        crate::templates::Materialize::Persisted
+    } else {
+        crate::templates::Materialize::Local
+    };
+    let materialized = crate::templates::materialize(&s, &id, want, &supplied, &body.env, mode)
         .await
         .map_err(map_err)?;
 
-    // A clustered submit persists the raw config so any instance can re-run it.
-    // A `secret: true` param value would therefore be written to the shared
-    // history database — which is deliberately never a secret store. Refuse
-    // instead, and point at the two safe ways to get a secret into a clustered
-    // template run.
-    if state.cluster().enabled() && materialized.used_secret_params {
+    // Caller-supplied values that would land in the persisted body: a
+    // `secret: true` param, or an `env:` override (which substitutes into the
+    // config exactly like a param and is equally likely to be a credential —
+    // #456 M4). Both are refused rather than written to a shared database that is
+    // deliberately not a secret store.
+    if clustered && (materialized.used_secret_params || !body.env.is_empty()) {
+        let what = if materialized.used_secret_params {
+            "declares `secret: true` param(s)"
+        } else {
+            "was triggered with `env` overrides"
+        };
         return Err(ServeError::Unprocessable {
-            message: "this template declares `secret: true` param(s), and a clustered server \
-                      persists the materialized config so a peer can execute it — which would \
-                      store the secret in the shared run-history database. Reference the secret \
-                      from the template body instead (`${env:VAR}` or `${vault:…}`, resolved on \
-                      the executing instance), or trigger it on a non-clustered server"
-                .into(),
+            message: format!(
+                "this template {what}, and a clustered server persists the materialized config \
+                 so a peer can execute it — which would store the value in the shared \
+                 run-history database. Reference the secret from the template body instead \
+                 (`${{env:VAR}}`, `${{vault:…}}`, `${{aws-sm:…}}`, … — all resolved on the \
+                 executing instance, never persisted), or trigger it on a non-clustered server"
+            ),
             details: None,
         });
     }
@@ -1148,6 +1166,124 @@ mod tests {
             }
             other => panic!("expected 422, got {other:?}"),
         }
+    }
+
+    /// #456 M4: an `env` override substitutes into the config exactly like a
+    /// param and is just as likely to be a credential, so on a clustered server —
+    /// where the materialized body is persisted for a peer — it must be refused
+    /// alongside `secret: true` params.
+    #[tokio::test]
+    async fn env_overrides_are_refused_on_a_clustered_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::serve::test_support::test_state_clustered();
+        let body = format!(
+            "version: 1\nname: tpl-env\npipeline:\n  source:\n    type: csv\n    config:\n      path: \"${{env:SRC_PATH}}\"\n  sink:\n    type: jsonl\n    config:\n      path: {}\n",
+            dir.path().join("o.jsonl").display()
+        );
+        let _registered = register_template(
+            State(state.clone()),
+            Extension(actor()),
+            Json(RegisterBody {
+                id: None,
+                config: body,
+                config_format: ConfigFormatWire::Yaml,
+                description: None,
+                tags: vec![],
+                launch: true,
+            }),
+        )
+        .await
+        .expect("register");
+
+        let err = trigger_template(
+            State(state),
+            Extension(actor()),
+            Path("tpl-env".into()),
+            Json(TriggerBody {
+                env: [("SRC_PATH".to_string(), "s3cret-path".to_string())].into(),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap_err();
+        match err {
+            ServeError::Unprocessable { message, .. } => {
+                assert!(message.contains("env"), "{message}");
+                assert!(!message.contains("s3cret-path"), "leaked: {message}");
+            }
+            other => panic!("expected 422, got {other:?}"),
+        }
+    }
+
+    /// #456 C5: on a clustered server the persisted body must still carry the
+    /// load-time directives as *tokens* — resolving them here would serialise the
+    /// server's own credentials into the shared run-history database. The
+    /// executing instance resolves them instead.
+    #[tokio::test]
+    async fn a_clustered_trigger_persists_tokens_not_resolved_values() {
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: single-threaded test; the value is read back below only via the
+        // materialize path we are asserting about.
+        unsafe { std::env::set_var("FAUCET_TEST_C5_SECRET", "hunter2-should-not-persist") };
+        let s = store(&crate::serve::test_support::test_state_clustered());
+        let body = format!(
+            "version: 1\nname: tpl-c5\npipeline:\n  source:\n    type: csv\n    config:\n      path: \"${{env:FAUCET_TEST_C5_SECRET}}\"\n  sink:\n    type: jsonl\n    config:\n      path: {}\n",
+            dir.path().join("o.jsonl").display()
+        );
+        crate::templates::register(
+            &s,
+            crate::templates::RegisterRequest {
+                id: None,
+                body,
+                format: crate::serve::load::ConfigFormat::Yaml,
+                description: None,
+                tags: vec![],
+                launch: true,
+                created_by: None,
+            },
+        )
+        .await
+        .expect("register");
+
+        let persisted = crate::templates::materialize(
+            &s,
+            "tpl-c5",
+            1,
+            &Default::default(),
+            &Default::default(),
+            crate::templates::Materialize::Persisted,
+        )
+        .await
+        .expect("materialize");
+        assert!(
+            !persisted.body.contains("hunter2-should-not-persist"),
+            "a resolved secret must never reach a persisted body: {}",
+            persisted.body
+        );
+        assert!(
+            persisted.body.contains("${env:FAUCET_TEST_C5_SECRET}"),
+            "the directive must survive as a token for the executor: {}",
+            persisted.body
+        );
+
+        // The local (non-clustered) path still resolves, so behaviour there is
+        // unchanged — nothing is persisted in that mode.
+        let local = crate::templates::materialize(
+            &s,
+            "tpl-c5",
+            1,
+            &Default::default(),
+            &Default::default(),
+            crate::templates::Materialize::Local,
+        )
+        .await
+        .expect("materialize");
+        assert!(
+            local.body.contains("hunter2-should-not-persist"),
+            "{}",
+            local.body
+        );
+        unsafe { std::env::remove_var("FAUCET_TEST_C5_SECRET") };
     }
 
     #[test]

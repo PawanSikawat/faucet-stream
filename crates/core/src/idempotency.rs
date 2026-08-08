@@ -252,6 +252,56 @@ pub const COMMIT_TOKEN_TOKEN_COL: &str = "token";
 pub const ICEBERG_SCOPE_PROP: &str = "faucet.commit-scope";
 pub const ICEBERG_TOKEN_PROP: &str = "faucet.commit-token";
 
+/// Fit a watermark scope into a length-capped, indexable key column.
+///
+/// The scope is the pipeline state key — `{name}::{row}` for a root, plus
+/// `::{parent_record_key}` for a child — and a child's key comes from *record
+/// data*, so it has no length bound. The SQL sinks store it as a PRIMARY KEY, and
+/// a key column cannot be unbounded (MySQL's index limit, SQL Server's 900-byte
+/// key budget), so an over-long scope either errors or — under a non-strict MySQL
+/// `sql_mode` — is **truncated**, silently collapsing two distinct rows onto one
+/// watermark so one row's committed token suppresses the other's pages (#456 L1).
+///
+/// Scopes at or under `max` are returned verbatim, so every watermark written
+/// before this existed still resolves. A longer one is replaced by a
+/// deterministic, collision-resistant digest form (`__h:<64-hex>`), which is
+/// stable across restarts — the only property the watermark needs.
+/// Length of the `__h:` + 16 hex-digit suffix appended to a shortened scope.
+const SCOPE_DIGEST_LEN: usize = 4 + 16;
+
+pub fn scope_key(scope: &str, max: usize) -> String {
+    if scope.len() <= max {
+        return scope.to_owned();
+    }
+    // FNV-1a rather than a crypto hash: `sha2` is an optional dependency of this
+    // crate (masking / transform-hash / encryption) and this module is always
+    // compiled. The requirement is determinism, not preimage resistance — the same
+    // choice the backfill progress marker makes.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in scope.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+    // Keep as much of the readable head as fits, so an operator inspecting the
+    // watermark table can still tell which pipeline a row belongs to. Truncate on
+    // a char boundary — a scope may hold non-ASCII.
+    let room = max.saturating_sub(SCOPE_DIGEST_LEN);
+    let mut head = 0usize;
+    for (i, _) in scope.char_indices() {
+        if i > room {
+            break;
+        }
+        head = i;
+    }
+    let shortened = format!("{}__h:{h:016x}", &scope[..head]);
+    tracing::debug!(
+        scope_len = scope.len(),
+        max,
+        "exactly-once scope exceeds the sink's key-column width; shortening with a digest"
+    );
+    shortened
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,5 +490,53 @@ mod tests {
         );
         let m: DeliveryMode = serde_json::from_str("\"at_least_once\"").unwrap();
         assert_eq!(m, DeliveryMode::AtLeastOnce);
+    }
+}
+
+#[cfg(test)]
+mod scope_key_tests {
+    use super::*;
+
+    /// #456 L1: the SQL sinks store the scope as a length-capped PRIMARY KEY, so
+    /// a long child scope (its key comes from record data and has no bound) either
+    /// errored or — under a non-strict MySQL sql_mode — truncated, collapsing two
+    /// rows onto one watermark.
+    #[test]
+    fn scope_key_passes_short_scopes_through_and_shortens_long_ones() {
+        // Backwards compatible: anything that fit before is returned verbatim, so
+        // watermarks written before this existed still resolve.
+        assert_eq!(scope_key("pipe::row", 255), "pipe::row");
+        let exactly = "x".repeat(255);
+        assert_eq!(scope_key(&exactly, 255), exactly);
+
+        // Over the cap: shortened, and within the cap.
+        let long = format!("pipe::row::{}", "k".repeat(400));
+        let key = scope_key(&long, 255);
+        assert!(key.len() <= 255, "len {}", key.len());
+        assert_ne!(key, long);
+        // Keeps a readable head so the row is still attributable.
+        assert!(key.starts_with("pipe::row::"), "{key}");
+        assert!(key.contains("__h:"), "{key}");
+    }
+
+    #[test]
+    fn scope_key_is_deterministic_and_distinguishes_scopes() {
+        let a = format!("pipe::row::{}", "a".repeat(400));
+        let b = format!("pipe::row::{}", "b".repeat(400));
+        // Stable across calls — the watermark must resolve after a restart.
+        assert_eq!(scope_key(&a, 255), scope_key(&a, 255));
+        // Two distinct scopes must not collide onto one watermark. Under plain
+        // truncation both of these would become the same 255-char prefix.
+        assert_ne!(scope_key(&a, 255), scope_key(&b, 255));
+        assert_eq!(&a[..255], &format!("pipe::row::{}", "a".repeat(400))[..255]);
+    }
+
+    #[test]
+    fn scope_key_truncates_on_a_char_boundary() {
+        // A multi-byte head must not be split mid-character (that would panic).
+        let long = format!("pipé::{}", "é".repeat(400));
+        let key = scope_key(&long, 255);
+        assert!(key.len() <= 255);
+        assert!(key.contains("__h:"), "{key}");
     }
 }

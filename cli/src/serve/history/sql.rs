@@ -900,19 +900,44 @@ impl Stmts {
 }
 
 /// Bounded retry count for the atomic idempotency claim (handles a claim being
-/// purged concurrently between the insert attempt and the read-back).
-pub const CLAIM_ATTEMPTS: usize = 4;
+/// purged concurrently between the insert attempt and the read-back) and for the
+/// read-max-then-insert paths (template versions, launch-log seqs).
+///
+/// Sized for *contention*, not just for a lost race. SQLite serializes writers
+/// and answers a write-write overlap on a deferred transaction with `database is
+/// locked` **immediately** (waiting would deadlock), so `busy_timeout` does not
+/// help there and the attempt budget is the only thing standing between a
+/// concurrent writer and a surfaced error. With N concurrent writers each needing
+/// its own turn, a budget of 4 is thinner than it looks: six writers on a loaded
+/// machine exhausted it and failed a register (#457 CI).
+pub const CLAIM_ATTEMPTS: usize = 8;
+
+/// Distinguishes concurrent retriers so their backoffs do not re-collide.
+///
+/// Every waiter sleeping the *same* duration just reproduces the same race one
+/// beat later. A per-call sequence number is a dependency-free way to stagger
+/// them (the alternative, a random jitter, would mean pulling in an RNG here).
+static RETRY_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Sleep before a read-max-then-insert retry (no-op on the first attempt).
 ///
-/// The retry exists for lost races, and under real contention an immediate retry
-/// tends to lose the same race again — SQLite in particular serializes writers, so
-/// a few milliseconds of stagger is the difference between converging and
-/// exhausting the attempt budget.
+/// Exponential (5ms, 10ms, 20ms, …, capped) plus a per-caller stagger, so a set
+/// of writers that collided on attempt 1 spreads out instead of colliding again.
+/// Worst case across the whole budget is a few hundred milliseconds — cheap next
+/// to failing a write the caller expected to succeed.
 pub async fn retry_backoff(attempt: usize) {
-    if attempt > 1 {
-        tokio::time::sleep(std::time::Duration::from_millis(5 * (attempt as u64 - 1))).await;
+    if attempt <= 1 {
+        return;
     }
+    const BASE_MS: u64 = 5;
+    const CAP_MS: u64 = 160;
+    let exp = BASE_MS
+        .saturating_mul(1u64 << (attempt - 2).min(6))
+        .min(CAP_MS);
+    // 0..BASE_MS of per-caller offset, so equal-length sleeps do not re-align.
+    let stagger =
+        (RETRY_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) as u64) % (BASE_MS + 1);
+    tokio::time::sleep(std::time::Duration::from_millis(exp + stagger)).await;
 }
 
 /// Fixed-width RFC3339 (nanoseconds + `Z`) — lexicographically sortable.

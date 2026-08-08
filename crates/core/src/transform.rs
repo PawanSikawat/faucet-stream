@@ -1935,6 +1935,16 @@ fn hash_fields(
                 let Some(current) = map.get(field) else {
                     continue;
                 };
+                // Null is left alone, matching `faucet_core::masking` (whose
+                // `hash`/`tokenize` actions skip null for the same reasons).
+                // Hashing it would (a) destroy nullability — a NOT NULL column
+                // silently accepts the digest and `IS NULL` stops matching
+                // downstream — and (b) give *every* null-valued row the same
+                // digest, so hashing a nullable field and keying an upsert or a
+                // join on it collapses all of those rows into one (#456 M3).
+                if current.is_null() {
+                    continue;
+                }
                 // String values hash over their raw UTF-8 bytes; every other
                 // JSON value hashes over its canonical serialization.
                 let input = match current {
@@ -4077,6 +4087,34 @@ mod tests {
             &compiled(&hash_spec(&["email"], HashEncoding::Hex, None)),
         );
         assert_eq!(out, json!({"id": 1}));
+    }
+
+    /// #456 M3: null must stay null. Hashing it destroys nullability *and* gives
+    /// every null-valued row the same digest — so hashing a nullable column and
+    /// keying an upsert/join on it would collapse all of those rows into one.
+    /// `faucet_core::masking` skips null for the same reason.
+    #[cfg(feature = "transform-hash")]
+    #[test]
+    fn hash_leaves_null_alone() {
+        let out = apply_all(
+            json!({"email": null, "other": "x"}),
+            &compiled(&hash_spec(&["email"], HashEncoding::Hex, None)),
+        );
+        assert_eq!(out["email"], Value::Null, "null must not be hashed");
+        assert_eq!(out["other"], json!("x"));
+
+        // Two distinct records with a null in the hashed field must not become
+        // indistinguishable.
+        let a = apply_all(
+            json!({"id": 1, "email": null}),
+            &compiled(&hash_spec(&["email"], HashEncoding::Hex, None)),
+        );
+        let b = apply_all(
+            json!({"id": 2, "email": null}),
+            &compiled(&hash_spec(&["email"], HashEncoding::Hex, None)),
+        );
+        assert_ne!(a, b);
+        assert!(a["email"].is_null() && b["email"].is_null());
     }
 
     #[cfg(feature = "transform-hash")]

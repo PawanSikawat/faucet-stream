@@ -41,10 +41,18 @@ ARG SINKS=""
 # Deliberately excludes the `source`/`sink`/`default` aggregates so a lean build
 # stays lean. `state` = all state backends (memory+file are free; redis/postgres
 # link a driver — drop it from EXTRAS if you don't need them).
-ARG EXTRAS="observability,state,transforms,compression,quality,contract,masking,cli-progress,serve,serve-ui,schedule,catalog,serve-history-postgres,serve-history-sqlite,notify,triggers"
+#
+# `triggers` here is the framework + the webhook trigger type only. The
+# `object_arrival` and `queue_depth` watchers need `triggers-object-store` /
+# `triggers-redis` / `triggers-kafka`, which pull heavy (and for Kafka, native)
+# dependency trees — add them explicitly when a lean image needs them. The
+# complete image below includes all three.
+ARG EXTRAS="observability,state,transforms,compression,quality,contract,masking,cli-progress,serve,serve-ui,schedule,catalog,serve-history-postgres,serve-history-sqlite,notify,lineage,templates,mcp,triggers"
 # The "complete" set used when neither SOURCES nor SINKS is given. `default`
-# already pulls every source+sink+state+transform; we add the runtime modes.
-ARG DEFAULT_FEATURES="default,serve,serve-ui,schedule,catalog,serve-history-postgres,serve-history-sqlite,notify,triggers"
+# already pulls every source+sink+state+transform; we add every runtime mode —
+# including all three trigger watchers, the template registry, and the MCP
+# endpoint, so nothing the Helm chart or docs reference 404s at runtime.
+ARG DEFAULT_FEATURES="default,serve,serve-ui,schedule,catalog,serve-history-postgres,serve-history-sqlite,notify,templates,mcp,lineage,triggers,triggers-object-store,triggers-redis,triggers-kafka"
 # Raw override — when set, wins over everything above.
 ARG FEATURES=""
 

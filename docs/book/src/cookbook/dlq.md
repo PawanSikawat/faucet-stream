@@ -46,7 +46,10 @@ record plus the metadata needed to inspect, fix, and replay it:
 }
 ```
 
-- `payload` — the original record, verbatim. This is what a replay re-feeds.
+- `payload` — the record **as it entered the write path**: after the transform
+  chain and after masking, since those passes run before the sink. This is what a
+  replay re-feeds, and it is why a replay does not re-run them (see
+  [Replaying](#replaying)).
 - `reason` — which stage quarantined the row: `quality`, `contract`,
   `schema_drift`, or `partial` / `dlq_all` for a sink-side row failure. This is
   the value the `--reason` filter matches.
@@ -113,8 +116,7 @@ summary.
 
 Once you've fixed the root cause — a transform, a contract, the destination
 schema — `faucet dlq replay` re-feeds the quarantined **payloads** through a
-pipeline config (transforms → quality → contract → sink), exactly as a normal
-run:
+pipeline config (quality → contract → sink):
 
 ```console
 $ faucet dlq replay orders.yaml --from ./dlq/contract_breaches.jsonl --dry-run
@@ -125,6 +127,15 @@ would be re-fed; 42 would reach the sink. Failures would go to
 $ faucet dlq replay orders.yaml --from ./dlq/contract_breaches.jsonl
 DLQ replay: 42 candidate record(s) re-fed; 42 written to the sink. …
 ```
+
+**A replay skips the transform chain and the masking pass**, because the payload
+already went through both before it was captured, and neither is idempotent:
+re-running the `hash` transform or masking's `hash`/`tokenize` action would
+produce `H(H(x))` — breaking the joinability masking exists to guarantee — a
+`set` stage would re-stamp `${now.*}` with the replay time, and `cast` /
+`json_parse` / `split` would re-run against already-converted values. The quality
+and contract passes *are* re-applied: they are pure checks over the record, so
+re-checking is idempotent, and a replay is exactly when you want them enforced.
 
 Rows that fail **again** on replay are quarantined to a *fresh* DLQ — a
 `replay-failed.jsonl` sibling of the source by default (override with

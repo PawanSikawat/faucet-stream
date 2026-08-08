@@ -8,6 +8,11 @@
 use super::spec::{EventKind, Severity};
 use serde_json::{Map, Value};
 
+/// Scrub every resolved secret from text bound for an external channel.
+fn redact(s: String) -> String {
+    crate::secrets::registry::redact(&s).into_owned()
+}
+
 /// A single thing worth notifying about.
 #[derive(Debug, Clone)]
 pub struct NotifyEvent {
@@ -27,6 +32,17 @@ pub struct NotifyEvent {
 }
 
 impl NotifyEvent {
+    /// The one constructor every event goes through — and therefore the single
+    /// place to scrub secrets.
+    ///
+    /// A notification leaves the trust boundary entirely: Slack, PagerDuty, or a
+    /// customer webhook. `message` is frequently a raw `FaucetError`, whose
+    /// `Display` can carry the material that produced it — `reqwest` includes the
+    /// full request URL, so a REST source with its API key in a query parameter
+    /// would post that key to a third party, and connection-string leakage in a
+    /// CDC error has already been a filed bug (#84). Every other outbound-ish
+    /// surface already redacts (MCP tool errors, the serve log layer, doctor
+    /// probe output); notifications did not (#456 H5).
     fn base(
         kind: EventKind,
         severity: Severity,
@@ -40,13 +56,19 @@ impl NotifyEvent {
             severity,
             pipeline: pipeline.into(),
             row: row.into(),
-            title: title.into(),
-            message: message.into(),
+            title: redact(title.into()),
+            message: redact(message.into()),
             details: Map::new(),
         }
     }
 
     fn with(mut self, key: &str, value: Value) -> Self {
+        // Detail values are rendered into the same outbound payload as `message`,
+        // so a string detail is scrubbed too.
+        let value = match value {
+            Value::String(s) => Value::String(redact(s)),
+            other => other,
+        };
         self.details.insert(key.to_string(), value);
         self
     }
@@ -246,5 +268,49 @@ mod tests {
     fn details_carry_structured_context() {
         let e = NotifyEvent::dlq_threshold("p", "", 42);
         assert_eq!(e.details.get("records_dlq").unwrap(), &Value::from(42u64));
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    /// #456 H5: a notification is delivered to Slack / PagerDuty / a customer
+    /// webhook, i.e. outside the trust boundary, so a resolved secret that landed
+    /// in the error text must not ride along.
+    #[test]
+    fn secrets_are_scrubbed_from_every_outbound_field() {
+        // A realistic leak: the API key is a query parameter, and reqwest's error
+        // Display embeds the whole URL.
+        let secret = "sk-live-456-audit-secret";
+        crate::secrets::registry::register(secret);
+
+        let ev = NotifyEvent::run_failure(
+            "p",
+            "row",
+            "http",
+            format!("HTTP error for url (https://api.example.com/v1?api_key={secret})"),
+        );
+        assert!(
+            !ev.message.contains(secret),
+            "message leaked: {}",
+            ev.message
+        );
+        assert!(ev.message.contains("***"), "{}", ev.message);
+
+        // Titles and string details go into the same payload.
+        let ev = NotifyEvent::sla_breach("p", "row", "staleness", format!("token {secret} stale"));
+        assert!(!ev.message.contains(secret));
+
+        let ev = NotifyEvent::run_failure("p", "row", "cfg", "boom")
+            .with("detail", Value::String(format!("url={secret}")));
+        assert!(
+            !ev.details["detail"].as_str().unwrap().contains(secret),
+            "detail leaked: {:?}",
+            ev.details
+        );
+        // Non-string details pass through untouched.
+        let ev = NotifyEvent::run_success("p", "row", 7);
+        assert_eq!(ev.details["records_written"], Value::from(7u64));
     }
 }

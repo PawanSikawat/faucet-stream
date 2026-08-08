@@ -446,9 +446,16 @@ pipeline:
     ));
     let auth = build_auth_catalog(None).unwrap();
     let cancel = faucet_core::CancellationToken::new();
-    let summary = faucet_cli::topology::run_topology(&cfg, &auth, Some(cancel))
-        .await
-        .unwrap();
+    let summary = faucet_cli::topology::run_topology(
+        &cfg,
+        &auth,
+        faucet_cli::topology::TopologyRunOptions {
+            cancel: Some(cancel),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(summary.invocations.len(), 1);
     assert_eq!(summary.invocations[0].records_written, 4);
     assert_eq!(summary.invocations[0].row_id, "w");
@@ -666,4 +673,205 @@ pipeline:
     let auth = build_auth_catalog(None).unwrap();
     let err = build_topology(&cfg, &auth).await.unwrap_err();
     assert!(matches!(err, CliError::InvalidTopology { .. }), "{err:?}");
+}
+
+// ── #456: topology mode must not bypass the governance layer ─────────────────
+
+/// #456 C2: `--dry-run` used to be silently ignored in topology mode, so it
+/// performed real writes. It must now write nothing.
+#[test]
+fn dry_run_writes_nothing_in_topology_mode() {
+    let dir = TempDir::new().unwrap();
+    let csv = orders_csv(dir.path());
+    let out = dir.path().join("out.jsonl");
+    let cfg_path = dir.path().join("faucet.yaml");
+    write(
+        &cfg_path,
+        &format!(
+            r#"version: 1
+name: dry
+pipeline:
+  sources:
+    o: {{ type: csv, config: {{ path: {csv} }} }}
+  sinks:
+    out: {{ type: jsonl, config: {{ path: {out} }} }}
+  nodes:
+    s: {{ kind: source, ref: o }}
+    w: {{ kind: sink, ref: out }}
+  edges:
+    - {{ from: s, to: w }}
+"#,
+            csv = csv.display(),
+            out = out.display()
+        ),
+    );
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["run", cfg_path.to_str().unwrap(), "--dry-run"])
+        .assert()
+        .success();
+    assert!(
+        !out.exists(),
+        "--dry-run must not create the destination file"
+    );
+}
+
+/// #456 C3: a topology declaring `masking:` must actually mask. Before the fix
+/// the block parsed, validated, ran — and PII reached the sink in the clear.
+#[test]
+#[cfg(feature = "masking")]
+fn masking_applies_in_topology_mode() {
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("people.csv");
+    write(&src, "id,email\n1,a@b.c\n");
+    let out = dir.path().join("masked.jsonl");
+    let cfg_path = dir.path().join("faucet.yaml");
+    write(
+        &cfg_path,
+        &format!(
+            r#"version: 1
+name: masked
+pipeline:
+  masking:
+    rules:
+      - name: hide-email
+        match: {{ fields: [email] }}
+        action: {{ type: redact, mask: "***" }}
+  sources:
+    o: {{ type: csv, config: {{ path: {src} }} }}
+  sinks:
+    out: {{ type: jsonl, config: {{ path: {out} }} }}
+  nodes:
+    s: {{ kind: source, ref: o }}
+    w: {{ kind: sink, ref: out }}
+  edges:
+    - {{ from: s, to: w }}
+"#,
+            src = src.display(),
+            out = out.display()
+        ),
+    );
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["run", cfg_path.to_str().unwrap()])
+        .assert()
+        .success();
+    let body = fs::read_to_string(&out).unwrap();
+    assert!(body.contains("***"), "email must be masked: {body}");
+    assert!(
+        !body.contains("a@b.c"),
+        "raw PII must not reach the sink: {body}"
+    );
+}
+
+/// #456 H2: `delivery: exactly_once` has no watermark path in a node graph, so
+/// it must be rejected rather than silently downgraded to at-least-once.
+#[tokio::test]
+async fn rejects_exactly_once_in_topology_mode() {
+    let cfg = parse(
+        r#"version: 1
+name: eo
+delivery: exactly_once
+pipeline:
+  sources:
+    o: { type: csv, config: { path: /tmp/x.csv } }
+  sinks:
+    out: { type: jsonl, config: { path: /tmp/y.jsonl } }
+  nodes:
+    s: { kind: source, ref: o }
+    w: { kind: sink, ref: out }
+  edges:
+    - { from: s, to: w }
+"#,
+    );
+    let auth = build_auth_catalog(None).unwrap();
+    let err = build_topology(&cfg, &auth).await.unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("exactly_once"), "{msg}");
+    assert!(msg.contains("topology mode"), "{msg}");
+}
+
+/// #456 H4: `${now.*}` was never resolved in topology mode, so the literal token
+/// reached the connector and a dated path became a directory named `${now.date}`.
+#[test]
+fn now_tokens_resolve_in_topology_mode() {
+    let dir = TempDir::new().unwrap();
+    let csv = orders_csv(dir.path());
+    let cfg_path = dir.path().join("faucet.yaml");
+    let out_dir = dir.path().join("dt=${now.date}");
+    write(
+        &cfg_path,
+        &format!(
+            r#"version: 1
+name: dated
+pipeline:
+  sources:
+    o: {{ type: csv, config: {{ path: {csv} }} }}
+  sinks:
+    out: {{ type: jsonl, config: {{ path: "{base}/dt=${{now.date}}/part.jsonl" }} }}
+  nodes:
+    s: {{ kind: source, ref: o }}
+    w: {{ kind: sink, ref: out }}
+  edges:
+    - {{ from: s, to: w }}
+"#,
+            csv = csv.display(),
+            base = dir.path().display()
+        ),
+    );
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args([
+            "run",
+            cfg_path.to_str().unwrap(),
+            "--clock",
+            "2026-03-04T00:00:00Z",
+        ])
+        .assert()
+        .success();
+    assert!(
+        dir.path().join("dt=2026-03-04/part.jsonl").exists(),
+        "the clock must be substituted into the sink path"
+    );
+    assert!(
+        !out_dir.exists(),
+        "the literal `${{now.date}}` token must never reach the connector"
+    );
+}
+
+/// #456 M2: blocks topology mode does not act on must be called out, not
+/// silently swallowed behind a "valid" line.
+#[test]
+fn validate_warns_about_blocks_topology_ignores() {
+    let dir = TempDir::new().unwrap();
+    let csv = orders_csv(dir.path());
+    let cfg_path = dir.path().join("faucet.yaml");
+    write(
+        &cfg_path,
+        &format!(
+            r#"version: 1
+name: inert
+sla:
+  max_staleness_secs: 3600
+pipeline:
+  sources:
+    o: {{ type: csv, config: {{ path: {csv} }} }}
+  sinks:
+    out: {{ type: stdout, config: {{}} }}
+  nodes:
+    s: {{ kind: source, ref: o }}
+    w: {{ kind: sink, ref: out }}
+  edges:
+    - {{ from: s, to: w }}
+"#,
+            csv = csv.display()
+        ),
+    );
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["validate", cfg_path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(contains("WARNING"))
+        .stdout(contains("sla"));
 }

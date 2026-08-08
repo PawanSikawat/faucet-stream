@@ -106,12 +106,31 @@ remote API, and keep `max_build_records` as a guardrail.
 ## State and errors
 
 Each terminal sink owns a bookmark under `{name}::{node_id}`. On restart the
-source resumes from the **minimum** across every sink's stored bookmark (only
-when all sinks have one), so a lagging sink is never skipped — sinks whose
-bookmarks diverge must be idempotent.
+source resumes from a stored position only when **both** hold:
 
-`execution.on_error: stop` aborts the whole topology on the first failure;
-`continue` lets healthy branches finish and reports the failures at the end.
+1. the graph has exactly **one source node**, and
+2. **every** sink's stored bookmark is identical.
+
+Otherwise the source replays in full and logs why. That is deliberately
+conservative. A sink's bookmark records the position of whichever source fed its
+pages, and nothing in the graph records which one that was — so in a multi-source
+graph one source's position would be applied to another. And bookmarks are
+compared for *equality*, never ordered: a resume position is frequently structured
+(a CDC LSN map, a Kafka offset map), and ordering those falls back to comparing
+serialized text, which is unrelated to replication progress — an ordered "minimum"
+can sit *ahead* of the true minimum and skip the lagging sink's records.
+
+Replaying costs duplicates; skipping loses data. So when a graph is resumed
+routinely, make the sinks idempotent (`write_mode: upsert` with a `key`).
+
+`execution.on_error: stop` aborts the whole topology on the first failure —
+signalling the other nodes so they stop at a page boundary and **flush** (a
+buffered Parquet/S3 sink commits rather than orphaning its upload), then aborting
+anything still running after a grace window. `continue` lets healthy branches
+finish and reports the failures at the end.
+
+Each node runs as its own task, so a synchronous stage (the DuckDB `sql`
+transform, a `wasm` transform) does not stall the rest of the graph.
 
 ## Observability
 
