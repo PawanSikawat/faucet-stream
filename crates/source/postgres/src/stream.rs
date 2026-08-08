@@ -179,23 +179,30 @@ fn bind_params<'q>(
     mut query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
     config_params: &'q [Value],
     bind_values: &'q [Value],
-) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+) -> Result<sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>, FaucetError> {
     // Bind the static config params and the per-context values as native
     // scalar types, in positional order ($1, $2, …). Binding a raw
     // `serde_json::Value` encodes it as `jsonb` (sqlx), which breaks comparisons
     // against typed columns — e.g. `WHERE id = $1` against an integer column
     // fails with "operator does not exist: integer = jsonb". config_params
     // previously bound the raw Value and hit exactly this (audit #146 H12).
-    for value in config_params.iter().chain(bind_values) {
+    for (i, value) in config_params.iter().chain(bind_values).enumerate() {
         query = match value {
             Value::String(s) => query.bind(s.clone()),
             Value::Number(n) => match classify_number(n) {
                 // `unwrap()` is sound: the classifier proves the predicate.
                 NumberBind::I64 => query.bind(n.as_i64().unwrap()),
-                // `u64::MAX` has no `i64` representation; reinterpret the bits
-                // so the value round-trips into an `int8`/`bigint` column
-                // without the precision loss an `f64` cast would introduce.
-                NumberBind::U64 => query.bind(n.as_u64().unwrap() as i64),
+                // Above `i64::MAX`. Postgres has no unsigned integer type, and
+                // `as i64` would *wrap* — writing a large id as a large negative
+                // number, or (when this binds an incremental bookmark) comparing
+                // against a negative bound and re-reading or skipping rows. The
+                // original intent here was to avoid an `f64` cast's precision
+                // loss, which is right; bit-reinterpretation is not the way to
+                // get it. Refuse instead (#462).
+                NumberBind::U64 => query.bind(faucet_core::util::u64_to_signed(
+                    n.as_u64().unwrap(),
+                    &format!("bind parameter ${}", i + 1),
+                )?),
                 NumberBind::F64 => query.bind(n.as_f64().unwrap_or(0.0)),
             },
             Value::Bool(b) => query.bind(*b),
@@ -203,7 +210,7 @@ fn bind_params<'q>(
             _ => query.bind(value.to_string()),
         };
     }
-    query
+    Ok(query)
 }
 
 /// One flattened `information_schema.columns` row used by [`discover`].
@@ -284,7 +291,7 @@ impl faucet_core::Source for PostgresSource {
     ) -> Result<Vec<Value>, FaucetError> {
         let (query_str, bind_values) = resolve_query(&self.config, context);
         let query_str = self.shard_wrap(query_str);
-        let query = bind_params(sqlx::query(&query_str), &self.config.params, &bind_values);
+        let query = bind_params(sqlx::query(&query_str), &self.config.params, &bind_values)?;
 
         let rows = query
             .fetch_all(&self.pool)
@@ -322,7 +329,7 @@ impl faucet_core::Source for PostgresSource {
                 sqlx::query(&query_str),
                 &self.config.params,
                 &bind_values,
-            );
+            )?;
 
             let mut rows = query.fetch(&self.pool);
             let chunk = if batch_size == 0 { usize::MAX } else { batch_size };
@@ -434,7 +441,7 @@ impl faucet_core::Source for PostgresSource {
 
         let bounds_sql =
             pk_bounds_query(&self.config.query, &quote_ident(&shard_cfg.key), "BIGINT");
-        let row = bind_params(sqlx::query(&bounds_sql), &self.config.params, &[])
+        let row = bind_params(sqlx::query(&bounds_sql), &self.config.params, &[])?
             .fetch_one(&self.pool)
             .await
             .map_err(|e| {
@@ -928,5 +935,37 @@ mod tests {
             err.to_string().contains("shard bounds"),
             "expected bounds-probe error, got: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod bind_overflow_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// #462: above `i64::MAX` Postgres has no type that fits, and `as i64` would
+    /// wrap to a negative. Refuse loudly instead — silently binding a negative
+    /// bookmark would make `WHERE key > $1` re-read or skip rows.
+    #[test]
+    fn u64_above_i64_max_is_refused_not_wrapped() {
+        let err = match bind_params(sqlx::query("SELECT 1"), &[json!(u64::MAX)], &[]) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("u64::MAX must not bind"),
+        };
+        assert!(err.contains(&u64::MAX.to_string()), "{err}");
+        assert!(
+            !err.contains("-9223372036854775808"),
+            "must not show the wrap: {err}"
+        );
+    }
+
+    #[test]
+    fn values_a_signed_column_can_hold_still_bind() {
+        for v in [json!(0), json!(-1), json!(i64::MAX), json!(i64::MAX as u64)] {
+            assert!(
+                bind_params(sqlx::query("SELECT 1"), &[v.clone()], &[]).is_ok(),
+                "{v} must still bind"
+            );
+        }
     }
 }

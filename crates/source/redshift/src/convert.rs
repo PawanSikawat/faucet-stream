@@ -4,6 +4,7 @@
 //! source: values decode through `sqlx`'s Postgres row API, and JSON bind values
 //! are classified before binding so large integers keep full precision.
 
+use faucet_core::FaucetError;
 use serde_json::Value;
 use sqlx::{Column, Row};
 
@@ -112,13 +113,20 @@ pub(crate) fn classify_number(n: &serde_json::Number) -> NumberBind {
 pub(crate) fn bind_params<'q>(
     mut query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
     binds: &'q [Value],
-) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
-    for value in binds {
+) -> Result<sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>, FaucetError> {
+    for (i, value) in binds.iter().enumerate() {
         query = match value {
             Value::String(s) => query.bind(s.clone()),
             Value::Number(n) => match classify_number(n) {
                 NumberBind::I64 => query.bind(n.as_i64().unwrap()),
-                NumberBind::U64 => query.bind(n.as_u64().unwrap() as i64),
+                // Above `i64::MAX`. Redshift's BIGINT is signed, and `as i64`
+                // would *wrap* — writing a large id as a large negative number, or
+                // (when this binds an incremental bookmark) comparing against a
+                // negative bound and re-reading or skipping rows. Refuse (#462).
+                NumberBind::U64 => query.bind(faucet_core::util::u64_to_signed(
+                    n.as_u64().unwrap(),
+                    &format!("bind parameter ${}", i + 1),
+                )?),
                 NumberBind::F64 => query.bind(n.as_f64().unwrap_or(0.0)),
             },
             Value::Bool(b) => query.bind(*b),
@@ -126,7 +134,7 @@ pub(crate) fn bind_params<'q>(
             _ => query.bind(value.to_string()),
         };
     }
-    query
+    Ok(query)
 }
 
 #[cfg(test)]
@@ -162,5 +170,36 @@ mod tests {
     #[test]
     fn classify_float_is_f64() {
         assert_eq!(classify_number(&num(json!(3.5))), NumberBind::F64);
+    }
+}
+
+#[cfg(test)]
+mod bind_overflow_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// #462: Redshift's BIGINT is signed; `as i64` would wrap a large unsigned
+    /// id to a negative, and this same binder carries incremental bookmarks.
+    #[test]
+    fn u64_above_i64_max_is_refused_not_wrapped() {
+        let err = match bind_params(sqlx::query("SELECT 1"), &[json!(u64::MAX)]) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("u64::MAX must not bind"),
+        };
+        assert!(err.contains(&u64::MAX.to_string()), "{err}");
+        assert!(
+            !err.contains("-9223372036854775808"),
+            "must not show the wrap: {err}"
+        );
+    }
+
+    #[test]
+    fn values_a_signed_column_can_hold_still_bind() {
+        for v in [json!(0), json!(-1), json!(i64::MAX), json!(i64::MAX as u64)] {
+            assert!(
+                bind_params(sqlx::query("SELECT 1"), &[v.clone()]).is_ok(),
+                "{v} must still bind"
+            );
+        }
     }
 }

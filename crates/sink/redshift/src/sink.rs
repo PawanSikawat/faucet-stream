@@ -192,7 +192,7 @@ impl RedshiftSink {
                     FaucetError::Sink("redshift: insert requires JSON object records".into())
                 })?;
                 for col in &present {
-                    q = bind_json(q, obj.get(col));
+                    q = bind_json(q, obj.get(col), col)?;
                 }
             }
             q.execute(&self.pool)
@@ -210,8 +210,9 @@ impl RedshiftSink {
 fn bind_json<'q>(
     query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
     v: Option<&Value>,
-) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
-    match v {
+    column: &str,
+) -> Result<sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>, FaucetError> {
+    Ok(match v {
         None | Some(Value::Null) => query.bind(None::<String>),
         Some(Value::String(s)) => query.bind(s.clone()),
         Some(Value::Bool(b)) => query.bind(*b),
@@ -219,13 +220,19 @@ fn bind_json<'q>(
             if n.is_i64() {
                 query.bind(n.as_i64().unwrap())
             } else if n.is_u64() {
-                query.bind(n.as_u64().unwrap() as i64)
+                // Above `i64::MAX`. Redshift's BIGINT is signed and `as i64`
+                // would *wrap*, writing the id as a large negative number with
+                // nothing raised. Refuse instead (#462).
+                query.bind(faucet_core::util::u64_to_signed(
+                    n.as_u64().unwrap(),
+                    &format!("column {}", faucet_core::util::quote_ident(column)),
+                )?)
             } else {
                 query.bind(n.as_f64().unwrap_or(0.0))
             }
         }
         Some(other) => query.bind(other.to_string()),
-    }
+    })
 }
 
 #[async_trait]
@@ -448,11 +455,20 @@ mod tests {
         // Smoke: binding must not panic for every JSON scalar kind. The actual
         // wire encoding is exercised by the live integration test.
         let q = sqlx::query("SELECT $1, $2, $3, $4, $5, $6");
-        let q = bind_json(q, Some(&json!("s")));
-        let q = bind_json(q, Some(&json!(7)));
-        let q = bind_json(q, Some(&json!(7.5)));
-        let q = bind_json(q, Some(&json!(true)));
-        let q = bind_json(q, Some(&Value::Null));
-        let _q = bind_json(q, None);
+        let q = bind_json(q, Some(&json!("s")), "c").unwrap();
+        let q = bind_json(q, Some(&json!(7)), "c").unwrap();
+        let q = bind_json(q, Some(&json!(7.5)), "c").unwrap();
+        let q = bind_json(q, Some(&json!(true)), "c").unwrap();
+        let q = bind_json(q, Some(&Value::Null), "c").unwrap();
+        let _q = bind_json(q, None, "c").unwrap();
+
+        // #462: a u64 above i64::MAX must be refused, not wrapped negative.
+        let q = sqlx::query("SELECT 1");
+        let err = match bind_json(q, Some(&json!(u64::MAX)), "big_id") {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("u64::MAX must not bind to a signed BIGINT"),
+        };
+        assert!(err.contains("big_id"), "{err}");
+        assert!(err.contains(&u64::MAX.to_string()), "{err}");
     }
 }

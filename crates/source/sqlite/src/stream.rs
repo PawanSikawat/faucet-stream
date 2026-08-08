@@ -157,17 +157,23 @@ fn classify_number(n: &serde_json::Number) -> NumberBind {
 fn bind_params<'q>(
     mut query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
     bind_values: &'q [Value],
-) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
-    for value in bind_values {
+) -> Result<sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>, FaucetError> {
+    for (i, value) in bind_values.iter().enumerate() {
         query = match value {
             Value::String(s) => query.bind(s.clone()),
             Value::Number(n) => match classify_number(n) {
                 // `unwrap()` is sound: the classifier proves the predicate.
                 NumberBind::I64 => query.bind(n.as_i64().unwrap()),
-                // SQLite has no unsigned integer type; reinterpret the bits so
-                // the value round-trips through its signed 8-byte INTEGER
-                // without the precision loss an `f64` cast would introduce.
-                NumberBind::U64 => query.bind(n.as_u64().unwrap() as i64),
+                // Above `i64::MAX`. SQLite's INTEGER is a signed 8-byte value, and
+                // `as i64` would *wrap* — storing a large id as a large negative
+                // number, or (when this binds an incremental bookmark) comparing
+                // against a negative bound and re-reading or skipping rows.
+                // Avoiding an `f64` cast's precision loss was the right instinct;
+                // bit-reinterpretation is not the way to get it. Refuse (#462).
+                NumberBind::U64 => query.bind(faucet_core::util::u64_to_signed(
+                    n.as_u64().unwrap(),
+                    &format!("bind parameter {}", i + 1),
+                )?),
                 NumberBind::F64 => query.bind(n.as_f64().unwrap_or(0.0)),
             },
             Value::Bool(b) => query.bind(*b),
@@ -175,7 +181,7 @@ fn bind_params<'q>(
             _ => query.bind(value.to_string()),
         };
     }
-    query
+    Ok(query)
 }
 
 /// One flattened `pragma_table_info` row used by [`discover`].
@@ -248,7 +254,7 @@ impl faucet_core::Source for SqliteSource {
     ) -> Result<Vec<Value>, FaucetError> {
         let (query_str, bind_values) = resolve_query(&self.config, context);
         let query_str = self.shard_wrap(query_str);
-        let query = bind_params(sqlx::query(&query_str), &bind_values);
+        let query = bind_params(sqlx::query(&query_str), &bind_values)?;
 
         let rows = query
             .fetch_all(&self.pool)
@@ -288,7 +294,7 @@ impl faucet_core::Source for SqliteSource {
         Box::pin(async_stream::try_stream! {
             let (query_str, bind_values) = resolve_query(&self.config, context);
             let query_str = self.shard_wrap(query_str);
-            let query = bind_params(sqlx::query(&query_str), &bind_values);
+            let query = bind_params(sqlx::query(&query_str), &bind_values)?;
 
             let mut rows = query.fetch(&self.pool);
             let chunk = if batch_size == 0 { usize::MAX } else { batch_size };
@@ -928,5 +934,36 @@ mod tests {
 
         let bad = faucet_core::ShardSpec::new("0", serde_json::json!({ "key": "k" }));
         assert!(source.apply_shard(&bad).await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod bind_overflow_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// #462: SQLite's INTEGER is signed 8-byte; `as i64` would wrap a large
+    /// unsigned id to a negative. Refuse instead.
+    #[test]
+    fn u64_above_i64_max_is_refused_not_wrapped() {
+        let err = match bind_params(sqlx::query("SELECT 1"), &[json!(u64::MAX)]) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("u64::MAX must not bind"),
+        };
+        assert!(err.contains(&u64::MAX.to_string()), "{err}");
+        assert!(
+            !err.contains("-9223372036854775808"),
+            "must not show the wrap: {err}"
+        );
+    }
+
+    #[test]
+    fn values_a_signed_column_can_hold_still_bind() {
+        for v in [json!(0), json!(-1), json!(i64::MAX), json!(i64::MAX as u64)] {
+            assert!(
+                bind_params(sqlx::query("SELECT 1"), &[v.clone()]).is_ok(),
+                "{v} must still bind"
+            );
+        }
     }
 }
