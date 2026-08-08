@@ -1126,3 +1126,270 @@ pipeline:
         "sla is wired per sink node now: {stdout}"
     );
 }
+
+/// #459: a merge sink's OpenLineage job must name **both** sources as inputs.
+///
+/// This is the end-to-end proof, not a unit check of the context builder: it runs
+/// a real two-source graph with a file transport and reads the emitted events
+/// back. An earlier revision threaded node identities through the builder but
+/// never populated them, so every event was silently suppressed — a test that
+/// only asserted "the run succeeded" could not tell the difference.
+#[test]
+#[cfg(feature = "lineage")]
+fn lineage_emits_a_job_per_sink_node_with_every_reaching_source() {
+    let dir = TempDir::new().unwrap();
+    let a = dir.path().join("a.csv");
+    let b = dir.path().join("b.csv");
+    write(&a, "id,v\n1,x\n2,y\n");
+    write(&b, "id,v\n3,z\n");
+    let out = dir.path().join("out.jsonl");
+    let events = dir.path().join("lineage.jsonl");
+    let cfg_path = dir.path().join("faucet.yaml");
+    write(
+        &cfg_path,
+        &format!(
+            r#"version: 1
+name: merged
+lineage:
+  namespace: test-ns
+  transport: {{ type: file, config: {{ path: {ev} }} }}
+pipeline:
+  sources:
+    a: {{ type: csv, config: {{ path: {a} }} }}
+    b: {{ type: csv, config: {{ path: {b} }} }}
+  sinks:
+    out: {{ type: jsonl, config: {{ path: {out} }} }}
+  nodes:
+    sa: {{ kind: source, ref: a }}
+    sb: {{ kind: source, ref: b }}
+    m: {{ kind: merge }}
+    w: {{ kind: sink, ref: out }}
+  edges:
+    - {{ from: sa, to: m }}
+    - {{ from: sb, to: m }}
+    - {{ from: m, to: w }}
+"#,
+            a = a.display(),
+            b = b.display(),
+            out = out.display(),
+            ev = events.display()
+        ),
+    );
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["run", cfg_path.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let body = fs::read_to_string(&events).expect("lineage transport wrote events");
+    let evs: Vec<serde_json::Value> = body
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("each line is one RunEvent"))
+        .collect();
+    assert!(!evs.is_empty(), "at least one event: {body}");
+
+    // One job per sink node, named `{pipeline}.{node_id}`.
+    for e in &evs {
+        assert_eq!(e["job"]["name"], "merged.w", "job per sink node: {e}");
+        assert_eq!(e["job"]["namespace"], "test-ns");
+    }
+    let kinds: Vec<&str> = evs
+        .iter()
+        .map(|e| e["eventType"].as_str().unwrap_or_default())
+        .collect();
+    assert!(kinds.contains(&"START"), "START emitted: {kinds:?}");
+    assert!(kinds.contains(&"COMPLETE"), "COMPLETE emitted: {kinds:?}");
+
+    // The terminal event names both sources as inputs and carries no column
+    // lineage (not derivable across a merge).
+    let done = evs
+        .iter()
+        .find(|e| e["eventType"] == "COMPLETE")
+        .expect("terminal event");
+    let inputs = done["inputs"].as_array().expect("inputs array");
+    assert_eq!(inputs.len(), 2, "both sources are inputs: {done}");
+    let mut names: Vec<String> = inputs
+        .iter()
+        .map(|d| d["name"].as_str().unwrap_or_default().to_string())
+        .collect();
+    names.sort();
+    assert!(
+        names[0].ends_with("a.csv") && names[1].ends_with("b.csv"),
+        "inputs name the real files: {names:?}"
+    );
+    assert_eq!(done["outputs"].as_array().map(Vec::len), Some(1));
+    let facets = &done["outputs"][0]["facets"];
+    assert!(
+        facets.get("columnLineage").is_none(),
+        "column lineage is not fabricated for a multi-input sink: {facets}"
+    );
+}
+
+/// A single-source graph is the shape where column lineage stays expressible, so
+/// the linear case must keep exactly one input — the check that the N-input
+/// change did not turn every job into a fan-in.
+#[test]
+#[cfg(feature = "lineage")]
+fn lineage_keeps_one_input_for_a_linear_graph() {
+    let dir = TempDir::new().unwrap();
+    let csv = orders_csv(dir.path());
+    let out = dir.path().join("out.jsonl");
+    let events = dir.path().join("lineage.jsonl");
+    let cfg_path = dir.path().join("faucet.yaml");
+    write(
+        &cfg_path,
+        &format!(
+            r#"version: 1
+name: linear
+lineage:
+  namespace: ns
+  transport: {{ type: file, config: {{ path: {ev} }} }}
+pipeline:
+  sources:
+    o: {{ type: csv, config: {{ path: {csv} }} }}
+  sinks:
+    out: {{ type: jsonl, config: {{ path: {out} }} }}
+  nodes:
+    s: {{ kind: source, ref: o }}
+    w: {{ kind: sink, ref: out }}
+  edges:
+    - {{ from: s, to: w }}
+"#,
+            csv = csv.display(),
+            out = out.display(),
+            ev = events.display()
+        ),
+    );
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["run", cfg_path.to_str().unwrap()])
+        .assert()
+        .success();
+    let body = fs::read_to_string(&events).unwrap();
+    let done: serde_json::Value = body
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .find(|e| e["eventType"] == "COMPLETE")
+        .expect("terminal event");
+    assert_eq!(done["inputs"].as_array().map(Vec::len), Some(1));
+    assert_eq!(done["job"]["name"], "linear.w");
+}
+
+/// #459: the catalog records a dataset per source and per sink, plus one edge per
+/// (source, sink) pair the graph actually connects — so a merge produces two
+/// edges into the same sink, each carrying its own source's volume.
+///
+/// Read back through `faucet catalog`, which is the surface an operator uses, so
+/// the test fails if either the write path or the read path regresses.
+#[test]
+#[cfg(all(feature = "catalog", feature = "serve-history-sqlite"))]
+fn catalog_records_a_dataset_per_node_and_an_edge_per_pair() {
+    let dir = TempDir::new().unwrap();
+    let a = dir.path().join("a.csv");
+    let b = dir.path().join("b.csv");
+    write(&a, "id,v\n1,x\n2,y\n");
+    write(&b, "id,v\n3,z\n");
+    let out = dir.path().join("out.jsonl");
+    let store = dir.path().join("catalog.db");
+    let cfg_path = dir.path().join("faucet.yaml");
+    write(
+        &cfg_path,
+        &format!(
+            r#"version: 1
+name: cat-merge
+catalog:
+  url: sqlite:{store}
+pipeline:
+  sources:
+    a: {{ type: csv, config: {{ path: {a} }} }}
+    b: {{ type: csv, config: {{ path: {b} }} }}
+  sinks:
+    out: {{ type: jsonl, config: {{ path: {out} }} }}
+  nodes:
+    sa: {{ kind: source, ref: a }}
+    sb: {{ kind: source, ref: b }}
+    m: {{ kind: merge }}
+    w: {{ kind: sink, ref: out }}
+  edges:
+    - {{ from: sa, to: m }}
+    - {{ from: sb, to: m }}
+    - {{ from: m, to: w }}
+"#,
+            a = a.display(),
+            b = b.display(),
+            out = out.display(),
+            store = store.display()
+        ),
+    );
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["run", cfg_path.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let listed = Command::cargo_bin("faucet")
+        .unwrap()
+        .args([
+            "catalog",
+            "datasets",
+            "--config",
+            cfg_path.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success();
+    let body = String::from_utf8_lossy(&listed.get_output().stdout).to_string();
+    let json: serde_json::Value = serde_json::from_str(&body).expect("--json emits JSON");
+    let rows = json
+        .get("datasets")
+        .and_then(|d| d.as_array())
+        .or_else(|| json.as_array())
+        .expect("a dataset list");
+    let uris: Vec<String> = rows
+        .iter()
+        .map(|d| d["uri"].as_str().unwrap_or_default().to_string())
+        .collect();
+    // Both sources and the sink, not just the sink.
+    for want in ["a.csv", "b.csv", "out.jsonl"] {
+        assert!(
+            uris.iter().any(|u| u.ends_with(want)),
+            "{want} recorded: {uris:?}"
+        );
+    }
+
+    // The lineage graph carries one edge per contributing source, and the volumes
+    // are per-source (2 + 1) rather than the sink total repeated.
+    let shown = Command::cargo_bin("faucet")
+        .unwrap()
+        .args([
+            "catalog",
+            "lineage",
+            "--config",
+            cfg_path.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success();
+    let detail: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&shown.get_output().stdout)).unwrap();
+    let edges = detail["edges"].as_array().expect("edges array");
+    assert_eq!(edges.len(), 2, "one edge per contributing source: {detail}");
+    for e in edges {
+        assert!(
+            e["dst_uri"].as_str().unwrap_or_default().ends_with("out.jsonl"),
+            "both edges land on the sink: {e}"
+        );
+    }
+    let mut vols: Vec<u64> = edges
+        .iter()
+        .map(|e| e["last_records"].as_u64().unwrap_or_default())
+        .collect();
+    vols.sort_unstable();
+    assert_eq!(
+        vols,
+        vec![1, 2],
+        "per-source volume, not the sink total: {edges:?}"
+    );
+}

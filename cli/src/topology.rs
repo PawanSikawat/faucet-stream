@@ -295,6 +295,41 @@ pub struct NodeIdentity {
     pub config: Value,
 }
 
+/// Record one connector node's identity, when a caller asked for the map.
+///
+/// Skipped when the caller wants no map, or when the connector does not override
+/// `dataset_uri()` — the `<kind>://unknown` default names nothing joinable, and
+/// recording it would put a placeholder dataset in the catalog and in every
+/// OpenLineage event.
+fn record_identity(
+    identities: &mut Option<&mut NodeIdentities>,
+    node_id: &str,
+    kind: &str,
+    config: Value,
+    dataset_uri: String,
+) {
+    let Some(map) = identities.as_mut() else {
+        return;
+    };
+    if dataset_uri.ends_with("://unknown") {
+        tracing::debug!(
+            node = %node_id,
+            kind = %kind,
+            "topology: connector does not expose a dataset_uri; omitted from lineage/catalog"
+        );
+        return;
+    }
+    let uri = dataset_uri;
+    map.insert(
+        node_id.to_string(),
+        NodeIdentity {
+            kind: kind.to_string(),
+            dataset_uri: uri,
+            config,
+        },
+    );
+}
+
 /// Per-node identities, keyed by node id. Only source and sink nodes appear.
 pub type NodeIdentities = std::collections::HashMap<String, NodeIdentity>;
 
@@ -364,7 +399,9 @@ async fn build_topology_inner(
                 )?;
                 crate::executor::resolve_now_inplace(&mut c, clock)?;
                 crate::executor::reject_unresolved_backfill_tokens(&c, "source")?;
-                NodeKind::Source(build_source(&k, c, auth, None).await?)
+                let source = build_source(&k, c.clone(), auth, None).await?;
+                record_identity(&mut identities, id, &k, c, source.dataset_uri());
+                NodeKind::Source(source)
             }
             NodeSpec::Sink {
                 template,
@@ -382,11 +419,19 @@ async fn build_topology_inner(
                 )?;
                 crate::executor::resolve_now_inplace(&mut c, clock)?;
                 crate::executor::reject_unresolved_backfill_tokens(&c, "sink")?;
-                // Preview modes must never reach the real destination.
+                // Preview modes must never reach the real destination. The
+                // identity is still recorded from the *real* config, so a
+                // `--dry-run` report names the destination it would have
+                // written rather than the counting stand-in.
                 let sink: Box<dyn faucet_core::Sink> = if opts.dry_run {
+                    if let Ok(probe) = build_sink(&k, c.clone(), auth).await {
+                        record_identity(&mut identities, id, &k, c.clone(), probe.dataset_uri());
+                    }
                     Box::new(crate::executor::CountingSink::new())
                 } else {
-                    build_sink(&k, c, auth).await?
+                    let sink = build_sink(&k, c.clone(), auth).await?;
+                    record_identity(&mut identities, id, &k, c, sink.dataset_uri());
+                    sink
                 };
                 let sink = match opts.limit {
                     Some(n) => Box::new(crate::executor::LimitedSink::wrap(sink, n)) as Box<_>,
@@ -677,15 +722,17 @@ pub async fn run_topology(
     if !run.is_preview() && !cancelled {
         post_run_observability(
             cfg,
-            &pipeline_name,
-            &reported,
-            state_store.as_ref(),
-            &identities,
-            &reaching_sources(cfg),
-            run.clock(),
-            &run_id,
-            #[cfg(feature = "lineage")]
-            lineage.as_ref(),
+            PostRun {
+                pipeline_name: &pipeline_name,
+                reported: &reported,
+                state_store: state_store.as_ref(),
+                identities: &identities,
+                reaching: &reaching_sources(cfg),
+                clock: run.clock(),
+                run_id: &run_id,
+                #[cfg(feature = "lineage")]
+                lineage: lineage.as_ref(),
+            },
         )
         .await;
     }
@@ -825,17 +872,30 @@ pub fn reaching_sources(cfg: &PipelineConfig) -> std::collections::HashMap<Strin
 /// constructors are already standalone, so topology mode calls exactly what the
 /// matrix executor calls. Neither can fail a run — an SLA violation is a signal
 /// and a notification is best-effort — so this returns nothing.
-async fn post_run_observability(
-    cfg: &PipelineConfig,
-    pipeline_name: &str,
-    reported: &faucet_core::topology::TopologyRun,
-    state_store: Option<&std::sync::Arc<dyn faucet_core::StateStore>>,
-    identities: &NodeIdentities,
-    reaching: &std::collections::HashMap<String, Vec<String>>,
+struct PostRun<'a> {
+    pipeline_name: &'a str,
+    reported: &'a faucet_core::topology::TopologyRun,
+    state_store: Option<&'a std::sync::Arc<dyn faucet_core::StateStore>>,
+    identities: &'a NodeIdentities,
+    reaching: &'a std::collections::HashMap<String, Vec<String>>,
     clock: DateTime<FixedOffset>,
-    run_id: &str,
-    #[cfg(feature = "lineage")] lineage: Option<&std::sync::Arc<faucet_lineage::LineageEmitter>>,
-) {
+    run_id: &'a str,
+    #[cfg(feature = "lineage")]
+    lineage: Option<&'a std::sync::Arc<faucet_lineage::LineageEmitter>>,
+}
+
+async fn post_run_observability(cfg: &PipelineConfig, ctx: PostRun<'_>) {
+    let PostRun {
+        pipeline_name,
+        reported,
+        state_store,
+        identities,
+        reaching,
+        clock,
+        run_id,
+        #[cfg(feature = "lineage")]
+        lineage,
+    } = ctx;
     #[cfg(feature = "catalog")]
     let catalog = match cfg.catalog.as_ref() {
         Some(spec) => match crate::catalog::connect_from_spec(spec).await {
