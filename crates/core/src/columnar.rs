@@ -64,7 +64,107 @@ pub fn infer_arrow_schema(records: &[Value]) -> Result<SchemaRef, FaucetError> {
         .map(|v| Ok::<_, arrow::error::ArrowError>(v.clone()));
     let schema = arrow_json::reader::infer_json_schema_from_iterator(iter)
         .map_err(|e| te("schema inference", e))?;
-    Ok(Arc::new(schema))
+    refine_wide_integers(&schema, records).map(Arc::new)
+}
+
+/// Re-type fields that `arrow-json` widened to `Float64` purely because an
+/// integer did not fit `i64`, and refuse the cases that cannot be re-typed.
+///
+/// `arrow-json` infers `Float64` for any integer outside `i64` range, so a `u64`
+/// id such as `18446744073709551615` silently becomes `1.8446744073709552e19` —
+/// exact value gone, `Ok` returned (#460). Where every observed value for such a
+/// field is a non-negative integer, `UInt64` holds it exactly, so use that.
+/// Where no integer type fits (values spanning negative *and* above `i64::MAX`)
+/// or the value sits somewhere this pass does not re-type (inside a list), fail
+/// with a typed error naming the path rather than approximating it.
+///
+/// Fields arrow-json typed `Float64` because a value genuinely *is* fractional
+/// are left alone, as is a field mixing integers and floats — coercing those to
+/// `Float64` is ordinary JSON-number behaviour, not loss of an exact integer.
+fn refine_wide_integers(schema: &Schema, records: &[Value]) -> Result<Schema, FaucetError> {
+    use arrow::datatypes::{DataType, Field};
+
+    /// Values observed at one field across the page (nulls skipped).
+    fn observed<'a>(records: &'a [Value], name: &str) -> Vec<&'a Value> {
+        records
+            .iter()
+            .filter_map(|r| r.get(name))
+            .filter(|v| !v.is_null())
+            .collect()
+    }
+
+    /// Does this number need more than `i64` *and* is it an exact integer?
+    fn is_wide_integer(v: &Value) -> bool {
+        matches!(v, Value::Number(n) if !n.is_i64() && n.is_u64())
+    }
+
+    fn refine_field(field: &Field, values: Vec<&Value>) -> Result<Field, FaucetError> {
+        match field.data_type() {
+            DataType::Float64 if values.iter().any(|v| is_wide_integer(v)) => {
+                // Every value integral and non-negative → UInt64 is exact.
+                if values
+                    .iter()
+                    .all(|v| matches!(v, Value::Number(n) if n.is_u64()))
+                {
+                    Ok(field.clone().with_data_type(DataType::UInt64))
+                } else {
+                    Err(FaucetError::Transform(format!(
+                        "columnar shim: field {:?} mixes an integer above i64::MAX with values \
+                         no unsigned type can hold, so no exact Arrow type fits. Convert it to a \
+                         string first (a `cast` transform) — it is not silently widened to a \
+                         float because that loses the exact value",
+                        field.name()
+                    )))
+                }
+            }
+            DataType::Struct(children) => {
+                let refined = children
+                    .iter()
+                    .map(|child| {
+                        let child_values = values
+                            .iter()
+                            .filter_map(|v| v.get(child.name()))
+                            .filter(|v| !v.is_null())
+                            .collect();
+                        refine_field(child, child_values).map(Arc::new)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(field
+                    .clone()
+                    .with_data_type(DataType::Struct(refined.into())))
+            }
+            // A wide integer inside a list is not re-typed by this pass; refusing
+            // beats writing an approximation nobody asked for.
+            _ if contains_wide_integer_in_container(&values) => {
+                Err(FaucetError::Transform(format!(
+                    "columnar shim: field {:?} contains an integer above i64::MAX inside a list, \
+                     which the columnar path cannot represent exactly. Convert those elements to \
+                     strings first (a `cast` transform)",
+                    field.name()
+                )))
+            }
+            _ => Ok(field.clone()),
+        }
+    }
+
+    /// Any wide integer nested inside an array (at any depth).
+    fn contains_wide_integer_in_container(values: &[&Value]) -> bool {
+        fn walk(v: &Value, in_list: bool) -> bool {
+            match v {
+                Value::Array(items) => items.iter().any(|i| walk(i, true)),
+                Value::Object(map) => map.values().any(|i| walk(i, in_list)),
+                other => in_list && is_wide_integer(other),
+            }
+        }
+        values.iter().any(|v| walk(v, false))
+    }
+
+    let fields = schema
+        .fields()
+        .iter()
+        .map(|f| refine_field(f, observed(records, f.name())).map(Arc::new))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Schema::new(fields).with_metadata(schema.metadata().clone()))
 }
 
 /// Encode a slice of JSON records into a single [`RecordBatch`] against `schema`.
@@ -155,5 +255,91 @@ mod tests {
         let page = ColumnarPage::new(batch, Some(json!({"lsn": 42})));
         assert_eq!(page.num_rows(), 2);
         assert_eq!(page.bookmark, Some(json!({"lsn": 42})));
+    }
+}
+
+#[cfg(test)]
+mod wide_integer_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// #460: arrow-json types an integer above `i64::MAX` as `Float64`, so
+    /// `18446744073709551615` used to come back as `1.8446744073709552e19` with
+    /// `Ok`. It must now round-trip exactly.
+    #[test]
+    fn u64_above_i64_max_round_trips_exactly() {
+        let recs = vec![json!({"id": u64::MAX})];
+        let back =
+            record_batch_to_values(&values_to_record_batch_inferred(&recs).unwrap()).unwrap();
+        assert_eq!(back[0]["id"], json!(u64::MAX), "exact value must survive");
+        assert!(back[0]["id"].is_u64(), "and stay an integer, not a float");
+    }
+
+    #[test]
+    fn mixed_small_and_wide_integers_all_survive() {
+        let recs = vec![
+            json!({"id": 1}),
+            json!({"id": u64::MAX}),
+            json!({"id": null}),
+        ];
+        let back =
+            record_batch_to_values(&values_to_record_batch_inferred(&recs).unwrap()).unwrap();
+        assert_eq!(back[0]["id"], json!(1));
+        assert_eq!(back[1]["id"], json!(u64::MAX));
+        assert_eq!(back[2]["id"], json!(null));
+    }
+
+    #[test]
+    fn wide_integer_nested_in_a_struct_survives() {
+        let recs = vec![json!({"outer": {"id": u64::MAX, "n": 3}})];
+        let back =
+            record_batch_to_values(&values_to_record_batch_inferred(&recs).unwrap()).unwrap();
+        assert_eq!(back[0]["outer"]["id"], json!(u64::MAX));
+        assert_eq!(back[0]["outer"]["n"], json!(3));
+    }
+
+    /// Genuine floats, and integer/float mixes, keep their existing behaviour —
+    /// coercing those to Float64 is ordinary JSON-number semantics, not loss of
+    /// an exact integer.
+    #[test]
+    fn genuine_floats_are_untouched() {
+        let recs = vec![json!({"a": 1.5}), json!({"a": 2})];
+        let back =
+            record_batch_to_values(&values_to_record_batch_inferred(&recs).unwrap()).unwrap();
+        assert_eq!(back[0]["a"], json!(1.5));
+        assert_eq!(back[1]["a"], json!(2.0));
+
+        // i64 range is unaffected (2^53+1 already round-tripped before).
+        let recs = vec![json!({"n": 9007199254740993i64, "m": i64::MIN})];
+        let back =
+            record_batch_to_values(&values_to_record_batch_inferred(&recs).unwrap()).unwrap();
+        assert_eq!(back[0]["n"], json!(9007199254740993i64));
+        assert_eq!(back[0]["m"], json!(i64::MIN));
+    }
+
+    /// No exact type fits a field spanning negatives and above-i64::MAX, so it
+    /// must fail loudly rather than approximate.
+    #[test]
+    fn unrepresentable_mix_is_refused() {
+        let recs = vec![json!({"v": -1}), json!({"v": u64::MAX})];
+        let err = match values_to_record_batch_inferred(&recs) {
+            Err(e) => e.to_string(),
+            Ok(b) => panic!("must refuse; got {:?}", record_batch_to_values(&b).unwrap()),
+        };
+        assert!(err.contains("\"v\""), "{err}");
+        assert!(err.contains("cast"), "points at the workaround: {err}");
+    }
+
+    /// A wide integer inside a list is not re-typed by this pass, so it is
+    /// refused rather than silently written as a float.
+    #[test]
+    fn wide_integer_inside_a_list_is_refused() {
+        let recs = vec![json!({"ids": [1, u64::MAX]})];
+        let err = match values_to_record_batch_inferred(&recs) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("must refuse a wide integer inside a list"),
+        };
+        assert!(err.contains("\"ids\""), "{err}");
+        assert!(err.contains("list"), "{err}");
     }
 }

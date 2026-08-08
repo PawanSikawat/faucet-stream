@@ -40,7 +40,7 @@ pub enum BackfillRange {
     Time {
         from: DateTime<FixedOffset>,
         to: DateTime<FixedOffset>,
-        window: Option<Duration>,
+        window: Option<crate::backfill::plan::WindowStep>,
         tz: chrono_tz::Tz,
     },
     /// Explicit bookmark range (`--from-bookmark` / `--to-bookmark`): seed
@@ -65,7 +65,7 @@ impl BackfillRange {
                 from.to_rfc3339(),
                 to.to_rfc3339(),
                 window
-                    .map(|w| w.num_seconds().to_string())
+                    .map(|w| w.to_string())
                     .unwrap_or_else(|| "whole".into()),
             ),
             Self::Bookmark { from, to, .. } => format!(
@@ -685,7 +685,11 @@ pipeline:
     config: { path: ./out.jsonl }
 "#;
 
-    fn time_range(from: &str, to: &str, window: Option<chrono::Duration>) -> BackfillRange {
+    fn time_range(
+        from: &str,
+        to: &str,
+        window: Option<crate::backfill::plan::WindowStep>,
+    ) -> BackfillRange {
         let tz: chrono_tz::Tz = "UTC".parse().unwrap();
         BackfillRange::Time {
             from: crate::backfill::plan::parse_boundary(from, tz).unwrap(),
@@ -718,7 +722,7 @@ pipeline:
         let opts = base_opts(time_range(
             "2026-06-01",
             "2026-07-02",
-            Some(chrono::Duration::days(1)),
+            Some(crate::backfill::plan::WindowStep::Days(1)),
         ));
         let out = run_backfill(&cfg, opts).await.unwrap();
         assert!(out.dry_run);

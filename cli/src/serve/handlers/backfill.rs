@@ -145,7 +145,7 @@ pub async fn submit_backfill(
         from.to_rfc3339(),
         to.to_rfc3339(),
         window
-            .map(|w| w.num_seconds().to_string())
+            .map(|w| w.to_string())
             .unwrap_or_else(|| "whole".into()),
     );
     let hash = range_hash(&descriptor);
