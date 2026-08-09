@@ -9662,48 +9662,53 @@
           "additionalProperties": false
         },
         {
-          "type": "object",
-          "title": "xml",
+          "additionalProperties": false,
           "properties": {
-            "type": {
-              "const": "xml"
-            },
             "config": {
               "anyOf": [
                 {
+                  "description": "Configuration for the XML source.",
                   "properties": {
+                    "auth": {
+                      "$ref": "#/$defs/source_xml__AuthSpec",
+                      "description": "Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`\npointer to a shared provider in the CLI's top-level `auth:` catalog."
+                    },
                     "base_url": {
                       "description": "Base URL of the API.",
                       "type": "string"
                     },
-                    "path": {
-                      "description": "Request path (appended to base_url).",
-                      "type": "string"
+                    "batch_size": {
+                      "default": 1000,
+                      "description": "Records per emitted [`StreamPage`](faucet_core::StreamPage). The\nevent-driven XML parser accumulates matched subtrees into a buffer\nand yields whenever the buffer reaches this size. Defaults to\n[`DEFAULT_BATCH_SIZE`].\n\n`batch_size = 0` is the \"no batching\" sentinel: the document is\ndrained end-to-end and the entire result set is emitted in a single\npage. Useful for small lookup payloads or for sinks (e.g. SQL `COPY`,\nBigQuery load jobs) that prefer one large request to many small ones.",
+                      "format": "uint",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "string"
+                      ]
+                    },
+                    "body": {
+                      "description": "Optional request body (e.g. a raw SOAP envelope). Mutually exclusive\nwith [`SoapConfig::body_inner`] when a [`soap`](Self::soap) block is set.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "max_pages": {
+                      "description": "Maximum number of pages to fetch.",
+                      "format": "uint",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ]
                     },
                     "method": {
                       "description": "HTTP method (GET or POST for SOAP).",
                       "type": "string"
                     },
-                    "auth": {
-                      "description": "Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`\npointer to a shared provider in the CLI's top-level `auth:` catalog.",
-                      "$ref": "#/$defs/source_xml__AuthSpec"
-                    },
-                    "body": {
-                      "description": "Optional request body (e.g. SOAP envelope).",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "records_element_path": {
-                      "description": "Dot-separated path to the repeating element in the XML response\n(e.g. `\"Envelope.Body.GetUsersResponse.Users.User\"`).",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
                     "pagination": {
-                      "description": "Pagination configuration.",
                       "anyOf": [
                         {
                           "$ref": "#/$defs/source_xml__XmlPagination"
@@ -9711,34 +9716,26 @@
                         {
                           "type": "null"
                         }
-                      ]
-                    },
-                    "max_pages": {
-                      "description": "Maximum number of pages to fetch.",
-                      "type": [
-                        "integer",
-                        "null",
-                        "string"
                       ],
-                      "format": "uint",
-                      "minimum": 0
+                      "description": "Pagination configuration."
+                    },
+                    "path": {
+                      "description": "Request path (appended to base_url).",
+                      "type": "string"
                     },
                     "query_params": {
-                      "description": "Query parameters to include in every request.",
-                      "type": "object",
                       "additionalProperties": {
                         "type": "string"
-                      }
+                      },
+                      "description": "Query parameters to include in every request.",
+                      "type": "object"
                     },
-                    "batch_size": {
-                      "description": "Records per emitted [`StreamPage`](faucet_core::StreamPage). The\nevent-driven XML parser accumulates matched subtrees into a buffer\nand yields whenever the buffer reaches this size. Defaults to\n[`DEFAULT_BATCH_SIZE`].\n\n`batch_size = 0` is the \"no batching\" sentinel: the document is\ndrained end-to-end and the entire result set is emitted in a single\npage. Useful for small lookup payloads or for sinks (e.g. SQL `COPY`,\nBigQuery load jobs) that prefer one large request to many small ones.",
+                    "records_element_path": {
+                      "description": "Dot-separated path to the repeating element in the XML response\n(e.g. `\"Envelope.Body.GetUsersResponse.Users.User\"`).",
                       "type": [
-                        "integer",
-                        "string"
-                      ],
-                      "format": "uint",
-                      "minimum": 0,
-                      "default": 1000
+                        "string",
+                        "null"
+                      ]
                     },
                     "soap": {
                       "anyOf": [
@@ -9754,11 +9751,13 @@
                     }
                   },
                   "title": "XmlStreamConfig",
-                  "description": "Configuration for the XML source.",
                   "type": "object"
                 },
                 true
               ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
             },
             "transforms": {
               "type": [
@@ -9766,14 +9765,15 @@
                 "null"
               ]
             },
-            "inherit_transforms": {
-              "type": "boolean"
+            "type": {
+              "const": "xml"
             }
           },
           "required": [
             "type"
           ],
-          "additionalProperties": false
+          "title": "xml",
+          "type": "object"
         },
         {
           "type": "object",
