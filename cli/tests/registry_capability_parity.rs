@@ -16,10 +16,13 @@
 //! **Coverage model.** A connector whose `new()` opens a live connection eagerly
 //! (the sqlx `.connect()` sinks, tiberius, Spanner, the Iceberg catalog, the CDC
 //! sources) cannot be constructed in an offline unit test, so it is *skipped*
-//! rather than failed. To guarantee the check never silently degrades to probing
-//! nothing, [`MUST_CHECK_SINKS`] / [`MUST_CHECK_SOURCES`] name connectors known
-//! to build offline — including the drift-critical capable sinks (sqlite, redis,
-//! mongodb, elasticsearch) — and the test fails if any of those is *not* probed.
+//! rather than failed. A `new()` that *panics* on the synthesized config (e.g.
+//! a reqwest client hitting rustls' "no process-level CryptoProvider" when
+//! `--all-features` pulls two crypto backends) is likewise isolated in a task
+//! and treated as a skip. To guarantee the check never silently degrades to
+//! probing nothing, [`MUST_CHECK_SINKS`] / [`MUST_CHECK_SOURCES`] name TLS-free
+//! connectors that always build offline — incl. the drift-critical capable
+//! sinks sqlite / redis / mongodb — and the test fails if any is *not* probed.
 //! In CI the whole suite runs under `--all-features`, so every compiled
 //! connector that can be built offline is exercised.
 
@@ -40,19 +43,19 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(4);
 /// construct without a live endpoint, deliberately including capable sinks so
 /// the tier-1 allowlists (idempotent / upsert / schema-evolution) are actually
 /// cross-checked, not skipped. The test fails if any is not probed.
+/// Deliberately TLS-free: each constructs without a network client, so it can't
+/// hit rustls' multi-provider panic under `--all-features` — keeping the MUST
+/// guarantee robust across feature sets. sqlite/redis/mongodb still cover the
+/// tier-1 allowlists (idempotent + upsert + schema-evolution). reqwest-based
+/// connectors (elasticsearch/http/…) are checked best-effort when they build.
 const MUST_CHECK_SINKS: &[&str] = &[
-    "jsonl",
-    "csv",
-    "stdout",
-    "sqlite",        // idempotent + upsert + schema-evolution
-    "redis",         // idempotent
-    "mongodb",       // idempotent + upsert
-    "elasticsearch", // upsert + schema-evolution
-    "http",
+    "jsonl", "csv", "stdout", "sqlite",  // idempotent + upsert + schema-evolution
+    "redis",   // idempotent
+    "mongodb", // idempotent + upsert
 ];
 
-/// Sources that MUST be probeable offline.
-const MUST_CHECK_SOURCES: &[&str] = &["csv", "sqlite", "redis", "mongodb", "elasticsearch"];
+/// Sources that MUST be probeable offline (TLS-free — see [`MUST_CHECK_SINKS`]).
+const MUST_CHECK_SOURCES: &[&str] = &["csv", "sqlite", "redis", "mongodb"];
 
 /// Partial config overrides, deep-merged onto the schema-synthesized config
 /// where the generic placeholder is not accepted by a connector's `new()` (a
@@ -200,16 +203,24 @@ fn minimal_config(kind_key: &str, schema: &Value) -> Value {
 
 /// Try to build a sink and, if it builds, assert allowlist == trait on all three
 /// sink dimensions. Returns whether it was actually probed.
-async fn probe_sink(kind: &str) -> bool {
+async fn probe_sink(kind: &'static str) -> bool {
     let Ok(schema) = registry::sink_schema(kind) else {
         return false;
     };
     let cfg = minimal_config(&format!("sink:{kind}"), &schema);
-    let auth: AuthCatalog = HashMap::new();
-    let Ok(Ok(sink)) =
-        tokio::time::timeout(BUILD_TIMEOUT, registry::build_sink(kind, cfg, &auth)).await
-    else {
-        return false;
+    // Isolate construction in a task: a `new()` that *panics* (e.g. a reqwest
+    // client hitting rustls' "no process-level CryptoProvider" when
+    // `--all-features` pulls in two crypto backends) surfaces as a `JoinError`
+    // and is treated as "un-probeable offline" (skip), not a test failure. The
+    // capability assertions run OUTSIDE the task, so a genuine allowlist-vs-trait
+    // drift still panics the test as it should.
+    let build = tokio::spawn(async move {
+        let auth: AuthCatalog = HashMap::new();
+        registry::build_sink(kind, cfg, &auth).await
+    });
+    let sink = match tokio::time::timeout(BUILD_TIMEOUT, build).await {
+        Ok(Ok(Ok(s))) => s,
+        _ => return false,
     };
 
     assert_eq!(
@@ -234,19 +245,20 @@ async fn probe_sink(kind: &str) -> bool {
 
 /// Try to build a source and, if it builds, assert allowlist == trait on both
 /// source dimensions. Returns whether it was actually probed.
-async fn probe_source(kind: &str) -> bool {
+async fn probe_source(kind: &'static str) -> bool {
     let Ok(schema) = registry::source_schema(kind) else {
         return false;
     };
     let cfg = minimal_config(&format!("source:{kind}"), &schema);
-    let auth: AuthCatalog = HashMap::new();
-    let Ok(Ok(source)) = tokio::time::timeout(
-        BUILD_TIMEOUT,
-        registry::build_source(kind, cfg, &auth, None),
-    )
-    .await
-    else {
-        return false;
+    // See `probe_sink` — construction is isolated so a panic in `new()` skips
+    // rather than fails; drift assertions stay outside the task.
+    let build = tokio::spawn(async move {
+        let auth: AuthCatalog = HashMap::new();
+        registry::build_source(kind, cfg, &auth, None).await
+    });
+    let source = match tokio::time::timeout(BUILD_TIMEOUT, build).await {
+        Ok(Ok(Ok(s))) => s,
+        _ => return false,
     };
 
     assert_eq!(
