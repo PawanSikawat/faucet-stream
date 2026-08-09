@@ -20,11 +20,12 @@
 //! a reqwest client hitting rustls' "no process-level CryptoProvider" when
 //! `--all-features` pulls two crypto backends) is likewise isolated in a task
 //! and treated as a skip. To guarantee the check never silently degrades to
-//! probing nothing, [`MUST_CHECK_SINKS`] / [`MUST_CHECK_SOURCES`] name TLS-free
-//! connectors that always build offline — incl. the drift-critical capable
-//! sinks sqlite / redis / mongodb — and the test fails if any is *not* probed.
-//! In CI the whole suite runs under `--all-features`, so every compiled
-//! connector that can be built offline is exercised.
+//! probing nothing, [`MUST_CHECK_SINKS`] / [`MUST_CHECK_SOURCES`] name the
+//! local-only connectors that build identically under every feature set (incl.
+//! `sqlite`, which alone exercises all three sink capability dimensions) and the
+//! test fails if any is *not* probed. Networked connectors are checked
+//! best-effort. In CI the whole suite runs under `--all-features`, so every
+//! compiled connector that can be built offline is exercised.
 
 use std::collections::{HashMap, HashSet};
 
@@ -39,23 +40,22 @@ use std::time::Duration;
 /// stalling the suite under `--all-features`.
 const BUILD_TIMEOUT: Duration = Duration::from_secs(4);
 
-/// Sinks that MUST be probeable offline. A curated set of connectors that
-/// construct without a live endpoint, deliberately including capable sinks so
-/// the tier-1 allowlists (idempotent / upsert / schema-evolution) are actually
-/// cross-checked, not skipped. The test fails if any is not probed.
-/// Deliberately TLS-free: each constructs without a network client, so it can't
-/// hit rustls' multi-provider panic under `--all-features` — keeping the MUST
-/// guarantee robust across feature sets. sqlite/redis/mongodb still cover the
-/// tier-1 allowlists (idempotent + upsert + schema-evolution). reqwest-based
-/// connectors (elasticsearch/http/…) are checked best-effort when they build.
-const MUST_CHECK_SINKS: &[&str] = &[
-    "jsonl", "csv", "stdout", "sqlite",  // idempotent + upsert + schema-evolution
-    "redis",   // idempotent
-    "mongodb", // idempotent + upsert
-];
+/// Sinks that MUST be probeable offline — the test fails if any is not probed,
+/// so the parity check can never silently degrade to checking nothing.
+///
+/// Deliberately restricted to connectors with **no network/TLS client at all**
+/// (local files / in-memory SQLite), so they build identically under every
+/// feature set. A networked client (redis/mongodb/elasticsearch/…) can behave
+/// differently under `--all-features` — e.g. a crypto backend pulled in by
+/// another crate makes rustls panic on client construction, or an eager
+/// connect fails without a server — so those are checked **best-effort** (when
+/// they build) rather than required. `sqlite` alone exercises all three sink
+/// capability dimensions (idempotent + upsert + schema-evolution), so the
+/// tier-1 allowlist cross-check is still guaranteed.
+const MUST_CHECK_SINKS: &[&str] = &["jsonl", "csv", "stdout", "sqlite"];
 
-/// Sources that MUST be probeable offline (TLS-free — see [`MUST_CHECK_SINKS`]).
-const MUST_CHECK_SOURCES: &[&str] = &["csv", "sqlite", "redis", "mongodb"];
+/// Sources that MUST be probeable offline (local-only — see [`MUST_CHECK_SINKS`]).
+const MUST_CHECK_SOURCES: &[&str] = &["csv", "sqlite"];
 
 /// Partial config overrides, deep-merged onto the schema-synthesized config
 /// where the generic placeholder is not accepted by a connector's `new()` (a
