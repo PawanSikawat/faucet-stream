@@ -1518,6 +1518,11 @@ pub struct ConformanceArgs {
     /// — an opt-in CI gate. One of `stable` / `experimental` / `beta` / `draft`.
     #[arg(long, value_name = "TIER")]
     pub min_tier: Option<String>,
+    /// Print the connector capability matrix (Markdown) derived from the
+    /// registry allowlists and exit — the generated source for the docs-site
+    /// capability matrix. Ignores the scoring flags.
+    #[arg(long)]
+    pub matrix: bool,
 }
 
 /// `faucet search` arguments.

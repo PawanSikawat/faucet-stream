@@ -62,6 +62,7 @@
 
 - [Connector catalog](./reference/connectors.md)
 - [Connector conformance & tiers](./reference/conformance.md)
+- [Connector capability matrix](./reference/capability-matrix.md)
 - [Choosing a connector](./reference/choosing.md)
 - [CLI commands](./reference/cli.md)
 - [Configuration file format](./reference/config.md)

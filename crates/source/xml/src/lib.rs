@@ -12,5 +12,5 @@ pub mod stream;
 
 pub use faucet_core::{FaucetError, Source};
 
-pub use config::{XmlAuth, XmlPagination, XmlStreamConfig};
+pub use config::{SoapConfig, SoapVersion, XmlAuth, XmlPagination, XmlStreamConfig};
 pub use stream::XmlStream;

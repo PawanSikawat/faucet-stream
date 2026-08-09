@@ -13,7 +13,7 @@ Reach for it when the upstream system only speaks XML or SOAP: legacy enterprise
 
 - **Automatic XML → JSON conversion** — every response is parsed into a `serde_json::Value` tree; attributes, text nodes, and repeated elements all map to predictable JSON shapes.
 - **Element-path record extraction** — `records_element_path` walks a dot-separated path (e.g. `Envelope.Body.GetUsersResponse.Users.User`) to the repeating element and emits one record per match. A single element collapses to one record; a repeated element fans out to many.
-- **SOAP friendly** — set `method: POST` and supply a raw SOAP envelope as `body`; attach SOAP-action and content-type headers via `Custom` auth or `query_params`.
+- **First-class SOAP** — a `soap:` block assembles the envelope, injects the version-correct headers (SOAPAction for 1.1, `Content-Type` action param for 1.2), resolves `records_element_path` relative to `Envelope.Body`, and surfaces SOAP `<Fault>` responses as errors. Or drop down to the raw-envelope path (`method: POST` + `body`) any time.
 - **Two pagination styles** — page-number and offset/limit, each with a built-in loop guard so a misbehaving endpoint can't spin forever; `max_pages` is a hard cap across both.
 - **Pluggable authentication** — `none`, `bearer`, `basic`, or fully custom headers — inline or via a shared provider from the CLI `auth:` catalog (OAuth2 token reuse across matrix rows).
 - **Retry with backoff** — transient HTTP failures (5xx / connection resets) are retried up to **3 attempts** with exponential backoff (base 500 ms) via the shared `faucet_core::execute_with_retry`.
@@ -70,8 +70,9 @@ faucet run pipeline.yaml
 | `base_url` | string | — *(required)* | Base URL of the API. |
 | `path` | string | — *(required)* | Request path appended to `base_url`. |
 | `method` | string | `GET` | HTTP method. Use `POST` for SOAP. |
-| `body` | string | *(unset)* | Optional request body — typically a raw SOAP envelope for `POST`. |
-| `records_element_path` | string | *(unset)* | Dot-separated path to the repeating element in the converted JSON (e.g. `Envelope.Body.GetUsersResponse.Users.User`). When unset, the whole converted document is emitted as one record. |
+| `body` | string | *(unset)* | Optional **raw** request body — a hand-written SOAP envelope for `POST`. Mutually exclusive with `soap.body_inner`. |
+| `soap` | `SoapConfig` | *(unset)* | First-class SOAP ergonomics — see [SOAP](#soap). Sugar over the raw `body` path. |
+| `records_element_path` | string | *(unset)* | Dot-separated path to the repeating element in the converted JSON (e.g. `Envelope.Body.GetUsersResponse.Users.User`). When unset, the whole converted document is emitted as one record. With a `soap:` block and `path_relative_to_body` (the default), it is resolved relative to `Envelope.Body` — you write `GetUsersResponse.Users.User`. |
 | `query_params` | map<string,string> | `{}` | Query parameters added to every request (in addition to pagination params). |
 
 ### Authentication
@@ -164,7 +165,7 @@ pipeline:
       path: ./products.jsonl
 ```
 
-### SOAP service with Basic auth (POST envelope)
+### SOAP service with Basic auth (first-class `soap:` block)
 
 ```yaml
 version: 1
@@ -180,14 +181,12 @@ pipeline:
         config:
           username: admin
           password: ${env:SOAP_PASSWORD}
-      body: |
-        <?xml version="1.0"?>
-        <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
-          <soapenv:Body>
-            <GetOrders xmlns="http://example.com/orders"/>
-          </soapenv:Body>
-        </soapenv:Envelope>
-      records_element_path: Envelope.Body.GetOrdersResponse.Orders.Order
+      soap:
+        version: "1.1"                # "1.1" (default) or "1.2"
+        action: http://example.com/orders/GetOrders
+        body_inner: '<GetOrders xmlns="http://example.com/orders"/>'
+      # Resolved relative to Envelope.Body by default:
+      records_element_path: GetOrdersResponse.Orders.Order
   sink:
     type: postgres
     config:
@@ -229,6 +228,60 @@ pipeline:
 ```
 
 Runnable copies of the last two shapes live in [`cli/examples/xml_to_mongodb.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/xml_to_mongodb.yaml) and [`cli/examples/xml_to_s3.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/xml_to_s3.yaml).
+
+## SOAP
+
+The optional `soap:` block is **sugar over the XML-over-HTTP request/response path** — it is *not* a WSDL client. When present, the source:
+
+1. **assembles the request envelope** from `version` (the namespace), any declared `namespaces` (prefix → URI on the envelope element), and `body_inner` (placed inside `<soap:Body>`);
+2. **injects the version-correct headers**, regardless of the `auth` variant (so real bearer / basic auth stays free):
+   - **1.1** → `SOAPAction: "<action>"` header **and** `Content-Type: text/xml; charset=utf-8`;
+   - **1.2** → `Content-Type: application/soap+xml; charset=utf-8; action="<action>"` and **no** `SOAPAction` header;
+3. **resolves `records_element_path` relative to `Envelope.Body`** when `path_relative_to_body` (default) — you write `GetUsersResponse.Users.User`;
+4. **surfaces a SOAP `<Fault>`** as `FaucetError::Source` when `fault_as_error` (default); set it `false` to emit zero records (logged once) instead.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `version` | `"1.1"` \| `"1.2"` | `"1.1"` | SOAP protocol version — selects the envelope namespace and the header shape. |
+| `action` | string | *(unset)* | SOAP action. For 1.1 → `SOAPAction` header; for 1.2 → `action` param on `Content-Type`. Omit for actionless operations. |
+| `body_inner` | string | *(unset)* | XML fragment placed inside `<soap:Body>` (typically the operation element). Mutually exclusive with the top-level `body`. |
+| `namespaces` | map<string,string> | `{}` | Extra `prefix → URI` declarations added to the envelope element. The `soap` prefix is reserved. |
+| `path_relative_to_body` | bool | `true` | Auto-prepend `Envelope.Body.` to `records_element_path`. Set `false` to pass a fully-qualified path from the document root. |
+| `fault_as_error` | bool | `true` | Raise an error on a SOAP `<Fault>`; when `false`, emit zero records instead. |
+
+> **Load-time validation.** Setting both the top-level `body` and `soap.body_inner` is rejected as ambiguous, and a `soap:` block with `method: GET` is rejected (SOAP is a POST protocol). Both surface as `FaucetError::Config` before any request is made.
+
+### Manual alternative — a raw SOAP envelope
+
+The `soap:` block is optional sugar. You can always hand-write the whole envelope as a raw `body` and target the fully-qualified path (namespace prefixes preserved). This is the pre-`soap:` behavior and is unchanged:
+
+```yaml
+version: 1
+pipeline:
+  source:
+    type: xml
+    config:
+      base_url: https://soap.example.com
+      path: /ws
+      method: POST
+      auth:
+        type: custom
+        config:
+          headers:
+            SOAPAction: '"http://example.com/orders/GetOrders"'
+      body: |
+        <?xml version="1.0"?>
+        <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+          <soapenv:Body>
+            <GetOrders xmlns="http://example.com/orders"/>
+          </soapenv:Body>
+        </soapenv:Envelope>
+      records_element_path: soapenv:Envelope.soapenv:Body.GetOrdersResponse.Orders.Order
+  sink:
+    type: jsonl
+    config:
+      path: ./orders.jsonl
+```
 
 ## Pagination
 

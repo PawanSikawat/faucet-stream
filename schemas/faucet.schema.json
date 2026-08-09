@@ -9662,38 +9662,73 @@
           "additionalProperties": false
         },
         {
-          "type": "object",
-          "title": "xml",
+          "additionalProperties": false,
           "properties": {
-            "type": {
-              "const": "xml"
-            },
             "config": {
               "anyOf": [
                 {
+                  "description": "Configuration for the XML source.",
                   "properties": {
+                    "auth": {
+                      "$ref": "#/$defs/source_xml__AuthSpec",
+                      "description": "Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`\npointer to a shared provider in the CLI's top-level `auth:` catalog."
+                    },
                     "base_url": {
                       "description": "Base URL of the API.",
                       "type": "string"
                     },
-                    "path": {
-                      "description": "Request path (appended to base_url).",
-                      "type": "string"
+                    "batch_size": {
+                      "default": 1000,
+                      "description": "Records per emitted [`StreamPage`](faucet_core::StreamPage). The\nevent-driven XML parser accumulates matched subtrees into a buffer\nand yields whenever the buffer reaches this size. Defaults to\n[`DEFAULT_BATCH_SIZE`].\n\n`batch_size = 0` is the \"no batching\" sentinel: the document is\ndrained end-to-end and the entire result set is emitted in a single\npage. Useful for small lookup payloads or for sinks (e.g. SQL `COPY`,\nBigQuery load jobs) that prefer one large request to many small ones.",
+                      "format": "uint",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "string"
+                      ]
+                    },
+                    "body": {
+                      "description": "Optional request body (e.g. a raw SOAP envelope). Mutually exclusive\nwith [`SoapConfig::body_inner`] when a [`soap`](Self::soap) block is set.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "max_pages": {
+                      "description": "Maximum number of pages to fetch.",
+                      "format": "uint",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ]
                     },
                     "method": {
                       "description": "HTTP method (GET or POST for SOAP).",
                       "type": "string"
                     },
-                    "auth": {
-                      "description": "Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`\npointer to a shared provider in the CLI's top-level `auth:` catalog.",
-                      "$ref": "#/$defs/source_xml__AuthSpec"
+                    "pagination": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_xml__XmlPagination"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Pagination configuration."
                     },
-                    "body": {
-                      "description": "Optional request body (e.g. SOAP envelope).",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                    "path": {
+                      "description": "Request path (appended to base_url).",
+                      "type": "string"
+                    },
+                    "query_params": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Query parameters to include in every request.",
+                      "type": "object"
                     },
                     "records_element_path": {
                       "description": "Dot-separated path to the repeating element in the XML response\n(e.g. `\"Envelope.Body.GetUsersResponse.Users.User\"`).",
@@ -9702,51 +9737,27 @@
                         "null"
                       ]
                     },
-                    "pagination": {
-                      "description": "Pagination configuration.",
+                    "soap": {
                       "anyOf": [
                         {
-                          "$ref": "#/$defs/source_xml__XmlPagination"
+                          "$ref": "#/$defs/source_xml__SoapConfig"
                         },
                         {
                           "type": "null"
                         }
-                      ]
-                    },
-                    "max_pages": {
-                      "description": "Maximum number of pages to fetch.",
-                      "type": [
-                        "integer",
-                        "null",
-                        "string"
                       ],
-                      "format": "uint",
-                      "minimum": 0
-                    },
-                    "query_params": {
-                      "description": "Query parameters to include in every request.",
-                      "type": "object",
-                      "additionalProperties": {
-                        "type": "string"
-                      }
-                    },
-                    "batch_size": {
-                      "description": "Records per emitted [`StreamPage`](faucet_core::StreamPage). The\nevent-driven XML parser accumulates matched subtrees into a buffer\nand yields whenever the buffer reaches this size. Defaults to\n[`DEFAULT_BATCH_SIZE`].\n\n`batch_size = 0` is the \"no batching\" sentinel: the document is\ndrained end-to-end and the entire result set is emitted in a single\npage. Useful for small lookup payloads or for sinks (e.g. SQL `COPY`,\nBigQuery load jobs) that prefer one large request to many small ones.",
-                      "type": [
-                        "integer",
-                        "string"
-                      ],
-                      "format": "uint",
-                      "minimum": 0,
-                      "default": 1000
+                      "default": null,
+                      "description": "Optional first-class SOAP ergonomics block. When present, the source\nassembles the SOAP envelope, injects the version-appropriate headers,\nand (by default) resolves `records_element_path` relative to\n`Envelope.Body`. Sugar over the raw `body` path — see [`SoapConfig`]."
                     }
                   },
                   "title": "XmlStreamConfig",
-                  "description": "Configuration for the XML source.",
                   "type": "object"
                 },
                 true
               ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
             },
             "transforms": {
               "type": [
@@ -9754,14 +9765,15 @@
                 "null"
               ]
             },
-            "inherit_transforms": {
-              "type": "boolean"
+            "type": {
+              "const": "xml"
             }
           },
           "required": [
             "type"
           ],
-          "additionalProperties": false
+          "title": "xml",
+          "type": "object"
         },
         {
           "type": "object",
@@ -16648,6 +16660,70 @@
         "int",
         "float",
         "bool"
+      ]
+    },
+    "source_xml__SoapConfig": {
+      "description": "First-class SOAP ergonomics for the XML source.\n\nThis is **sugar** over the existing XML-over-HTTP request/response path —\nnot a WSDL client. When present, the source assembles a SOAP envelope for\nthe request body, injects the version-appropriate headers, and (by default)\nresolves [`XmlStreamConfig::records_element_path`] relative to\n`Envelope.Body` and surfaces SOAP `<Fault>` responses as errors.",
+      "properties": {
+        "action": {
+          "description": "The SOAP action. For 1.1 it becomes the `SOAPAction` header; for 1.2 it\nis carried as the `action` parameter of the `Content-Type` header.\nOptional — omit for actionless operations.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "body_inner": {
+          "description": "The XML fragment placed inside `<soap:Body>` — typically the operation\nelement, e.g. `<GetUsers xmlns=\"urn:example\"/>`. Mutually exclusive with\nthe top-level [`XmlStreamConfig::body`].",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fault_as_error": {
+          "default": true,
+          "description": "When `true` (default), a SOAP `<Fault>` in the response raises\n[`FaucetError::Source`]. When `false`,\na fault yields zero records (logged once).",
+          "type": [
+            "boolean",
+            "string"
+          ]
+        },
+        "namespaces": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Extra namespace declarations (prefix → URI) added to the envelope\nelement. The `soap` prefix is reserved for the envelope namespace and\nany entry using it is ignored.",
+          "type": "object"
+        },
+        "path_relative_to_body": {
+          "default": true,
+          "description": "When `true` (default), [`XmlStreamConfig::records_element_path`] is\nresolved relative to `Envelope.Body` — i.e. `Envelope.Body.` is\nauto-prepended, so you write `GetUsersResponse.Users.User`. Set `false`\nto supply the fully-qualified path from the document root.",
+          "type": [
+            "boolean",
+            "string"
+          ]
+        },
+        "version": {
+          "$ref": "#/$defs/source_xml__SoapVersion",
+          "default": "1.1",
+          "description": "SOAP protocol version (default `1.1`)."
+        }
+      },
+      "type": "object"
+    },
+    "source_xml__SoapVersion": {
+      "description": "SOAP protocol version. Controls the envelope namespace and the HTTP\nheader shape used to carry the SOAP action.\n\nDeserializes from the wire strings `\"1.1\"` / `\"1.2\"`.",
+      "oneOf": [
+        {
+          "const": "1.1",
+          "description": "SOAP 1.1 — envelope namespace `http://schemas.xmlsoap.org/soap/envelope/`,\naction carried in a separate `SOAPAction` header.",
+          "type": "string"
+        },
+        {
+          "const": "1.2",
+          "description": "SOAP 1.2 — envelope namespace `http://www.w3.org/2003/05/soap-envelope`,\naction carried as a `Content-Type` parameter (no `SOAPAction` header).",
+          "type": "string"
+        }
       ]
     }
   }

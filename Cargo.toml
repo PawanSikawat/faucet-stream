@@ -135,7 +135,7 @@ faucet-source-singer = { path = "crates/source/singer", version = "1.1.2" }
 # require it on crates.io first (release-plz does not order by dev-dep edges).
 faucet-conformance = { path = "crates/conformance" }
 faucet-source-graphql = { path = "crates/source/graphql", version = "1.2.5" }
-faucet-source-xml = { path = "crates/source/xml", version = "1.2.5" }
+faucet-source-xml = { path = "crates/source/xml", version = "1.3.0" }
 faucet-source-grpc = { path = "crates/source/grpc", version = "1.2.3" }
 faucet-source-kafka = { path = "crates/source/kafka", version = "1.3.3" }
 faucet-source-kinesis = { path = "crates/source/kinesis", version = "1.0.2" }

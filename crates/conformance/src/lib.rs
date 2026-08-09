@@ -18,7 +18,7 @@
 //! # }
 //! ```
 //!
-//! All six checks are fully implemented:
+//! The core contract checks:
 //! 1. [`assert_config_schema_valid`] — the config schema is a valid JSON Schema.
 //! 2. [`assert_bounded_memory`] — the source pages instead of buffering.
 //! 3. [`assert_bookmark_roundtrip`] — an incremental source resumes from its
@@ -29,6 +29,20 @@
 //!    behaviour.
 //! 6. [`assert_errors_not_panics`] — failures surface as a typed
 //!    [`faucet_core::FaucetError`], never a panic.
+//!
+//! Capability-demonstration checks — each proves a connector that *advertises* a
+//! capability actually *demonstrates* it:
+//! 7. [`assert_write_modes_truthful`] — a sink advertising `Upsert`/`Delete`
+//!    genuinely converges by key and removes on delete, and missing/null keys
+//!    are reported as failed rather than silently written.
+//! 8. [`assert_schema_evolution_effective`] — an evolvable sink's `evolve_schema`
+//!    makes the added column appear in a fresh `current_schema()`.
+//! 9. [`assert_batch_size_zero_single_page`] — a source built with `batch_size =
+//!    0` yields the whole result set as one page.
+//! 10. [`assert_connector_name_nonempty`] — `connector_name()` is non-empty (an
+//!     empty name becomes the `"unknown"` metric label).
+//! 11. [`assert_preflight_check_wellformed`] — `check()` returns `Ok(CheckReport)`
+//!     with well-formed probes; a probe failure is a `Fail` probe, not an `Err`.
 //!
 //! Each check has both a passing and a `#[should_panic]` failing test in this
 //! crate — a check that cannot fail is worthless.
@@ -465,12 +479,342 @@ pub async fn assert_errors_not_panics<S: Source + ?Sized>(source: &S) {
     }
 }
 
+// ── Check 7: write modes are truthful ────────────────────────────────────────
+
+/// **Check 7.** Assert a sink advertising `Upsert`/`Delete` in
+/// [`supported_write_modes`](Sink::supported_write_modes) genuinely upholds
+/// those modes:
+/// - **Upsert** — re-writing a record with an existing key converges to one row
+///   (last-write-wins), it does not append a duplicate.
+/// - **Delete** — a record carrying the standard delete marker
+///   ([`DELETE_MARKER_FIELD`](doubles::DELETE_MARKER_FIELD) =
+///   [`DELETE_MARKER_VALUE`](doubles::DELETE_MARKER_VALUE), matching the
+///   `cdc_unwrap` convention) removes its keyed row. Only run when the sink
+///   advertises `Delete`; the sink under test must be configured with a
+///   matching `delete_marker`.
+/// - **Missing/null key** — [`plan_writes`](faucet_core::write_mode::plan_writes),
+///   the shared planner every upsert sink routes through, reports such rows as
+///   `failed` (destined for a DLQ) rather than writing them.
+///
+/// Records are keyed on `"id"`, so the sink under test must be configured
+/// `write_mode: upsert` with `key: ["id"]`. A sink advertising only `Append`
+/// has nothing to prove and the body is skipped. `distinct_count` reports the
+/// destination's current distinct-row count.
+pub async fn assert_write_modes_truthful<S, F, Fut>(sink: &S, distinct_count: F)
+where
+    S: Sink + ?Sized,
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = usize>,
+{
+    use faucet_core::write_mode::{WriteMode, WriteSpec, plan_writes};
+
+    let label = sink.connector_name();
+    let modes = sink.supported_write_modes();
+    let has_upsert = modes.contains(&WriteMode::Upsert);
+    let has_delete = modes.contains(&WriteMode::Delete);
+
+    if !has_upsert && !has_delete {
+        // Append-only sink: nothing to demonstrate.
+        return;
+    }
+
+    // The instance under test must be *configured* for keyed writes, or there is
+    // no upsert/delete behaviour to exercise through the trait.
+    assert!(
+        sink.dedups_by_key(),
+        "[{label}] advertises {modes:?} but dedups_by_key()=false — pass a sink \
+         configured `write_mode: upsert` with `key: [\"id\"]` so the mode can be exercised"
+    );
+
+    // ── Upsert: same key twice → one row (last-write-wins), not a duplicate. ──
+    if has_upsert {
+        let before = distinct_count().await;
+        // Two distinct keys, then re-write one of them.
+        sink.write_batch(&rows(&[1, 2]))
+            .await
+            .unwrap_or_else(|e| panic!("[{label}] write_batch(upsert seed) errored: {e}"));
+        sink.write_batch(&[serde_json::json!({ "id": 1, "v": "updated" })])
+            .await
+            .unwrap_or_else(|e| panic!("[{label}] write_batch(upsert overwrite) errored: {e}"));
+        let after = distinct_count().await;
+        assert_eq!(
+            after - before,
+            2,
+            "[{label}] upsert did not converge: re-writing key id=1 left {} distinct rows \
+             (expected 2: ids 1 and 2) — it appended a duplicate instead of updating",
+            after - before
+        );
+    }
+
+    // ── Delete: a delete-marked record removes its keyed row. ──
+    if has_delete {
+        let before = distinct_count().await;
+        sink.write_batch(&[serde_json::json!({ "id": 777, "v": "doomed" })])
+            .await
+            .unwrap_or_else(|e| panic!("[{label}] write_batch(delete seed) errored: {e}"));
+        let seeded = distinct_count().await;
+        assert_eq!(
+            seeded - before,
+            1,
+            "[{label}] delete precondition failed: the row to delete was not written"
+        );
+        let mut del = serde_json::Map::new();
+        del.insert("id".to_string(), serde_json::json!(777));
+        del.insert(
+            doubles::DELETE_MARKER_FIELD.to_string(),
+            Value::String(doubles::DELETE_MARKER_VALUE.to_string()),
+        );
+        sink.write_batch(&[Value::Object(del)])
+            .await
+            .unwrap_or_else(|e| panic!("[{label}] write_batch(delete) errored: {e}"));
+        let after = distinct_count().await;
+        assert_eq!(
+            after, before,
+            "[{label}] a delete-marked record did not remove the row: {after} rows remain \
+             (expected {before}) — the delete was ignored"
+        );
+    }
+
+    // ── Missing / null key must be reported as failed, never silently written. ──
+    let spec = WriteSpec {
+        write_mode: WriteMode::Upsert,
+        key: vec!["id".to_string()],
+        delete_marker: None,
+    };
+    let plan = plan_writes(
+        &[
+            serde_json::json!({ "id": 9, "v": "ok" }),
+            serde_json::json!({ "no_key": 1 }),
+            serde_json::json!({ "id": null }),
+        ],
+        &spec,
+    );
+    assert_eq!(
+        plan.upserts.len(),
+        1,
+        "[{label}] the one keyed row should be planned as an upsert"
+    );
+    assert_eq!(
+        plan.failed.len(),
+        2,
+        "[{label}] plan_writes did not report the missing-key and null-key rows as failed \
+         (they would be silently dropped or written): {:?}",
+        plan.failed
+    );
+}
+
+// ── Check 8: schema evolution is effective ────────────────────────────────────
+
+/// **Check 8.** For a sink advertising
+/// [`supports_schema_evolution`](Sink::supports_schema_evolution): read
+/// [`current_schema`](Sink::current_schema), apply a real add-column
+/// [`SchemaEvolution`](faucet_core::drift::SchemaEvolution) via
+/// [`evolve_schema`](Sink::evolve_schema), and assert the new column appears in
+/// a *fresh* `current_schema()`. Stronger than
+/// [`assert_capabilities_truthful`], which only checks a no-op evolve does not
+/// error.
+///
+/// Panics if the sink does not advertise evolution (call it only on an evolvable
+/// sink), if `current_schema()` is `None` (nothing to diff against), or if the
+/// added column never surfaces (the evolution was a silent no-op).
+pub async fn assert_schema_evolution_effective<S: Sink + ?Sized>(sink: &S) {
+    use faucet_core::drift::{ColumnChange, SchemaEvolution};
+
+    let label = sink.connector_name();
+    assert!(
+        sink.supports_schema_evolution(),
+        "[{label}] does not advertise schema evolution — call this only on an evolvable sink \
+         (assert_capabilities_truthful covers the no-op case)"
+    );
+
+    let before = sink
+        .current_schema()
+        .await
+        .unwrap_or_else(|e| panic!("[{label}] current_schema() errored: {e}"))
+        .unwrap_or_else(|| {
+            panic!(
+                "[{label}] advertises schema evolution but current_schema() is None — \
+                 cannot verify an added column appears"
+            )
+        });
+
+    let new_col = "__conformance_evolved__";
+    let already = before
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .is_some_and(|p| p.contains_key(new_col));
+    assert!(
+        !already,
+        "[{label}] test column `{new_col}` already exists in current_schema() — \
+         cannot prove evolution added it"
+    );
+
+    let evolution = SchemaEvolution {
+        additions: vec![ColumnChange {
+            name: new_col.to_string(),
+            from: None,
+            to: serde_json::json!({ "type": "string" }),
+        }],
+        widenings: Vec::new(),
+        relax_nullability: Vec::new(),
+    };
+    sink.evolve_schema(&evolution)
+        .await
+        .unwrap_or_else(|e| panic!("[{label}] evolve_schema(add `{new_col}`) errored: {e}"));
+
+    let after = sink
+        .current_schema()
+        .await
+        .unwrap_or_else(|e| panic!("[{label}] current_schema() errored after evolve: {e}"))
+        .unwrap_or_else(|| panic!("[{label}] current_schema() became None after evolve_schema"));
+    let after_props = after
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .unwrap_or_else(|| {
+            panic!("[{label}] current_schema() has no `properties` object after evolve: {after}")
+        });
+    assert!(
+        after_props.contains_key(new_col),
+        "[{label}] evolve_schema reported success but the added column `{new_col}` does not \
+         appear in a fresh current_schema() — the evolution was not effective: {after}"
+    );
+}
+
+// ── Check 9: batch_size=0 emits a single page ─────────────────────────────────
+
+/// **Check 9.** Drive a source **built with `batch_size = 0`** and assert it
+/// yields the entire result set as a single [`StreamPage`](faucet_core::StreamPage)
+/// — the documented "no batching" sentinel (small lookup tables, sinks that
+/// prefer one large request).
+///
+/// Asserts the source produced at least one record and that exactly one page
+/// carried records (a trailing empty terminal page carrying only a bookmark is
+/// tolerated). Panics if the data is split across multiple non-empty pages.
+pub async fn assert_batch_size_zero_single_page<S: Source + ?Sized>(source: &S) {
+    let label = source.connector_name();
+    let ctx: HashMap<String, Value> = HashMap::new();
+    let mut stream = source.stream_pages(&ctx, 0);
+    let mut pages = 0usize;
+    let mut non_empty = 0usize;
+    let mut records = 0usize;
+    while let Some(page) = stream.next().await {
+        let page = page.unwrap_or_else(|e| panic!("[{label}] stream_pages errored: {e}"));
+        pages += 1;
+        if !page.records.is_empty() {
+            non_empty += 1;
+        }
+        records += page.records.len();
+    }
+    assert!(
+        records > 0,
+        "[{label}] produced no records under batch_size=0 — cannot verify single-page batching"
+    );
+    assert_eq!(
+        non_empty, 1,
+        "[{label}] batch_size=0 must yield the entire result set as a single page, but \
+         {non_empty} non-empty pages were emitted ({pages} pages total, {records} records)"
+    );
+}
+
+// ── Check 10: connector_name is non-empty ─────────────────────────────────────
+
+/// **Check 10.** Assert a source's [`connector_name`](Source::connector_name)
+/// is a non-empty string. An empty name is a cardinality-rule violation — the
+/// observability layer falls back to the `"unknown"` metric label, silently
+/// merging distinct connectors' metrics.
+///
+/// For sinks (which expose the same method), use
+/// [`assert_connector_name_nonempty_value`]:
+/// `assert_connector_name_nonempty_value(sink.connector_name(), sink.connector_name())`.
+pub fn assert_connector_name_nonempty<S: Source + ?Sized>(source: &S) {
+    assert_connector_name_nonempty_value(source.connector_name(), source.connector_name());
+}
+
+/// The value-level core of [`assert_connector_name_nonempty`] — usable for sinks.
+pub fn assert_connector_name_nonempty_value(name: &str, label: &str) {
+    assert!(
+        !name.is_empty(),
+        "[{label}] connector_name() returned an empty string — it would surface as the \
+         \"unknown\" metric label (a cardinality-rule violation)"
+    );
+    assert!(
+        !name.trim().is_empty(),
+        "[{label}] connector_name() is whitespace-only ({name:?}) — same effect as empty"
+    );
+}
+
+// ── Check 11: preflight check() is well-formed ────────────────────────────────
+
+/// **Check 11.** Assert a source's [`check`](Source::check) returns
+/// `Ok(CheckReport)` with at least one well-formed probe (non-empty name; a
+/// `Fail`/`Skip` probe carries a non-empty reason). A connector must surface a
+/// probe failure as a [`ProbeStatus::Fail`](faucet_core::check::ProbeStatus)
+/// *inside* `Ok(report)`, never as an `Err` from `check()` (an `Err` means "no
+/// probe could run at all", which `faucet doctor` renders differently).
+///
+/// For sinks, use [`assert_sink_preflight_check_wellformed`].
+pub async fn assert_preflight_check_wellformed<S: Source + ?Sized>(
+    source: &S,
+    ctx: &faucet_core::check::CheckContext,
+) {
+    assert_report_wellformed(source.check(ctx).await, source.connector_name());
+}
+
+/// The sink counterpart of [`assert_preflight_check_wellformed`].
+pub async fn assert_sink_preflight_check_wellformed<S: Sink + ?Sized>(
+    sink: &S,
+    ctx: &faucet_core::check::CheckContext,
+) {
+    assert_report_wellformed(sink.check(ctx).await, sink.connector_name());
+}
+
+/// Shared assertion over a `check()` outcome: `Ok(report)` with well-formed
+/// probes, never `Err`.
+fn assert_report_wellformed(
+    outcome: Result<faucet_core::check::CheckReport, faucet_core::FaucetError>,
+    label: &str,
+) {
+    use faucet_core::check::ProbeStatus;
+
+    let report = outcome.unwrap_or_else(|e| {
+        panic!(
+            "[{label}] check() returned Err({e}) — a probe failure must surface as a Fail \
+             probe inside Ok(report), not as an Err from check()"
+        )
+    });
+    assert!(
+        !report.probes.is_empty(),
+        "[{label}] check() returned an empty report — a well-formed report carries at least \
+         one probe"
+    );
+    for probe in &report.probes {
+        assert!(
+            !probe.name.is_empty(),
+            "[{label}] check() returned a probe with an empty name"
+        );
+        match &probe.status {
+            ProbeStatus::Pass => {}
+            ProbeStatus::Fail { reason } => assert!(
+                !reason.trim().is_empty(),
+                "[{label}] Fail probe `{}` has an empty reason",
+                probe.name
+            ),
+            ProbeStatus::Skip { reason } => assert!(
+                !reason.trim().is_empty(),
+                "[{label}] Skip probe `{}` has an empty reason",
+                probe.name
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use doubles::{
-        CountingSource, FailingSource, LyingIdempotentSink, LyingKeyedSink, PanickingSource,
-        TestSink,
+        CountingSource, EmptyNameSource, ErringCheckSink, ErringCheckSource, EvolvingSink,
+        FailingSource, LyingIdempotentSink, LyingKeyedSink, MultiPageZeroSource, NoOpEvolvingSink,
+        PanickingSource, TestSink,
     };
 
     #[test]
@@ -635,5 +979,135 @@ mod tests {
         // A healthy source fed to the failure check must be flagged — the check
         // is only meaningful against a source expected to fail.
         assert_errors_not_panics(&CountingSource::new(3, 1)).await;
+    }
+
+    // ── Check 7: write modes truthful ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn check7_passes_for_an_upsert_delete_sink() {
+        let sink = TestSink::keyed_upsert("id");
+        let s = sink.clone();
+        assert_write_modes_truthful(&sink, || {
+            let s = s.clone();
+            async move { s.len() }
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn check7_skips_an_append_only_sink() {
+        // Append-only: the body is skipped (nothing to prove), so the check
+        // passes without ever touching the sink's write path.
+        let sink = TestSink::new();
+        let s = sink.clone();
+        assert_write_modes_truthful(&sink, || {
+            let s = s.clone();
+            async move { s.len() }
+        })
+        .await;
+        assert!(sink.is_empty(), "append-only skip must not write anything");
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "did not converge")]
+    async fn check7_fails_for_a_lying_keyed_sink() {
+        let sink = LyingKeyedSink::new();
+        let s = sink.clone();
+        assert_write_modes_truthful(&sink, || {
+            let s = s.clone();
+            async move { s.len() }
+        })
+        .await;
+    }
+
+    // ── Check 8: schema evolution effective ──────────────────────────────────
+
+    #[tokio::test]
+    async fn check8_passes_for_an_evolving_sink() {
+        let sink = EvolvingSink::new();
+        assert_schema_evolution_effective(&sink).await;
+        assert_eq!(sink.column_count(), 2, "evolve must have added a column");
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "was not effective")]
+    async fn check8_fails_for_a_noop_evolving_sink() {
+        assert_schema_evolution_effective(&NoOpEvolvingSink).await;
+    }
+
+    // ── Check 9: batch_size=0 single page ────────────────────────────────────
+
+    #[tokio::test]
+    async fn check9_passes_for_a_single_page_source() {
+        let s = CountingSource::new(6, 0);
+        assert_batch_size_zero_single_page(&s).await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "single page")]
+    async fn check9_fails_for_a_multi_page_source() {
+        let s = MultiPageZeroSource::new(6);
+        assert_batch_size_zero_single_page(&s).await;
+    }
+
+    // ── Check 10: connector_name non-empty ───────────────────────────────────
+
+    #[test]
+    fn check10_passes_for_a_named_source() {
+        assert_connector_name_nonempty(&CountingSource::new(1, 1));
+    }
+
+    #[test]
+    fn check10_value_form_works_for_a_sink() {
+        let sink = TestSink::new();
+        assert_connector_name_nonempty_value(sink.connector_name(), sink.connector_name());
+    }
+
+    #[test]
+    #[should_panic(expected = "empty string")]
+    fn check10_fails_for_an_empty_name_source() {
+        assert_connector_name_nonempty(&EmptyNameSource);
+    }
+
+    #[test]
+    #[should_panic(expected = "empty string")]
+    fn check10_value_form_rejects_empty() {
+        assert_connector_name_nonempty_value("", "bogus");
+    }
+
+    // ── Check 11: preflight check() well-formed ──────────────────────────────
+
+    #[tokio::test]
+    async fn check11_passes_for_a_source_with_a_fail_probe() {
+        // A failing source surfaces its failure as a Fail probe inside
+        // Ok(report) — exactly what the check requires.
+        let ctx = faucet_core::check::CheckContext::default();
+        assert_preflight_check_wellformed(&FailingSource, &ctx).await;
+    }
+
+    #[tokio::test]
+    async fn check11_passes_for_a_healthy_source() {
+        let ctx = faucet_core::check::CheckContext::default();
+        assert_preflight_check_wellformed(&CountingSource::new(3, 1), &ctx).await;
+    }
+
+    #[tokio::test]
+    async fn check11_passes_for_a_sink() {
+        let ctx = faucet_core::check::CheckContext::default();
+        assert_sink_preflight_check_wellformed(&TestSink::new(), &ctx).await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "returned Err")]
+    async fn check11_fails_when_source_check_returns_err() {
+        let ctx = faucet_core::check::CheckContext::default();
+        assert_preflight_check_wellformed(&ErringCheckSource, &ctx).await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "returned Err")]
+    async fn check11_fails_when_sink_check_returns_err() {
+        let ctx = faucet_core::check::CheckContext::default();
+        assert_sink_preflight_check_wellformed(&ErringCheckSink, &ctx).await;
     }
 }
