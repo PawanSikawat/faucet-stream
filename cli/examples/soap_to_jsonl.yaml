@@ -1,0 +1,35 @@
+# SOAP web service -> JSON Lines file.
+#
+# Uses the first-class `soap:` ergonomics block on the XML source: it assembles
+# the SOAP 1.1 envelope, injects the `SOAPAction` + `Content-Type` headers, and
+# resolves `records_element_path` relative to `Envelope.Body` (so the path names
+# only the payload, not the envelope wrapper). SOAP `<Fault>` responses are
+# surfaced as errors by default.
+#
+# Run:  faucet run cli/examples/soap_to_jsonl.yaml
+version: 1
+name: soap_to_jsonl
+pipeline:
+  source:
+    type: xml
+    config:
+      base_url: https://soap.example.com
+      path: /services/UserService
+      method: POST
+      auth:
+        type: basic
+        config:
+          username: ${env:SOAP_USER}
+          password: ${env:SOAP_PASS}
+      soap:
+        version: "1.1"
+        action: http://soap.example.com/UserService/GetUsers
+        namespaces:
+          usr: http://soap.example.com/users
+        body_inner: '<usr:GetUsers><usr:activeOnly>true</usr:activeOnly></usr:GetUsers>'
+      # Relative to Envelope.Body (path_relative_to_body defaults to true).
+      records_element_path: GetUsersResponse.Users.User
+  sink:
+    type: jsonl
+    config:
+      path: ./users.jsonl

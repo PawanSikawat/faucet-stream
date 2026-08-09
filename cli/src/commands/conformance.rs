@@ -7,6 +7,12 @@ use crate::error::{CliError, CliResult};
 
 /// Execute the `conformance` command.
 pub async fn run(args: ConformanceArgs) -> CliResult<()> {
+    // `--matrix` prints the generated capability matrix and exits — the scoring
+    // flags do not apply.
+    if args.matrix {
+        print!("{}", crate::conformance::capability_matrix_markdown());
+        return Ok(());
+    }
     let kind_filter = match args.kind.as_deref() {
         None => None,
         Some("source") => Some("source"),
@@ -138,7 +144,32 @@ mod tests {
             all: false,
             json,
             min_tier: None,
+            matrix: false,
         }
+    }
+
+    #[tokio::test]
+    async fn matrix_flag_prints_and_exits_ok() {
+        let mut a = args(None, None, false);
+        a.matrix = true;
+        assert!(run(a).await.is_ok());
+    }
+
+    #[test]
+    fn generated_matrix_has_expected_cells() {
+        let m = crate::conformance::capability_matrix_markdown();
+        assert!(m.contains("# Connector capability matrix"));
+        // A capable sink row and an append-only sink's absence from the sink rows.
+        assert!(
+            m.contains("| `postgres` | ✓ | ✓ | ✓ |"),
+            "postgres row: {m}"
+        );
+        assert!(
+            m.contains("| `iceberg` | ✓ |  | ✓ |"),
+            "iceberg is append-only: {m}"
+        );
+        // jsonl is not a capable sink, so it never appears as a matrix row.
+        assert!(!m.contains("| `jsonl` |"), "jsonl has no capability: {m}");
     }
 
     #[tokio::test]

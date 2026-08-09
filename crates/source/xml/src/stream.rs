@@ -104,6 +104,61 @@ impl XmlStream {
         self
     }
 
+    /// The effective record element path after applying SOAP ergonomics.
+    ///
+    /// When a `soap:` block is present with `path_relative_to_body` (the
+    /// default), the configured `records_element_path` is resolved relative to
+    /// the SOAP body — `Envelope.Body.` is prepended so the user writes
+    /// `GetUsersResponse.Users.User`. Otherwise the configured path is used
+    /// verbatim (the non-SOAP behavior).
+    fn effective_records_path(&self) -> Option<String> {
+        match (&self.config.soap, &self.config.records_element_path) {
+            (Some(soap), Some(path)) if soap.path_relative_to_body => {
+                Some(format!("Envelope.Body.{path}"))
+            }
+            (_, path) => path.clone(),
+        }
+    }
+
+    /// Eagerly convert one HTTP page of XML to JSON and extract its records,
+    /// applying SOAP fault handling when a `soap:` block is present.
+    ///
+    /// When `soap` is absent this reproduces the legacy eager path exactly
+    /// (`xml_to_json` + `extract_at_path`), so non-SOAP behavior is unchanged.
+    /// When `soap` is present it additionally detects a SOAP `<Fault>` under
+    /// `Envelope.Body`: with `fault_as_error` it raises
+    /// [`FaucetError::Source`]; otherwise it emits zero records and logs the
+    /// fault once (tracked via `fault_logged`).
+    fn extract_records_eager(
+        &self,
+        xml_text: &str,
+        fault_logged: &mut bool,
+    ) -> Result<Vec<Value>, FaucetError> {
+        let doc = convert::xml_to_json(xml_text)?;
+
+        if let Some(soap) = &self.config.soap
+            && let Some(message) = convert::detect_soap_fault(&doc)
+        {
+            if soap.fault_as_error {
+                return Err(FaucetError::Source(format!("SOAP fault: {message}")));
+            }
+            if !*fault_logged {
+                tracing::warn!(
+                    fault = %message,
+                    "SOAP fault in response; emitting zero records (fault_as_error=false)"
+                );
+                *fault_logged = true;
+            }
+            return Ok(Vec::new());
+        }
+
+        let records = match self.effective_records_path() {
+            Some(path) => convert::extract_at_path(&doc, &path),
+            None => vec![doc],
+        };
+        Ok(records)
+    }
+
     /// Fetch all records across all pages.
     pub async fn fetch_all(&self) -> Result<Vec<Value>, FaucetError> {
         self.fetch_all_with_context(&HashMap::new()).await
@@ -114,11 +169,14 @@ impl XmlStream {
         &self,
         context: &HashMap<String, serde_json::Value>,
     ) -> Result<Vec<Value>, FaucetError> {
+        self.config.validate()?;
+
         let mut all_records = Vec::new();
         let mut pages_fetched = 0usize;
         let mut offset = 0usize;
         let mut page_number = None;
         let mut prev_fingerprint: Option<u64> = None;
+        let mut fault_logged = false;
 
         // Initialize pagination state.
         if let Some(XmlPagination::PageNumber { start_page, .. }) = &self.config.pagination {
@@ -137,12 +195,7 @@ impl XmlStream {
             self.apply_pagination_params(&mut params, page_number, offset);
 
             let xml_text = self.execute_request(&params, context).await?;
-            let json = convert::xml_to_json(&xml_text)?;
-
-            let records = match &self.config.records_element_path {
-                Some(path) => convert::extract_at_path(&json, path),
-                None => vec![json],
-            };
+            let records = self.extract_records_eager(&xml_text, &mut fault_logged)?;
 
             let record_count = records.len();
             let fingerprint = page_fingerprint(&records);
@@ -298,8 +351,28 @@ impl XmlStream {
             }
         }
 
-        // Set body for POST requests (SOAP), with context substitution.
-        if let Some(body) = &self.config.body {
+        // Set the request body for POST (SOAP), with context substitution.
+        //
+        // A `soap:` block takes precedence: it assembles the envelope and
+        // injects the version-appropriate headers (Content-Type + SOAPAction).
+        // These headers are set here regardless of the `auth` variant, so real
+        // bearer / basic auth (applied above) is left untouched. Otherwise the
+        // legacy raw-`body` path is used verbatim (byte-for-byte unchanged).
+        if let Some(soap) = &self.config.soap {
+            let inner = soap.body_inner.as_deref().unwrap_or("");
+            let resolved_inner = if context.is_empty() {
+                inner.to_string()
+            } else {
+                faucet_core::util::substitute_context(inner, context)
+            };
+            let envelope = soap.build_envelope(&resolved_inner);
+            req = req
+                .header("Content-Type", soap.content_type())
+                .body(envelope);
+            if let Some(action) = soap.soap_action_header() {
+                req = req.header("SOAPAction", action);
+            }
+        } else if let Some(body) = &self.config.body {
             let resolved_body = if context.is_empty() {
                 body.clone()
             } else {
@@ -368,6 +441,8 @@ impl faucet_core::Source for XmlStream {
         let owned_context = context.clone();
 
         Box::pin(async_stream::try_stream! {
+            self.config.validate()?;
+
             let chunk = if batch_size == 0 { usize::MAX } else { batch_size };
             let initial_capacity = if batch_size == 0 { 1024 } else { batch_size };
             let mut buffer: Vec<Value> = Vec::with_capacity(initial_capacity);
@@ -376,6 +451,7 @@ impl faucet_core::Source for XmlStream {
             let mut offset = 0usize;
             let mut page_number = None;
             let mut prev_fingerprint: Option<u64> = None;
+            let mut fault_logged = false;
 
             if let Some(XmlPagination::PageNumber { start_page, .. }) =
                 &self.config.pagination
@@ -402,12 +478,22 @@ impl faucet_core::Source for XmlStream {
                 // can flush, but we can't `yield` from inside the closure,
                 // so we collect this HTTP page's records into a scratch
                 // Vec and then iterate them after.
+                //
+                // A `soap:` block routes through the eager converter so the
+                // SOAP `<Fault>` check and `Envelope.Body.`-relative path
+                // resolution apply (SOAP responses are small — the bounded-
+                // memory streaming path is reserved for the non-SOAP case,
+                // which stays byte-for-byte unchanged).
                 let mut page_records: Vec<Value> = Vec::new();
-                convert::stream_extract(
-                    &xml_text,
-                    self.config.records_element_path.as_deref(),
-                    |rec| page_records.push(rec),
-                )?;
+                if self.config.soap.is_some() {
+                    page_records = self.extract_records_eager(&xml_text, &mut fault_logged)?;
+                } else {
+                    convert::stream_extract(
+                        &xml_text,
+                        self.config.records_element_path.as_deref(),
+                        |rec| page_records.push(rec),
+                    )?;
+                }
 
                 let record_count = page_records.len();
                 let fingerprint = page_fingerprint(&page_records);
@@ -490,7 +576,160 @@ impl faucet_core::Source for XmlStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{SoapConfig, SoapVersion};
     use faucet_core::Source;
+
+    fn soap_response(records: &str) -> String {
+        format!(
+            "<Envelope xmlns=\"http://schemas.xmlsoap.org/soap/envelope/\"><Body>\
+             <GetUsersResponse><Users>{records}</Users></GetUsersResponse></Body></Envelope>"
+        )
+    }
+
+    #[test]
+    fn effective_path_prepends_envelope_body_by_default() {
+        let source = XmlStream::new(
+            XmlStreamConfig::new("https://s", "/svc")
+                .method(reqwest::Method::POST)
+                .records_element_path("GetUsersResponse.Users.User")
+                .with_soap(SoapConfig {
+                    body_inner: Some("<Op/>".into()),
+                    ..Default::default()
+                }),
+        );
+        assert_eq!(
+            source.effective_records_path().as_deref(),
+            Some("Envelope.Body.GetUsersResponse.Users.User")
+        );
+    }
+
+    #[test]
+    fn effective_path_absolute_override_when_not_relative() {
+        let source = XmlStream::new(
+            XmlStreamConfig::new("https://s", "/svc")
+                .method(reqwest::Method::POST)
+                .records_element_path("Envelope.Body.GetUsersResponse.Users.User")
+                .with_soap(SoapConfig {
+                    body_inner: Some("<Op/>".into()),
+                    path_relative_to_body: false,
+                    ..Default::default()
+                }),
+        );
+        assert_eq!(
+            source.effective_records_path().as_deref(),
+            Some("Envelope.Body.GetUsersResponse.Users.User")
+        );
+    }
+
+    #[test]
+    fn effective_path_unchanged_without_soap() {
+        let source = XmlStream::new(
+            XmlStreamConfig::new("https://s", "/svc").records_element_path("root.item"),
+        );
+        assert_eq!(
+            source.effective_records_path().as_deref(),
+            Some("root.item")
+        );
+    }
+
+    #[test]
+    fn extract_records_eager_resolves_relative_soap_path() {
+        let source = XmlStream::new(
+            XmlStreamConfig::new("https://s", "/svc")
+                .method(reqwest::Method::POST)
+                .records_element_path("GetUsersResponse.Users.User")
+                .with_soap(SoapConfig {
+                    body_inner: Some("<Op/>".into()),
+                    ..Default::default()
+                }),
+        );
+        let xml = soap_response("<User><Name>Alice</Name></User><User><Name>Bob</Name></User>");
+        let mut logged = false;
+        let records = source.extract_records_eager(&xml, &mut logged).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["Name"], "Alice");
+        assert_eq!(records[1]["Name"], "Bob");
+    }
+
+    #[test]
+    fn extract_records_eager_fault_as_error_raises_source_error() {
+        let source = XmlStream::new(
+            XmlStreamConfig::new("https://s", "/svc")
+                .method(reqwest::Method::POST)
+                .records_element_path("GetUsersResponse.Users.User")
+                .with_soap(SoapConfig {
+                    body_inner: Some("<Op/>".into()),
+                    ..Default::default()
+                }),
+        );
+        let xml = r#"<Envelope xmlns="http://schemas.xmlsoap.org/soap/envelope/"><Body>
+            <Fault><faultcode>Server</faultcode><faultstring>kaboom</faultstring></Fault>
+        </Body></Envelope>"#;
+        let mut logged = false;
+        let err = source.extract_records_eager(xml, &mut logged).unwrap_err();
+        assert!(
+            matches!(&err, FaucetError::Source(m) if m.contains("SOAP fault") && m.contains("kaboom")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn extract_records_eager_fault_not_error_yields_zero_records() {
+        let source = XmlStream::new(
+            XmlStreamConfig::new("https://s", "/svc")
+                .method(reqwest::Method::POST)
+                .records_element_path("GetUsersResponse.Users.User")
+                .with_soap(SoapConfig {
+                    body_inner: Some("<Op/>".into()),
+                    fault_as_error: false,
+                    ..Default::default()
+                }),
+        );
+        let xml = r#"<Envelope xmlns="http://schemas.xmlsoap.org/soap/envelope/"><Body>
+            <Fault><faultstring>ignored</faultstring></Fault>
+        </Body></Envelope>"#;
+        let mut logged = false;
+        let records = source.extract_records_eager(xml, &mut logged).unwrap();
+        assert!(records.is_empty());
+        assert!(logged, "fault should be recorded as logged");
+    }
+
+    #[test]
+    fn extract_records_eager_non_soap_matches_legacy_eager_path() {
+        // Regression: with no soap block, extraction is byte-for-byte the
+        // legacy xml_to_json + extract_at_path behavior.
+        let source = XmlStream::new(
+            XmlStreamConfig::new("https://s", "/svc").records_element_path("root.item"),
+        );
+        let xml = "<root><item><id>1</id></item><item><id>2</id></item></root>";
+        let mut logged = false;
+        let records = source.extract_records_eager(xml, &mut logged).unwrap();
+        let legacy = convert::extract_at_path(&convert::xml_to_json(xml).unwrap(), "root.item");
+        assert_eq!(records, legacy);
+        assert_eq!(records.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn fetch_all_rejects_invalid_soap_config() {
+        // A soap block with the default GET method fails validation before any
+        // request is attempted.
+        let source = XmlStream::new(
+            XmlStreamConfig::new("https://s", "/svc").with_soap(SoapConfig::default()),
+        );
+        let err = source.fetch_all().await.unwrap_err();
+        assert!(matches!(&err, FaucetError::Config(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn soap12_content_type_used_for_envelope() {
+        // Sanity: a 1.2 soap block produces the 1.2 content type.
+        let soap = SoapConfig {
+            version: SoapVersion::Soap12,
+            action: Some("urn:Op".into()),
+            ..Default::default()
+        };
+        assert!(soap.content_type().starts_with("application/soap+xml"));
+    }
 
     #[test]
     fn dataset_uri_combines_base_and_path() {

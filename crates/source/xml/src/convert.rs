@@ -441,6 +441,72 @@ pub fn extract_at_path(value: &Value, path: &str) -> Vec<Value> {
     }
 }
 
+/// The local name of an element key — the part after the last `:`, so a
+/// namespace-prefixed element like `soap:Body` matches on `Body`.
+fn local_name(key: &str) -> &str {
+    match key.rsplit_once(':') {
+        Some((_, local)) => local,
+        None => key,
+    }
+}
+
+/// Find the first child of `value` whose element key has the given local name
+/// (namespace-prefix-insensitive). Returns the child value.
+fn find_child_by_local<'a>(value: &'a Value, local: &str) -> Option<&'a Value> {
+    value
+        .as_object()?
+        .iter()
+        .find_map(|(k, v)| (local_name(k) == local).then_some(v))
+}
+
+/// Best-effort human-readable text of a SOAP fault subtree: the SOAP 1.1
+/// `faultstring`, else the SOAP 1.2 `Reason`/`Text`, else the whole subtree.
+fn fault_message(fault: &Value) -> String {
+    // A repeated <Fault> collapses to an array; inspect the first.
+    let fault = match fault {
+        Value::Array(items) => items.first().unwrap_or(fault),
+        other => other,
+    };
+    // SOAP 1.1: <faultstring>msg</faultstring>.
+    if let Some(fs) = find_child_by_local(fault, "faultstring") {
+        return value_to_text(fs);
+    }
+    // SOAP 1.2: <Reason><Text>msg</Text></Reason>.
+    if let Some(reason) = find_child_by_local(fault, "Reason") {
+        if let Some(text) = find_child_by_local(reason, "Text") {
+            return value_to_text(text);
+        }
+        return value_to_text(reason);
+    }
+    value_to_text(fault)
+}
+
+/// Flatten a converted-XML value to its text: a bare string, an element's
+/// `#text`, else the serialized JSON.
+fn value_to_text(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Object(map) => map
+            .get("#text")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| value.to_string()),
+        other => other.to_string(),
+    }
+}
+
+/// Detect a SOAP `<Fault>` under `Envelope.Body` in a converted document and
+/// return its message. Matching is namespace-prefix-insensitive (a fault under
+/// `soap:Envelope.soap:Body.soap:Fault` and one under a default-namespaced
+/// `Envelope.Body.Fault` are both detected). Returns `None` when there is no
+/// fault (the normal success path).
+pub fn detect_soap_fault(doc: &Value) -> Option<String> {
+    let envelope = find_child_by_local(doc, "Envelope")?;
+    let body = find_child_by_local(envelope, "Body")?;
+    let fault = find_child_by_local(body, "Fault")?;
+    Some(fault_message(fault))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -809,6 +875,74 @@ mod tests {
             matches!(&err, FaucetError::Transform(m) if m.contains("XML parse error")),
             "got {err:?}"
         );
+    }
+
+    #[test]
+    fn local_name_strips_namespace_prefix() {
+        assert_eq!(local_name("soap:Body"), "Body");
+        assert_eq!(local_name("Body"), "Body");
+        assert_eq!(local_name("a:b:c"), "c");
+    }
+
+    #[test]
+    fn detect_soap_fault_soap11_prefixed() {
+        let xml = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+            <soap:Body>
+                <soap:Fault>
+                    <faultcode>soap:Server</faultcode>
+                    <faultstring>Something went wrong</faultstring>
+                </soap:Fault>
+            </soap:Body>
+        </soap:Envelope>"#;
+        let doc = xml_to_json(xml).unwrap();
+        assert_eq!(
+            detect_soap_fault(&doc).as_deref(),
+            Some("Something went wrong")
+        );
+    }
+
+    #[test]
+    fn detect_soap_fault_soap11_default_namespace() {
+        // A default-namespaced envelope (unprefixed element names).
+        let xml = r#"<Envelope xmlns="http://schemas.xmlsoap.org/soap/envelope/">
+            <Body>
+                <Fault>
+                    <faultcode>Server</faultcode>
+                    <faultstring>boom</faultstring>
+                </Fault>
+            </Body>
+        </Envelope>"#;
+        let doc = xml_to_json(xml).unwrap();
+        assert_eq!(detect_soap_fault(&doc).as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn detect_soap_fault_soap12_reason_text() {
+        let xml = r#"<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope">
+            <env:Body>
+                <env:Fault>
+                    <env:Code><env:Value>env:Receiver</env:Value></env:Code>
+                    <env:Reason><env:Text xml:lang="en">server exploded</env:Text></env:Reason>
+                </env:Fault>
+            </env:Body>
+        </env:Envelope>"#;
+        let doc = xml_to_json(xml).unwrap();
+        assert_eq!(detect_soap_fault(&doc).as_deref(), Some("server exploded"));
+    }
+
+    #[test]
+    fn detect_soap_fault_returns_none_on_success_response() {
+        let xml = r#"<Envelope><Body>
+            <GetUsersResponse><User><Name>Alice</Name></User></GetUsersResponse>
+        </Body></Envelope>"#;
+        let doc = xml_to_json(xml).unwrap();
+        assert!(detect_soap_fault(&doc).is_none());
+    }
+
+    #[test]
+    fn detect_soap_fault_returns_none_when_no_envelope() {
+        let doc = xml_to_json("<root><item>a</item></root>").unwrap();
+        assert!(detect_soap_fault(&doc).is_none());
     }
 
     #[test]

@@ -25,7 +25,7 @@ Legend: ✓ supported · ✗ not applicable. Tier: T1 = passes the faucet-confor
 |-----------|:---:|---------|:---:|:---:|:---:|:---:|:---:|----------------------|
 | REST | T1 ✅ᵐ | `source-rest` | ✓ | ✓ | ✗ | ✗ | ✗ | HTTP + 6 pagination styles, JSONPath extraction |
 | GraphQL | T1 ✅ᵐ | `source-graphql` | ✓ | ✗ | ✗ | ✗ | ✗ | cursor pagination, variable injection |
-| XML / SOAP | T1 ✅ᵐ | `source-xml` | ✓ | ✗ | ✗ | ✗ | ✗ | streaming XML→JSON, dot-path extraction |
+| XML / SOAP | T1 ✅ᵐ | `source-xml` | ✓ | ✗ | ✗ | ✗ | ✗ | streaming XML→JSON, dot-path extraction, first-class `soap:` block (envelope + headers + fault handling) |
 | gRPC | T1 ✅ | `source-grpc` | ✓⁴ | ✗ | ✗ | ✗ | ✗ | dynamic protobuf; unary + server-streaming |
 | PostgreSQL | T1 ✅ | `source-postgres` | ✓ | ✗ | ✗ | ✗ | ✓ | SQL query, rows as JSON |
 | PostgreSQL CDC | T1 ✅ | `source-postgres-cdc` | ✓ | ✓ | **✓** | ✗ | ✗ | logical replication (pgoutput), LSN bookmarks |

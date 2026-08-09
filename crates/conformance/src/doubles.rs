@@ -3,18 +3,32 @@
 //!
 //! The doubles come in **conformant** and deliberately **non-conformant**
 //! flavours. The non-conformant ones (`FailingSource`, `PanickingSource`,
-//! `LyingIdempotentSink`, `LyingKeyedSink`) exist so the battery's own unit
-//! tests can prove each check actually *fails* when the contract is violated —
-//! a check that can never fail is worthless.
+//! `LyingIdempotentSink`, `LyingKeyedSink`, `NoOpEvolvingSink`,
+//! `MultiPageZeroSource`, `EmptyNameSource`, `ErringCheckSource`,
+//! `ErringCheckSink`) exist so the battery's own unit tests can prove each
+//! check actually *fails* when the contract is violated — a check that can
+//! never fail is worthless. The conformant ones (`CountingSource`, `TestSink`,
+//! `EvolvingSink`) demonstrate the contract genuinely.
 
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use faucet_core::write_mode::WriteMode;
+use faucet_core::check::{CheckContext, CheckReport};
+use faucet_core::drift::SchemaEvolution;
+use faucet_core::write_mode::{DeleteMarker, WriteMode};
 use faucet_core::{FaucetError, Sink, Source, StreamPage, Value, async_trait};
 use futures_core::Stream;
 use serde_json::json;
+
+/// Field the conformance battery uses to flag a record as a delete when
+/// exercising an upsert sink's delete path (matches the `cdc_unwrap`
+/// convention). A sink under test must be configured with a
+/// `delete_marker { field: "__op", values: ["d"] }` for the delete branch of
+/// [`assert_write_modes_truthful`](crate::assert_write_modes_truthful) to run.
+pub const DELETE_MARKER_FIELD: &str = "__op";
+/// Value of [`DELETE_MARKER_FIELD`] that means "this record is a delete".
+pub const DELETE_MARKER_VALUE: &str = "d";
 
 /// A source that lazily emits `total` synthetic records (`{"n": i}`) in pages of
 /// its configured `batch` (or the `stream_pages` hint), **without** buffering
@@ -166,6 +180,10 @@ impl Source for PanickingSource {
 /// - [`TestSink::new`] — append-only, non-idempotent.
 /// - [`TestSink::keyed`] — dedups by key on `write_batch` (keyed-upsert /
 ///   `dedups_by_key`), advertises `Upsert`/`Delete`.
+/// - [`TestSink::keyed_upsert`] — like `keyed`, but also honours a delete
+///   marker (`{"__op": "d"}`) so a delete-marked record genuinely *removes* the
+///   keyed row — used to exercise the delete path of
+///   [`assert_write_modes_truthful`](crate::assert_write_modes_truthful).
 /// - [`TestSink::idempotent`] — additionally advertises
 ///   `supports_idempotent_writes` and stores a per-scope commit token, so the
 ///   atomic-watermark path can be exercised.
@@ -173,6 +191,7 @@ impl Source for PanickingSource {
 pub struct TestSink {
     key_field: Option<String>,
     idempotent: bool,
+    delete_marker: Option<DeleteMarker>,
     keyed: Arc<Mutex<HashMap<String, Value>>>,
     appended: Arc<Mutex<Vec<Value>>>,
     tokens: Arc<Mutex<HashMap<String, String>>>,
@@ -189,6 +208,21 @@ impl TestSink {
     pub fn keyed(key_field: impl Into<String>) -> Self {
         Self {
             key_field: Some(key_field.into()),
+            ..Self::default()
+        }
+    }
+
+    /// A keyed upsert sink that additionally honours the standard delete marker
+    /// (a record carrying [`DELETE_MARKER_FIELD`] = [`DELETE_MARKER_VALUE`]
+    /// removes its keyed row), so both the upsert and delete paths can be
+    /// exercised through `write_batch`.
+    pub fn keyed_upsert(key_field: impl Into<String>) -> Self {
+        Self {
+            key_field: Some(key_field.into()),
+            delete_marker: Some(DeleteMarker {
+                field: DELETE_MARKER_FIELD.to_string(),
+                values: vec![DELETE_MARKER_VALUE.to_string()],
+            }),
             ..Self::default()
         }
     }
@@ -222,6 +256,17 @@ impl TestSink {
     pub fn total_written(&self) -> usize {
         *self.write_calls.lock().unwrap()
     }
+
+    /// Whether `record` is flagged as a delete by this sink's configured marker.
+    fn is_delete_marked(&self, record: &Value) -> bool {
+        match &self.delete_marker {
+            Some(dm) => record
+                .get(&dm.field)
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| dm.values.iter().any(|m| m == s)),
+            None => false,
+        }
+    }
 }
 
 #[async_trait]
@@ -235,7 +280,13 @@ impl Sink for TestSink {
                     let key = r.get(field).map(|v| v.to_string()).ok_or_else(|| {
                         FaucetError::Sink(format!("record missing key `{field}`"))
                     })?;
-                    map.insert(key, r.clone());
+                    // A delete-marked record removes its keyed row (upsert
+                    // sinks with a `delete_marker`); otherwise insert/overwrite.
+                    if self.is_delete_marked(r) {
+                        map.remove(&key);
+                    } else {
+                        map.insert(key, r.clone());
+                    }
                 }
             }
             None => self
@@ -376,9 +427,235 @@ impl Sink for LyingKeyedSink {
     }
 }
 
+/// A schemaless-to-typed sink that maintains a live destination schema and
+/// **genuinely evolves** it: `evolve_schema` adds/overwrites the columns of a
+/// [`SchemaEvolution`] into the stored schema, so a fresh `current_schema()`
+/// reflects the change. Used to prove
+/// [`assert_schema_evolution_effective`](crate::assert_schema_evolution_effective)
+/// passes for a sink that actually applies the DDL.
+#[derive(Clone)]
+pub struct EvolvingSink {
+    /// `column name -> JSON-Schema type fragment`.
+    columns: Arc<Mutex<HashMap<String, Value>>>,
+}
+
+impl Default for EvolvingSink {
+    fn default() -> Self {
+        let mut cols = HashMap::new();
+        cols.insert("id".to_string(), json!({ "type": "integer" }));
+        Self {
+            columns: Arc::new(Mutex::new(cols)),
+        }
+    }
+}
+
+impl EvolvingSink {
+    /// A fresh evolving sink seeded with a single `id: integer` column.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of columns currently in the destination schema.
+    pub fn column_count(&self) -> usize {
+        self.columns.lock().unwrap().len()
+    }
+}
+
+/// Build an `infer_schema`-shaped object schema from a column map.
+fn schema_from_columns(cols: &HashMap<String, Value>) -> Value {
+    let props: serde_json::Map<String, Value> =
+        cols.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    json!({ "type": "object", "properties": props })
+}
+
+#[async_trait]
+impl Sink for EvolvingSink {
+    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        Ok(records.len())
+    }
+
+    async fn current_schema(&self) -> Result<Option<Value>, FaucetError> {
+        Ok(Some(schema_from_columns(&self.columns.lock().unwrap())))
+    }
+
+    fn supports_schema_evolution(&self) -> bool {
+        true
+    }
+
+    async fn evolve_schema(&self, evolution: &SchemaEvolution) -> Result<(), FaucetError> {
+        let mut cols = self.columns.lock().unwrap();
+        for change in evolution.additions.iter().chain(&evolution.widenings) {
+            cols.insert(change.name.clone(), change.to.clone());
+        }
+        Ok(())
+    }
+
+    fn connector_name(&self) -> &'static str {
+        "evolving-sink"
+    }
+}
+
+/// A sink that **claims** `supports_schema_evolution` and exposes a fixed
+/// destination schema, but whose `evolve_schema` is a silent no-op — a fresh
+/// `current_schema()` never changes. Used to prove
+/// [`assert_schema_evolution_effective`](crate::assert_schema_evolution_effective)
+/// *fails* against a sink that only pretends to evolve.
+#[derive(Clone, Default)]
+pub struct NoOpEvolvingSink;
+
+#[async_trait]
+impl Sink for NoOpEvolvingSink {
+    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        Ok(records.len())
+    }
+
+    async fn current_schema(&self) -> Result<Option<Value>, FaucetError> {
+        Ok(Some(json!({
+            "type": "object",
+            "properties": { "id": { "type": "integer" } }
+        })))
+    }
+
+    fn supports_schema_evolution(&self) -> bool {
+        true // the lie — evolve_schema does nothing.
+    }
+
+    async fn evolve_schema(&self, _evolution: &SchemaEvolution) -> Result<(), FaucetError> {
+        Ok(()) // accepted, but the schema never actually changes.
+    }
+
+    fn connector_name(&self) -> &'static str {
+        "noop-evolving-sink"
+    }
+}
+
+/// A source that emits `total` records in multiple non-empty pages **even when
+/// asked to page with `batch_size = 0`** — violating the "no batching = single
+/// page" contract. Used to prove
+/// [`assert_batch_size_zero_single_page`](crate::assert_batch_size_zero_single_page)
+/// *fails*.
+pub struct MultiPageZeroSource {
+    total: usize,
+    page: usize,
+}
+
+impl MultiPageZeroSource {
+    /// `total` records emitted in fixed pages of `page` (defaults to 2),
+    /// regardless of the `batch_size` hint.
+    pub fn new(total: usize) -> Self {
+        Self { total, page: 2 }
+    }
+}
+
+#[async_trait]
+impl Source for MultiPageZeroSource {
+    async fn fetch_with_context(
+        &self,
+        _context: &HashMap<String, Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
+        Ok((0..self.total).map(|i| json!({ "n": i })).collect())
+    }
+
+    fn stream_pages<'a>(
+        &'a self,
+        _context: &'a HashMap<String, Value>,
+        _batch_size: usize,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamPage, FaucetError>> + Send + 'a>> {
+        // Deliberately ignores the batch_size=0 "single page" sentinel.
+        let total = self.total;
+        let page = self.page.max(1);
+        Box::pin(async_stream::try_stream! {
+            let mut n = 0;
+            while n < total {
+                let end = (n + page).min(total);
+                let records: Vec<Value> = (n..end).map(|i| json!({ "n": i })).collect();
+                n = end;
+                let bookmark = if n >= total { Some(json!({ "n": total })) } else { None };
+                yield StreamPage { records, bookmark };
+            }
+        })
+    }
+
+    fn connector_name(&self) -> &'static str {
+        "multi-page-zero-source"
+    }
+}
+
+/// A source whose `connector_name()` is the empty string — a cardinality-rule
+/// violation (it would surface as the `"unknown"` metric label). Used to prove
+/// [`assert_connector_name_nonempty`](crate::assert_connector_name_nonempty)
+/// *fails*.
+pub struct EmptyNameSource;
+
+#[async_trait]
+impl Source for EmptyNameSource {
+    async fn fetch_with_context(
+        &self,
+        _context: &HashMap<String, Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
+        Ok(Vec::new())
+    }
+
+    fn connector_name(&self) -> &'static str {
+        "" // the violation.
+    }
+}
+
+/// A source whose `check()` returns `Err` instead of surfacing the probe
+/// failure as a [`ProbeStatus::Fail`](faucet_core::check::ProbeStatus) inside
+/// `Ok(report)`. Used to prove
+/// [`assert_preflight_check_wellformed`](crate::assert_preflight_check_wellformed)
+/// *fails*.
+pub struct ErringCheckSource;
+
+#[async_trait]
+impl Source for ErringCheckSource {
+    async fn fetch_with_context(
+        &self,
+        _context: &HashMap<String, Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
+        Ok(Vec::new())
+    }
+
+    async fn check(&self, _ctx: &CheckContext) -> Result<CheckReport, FaucetError> {
+        Err(FaucetError::Source(
+            "probe failed — but returned as Err instead of a Fail probe".to_string(),
+        ))
+    }
+
+    fn connector_name(&self) -> &'static str {
+        "erring-check-source"
+    }
+}
+
+/// A sink whose `check()` returns `Err` instead of a `Fail` probe. Used to prove
+/// [`assert_sink_preflight_check_wellformed`](crate::assert_sink_preflight_check_wellformed)
+/// *fails*.
+#[derive(Clone, Default)]
+pub struct ErringCheckSink;
+
+#[async_trait]
+impl Sink for ErringCheckSink {
+    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        Ok(records.len())
+    }
+
+    async fn check(&self, _ctx: &CheckContext) -> Result<CheckReport, FaucetError> {
+        Err(FaucetError::Sink(
+            "probe failed — but returned as Err instead of a Fail probe".to_string(),
+        ))
+    }
+
+    fn connector_name(&self) -> &'static str {
+        "erring-check-sink"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use faucet_core::drift::ColumnChange;
+    use futures::StreamExt;
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -450,5 +727,102 @@ mod tests {
         assert_eq!(FailingSource.connector_name(), "failing-source");
         assert_eq!(PanickingSource.connector_name(), "panicking-source");
         assert!(FailingSource.fetch_all().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_sink_delete_marker_removes_row() {
+        let s = TestSink::keyed_upsert("id");
+        assert!(s.supported_write_modes().contains(&WriteMode::Delete));
+        s.write_batch(&[json!({ "id": 1, "v": "a" })])
+            .await
+            .unwrap();
+        assert_eq!(s.len(), 1);
+        // A delete-marked record removes the keyed row.
+        s.write_batch(&[json!({ "id": 1, "__op": "d" })])
+            .await
+            .unwrap();
+        assert_eq!(s.len(), 0, "delete marker must remove the row");
+        // A keyed sink without a marker never treats a record as a delete.
+        let plain = TestSink::keyed("id");
+        plain
+            .write_batch(&[json!({ "id": 2, "__op": "d" })])
+            .await
+            .unwrap();
+        assert_eq!(plain.len(), 1, "no marker configured → the row is upserted");
+    }
+
+    #[tokio::test]
+    async fn evolving_sink_evolves_and_noop_does_not() {
+        let evo = EvolvingSink::new();
+        assert_eq!(evo.connector_name(), "evolving-sink");
+        assert_eq!(evo.write_batch(&[json!({ "id": 1 })]).await.unwrap(), 1);
+        assert_eq!(evo.column_count(), 1);
+        let evolution = SchemaEvolution {
+            additions: vec![ColumnChange {
+                name: "email".to_string(),
+                from: None,
+                to: json!({ "type": "string" }),
+            }],
+            widenings: Vec::new(),
+            relax_nullability: Vec::new(),
+        };
+        evo.evolve_schema(&evolution).await.unwrap();
+        assert_eq!(evo.column_count(), 2);
+        let schema = evo.current_schema().await.unwrap().unwrap();
+        assert!(schema["properties"]["email"].is_object());
+
+        let noop = NoOpEvolvingSink;
+        assert!(noop.supports_schema_evolution());
+        assert_eq!(noop.write_batch(&[json!({ "id": 1 })]).await.unwrap(), 1);
+        let before = noop.current_schema().await.unwrap().unwrap();
+        noop.evolve_schema(&evolution).await.unwrap();
+        let after = noop.current_schema().await.unwrap().unwrap();
+        assert_eq!(before, after, "noop evolve must not change the schema");
+    }
+
+    #[tokio::test]
+    async fn multi_page_zero_source_emits_multiple_pages_and_fetches() {
+        let s = MultiPageZeroSource::new(6);
+        assert_eq!(s.connector_name(), "multi-page-zero-source");
+        let ctx: HashMap<String, Value> = HashMap::new();
+        assert_eq!(s.fetch_with_context(&ctx).await.unwrap().len(), 6);
+        let mut stream = s.stream_pages(&ctx, 0);
+        let mut pages = 0usize;
+        let mut records = 0usize;
+        while let Some(p) = stream.next().await {
+            let p = p.unwrap();
+            pages += 1;
+            records += p.records.len();
+        }
+        assert_eq!(records, 6);
+        assert!(pages > 1, "must emit more than one page under batch_size=0");
+    }
+
+    #[tokio::test]
+    async fn empty_name_and_erring_check_doubles() {
+        assert_eq!(EmptyNameSource.connector_name(), "");
+        assert!(
+            EmptyNameSource
+                .fetch_with_context(&HashMap::new())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let ctx = CheckContext::default();
+        assert_eq!(ErringCheckSource.connector_name(), "erring-check-source");
+        assert!(
+            ErringCheckSource
+                .fetch_with_context(&HashMap::new())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(ErringCheckSource.check(&ctx).await.is_err());
+
+        let sink = ErringCheckSink;
+        assert_eq!(sink.connector_name(), "erring-check-sink");
+        assert_eq!(sink.write_batch(&[json!({ "x": 1 })]).await.unwrap(), 1);
+        assert!(sink.check(&ctx).await.is_err());
     }
 }
