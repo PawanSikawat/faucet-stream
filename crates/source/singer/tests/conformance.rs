@@ -58,9 +58,35 @@ async fn conformance_bookmark_roundtrip() {
 async fn conformance_errors_not_panics() {
     // A tap executable that does not exist must surface a typed FaucetError when
     // the bridge tries to spawn it — never a panic.
-    let source = SingerSource::new(SingerSourceConfig::new(
+    faucet_conformance::assert_errors_not_panics(&missing_tap_source()).await;
+}
+
+/// A source whose configured tap binary does not exist.
+fn missing_tap_source() -> SingerSource {
+    SingerSource::new(SingerSourceConfig::new(
         "/nonexistent/faucet-conformance-tap-binary",
         "s",
-    ));
-    faucet_conformance::assert_errors_not_panics(&source).await;
+    ))
+}
+
+// ── Check 10: connector_name non-empty (offline) ──────────────────────────────
+
+#[test]
+fn conformance_connector_name_nonempty() {
+    let source = SingerSource::new(SingerSourceConfig::new(fake_tap(), "s"));
+    faucet_conformance::assert_connector_name_nonempty(&source);
+}
+
+// ── Check 11: preflight check() is well-formed ────────────────────────────────
+
+#[tokio::test]
+async fn conformance_preflight_check_wellformed() {
+    // The Singer source overrides `check()` (tap-executable + catalog probes);
+    // a missing tap surfaces as a `Fail` probe inside `Ok(report)`, never an
+    // `Err`.
+    faucet_conformance::assert_preflight_check_wellformed(
+        &missing_tap_source(),
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
 }

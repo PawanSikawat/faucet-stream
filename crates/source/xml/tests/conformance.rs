@@ -6,7 +6,8 @@
 //! cap and strictly < the total), never materialising the whole result set.
 
 use faucet_conformance::{
-    assert_bounded_memory, assert_config_schema_valid_value, assert_errors_not_panics,
+    assert_batch_size_zero_single_page, assert_bounded_memory, assert_config_schema_valid_value,
+    assert_connector_name_nonempty, assert_errors_not_panics, assert_preflight_check_wellformed,
 };
 use faucet_source_xml::{XmlStream, XmlStreamConfig};
 use wiremock::matchers::{method, path};
@@ -64,13 +65,60 @@ async fn conformance_bounded_memory() {
     assert_bounded_memory(&source, BATCH, TOTAL).await;
 }
 
+// ── Check 9: batch_size=0 emits a single page ─────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_batch_size_zero_single_page() {
+    // `batch_size = 0` is the "no batching" sentinel — the event-driven parser
+    // accumulates the whole document into a single `StreamPage`.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/feed.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "application/xml")
+                .set_body_string(build_doc(200)),
+        )
+        .mount(&server)
+        .await;
+
+    let config = XmlStreamConfig::new(server.uri(), "/feed.xml")
+        .records_element_path("root.item")
+        .with_batch_size(0);
+    let source = XmlStream::new(config);
+    assert_batch_size_zero_single_page(&source).await;
+}
+
 // ── Check 6: errors, not panics ──────────────────────────────────────────────
+
+/// A source pointed at an unreachable endpoint. `new()` is lazy (it builds the
+/// HTTP client), so the failure surfaces on first read. Port 1 refuses
+/// connections immediately on all platforms.
+fn unreachable_source() -> XmlStream {
+    XmlStream::new(XmlStreamConfig::new("http://127.0.0.1:1", "/feed.xml"))
+}
 
 #[tokio::test]
 async fn conformance_errors_not_panics() {
-    // Unreachable endpoint: `new()` builds (lazy HTTP client), the first read
-    // errors with a typed `FaucetError` (connection refused) without panicking.
-    // Port 1 refuses connections immediately on all platforms.
-    let source = XmlStream::new(XmlStreamConfig::new("http://127.0.0.1:1", "/feed.xml"));
-    assert_errors_not_panics(&source).await;
+    assert_errors_not_panics(&unreachable_source()).await;
+}
+
+// ── Check 10: connector_name non-empty (offline) ──────────────────────────────
+
+#[test]
+fn conformance_connector_name_nonempty() {
+    assert_connector_name_nonempty(&unreachable_source());
+}
+
+// ── Check 11: preflight check() is well-formed ────────────────────────────────
+
+#[tokio::test]
+async fn conformance_preflight_check_wellformed() {
+    // The default `Source::check` probes the real read path; an unreachable
+    // endpoint surfaces as a `Fail` probe inside `Ok(report)`, never an `Err`.
+    assert_preflight_check_wellformed(
+        &unreachable_source(),
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
 }

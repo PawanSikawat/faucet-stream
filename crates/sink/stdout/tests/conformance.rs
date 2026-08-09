@@ -62,6 +62,29 @@ fn conformance_config_schema_valid() {
     assert_config_schema_valid_value(&schema, "stdout");
 }
 
+// ── Check 10: connector_name is non-empty ─────────────────────────────────────
+#[test]
+fn conformance_connector_name_nonempty() {
+    let sink = StdoutSink::new(StdoutSinkConfig::new());
+    faucet_conformance::assert_connector_name_nonempty_value(
+        sink.connector_name(),
+        sink.connector_name(),
+    );
+}
+
+// ── Check 11: preflight check() is well-formed ────────────────────────────────
+#[tokio::test]
+async fn conformance_preflight_check_wellformed() {
+    // The stdout sink's probe always passes; the check must return Ok(report)
+    // with a well-formed probe.
+    let sink = StdoutSink::new(StdoutSinkConfig::new());
+    faucet_conformance::assert_sink_preflight_check_wellformed(
+        &sink,
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn conformance_capabilities_truthful() {
     let capture = CaptureWriter::default();

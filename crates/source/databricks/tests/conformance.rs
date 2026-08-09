@@ -5,7 +5,9 @@
 //! batch_size, every row streamed) against a wiremock-served result set, i.e.
 //! memory stays O(batch_size) regardless of total rows.
 
-use faucet_conformance::{assert_bounded_memory, assert_config_schema_valid_value};
+use faucet_conformance::{
+    assert_bounded_memory, assert_config_schema_valid_value, assert_connector_name_nonempty,
+};
 use faucet_core::AuthSpec;
 use faucet_source_databricks::{
     DatabricksAuth, DatabricksReplication, DatabricksSource, DatabricksSourceConfig,
@@ -60,6 +62,9 @@ async fn conformance_bounded_memory() {
     let src = DatabricksSource::new(config)
         .unwrap()
         .with_endpoint_base(server.uri());
+
+    // Check 10: connector_name() is non-empty (reuses this instance).
+    assert_connector_name_nonempty(&src);
 
     assert_bounded_memory(&src, batch, total).await;
 }

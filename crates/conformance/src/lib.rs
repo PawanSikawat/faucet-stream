@@ -638,7 +638,9 @@ pub async fn assert_schema_evolution_effective<S: Sink + ?Sized>(sink: &S) {
             )
         });
 
-    let new_col = "__conformance_evolved__";
+    // Must be a valid identifier on every evolvable backend: Spanner rejects a
+    // leading underscore ("Column name not valid"), so no `__…__` fencing here.
+    let new_col = "faucet_conformance_evolved";
     let already = before
         .get("properties")
         .and_then(|p| p.as_object())

@@ -18,7 +18,7 @@
 
 use faucet_conformance::{
     assert_bookmark_roundtrip, assert_bounded_memory, assert_config_schema_valid_value,
-    assert_errors_not_panics,
+    assert_connector_name_nonempty, assert_errors_not_panics, assert_preflight_check_wellformed,
 };
 use faucet_source_mysql_cdc::{MysqlCdcSource, MysqlCdcSourceConfig};
 use mysql_async::{Conn, Opts, prelude::Queryable};
@@ -99,6 +99,13 @@ async fn conformance_bounded_memory() {
     let source = MysqlCdcSource::new(build_config(&url))
         .await
         .expect("source new");
+
+    // Check 10: connector_name is non-empty (pure — no I/O).
+    assert_connector_name_nonempty(&source);
+    // Check 11: preflight check() is well-formed against the live server. The
+    // CDC check() is overridden to run a read-only connect + binlog-config probe
+    // (never a page pull), so it is safe to call in the live test.
+    assert_preflight_check_wellformed(&source, &faucet_core::check::CheckContext::default()).await;
 
     // Concurrent writer: wait ~2 s for the binlog stream to open, then perform
     // TOTAL single-row autocommitted INSERTs — each its own transaction, hence

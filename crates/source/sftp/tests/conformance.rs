@@ -29,6 +29,25 @@ fn conformance_config_schema_valid() {
     assert_config_schema_valid_value(&schema, "faucet-source-sftp");
 }
 
+// ── Check 10: connector_name is non-empty (offline, lazy build) ──────────────
+/// `SftpSource::new` is lazy (no connect at build time), so this runs
+/// unconditionally with no container.
+#[test]
+fn conformance_connector_name_nonempty() {
+    let conn = SftpConnectionConfig {
+        host: "127.0.0.1".to_string(),
+        port: 1,
+        username: "nobody".to_string(),
+        auth: SftpAuth::Password {
+            password: "x".to_string(),
+        },
+        known_hosts: HostKeyPolicy::Insecure,
+    };
+    let source =
+        SftpSource::new(SftpSourceConfig::new(conn, "/data")).expect("source builds lazily");
+    faucet_conformance::assert_connector_name_nonempty(&source);
+}
+
 // ── Check 2: bounded-memory streaming (Docker) ──────────────────────────────
 
 /// Start an `atmoz/sftp` container with user `faucet:faucetpass` and a writable

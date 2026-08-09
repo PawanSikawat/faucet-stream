@@ -16,7 +16,7 @@
 
 use faucet_conformance::{
     assert_bookmark_roundtrip, assert_bounded_memory, assert_config_schema_valid_value,
-    assert_errors_not_panics,
+    assert_connector_name_nonempty, assert_errors_not_panics, assert_preflight_check_wellformed,
 };
 use faucet_source_mongodb_cdc::{MongoCdcSource, MongoCdcSourceConfig};
 use mongodb::Client;
@@ -89,6 +89,13 @@ async fn conformance_bounded_memory() {
     }
 
     let source = MongoCdcSource::new(config(&uri)).await.expect("source");
+
+    // Check 10: connector_name is non-empty (pure — no I/O).
+    assert_connector_name_nonempty(&source);
+    // Check 11: preflight check() is well-formed against the live replica set.
+    // The CDC check() is overridden to run a read-only `hello` + topology probe
+    // (never a page pull), so it is safe to call in the live test.
+    assert_preflight_check_wellformed(&source, &faucet_core::check::CheckContext::default()).await;
 
     // Concurrent writer: wait ~2 s for the change stream to open, then insert
     // TOTAL documents (each a distinct change event). After the writer goes

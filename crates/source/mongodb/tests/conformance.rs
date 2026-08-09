@@ -6,7 +6,7 @@
 //! matches the existing streaming integration test's container boot + seeding
 //! path verbatim.
 
-use faucet_conformance::assert_config_schema_valid_value;
+use faucet_conformance::{assert_config_schema_valid_value, assert_connector_name_nonempty};
 use faucet_source_mongodb::{MongoSource, MongoSourceConfig};
 use mongodb::Client;
 use mongodb::bson::{Document, doc};
@@ -52,10 +52,30 @@ async fn conformance_bounded_memory() {
     let (_container, uri) = start_mongo().await;
     seed_docs(&uri, "testdb", "events", 5_000).await;
 
-    let config = MongoSourceConfig::new(uri, "testdb", "events").with_batch_size(250);
+    let config = MongoSourceConfig::new(uri.as_str(), "testdb", "events").with_batch_size(250);
     let source = MongoSource::new(config).await.expect("source new");
 
     faucet_conformance::assert_bounded_memory(&source, 250, 5_000).await;
+
+    // Check 10: connector_name is non-empty.
+    assert_connector_name_nonempty(&source);
+
+    // Check 11: preflight check() is well-formed against the live server (the
+    // MongoDB source uses the default real-read-path probe — a non-mutating
+    // find of the first page).
+    faucet_conformance::assert_preflight_check_wellformed(
+        &source,
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
+
+    // Check 9: batch_size = 0 (the "no batching" sentinel) yields the entire
+    // result set as a single page. Reuses the same container + seeded data.
+    let zero_config = MongoSourceConfig::new(uri.as_str(), "testdb", "events").with_batch_size(0);
+    let zero_source = MongoSource::new(zero_config)
+        .await
+        .expect("zero-batch source new");
+    faucet_conformance::assert_batch_size_zero_single_page(&zero_source).await;
     // _container stays alive to here
 }
 
@@ -76,6 +96,9 @@ async fn conformance_errors_not_panics() {
     let source = MongoSource::new(config)
         .await
         .expect("builds lazily; read fails");
+
+    // Check 10: connector_name is non-empty (pure — runs offline, no Docker).
+    assert_connector_name_nonempty(&source);
 
     faucet_conformance::assert_errors_not_panics(&source).await;
 }

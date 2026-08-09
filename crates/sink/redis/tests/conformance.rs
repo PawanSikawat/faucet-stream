@@ -20,6 +20,7 @@ fn conformance_config_schema_valid() {
 }
 
 mod idempotent {
+    use faucet_core::Sink as _;
     use faucet_sink_redis::{RedisSink, RedisSinkConfig, RedisSinkType};
     use redis::AsyncCommands;
     use testcontainers::{ContainerAsync, runners::AsyncRunner};
@@ -90,6 +91,18 @@ mod idempotent {
     #[tokio::test(flavor = "multi_thread")]
     async fn conformance_capabilities_truthful() {
         let (_container, url, sink) = fresh_sink().await;
+        // Check 10: connector_name is non-empty (metric-cardinality contract).
+        faucet_conformance::assert_connector_name_nonempty_value(
+            sink.connector_name(),
+            sink.connector_name(),
+        );
+        // Check 11: preflight check() is well-formed against the live server
+        // (Redis `PING` → a Pass probe inside Ok(report); nothing written).
+        faucet_conformance::assert_sink_preflight_check_wellformed(
+            &sink,
+            &faucet_core::check::CheckContext::default(),
+        )
+        .await;
         faucet_conformance::assert_capabilities_truthful(&sink, || {
             let url = url.clone();
             async move { count_entries(&url).await }

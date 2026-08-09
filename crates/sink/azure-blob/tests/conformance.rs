@@ -109,6 +109,27 @@ fn conformance_config_schema_valid() {
     assert_config_schema_valid_value(&schema, "azure-blob");
 }
 
+// ── Check 10: connector_name is non-empty (offline, lazy build) ──────────────
+/// The `object_store` Azure builder is lazy, so this runs unconditionally with
+/// no container.
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_connector_name_nonempty() {
+    let config = AzureBlobSinkConfig::new(CONTAINER)
+        .account(AZURITE_ACCOUNT)
+        .auth(AzureCredentials::AccountKey {
+            account_key: AZURITE_KEY.into(),
+        })
+        .endpoint("http://127.0.0.1:1")
+        .allow_http(true);
+    let sink = AzureBlobSink::new(config)
+        .await
+        .expect("sink builds lazily");
+    faucet_conformance::assert_connector_name_nonempty_value(
+        sink.connector_name(),
+        sink.connector_name(),
+    );
+}
+
 // ── Check 5: capabilities are truthful (Azurite, skip if no Docker) ──────────
 #[tokio::test(flavor = "multi_thread")]
 async fn conformance_capabilities_truthful() {

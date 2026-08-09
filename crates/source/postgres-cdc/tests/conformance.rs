@@ -16,7 +16,7 @@
 
 use faucet_conformance::{
     assert_bookmark_roundtrip, assert_bounded_memory, assert_config_schema_valid_value,
-    assert_errors_not_panics,
+    assert_connector_name_nonempty, assert_errors_not_panics, assert_preflight_check_wellformed,
 };
 use faucet_core::Source;
 use faucet_source_postgres_cdc::{PostgresCdcSource, PostgresCdcSourceConfig};
@@ -106,6 +106,15 @@ async fn conformance_bounded_memory() {
     .await;
 
     let source = PostgresCdcSource::new(cfg(&url)).await.expect("source");
+
+    // Check 10: connector_name is non-empty (pure — no I/O).
+    assert_connector_name_nonempty(&source);
+    // Check 11: preflight check() is well-formed against the live server. The
+    // CDC check() is overridden to run a read-only connect + slot metadata probe
+    // (never a page pull), so it is safe to call in the live test. The slot does
+    // not exist yet, so the slot probe is a well-formed `Skip` — still a valid
+    // report inside `Ok`.
+    assert_preflight_check_wellformed(&source, &faucet_core::check::CheckContext::default()).await;
 
     // Warm-up fetch: materialise the slot so the seeded changes below land in
     // the replicated WAL. idle_timeout drains 0 records.

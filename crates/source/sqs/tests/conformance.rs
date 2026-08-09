@@ -39,6 +39,8 @@ async fn conformance_errors_not_panics() {
     cfg.max_messages = Some(10);
 
     let source = SqsSource::new(cfg).await.expect("source builds lazily");
+    // Check 10: connector_name is non-empty (metric-cardinality contract).
+    faucet_conformance::assert_connector_name_nonempty(&source);
     assert_errors_not_panics(&source).await;
 }
 
@@ -131,6 +133,14 @@ async fn conformance_bounded_memory() {
     cfg.batch_size = 250;
 
     let source = SqsSource::new(cfg).await.expect("source");
+    // Check 11: preflight check() is well-formed against the live queue
+    // (`GetQueueAttributes` → a Pass probe inside Ok(report); no messages
+    // consumed).
+    faucet_conformance::assert_preflight_check_wellformed(
+        &source,
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
     faucet_conformance::assert_bounded_memory(&source, 250, 5_000).await;
     // _container stays alive to here
 }

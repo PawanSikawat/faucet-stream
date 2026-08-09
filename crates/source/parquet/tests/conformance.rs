@@ -4,6 +4,13 @@
 //! Check 2 — `stream_pages` pages under a bounded batch size (every record
 //! streamed; peak page ≤ batch_size and < total), i.e. memory is O(batch_size)
 //! regardless of total volume.
+//! Check 6 — a bad path surfaces a typed error, never a panic.
+//! Check 9 — `batch_size = 0` yields the whole (small) result set as one page.
+//! Check 10 — `connector_name()` is non-empty.
+//! Check 11 — `check()` returns a well-formed `Ok(report)`.
+//!
+//! Parquet is a snapshot source (no incremental bookmark) and not a sink, so
+//! checks 3 and 4/5/7/8 do not apply.
 
 use std::fs::File;
 use std::path::Path;
@@ -12,7 +19,8 @@ use std::sync::Arc;
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use faucet_conformance::{
-    assert_bounded_memory, assert_config_schema_valid_value, assert_errors_not_panics,
+    assert_batch_size_zero_single_page, assert_bounded_memory, assert_config_schema_valid_value,
+    assert_connector_name_nonempty, assert_errors_not_panics, assert_preflight_check_wellformed,
 };
 use faucet_source_parquet::{ParquetSource, ParquetSourceConfig};
 use parquet::arrow::ArrowWriter;
@@ -83,4 +91,42 @@ async fn conformance_errors_not_panics() {
     .await
     .expect("source builds without touching the file");
     assert_errors_not_panics(&source).await;
+}
+
+// ── Check 10: connector_name is non-empty ─────────────────────────────────────
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_connector_name_nonempty() {
+    let source = ParquetSource::new(ParquetSourceConfig::local("/tmp/does-not-matter.parquet"))
+        .await
+        .unwrap();
+    assert_connector_name_nonempty(&source);
+}
+
+// ── Check 9: batch_size=0 yields a single page ────────────────────────────────
+/// A small single-row-group fixture read under the `batch_size = 0` sentinel
+/// (native row-group cadence) must surface as exactly one page.
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_batch_size_zero_single_page() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("small.parquet");
+    write_fixture(&path, 6);
+
+    let source =
+        ParquetSource::new(ParquetSourceConfig::local(path.to_str().unwrap()).with_batch_size(0))
+            .await
+            .unwrap();
+    assert_batch_size_zero_single_page(&source).await;
+}
+
+// ── Check 11: preflight check() is well-formed ────────────────────────────────
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_preflight_check_wellformed() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("small.parquet");
+    write_fixture(&path, 6);
+
+    let source = ParquetSource::new(ParquetSourceConfig::local(path.to_str().unwrap()))
+        .await
+        .unwrap();
+    assert_preflight_check_wellformed(&source, &faucet_core::check::CheckContext::default()).await;
 }

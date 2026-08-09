@@ -6,8 +6,10 @@
 //! criterion — see the connector catalog's "Support tiers" note.
 //!
 //! Checks exercised: 1 (config schema, offline), 2 (bounded-memory streaming),
-//! and 6 (errors, not panics). Delta is a snapshot source (no incremental
-//! bookmark), so checks 3–5 do not apply.
+//! 6 (errors, not panics), 9 (`batch_size = 0` single page), 10
+//! (`connector_name()` non-empty), and 11 (`check()` well-formed). Delta is a
+//! snapshot source (no incremental bookmark) and not a sink, so checks 3 and
+//! 4/5/7/8 do not apply.
 
 use std::sync::Arc;
 
@@ -19,7 +21,8 @@ use deltalake::kernel::engine::arrow_conversion::TryIntoKernel;
 use deltalake::operations::create::CreateBuilder;
 use deltalake::writer::{DeltaWriter, RecordBatchWriter};
 use faucet_conformance::{
-    assert_bounded_memory, assert_config_schema_valid_value, assert_errors_not_panics,
+    assert_batch_size_zero_single_page, assert_bounded_memory, assert_config_schema_valid_value,
+    assert_connector_name_nonempty, assert_errors_not_panics, assert_preflight_check_wellformed,
 };
 use faucet_core::Source as _;
 use faucet_source_delta::{DeltaSource, DeltaSourceConfig};
@@ -97,4 +100,45 @@ async fn conformance_errors_not_panics() {
     if let Ok(source) = DeltaSource::new(DeltaSourceConfig::new(&uri)).await {
         assert_errors_not_panics(&source).await;
     }
+}
+
+// ── Check 10: connector_name is non-empty ─────────────────────────────────────
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_connector_name_nonempty() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = table_uri(&dir, "name");
+    seed(&uri, 1).await;
+    let source = DeltaSource::new(DeltaSourceConfig::new(&uri))
+        .await
+        .expect("source");
+    assert_connector_name_nonempty(&source);
+}
+
+// ── Check 9: batch_size=0 yields a single page ────────────────────────────────
+/// A small single-commit table read under the `batch_size = 0` sentinel (native
+/// row-group cadence) must surface as exactly one page.
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_batch_size_zero_single_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = table_uri(&dir, "single_page");
+    seed(&uri, 6).await;
+
+    let mut cfg = DeltaSourceConfig::new(&uri);
+    cfg.batch_size = 0;
+    let source = DeltaSource::new(cfg).await.expect("source");
+    assert_batch_size_zero_single_page(&source).await;
+}
+
+// ── Check 11: preflight check() is well-formed ────────────────────────────────
+/// A seeded table makes delta's metadata-open probe pass; the check must return
+/// Ok(report) with a well-formed probe.
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_preflight_check_wellformed() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = table_uri(&dir, "preflight");
+    seed(&uri, 6).await;
+    let source = DeltaSource::new(DeltaSourceConfig::new(&uri))
+        .await
+        .expect("source");
+    assert_preflight_check_wellformed(&source, &faucet_core::check::CheckContext::default()).await;
 }

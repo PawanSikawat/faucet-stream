@@ -44,6 +44,8 @@ async fn conformance_config_schema_valid() {
         .await
         .expect("source");
     faucet_conformance::assert_config_schema_valid(&source);
+    // Check 10: connector_name is non-empty.
+    faucet_conformance::assert_connector_name_nonempty(&source);
 }
 
 #[tokio::test]
@@ -52,11 +54,26 @@ async fn conformance_bounded_memory() {
     let batch = 100;
     let (_dir, url) = seed(total).await;
     let source = SqliteSource::new(
-        SqliteSourceConfig::new(url, "SELECT id, name FROM t ORDER BY id").with_batch_size(batch),
+        SqliteSourceConfig::new(&url, "SELECT id, name FROM t ORDER BY id").with_batch_size(batch),
     )
     .await
     .expect("source");
     faucet_conformance::assert_bounded_memory(&source, batch, total).await;
+
+    // Check 11: preflight check() returns Ok(report) with well-formed probes.
+    faucet_conformance::assert_preflight_check_wellformed(
+        &source,
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
+
+    // Check 9: batch_size=0 yields the entire result set as a single page.
+    let single_page = SqliteSource::new(
+        SqliteSourceConfig::new(&url, "SELECT id, name FROM t ORDER BY id").with_batch_size(0),
+    )
+    .await
+    .expect("source (batch_size=0)");
+    faucet_conformance::assert_batch_size_zero_single_page(&single_page).await;
 }
 
 #[tokio::test]

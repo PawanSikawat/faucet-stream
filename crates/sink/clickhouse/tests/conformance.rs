@@ -8,7 +8,10 @@
 //! honest-`false` branch: Append works and no phantom commit token is recorded.
 //! Passing this battery in CI is the Tier-1 (supported) criterion.
 
-use faucet_conformance::{assert_capabilities_truthful, assert_config_schema_valid_value};
+use faucet_conformance::{
+    assert_capabilities_truthful, assert_config_schema_valid_value,
+    assert_connector_name_nonempty_value,
+};
 use faucet_core::Sink as _;
 use faucet_sink_clickhouse::{ClickHouseSink, ClickHouseSinkConfig};
 use serde_json::Value;
@@ -67,6 +70,14 @@ async fn count_rows(base: &str) -> usize {
 fn conformance_config_schema_valid() {
     let schema = serde_json::to_value(schemars::schema_for!(ClickHouseSinkConfig)).unwrap();
     assert_config_schema_valid_value(&schema, "clickhouse");
+}
+
+// ── Check 10: connector_name is non-empty (offline, lazy sink) ───────────────
+#[test]
+fn conformance_connector_name_nonempty() {
+    let sink =
+        ClickHouseSink::new(ClickHouseSinkConfig::new("http://127.0.0.1:1", "t")).expect("sink");
+    assert_connector_name_nonempty_value(sink.connector_name(), sink.connector_name());
 }
 
 // ── Check 5: capabilities are truthful (real backend, skip if no Docker) ─────

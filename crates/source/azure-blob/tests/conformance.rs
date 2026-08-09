@@ -19,6 +19,24 @@ fn conformance_config_schema_valid() {
     assert_config_schema_valid_value(&schema, "faucet-source-azure-blob");
 }
 
+// ── Check 10: connector_name is non-empty (offline, lazy build) ──────────────
+/// The `object_store` Azure builder is lazy, so this runs unconditionally with
+/// no container.
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_connector_name_nonempty() {
+    let config = AzureBlobSourceConfig::new("does-not-exist")
+        .account("devstoreaccount1")
+        .auth(AzureCredentials::AccountKey {
+            account_key: "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==".into(),
+        })
+        .endpoint("http://127.0.0.1:1")
+        .allow_http(true);
+    let source = AzureBlobSource::new(config)
+        .await
+        .expect("source builds lazily");
+    faucet_conformance::assert_connector_name_nonempty(&source);
+}
+
 // ── Check 6: errors, not panics (no container) ──────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]

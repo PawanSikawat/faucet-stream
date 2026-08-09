@@ -92,6 +92,24 @@ async fn conformance_bounded_memory() {
     let source = RedisSource::new(config).unwrap();
 
     faucet_conformance::assert_bounded_memory(&source, 250, 5_000).await;
+
+    // Check 9: batch_size=0 is the "no batching" sentinel — the stream mode
+    // drains the whole `events` stream in one XRANGE and emits it as a single
+    // page (see `RedisSourceConfig::batch_size`). A fresh source over the same
+    // (non-destructively read, no consumer group) seeded stream exercises it
+    // without a new container.
+    let config0 = RedisSourceConfig::new(
+        &url,
+        RedisSourceType::Stream {
+            key: "events".into(),
+            group: None,
+            consumer: None,
+            count: None,
+        },
+    )
+    .with_batch_size(0);
+    let source0 = RedisSource::new(config0).unwrap();
+    faucet_conformance::assert_batch_size_zero_single_page(&source0).await;
     // _container stays alive to here
 }
 
@@ -116,5 +134,14 @@ async fn conformance_errors_not_panics() {
     );
     let source = RedisSource::new(config).expect("builds lazily; read fails");
 
+    // Check 10: connector_name is non-empty (metric-cardinality contract).
+    faucet_conformance::assert_connector_name_nonempty(&source);
     faucet_conformance::assert_errors_not_panics(&source).await;
+    // Check 11: the default page-pull check() surfaces the connect failure as a
+    // Fail probe inside Ok(report) — never an Err from check() itself.
+    faucet_conformance::assert_preflight_check_wellformed(
+        &source,
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
 }

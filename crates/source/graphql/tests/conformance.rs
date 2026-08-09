@@ -6,7 +6,8 @@
 //! the batch cap and strictly < the total).
 
 use faucet_conformance::{
-    assert_bounded_memory, assert_config_schema_valid_value, assert_errors_not_panics,
+    assert_batch_size_zero_single_page, assert_bounded_memory, assert_config_schema_valid_value,
+    assert_connector_name_nonempty, assert_errors_not_panics, assert_preflight_check_wellformed,
 };
 use faucet_source_graphql::config::GraphqlPagination;
 use faucet_source_graphql::{GraphqlStream, GraphqlStreamConfig};
@@ -115,14 +116,69 @@ async fn conformance_bounded_memory() {
 
 // ── Check 6: errors, not panics ──────────────────────────────────────────────
 
-#[tokio::test]
-async fn conformance_errors_not_panics() {
-    // Unreachable endpoint: `new()` builds (lazy HTTP client), the first read
-    // errors with a typed `FaucetError` (connection refused) without panicking.
-    // Port 1 refuses connections immediately on all platforms.
-    let source = GraphqlStream::new(GraphqlStreamConfig::new(
+/// A source pointed at an unreachable endpoint. `new()` is lazy (it builds the
+/// HTTP client), so the failure surfaces on first read. Port 1 refuses
+/// connections immediately on all platforms.
+fn unreachable_source() -> GraphqlStream {
+    GraphqlStream::new(GraphqlStreamConfig::new(
         "http://127.0.0.1:1",
         "query { users { edges { node { id } } } }",
-    ));
-    assert_errors_not_panics(&source).await;
+    ))
+}
+
+#[tokio::test]
+async fn conformance_errors_not_panics() {
+    assert_errors_not_panics(&unreachable_source()).await;
+}
+
+// ── Check 9: batch_size=0 emits a single page ─────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_batch_size_zero_single_page() {
+    // With `batch_size = 0` the source omits the `first:` variable and expects
+    // the upstream to return the whole result set in one response — so a single
+    // GraphQL response with `hasNextPage: false` is emitted as one `StreamPage`.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(make_page(0, 50, None)))
+        .mount(&server)
+        .await;
+
+    let config = GraphqlStreamConfig::new(
+        server.uri(),
+        "query($first: Int, $after: String) { users(first: $first, after: $after) { \
+         edges { node { id } } pageInfo { hasNextPage endCursor } } }",
+    )
+    .records_path("$.data.users.edges[*].node")
+    .pagination(GraphqlPagination {
+        has_next_page_path: "$.data.users.pageInfo.hasNextPage".into(),
+        cursor_path: "$.data.users.pageInfo.endCursor".into(),
+        cursor_variable: "after".into(),
+        page_size_variable: "first".into(),
+    })
+    .with_batch_size(0);
+
+    let source = GraphqlStream::new(config);
+    assert_batch_size_zero_single_page(&source).await;
+}
+
+// ── Check 10: connector_name non-empty (offline) ──────────────────────────────
+
+#[test]
+fn conformance_connector_name_nonempty() {
+    assert_connector_name_nonempty(&unreachable_source());
+}
+
+// ── Check 11: preflight check() is well-formed ────────────────────────────────
+
+#[tokio::test]
+async fn conformance_preflight_check_wellformed() {
+    // The default `Source::check` probes the real read path; an unreachable
+    // endpoint surfaces as a `Fail` probe inside `Ok(report)`, never an `Err`.
+    assert_preflight_check_wellformed(
+        &unreachable_source(),
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
 }

@@ -31,6 +31,27 @@ fn conformance_config_schema_valid() {
     assert_config_schema_valid_value(&schema, "sftp");
 }
 
+// ── Check 10: connector_name is non-empty (offline, lazy build) ──────────────
+/// `SftpSink::new` is lazy (no connect at build time), so this runs
+/// unconditionally with no container.
+#[test]
+fn conformance_connector_name_nonempty() {
+    let conn = SftpConnectionConfig {
+        host: "127.0.0.1".to_string(),
+        port: 1,
+        username: "nobody".to_string(),
+        auth: SftpAuth::Password {
+            password: "x".to_string(),
+        },
+        known_hosts: HostKeyPolicy::Insecure,
+    };
+    let sink = SftpSink::new(SftpSinkConfig::new(conn, "/data")).expect("sink builds lazily");
+    faucet_conformance::assert_connector_name_nonempty_value(
+        sink.connector_name(),
+        sink.connector_name(),
+    );
+}
+
 // ── Check 5: capabilities truthful (Docker) ─────────────────────────────────
 
 async fn start_sftp() -> Option<(ContainerAsync<GenericImage>, u16)> {

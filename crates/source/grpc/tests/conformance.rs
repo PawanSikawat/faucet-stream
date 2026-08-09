@@ -14,7 +14,8 @@
 mod common;
 
 use faucet_conformance::{
-    assert_bounded_memory, assert_config_schema_valid_value, assert_errors_not_panics,
+    assert_bounded_memory, assert_config_schema_valid_value, assert_connector_name_nonempty,
+    assert_errors_not_panics, assert_preflight_check_wellformed,
 };
 use faucet_source_grpc::{GrpcStream, GrpcStreamConfig, RpcKind};
 use serde_json::json;
@@ -53,16 +54,15 @@ async fn conformance_bounded_memory() {
 
 // ── Check 6: errors, not panics ──────────────────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn conformance_errors_not_panics() {
-    // Unreachable endpoint: `new()` only validates config (no eager connect),
-    // so the channel connect happens at read time and fails with a typed
-    // `FaucetError`. Port 1 refuses connections immediately on all platforms.
-    // Unary is the default RPC kind — its single connect attempt surfaces the
-    // error directly (ServerStreaming would retry forever on the unlimited
-    // default `reconnect_max_attempts`). A real descriptor set is still
-    // required to construct the source, so reuse the shared fixture path; the
-    // connect fails before the RPC method is ever invoked.
+/// A source pointed at an unreachable endpoint in **unary** mode. `new()` only
+/// validates config (no eager connect), so the channel connect happens at read
+/// time and fails with a typed `FaucetError`. Port 1 refuses connections
+/// immediately on all platforms. Unary is used deliberately — its single
+/// connect attempt surfaces the error directly (ServerStreaming would retry
+/// forever on the unlimited default `reconnect_max_attempts`). A real
+/// descriptor set is still required to construct the source, so reuse the
+/// shared fixture path; the connect fails before the RPC method is invoked.
+fn unreachable_source() -> GrpcStream {
     let config = GrpcStreamConfig::new(
         "http://127.0.0.1:1",
         "faucet.test.echo.EchoService",
@@ -71,7 +71,31 @@ async fn conformance_errors_not_panics() {
     )
     .request(json!({ "count": 1 }))
     .rpc_kind(RpcKind::Unary);
+    GrpcStream::new(config).expect("grpc stream builds from a valid config")
+}
 
-    let stream = GrpcStream::new(config).expect("grpc stream builds from a valid config");
-    assert_errors_not_panics(&stream).await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conformance_errors_not_panics() {
+    assert_errors_not_panics(&unreachable_source()).await;
+}
+
+// ── Check 10: connector_name non-empty ────────────────────────────────────────
+
+#[test]
+fn conformance_connector_name_nonempty() {
+    assert_connector_name_nonempty(&unreachable_source());
+}
+
+// ── Check 11: preflight check() is well-formed ────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conformance_preflight_check_wellformed() {
+    // The default `Source::check` probes the real read path; an unreachable
+    // endpoint (unary) surfaces as a `Fail` probe inside `Ok(report)`, never
+    // an `Err`.
+    assert_preflight_check_wellformed(
+        &unreachable_source(),
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
 }

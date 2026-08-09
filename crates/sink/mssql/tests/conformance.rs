@@ -15,7 +15,7 @@
 
 use faucet_common_mssql::{MssqlConnectionConfig, MssqlPool, MssqlTls, MssqlTlsMode, build_pool};
 use faucet_conformance::assert_config_schema_valid_value;
-use faucet_core::{WriteMode, WriteSpec};
+use faucet_core::{DeleteMarker, Sink, WriteMode, WriteSpec};
 use faucet_sink_mssql::{MssqlColumnMapping, MssqlSink, MssqlSinkConfig, OnUnknownField};
 use testcontainers_modules::mssql_server::MssqlServer;
 use testcontainers_modules::testcontainers::ContainerAsync;
@@ -77,7 +77,10 @@ async fn fresh_sink() -> (ContainerAsync<MssqlServer>, MssqlPool, MssqlSink) {
     scfg.write = WriteSpec {
         write_mode: WriteMode::Upsert,
         key: vec!["id".to_string()],
-        delete_marker: None,
+        delete_marker: Some(DeleteMarker {
+            field: "__op".to_string(),
+            values: vec!["d".to_string()],
+        }),
     };
     let sink = MssqlSink::new(scfg).await.expect("sink");
     (container, pool, sink)
@@ -95,22 +98,51 @@ async fn count_rows(pool: &MssqlPool) -> usize {
     rows[0].get::<i32, _>("c").expect("count value") as usize
 }
 
+/// Empty the data table so a following check starts from a known-clean state.
+async fn reset_rows(pool: &MssqlPool) {
+    exec(pool, "DELETE FROM dbo.t").await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn conformance_idempotent_replay() {
     let _serial = SERIAL.lock().await;
     let (_container, pool, sink) = fresh_sink().await;
+    // Check 10: connector_name is non-empty.
+    faucet_conformance::assert_connector_name_nonempty_value(
+        sink.connector_name(),
+        sink.connector_name(),
+    );
     faucet_conformance::assert_idempotent_replay(&sink, || {
         let pool = pool.clone();
         async move { count_rows(&pool).await }
     })
     .await;
+    // Check 8: schema evolution is effective (add-column surfaces in a fresh
+    // current_schema()). Independent of row state, so it can follow the replay.
+    faucet_conformance::assert_schema_evolution_effective(&sink).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn conformance_capabilities_truthful() {
     let _serial = SERIAL.lock().await;
     let (_container, pool, sink) = fresh_sink().await;
+    // Check 11: the sink's preflight check() returns Ok(report) with well-formed
+    // probes (non-mutating).
+    faucet_conformance::assert_sink_preflight_check_wellformed(
+        &sink,
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
     faucet_conformance::assert_capabilities_truthful(&sink, || {
+        let pool = pool.clone();
+        async move { count_rows(&pool).await }
+    })
+    .await;
+    // Check 7: write modes are truthful (upsert converges, delete removes,
+    // missing/null keys are reported failed). Needs a clean table because the
+    // capabilities check above wrote rows.
+    reset_rows(&pool).await;
+    faucet_conformance::assert_write_modes_truthful(&sink, || {
         let pool = pool.clone();
         async move { count_rows(&pool).await }
     })
