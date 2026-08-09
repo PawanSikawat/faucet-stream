@@ -13,7 +13,8 @@
 //! `batch_size` (250), so peak page is 250 < 6 000.
 
 use faucet_conformance::{
-    assert_bounded_memory, assert_config_schema_valid_value, assert_errors_not_panics,
+    assert_bounded_memory, assert_config_schema_valid_value, assert_connector_name_nonempty,
+    assert_errors_not_panics,
 };
 use faucet_source_bigquery::{BigQueryCredentials, BigQuerySource, BigQuerySourceConfig};
 use gcp_bigquery_client::client_builder::ClientBuilder;
@@ -193,6 +194,9 @@ async fn conformance_errors_not_panics() {
         "SELECT id FROM events",
     );
     let source = BigQuerySource::from_parts(config, client);
+
+    // Check 10: connector_name() is non-empty (reuses this offline instance).
+    assert_connector_name_nonempty(&source);
 
     assert_errors_not_panics(&source).await;
 }

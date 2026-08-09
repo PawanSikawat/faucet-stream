@@ -28,6 +28,31 @@ fn conformance_config_schema_valid() {
     );
 }
 
+// ── Check 10: connector_name is non-empty ─────────────────────────────────────
+#[test]
+fn conformance_connector_name_nonempty() {
+    let sink = JsonlSink::new(JsonlSinkConfig::new("/tmp/does-not-matter.jsonl"));
+    faucet_conformance::assert_connector_name_nonempty_value(
+        sink.connector_name(),
+        sink.connector_name(),
+    );
+}
+
+// ── Check 11: preflight check() is well-formed ────────────────────────────────
+#[tokio::test]
+async fn conformance_preflight_check_wellformed() {
+    // A writable parent directory makes the filesystem probe pass; the check
+    // must return Ok(report) with a well-formed probe.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("out.jsonl");
+    let sink = JsonlSink::new(JsonlSinkConfig::new(&path));
+    faucet_conformance::assert_sink_preflight_check_wellformed(
+        &sink,
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn conformance_capabilities_truthful() {
     let dir = tempfile::tempdir().unwrap();

@@ -34,6 +34,8 @@ async fn conformance_errors_not_panics() {
     let source = NatsSource::new(cfg)
         .await
         .expect("lazy construction succeeds");
+    // Check 10: connector_name is non-empty (metric-cardinality contract).
+    faucet_conformance::assert_connector_name_nonempty(&source);
     assert_errors_not_panics(&source).await;
 }
 

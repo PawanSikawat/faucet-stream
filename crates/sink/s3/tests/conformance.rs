@@ -88,6 +88,19 @@ fn conformance_config_schema_valid() {
     assert_config_schema_valid_value(&schema, "s3");
 }
 
+// ── Check 10: connector_name is non-empty (offline, lazy build) ──────────────
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_connector_name_nonempty() {
+    let config = S3SinkConfig::new("does-not-exist")
+        .endpoint_url("http://127.0.0.1:1".to_string())
+        .region(REGION.to_string());
+    let sink = S3Sink::new(config).await.expect("sink builds lazily");
+    faucet_conformance::assert_connector_name_nonempty_value(
+        sink.connector_name(),
+        sink.connector_name(),
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn conformance_capabilities_truthful() {
     let (_container, endpoint) = start_minio().await;

@@ -110,6 +110,19 @@ async fn conformance_capabilities_truthful() {
     cfg.value_format = ValueFormat::Json;
     let sink = PubsubSink::new(cfg).await.expect("sink builds");
 
+    // Check 10: connector_name is non-empty (metric-cardinality contract).
+    faucet_conformance::assert_connector_name_nonempty_value(
+        sink.connector_name(),
+        sink.connector_name(),
+    );
+    // Check 11: preflight check() is well-formed against the emulator (the
+    // topic created above exists → a Pass probe inside Ok(report)).
+    faucet_conformance::assert_sink_preflight_check_wellformed(
+        &sink,
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
+
     let seen = Arc::new(AtomicUsize::new(0));
     let sub = Arc::new(sub);
     assert_capabilities_truthful_count(&sink, seen, sub).await;

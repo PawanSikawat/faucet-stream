@@ -25,6 +25,7 @@ fn conformance_config_schema_valid() {
 #[cfg(test)]
 mod docker {
     use super::*;
+    use faucet_core::Sink as _;
     use faucet_sink_nats::NatsSink;
     use futures::StreamExt;
     use std::sync::Arc;
@@ -62,6 +63,20 @@ mod docker {
         let mut cfg = NatsSinkConfig::new(subject);
         cfg.connection.servers = vec![server.clone()];
         let sink = NatsSink::new(cfg).await.expect("sink new");
+
+        // Check 10: connector_name is non-empty (metric-cardinality contract).
+        faucet_conformance::assert_connector_name_nonempty_value(
+            sink.connector_name(),
+            sink.connector_name(),
+        );
+        // Check 11: the append-only NATS sink implements no custom check(), so
+        // the core default returns a well-formed single Skip probe inside
+        // Ok(report) — never an Err.
+        faucet_conformance::assert_sink_preflight_check_wellformed(
+            &sink,
+            &faucet_core::check::CheckContext::default(),
+        )
+        .await;
 
         let counter_cl = counter.clone();
         faucet_conformance::assert_capabilities_truthful(&sink, move || {

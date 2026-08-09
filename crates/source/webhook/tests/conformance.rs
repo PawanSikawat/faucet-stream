@@ -17,7 +17,10 @@
 //! binds a `TcpListener` to `listen_addr` at read time, so an unbindable
 //! address deterministically drives the failure path.
 
-use faucet_conformance::{assert_config_schema_valid_value, assert_errors_not_panics};
+use faucet_conformance::{
+    assert_config_schema_valid_value, assert_connector_name_nonempty, assert_errors_not_panics,
+    assert_preflight_check_wellformed,
+};
 use faucet_source_webhook::{WebhookSource, WebhookSourceConfig};
 
 #[test]
@@ -39,4 +42,23 @@ async fn conformance_errors_not_panics() {
     let source =
         WebhookSource::new(WebhookSourceConfig::new().listen_addr("999.999.999.999:99999"));
     assert_errors_not_panics(&source).await;
+}
+
+// ── Check 10: connector_name non-empty (offline) ──────────────────────────────
+
+#[test]
+fn conformance_connector_name_nonempty() {
+    let source = WebhookSource::new(WebhookSourceConfig::new());
+    assert_connector_name_nonempty(&source);
+}
+
+// ── Check 11: preflight check() is well-formed ────────────────────────────────
+
+/// The webhook source overrides `check()` with a bind probe. Against a bindable
+/// ephemeral address (`127.0.0.1:0`) it returns a `Pass` probe inside
+/// `Ok(report)` — a well-formed report, which is what the contract requires.
+#[tokio::test]
+async fn conformance_preflight_check_wellformed() {
+    let source = WebhookSource::new(WebhookSourceConfig::new().listen_addr("127.0.0.1:0"));
+    assert_preflight_check_wellformed(&source, &faucet_core::check::CheckContext::default()).await;
 }

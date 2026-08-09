@@ -37,6 +37,22 @@ async fn conformance_config_schema_valid() {
         .await
         .expect("source");
     faucet_conformance::assert_config_schema_valid(&source);
+    // Check 10: connector_name() is non-empty (reuses this offline instance).
+    faucet_conformance::assert_connector_name_nonempty(&source);
+}
+
+#[tokio::test]
+async fn conformance_batch_size_zero_single_page() {
+    // Check 9: a source built with `batch_size = 0` yields the whole result set
+    // as a single page (the DuckDB "no batching" sentinel).
+    let total = 200;
+    let (_dir, path) = seed(total);
+    let source = DuckdbSource::new(
+        DuckdbSourceConfig::new(path, "SELECT id, name FROM t ORDER BY id").with_batch_size(0),
+    )
+    .await
+    .expect("source");
+    faucet_conformance::assert_batch_size_zero_single_page(&source).await;
 }
 
 #[tokio::test]

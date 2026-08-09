@@ -3,6 +3,13 @@
 //! - check 1 `assert_config_schema_valid`
 //! - check 6 `assert_errors_not_panics` — an unreachable endpoint surfaces a
 //!   typed `FaucetError` (connection refused) rather than panicking.
+//! - check 9 `assert_batch_size_zero_single_page` — a single-page (`None`
+//!   pagination) upstream is emitted as one `StreamPage` (REST chunks by
+//!   upstream-API page boundaries, so an unpaginated response is one page).
+//! - check 10 `assert_connector_name_nonempty` — the connector label is
+//!   non-empty (offline).
+//! - check 11 `assert_preflight_check_wellformed` — `check()` surfaces an
+//!   unreachable endpoint as a `Fail` probe inside `Ok(report)`, never `Err`.
 //!
 //! check 2 (bounded-memory streaming) and the incremental resume path (check 3)
 //! are covered in depth by this crate's dedicated `stream_test.rs`,
@@ -10,6 +17,9 @@
 //! server; the battery here adds the uniform schema + error-handling contract.
 
 use faucet_source_rest::{PaginationStyle, RestStream, RestStreamConfig};
+use serde_json::json;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn unreachable_source() -> RestStream {
     // Port 1 refuses connections immediately on all platforms — a fast,
@@ -28,4 +38,48 @@ fn conformance_config_schema_valid() {
 #[tokio::test]
 async fn conformance_errors_not_panics() {
     faucet_conformance::assert_errors_not_panics(&unreachable_source()).await;
+}
+
+// ── Check 9: batch_size=0 emits a single page ─────────────────────────────────
+
+#[tokio::test]
+async fn conformance_batch_size_zero_single_page() {
+    // `None` pagination: the upstream returns the whole result set in one
+    // response, which the source emits as exactly one `StreamPage`.
+    let server = MockServer::start().await;
+    let data: Vec<_> = (0..50).map(|i| json!({ "id": i })).collect();
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": data })))
+        .mount(&server)
+        .await;
+
+    let source = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/items")
+            .records_path("$.data[*]")
+            .pagination(PaginationStyle::None),
+    )
+    .unwrap();
+
+    faucet_conformance::assert_batch_size_zero_single_page(&source).await;
+}
+
+// ── Check 10: connector_name non-empty (offline) ──────────────────────────────
+
+#[test]
+fn conformance_connector_name_nonempty() {
+    faucet_conformance::assert_connector_name_nonempty(&unreachable_source());
+}
+
+// ── Check 11: preflight check() is well-formed ────────────────────────────────
+
+#[tokio::test]
+async fn conformance_preflight_check_wellformed() {
+    // The default `Source::check` probes the real read path; an unreachable
+    // endpoint surfaces as a `Fail` probe inside `Ok(report)`, never an `Err`.
+    faucet_conformance::assert_preflight_check_wellformed(
+        &unreachable_source(),
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
 }

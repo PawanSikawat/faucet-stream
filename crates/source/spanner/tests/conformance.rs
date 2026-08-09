@@ -9,7 +9,7 @@ mod support;
 
 use faucet_conformance::{
     assert_bookmark_roundtrip, assert_bounded_memory, assert_config_schema_valid_value,
-    assert_errors_not_panics,
+    assert_connector_name_nonempty, assert_errors_not_panics,
 };
 use faucet_source_spanner::{SpannerReplication, SpannerSource, SpannerSourceConfig};
 
@@ -60,6 +60,9 @@ async fn conformance_bounded_memory() {
     cfg.connection = support::connection(&emu.host, "conformance");
     cfg.batch_size = 500;
     let source = SpannerSource::new(cfg).await.expect("source");
+
+    // Check 10: connector_name() is non-empty (reuses this live instance).
+    assert_connector_name_nonempty(&source);
 
     assert_bounded_memory(&source, 500, 5_000).await;
 }

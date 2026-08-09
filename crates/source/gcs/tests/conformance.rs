@@ -28,6 +28,21 @@ fn conformance_config_schema_valid() {
     assert_config_schema_valid_value(&schema, "faucet-source-gcs");
 }
 
+// ── Check 10: connector_name is non-empty (offline, lazy build) ──────────────
+/// Building the gRPC storage clients with `Anonymous` creds + an endpoint
+/// override performs no I/O, so this runs unconditionally (no emulator needed).
+/// Check 9 (`batch_size = 0` single page) is intentionally *not* added: like the
+/// bounded-memory check it would need the gRPC read path, which `fake-gcs-server`
+/// cannot serve.
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_connector_name_nonempty() {
+    let config = GcsSourceConfig::new("does-not-exist")
+        .auth(GcsCredentials::Anonymous)
+        .storage_host("http://127.0.0.1:1");
+    let source = GcsSource::new(config).await.expect("source builds lazily");
+    faucet_conformance::assert_connector_name_nonempty(&source);
+}
+
 // ── Check 2: bounded-memory streaming (live gRPC backend, ignored) ──────────
 
 /// Spawn `fake-gcs-server` and return `(host_url, bucket_name)`.

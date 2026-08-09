@@ -96,6 +96,19 @@ async fn conformance_capabilities_truthful() {
     cfg.credentials = test_credentials();
     let sink = SqsSink::new(cfg).await.expect("sink");
 
+    // Check 10: connector_name is non-empty (metric-cardinality contract).
+    faucet_conformance::assert_connector_name_nonempty_value(
+        sink.connector_name(),
+        sink.connector_name(),
+    );
+    // Check 11: preflight check() is well-formed against the live queue
+    // (`GetQueueAttributes` → a Pass probe inside Ok(report); nothing written).
+    faucet_conformance::assert_sink_preflight_check_wellformed(
+        &sink,
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
+
     let client_ref = &client;
     let url = queue_url.clone();
     faucet_conformance::assert_capabilities_truthful(&sink, || {

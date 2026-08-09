@@ -10,7 +10,8 @@
 //!          the drain via `max_messages` (with `idle_timeout` as a backstop).
 
 use faucet_conformance::{
-    assert_bounded_memory, assert_config_schema_valid_value, assert_errors_not_panics,
+    assert_bounded_memory, assert_config_schema_valid_value, assert_connector_name_nonempty,
+    assert_errors_not_panics, assert_preflight_check_wellformed,
 };
 use faucet_core::AuthSpec;
 use faucet_source_websocket::{
@@ -99,4 +100,23 @@ async fn conformance_bounded_memory() {
 async fn conformance_errors_not_panics() {
     let source = WebsocketSource::new(base_config("ws://127.0.0.1:1")).unwrap();
     assert_errors_not_panics(&source).await;
+}
+
+// ── Check 10: connector_name non-empty (offline) ──────────────────────────────
+
+#[test]
+fn conformance_connector_name_nonempty() {
+    let source = WebsocketSource::new(base_config("ws://127.0.0.1:1")).unwrap();
+    assert_connector_name_nonempty(&source);
+}
+
+// ── Check 11: preflight check() is well-formed ────────────────────────────────
+
+/// The websocket source overrides `check()` with a TCP-connect probe. Pointed
+/// at an unreachable endpoint it surfaces the failure as a `Fail` probe inside
+/// `Ok(report)`, never an `Err` — exactly what the contract requires.
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_preflight_check_wellformed() {
+    let source = WebsocketSource::new(base_config("ws://127.0.0.1:1")).unwrap();
+    assert_preflight_check_wellformed(&source, &faucet_core::check::CheckContext::default()).await;
 }

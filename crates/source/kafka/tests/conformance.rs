@@ -108,6 +108,16 @@ async fn conformance_bounded_memory() {
     let cfg = source_config(&brokers, topic, "g-conformance-bounded", 5_000, 250);
     let source = KafkaSource::new(cfg).await.expect("source new");
 
+    // Check 10: connector_name is non-empty (metric-cardinality contract).
+    faucet_conformance::assert_connector_name_nonempty(&source);
+    // Check 11: preflight check() is well-formed against the live broker
+    // (`fetch_metadata` → a Pass probe inside Ok(report); no records consumed).
+    faucet_conformance::assert_preflight_check_wellformed(
+        &source,
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
+
     faucet_conformance::assert_bounded_memory(&source, 250, 5_000).await;
     // _container stays alive to here
 }

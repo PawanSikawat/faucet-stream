@@ -28,6 +28,12 @@ async fn conformance_capabilities_truthful() {
     .await
     .expect("sink");
 
+    // Check 10: connector_name() is non-empty (reuses this offline instance).
+    faucet_conformance::assert_connector_name_nonempty_value(
+        sink.connector_name(),
+        sink.connector_name(),
+    );
+
     // The battery writes {id: i64, v: string}; seed the matching table on the
     // sink's own connection.
     sink.run_sql("CREATE TABLE t (id BIGINT, v TEXT)")

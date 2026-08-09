@@ -91,6 +91,29 @@ async fn conformance_bounded_memory() {
     let source = MssqlSource::new(scfg).await.expect("source new");
 
     faucet_conformance::assert_bounded_memory(&source, 250, 5_000).await;
+
+    // Check 10: connector_name is non-empty.
+    faucet_conformance::assert_connector_name_nonempty(&source);
+
+    // Check 11: preflight check() returns Ok(report) with well-formed probes.
+    faucet_conformance::assert_preflight_check_wellformed(
+        &source,
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
+
+    // Check 9: batch_size=0 yields the entire result set as a single page. Reuse
+    // the same seeded container with a fresh source configured for no batching.
+    let mut scfg0 = MssqlSourceConfig::new(
+        cfg.connection_url.clone().unwrap(),
+        "SELECT id FROM dbo.events ORDER BY id",
+    );
+    scfg0.connection.tls = cfg.tls.clone();
+    scfg0.batch_size = 0;
+    let single_page = MssqlSource::new(scfg0)
+        .await
+        .expect("source new (batch_size=0)");
+    faucet_conformance::assert_batch_size_zero_single_page(&single_page).await;
     // _container stays alive to here
 }
 

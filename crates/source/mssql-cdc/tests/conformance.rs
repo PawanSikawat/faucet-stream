@@ -30,6 +30,7 @@ use std::time::Duration;
 use faucet_common_mssql::{MssqlConnectionConfig, MssqlPool, MssqlTls, MssqlTlsMode, build_pool};
 use faucet_conformance::{
     assert_bookmark_roundtrip, assert_bounded_memory, assert_config_schema_valid_value,
+    assert_connector_name_nonempty, assert_preflight_check_wellformed,
 };
 use faucet_source_mssql_cdc::{MssqlCdcSource, MssqlCdcSourceConfig};
 use serde_json::json;
@@ -250,6 +251,13 @@ async fn conformance_bounded_memory() {
     let source = MssqlCdcSource::new(build_config(&conn))
         .await
         .expect("source new");
+
+    // Check 10: connector_name is non-empty (pure — no I/O).
+    assert_connector_name_nonempty(&source);
+    // Check 11: preflight check() is well-formed against the live server. The
+    // CDC check() is overridden to run a read-only connect + CDC-status +
+    // capture-instance probe (never a page pull), so it is safe in the live test.
+    assert_preflight_check_wellformed(&source, &faucet_core::check::CheckContext::default()).await;
 
     // Each committed single-row transaction is its own page (1 record) → peak
     // == 1, which is ≤ BATCH and < TOTAL.

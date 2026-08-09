@@ -27,6 +27,16 @@ fn conformance_config_schema_valid() {
     assert_config_schema_valid_value(&schema, "faucet-source-s3");
 }
 
+// ── Check 10: connector_name is non-empty (offline, lazy build) ──────────────
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_connector_name_nonempty() {
+    let config = S3SourceConfig::new("does-not-exist")
+        .endpoint_url("http://127.0.0.1:1".to_string())
+        .region(REGION.to_string());
+    let source = S3Source::new(config).await.expect("source builds lazily");
+    faucet_conformance::assert_connector_name_nonempty(&source);
+}
+
 // ── Check 2: bounded-memory streaming (Docker) ──────────────────────────────
 
 /// Start a MinIO container and return the container handle plus the
@@ -123,6 +133,12 @@ async fn conformance_bounded_memory() {
     let source = build_source(&endpoint, config).await;
 
     faucet_conformance::assert_bounded_memory(&source, 250, 5_000).await;
+
+    // Check 9: reuse the same MinIO instance + seeded bucket — a source built
+    // with `batch_size = 0` must yield the whole object as a single page.
+    let zero_config = S3SourceConfig::new(TEST_BUCKET).with_batch_size(0);
+    let zero_source = build_source(&endpoint, zero_config).await;
+    faucet_conformance::assert_batch_size_zero_single_page(&zero_source).await;
     // _container stays alive to here
 }
 

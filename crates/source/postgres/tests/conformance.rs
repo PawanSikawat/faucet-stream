@@ -52,12 +52,32 @@ async fn conformance_bounded_memory() {
     seed(&url, total as i64).await;
 
     let source = PostgresSource::new(
-        PostgresSourceConfig::new(url, "SELECT id, name FROM events ORDER BY id")
+        PostgresSourceConfig::new(&url, "SELECT id, name FROM events ORDER BY id")
             .with_batch_size(batch),
     )
     .await
     .expect("source new");
     faucet_conformance::assert_bounded_memory(&source, batch, total).await;
+
+    // Check 10: connector_name is non-empty.
+    faucet_conformance::assert_connector_name_nonempty(&source);
+
+    // Check 11: preflight check() returns Ok(report) with well-formed probes.
+    faucet_conformance::assert_preflight_check_wellformed(
+        &source,
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
+
+    // Check 9: batch_size=0 yields the entire result set as a single page. Reuse
+    // the same seeded container with a fresh source configured for no batching.
+    let single_page = PostgresSource::new(
+        PostgresSourceConfig::new(&url, "SELECT id, name FROM events ORDER BY id")
+            .with_batch_size(0),
+    )
+    .await
+    .expect("source new (batch_size=0)");
+    faucet_conformance::assert_batch_size_zero_single_page(&single_page).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

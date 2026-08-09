@@ -106,5 +106,15 @@ async fn conformance_bounded_memory() {
     cfg.batch_size = 30;
     let source = PubsubSource::new(cfg).await.expect("source builds");
 
+    // Check 10: connector_name is non-empty (metric-cardinality contract).
+    faucet_conformance::assert_connector_name_nonempty(&source);
+    // Check 11: preflight check() is well-formed against the emulator (the
+    // subscription created above exists → a Pass probe inside Ok(report)).
+    faucet_conformance::assert_preflight_check_wellformed(
+        &source,
+        &faucet_core::check::CheckContext::default(),
+    )
+    .await;
+
     faucet_conformance::assert_bounded_memory(&source, 30, 150).await;
 }
