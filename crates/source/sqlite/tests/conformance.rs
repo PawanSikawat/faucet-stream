@@ -86,3 +86,26 @@ async fn conformance_errors_not_panics() {
         .expect("source builds; the query only fails at read time");
     faucet_conformance::assert_errors_not_panics(&source).await;
 }
+
+#[tokio::test]
+async fn conformance_discover_roundtrips() {
+    // Check 12: every dataset `discover()` reports must be genuinely selectable —
+    // deep-merge its config_patch onto the base config, rebuild, and read.
+    let (_dir, url) = seed(3).await;
+    let source = SqliteSource::new(SqliteSourceConfig::new(&url, "SELECT 1"))
+        .await
+        .expect("source");
+    faucet_conformance::assert_discover_roundtrips(&source, |patch| {
+        let url = url.clone();
+        async move {
+            let base = serde_json::to_value(SqliteSourceConfig::new(&url, "SELECT 1"))
+                .expect("serialize base config");
+            let merged = faucet_conformance::merge_config_patch(base, &patch);
+            let cfg: SqliteSourceConfig =
+                serde_json::from_value(merged).expect("deserialize merged config");
+            Box::new(SqliteSource::new(cfg).await.expect("rebuilt source"))
+                as Box<dyn faucet_core::Source>
+        }
+    })
+    .await;
+}

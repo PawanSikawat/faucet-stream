@@ -163,6 +163,106 @@ async fn conformance_bounded_memory() {
     assert_bounded_memory(&source, 250, TOTAL_ROWS).await;
 }
 
+// ── Check 12: discovery round-trips ───────────────────────────────────────────
+
+/// Every table `discover()` reports (datasets.list → tables.list → tables.get)
+/// must be genuinely selectable: deep-merge its config_patch (`{"query": …}`)
+/// onto the base config, rebuild the source, and read it via `jobs.query`. A
+/// realistic mock of the BigQuery catalog + query REST API.
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_discover_roundtrips() {
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+
+    // Catalog: one dataset `sales` with one physical table `orders`.
+    Mock::given(method("GET"))
+        .and(path(format!("/projects/{PROJECT_ID}/datasets")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "bigquery#datasetList",
+            "etag": "etag-0",
+            "datasets": [{
+                "datasetReference": { "projectId": PROJECT_ID, "datasetId": "sales" }
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/projects/{PROJECT_ID}/datasets/sales/tables"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "tables": [{
+                "type": "TABLE",
+                "tableReference": {
+                    "projectId": PROJECT_ID, "datasetId": "sales", "tableId": "orders"
+                }
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/projects/{PROJECT_ID}/datasets/sales/tables/orders"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "tableReference": {
+                "projectId": PROJECT_ID, "datasetId": "sales", "tableId": "orders"
+            },
+            "schema": schema_one_col(),
+            "numRows": "3",
+        })))
+        .mount(&server)
+        .await;
+    // Read path for the rebuilt source: a single jobs.query page of 3 rows.
+    Mock::given(method("POST"))
+        .and(path(format!("/projects/{PROJECT_ID}/queries")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jobComplete": true,
+            "schema": schema_one_col(),
+            "jobReference": {"projectId": PROJECT_ID, "jobId": JOB_ID},
+            "rows": rows(0, 3),
+        })))
+        .mount(&server)
+        .await;
+
+    let base_cfg = BigQuerySourceConfig::new(
+        PROJECT_ID,
+        BigQueryCredentials::ApplicationDefault,
+        "SELECT 1",
+    );
+    let (source, _sa_file) = build_source(&server, base_cfg).await;
+
+    faucet_conformance::assert_discover_roundtrips(&source, |patch| {
+        let server_uri = server.uri();
+        async move {
+            // Rebuild against the same mock: a fresh client + config carrying
+            // the discovered query. `build_source` needs a &MockServer, so
+            // reconstruct the client the same way here.
+            let query = patch["query"].as_str().expect("query patch").to_string();
+            let cfg = BigQuerySourceConfig::new(
+                PROJECT_ID,
+                BigQueryCredentials::ApplicationDefault,
+                query,
+            );
+            let sa_json = dummy_service_account_json(&server_uri);
+            let sa_file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(
+                sa_file.path(),
+                serde_json::to_string_pretty(&sa_json).unwrap(),
+            )
+            .unwrap();
+            let client = ClientBuilder::new()
+                .with_auth_base_url(format!("{server_uri}{AUTH_SCOPE_BASE}"))
+                .with_v2_base_url(server_uri)
+                .build_from_service_account_key_file(sa_file.path().to_str().unwrap())
+                .await
+                .expect("build bigquery client against mock");
+            Box::new(BigQuerySource::from_parts(cfg, client)) as Box<dyn faucet_core::Source>
+        }
+    })
+    .await;
+}
+
 // ── Check 6: errors, not panics ──────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]

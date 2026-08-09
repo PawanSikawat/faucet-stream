@@ -142,6 +142,40 @@ async fn conformance_bounded_memory() {
     // _container stays alive to here
 }
 
+// ── Check 12: discovery round-trips (Docker) ────────────────────────────────
+
+/// Every dataset `discover()` reports must be genuinely selectable: deep-merge
+/// its config_patch (a `{"prefix": …}` override) onto the base config, rebuild
+/// the source, and read it. Objects are seeded under two "directory" prefixes
+/// so the delimiter listing yields prefix datasets.
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_discover_roundtrips() {
+    let (_container, endpoint) = start_minio().await;
+    seed_bucket(
+        &endpoint,
+        &[
+            ("orders/data.jsonl".to_string(), jsonl_body(1, 3)),
+            ("customers/data.jsonl".to_string(), jsonl_body(4, 6)),
+        ],
+    )
+    .await;
+
+    let source = build_source(&endpoint, S3SourceConfig::new(TEST_BUCKET)).await;
+    faucet_conformance::assert_discover_roundtrips(&source, |patch| {
+        let endpoint = endpoint.clone();
+        async move {
+            let base = serde_json::to_value(S3SourceConfig::new(TEST_BUCKET))
+                .expect("serialize base config");
+            let merged = faucet_conformance::merge_config_patch(base, &patch);
+            let cfg: S3SourceConfig =
+                serde_json::from_value(merged).expect("deserialize merged config");
+            Box::new(build_source(&endpoint, cfg).await) as Box<dyn faucet_core::Source>
+        }
+    })
+    .await;
+    // _container stays alive to here
+}
+
 // ── Check 6: errors, not panics (no container) ──────────────────────────────
 
 /// Point the source at an unreachable S3 endpoint (`http://127.0.0.1:1`, which

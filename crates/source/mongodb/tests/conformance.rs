@@ -79,6 +79,35 @@ async fn conformance_bounded_memory() {
     // _container stays alive to here
 }
 
+// ── Check 12: discovery round-trips (Docker) ────────────────────────────────
+
+/// Every collection `discover()` reports must be genuinely selectable:
+/// deep-merge its config_patch (`{"collection": …}`) onto the base config,
+/// rebuild the source, and read it.
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_discover_roundtrips() {
+    let (_container, uri) = start_mongo().await;
+    seed_docs(&uri, "testdb", "events", 3).await;
+
+    let source = MongoSource::new(MongoSourceConfig::new(uri.as_str(), "testdb", "events"))
+        .await
+        .expect("source new");
+    faucet_conformance::assert_discover_roundtrips(&source, |patch| {
+        let uri = uri.clone();
+        async move {
+            let base = serde_json::to_value(MongoSourceConfig::new(&uri, "testdb", "events"))
+                .expect("serialize base config");
+            let merged = faucet_conformance::merge_config_patch(base, &patch);
+            let cfg: MongoSourceConfig =
+                serde_json::from_value(merged).expect("deserialize merged config");
+            Box::new(MongoSource::new(cfg).await.expect("rebuilt source"))
+                as Box<dyn faucet_core::Source>
+        }
+    })
+    .await;
+    // _container stays alive to here
+}
+
 // ── Check 6: errors, not panics (no Docker) ─────────────────────────────────
 
 /// `MongoSource::new` only parses the URI and spawns the driver's background

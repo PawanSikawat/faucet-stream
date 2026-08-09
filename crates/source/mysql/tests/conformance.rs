@@ -114,6 +114,33 @@ async fn conformance_bounded_memory() {
     // _container stays alive to here
 }
 
+// ── Check 12: discovery round-trips (Docker) ────────────────────────────────
+
+/// Every dataset `discover()` reports must be genuinely selectable: deep-merge
+/// its config_patch onto the base config, rebuild the source, and read it.
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_discover_roundtrips() {
+    let (_container, url) = start_mysql().await;
+    seed_events(&url, 3).await;
+    let source = MysqlSource::new(MysqlSourceConfig::new(&url, "SELECT 1"))
+        .await
+        .expect("source new");
+    faucet_conformance::assert_discover_roundtrips(&source, |patch| {
+        let url = url.clone();
+        async move {
+            let base = serde_json::to_value(MysqlSourceConfig::new(&url, "SELECT 1"))
+                .expect("serialize base config");
+            let merged = faucet_conformance::merge_config_patch(base, &patch);
+            let cfg: MysqlSourceConfig =
+                serde_json::from_value(merged).expect("deserialize merged config");
+            Box::new(MysqlSource::new(cfg).await.expect("rebuilt source"))
+                as Box<dyn faucet_core::Source>
+        }
+    })
+    .await;
+    // _container stays alive to here
+}
+
 // ── Check 6: errors, not panics (Docker) ────────────────────────────────────
 
 /// The source builds against a live container (so `new()` — which eagerly

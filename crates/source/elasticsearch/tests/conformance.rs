@@ -136,6 +136,52 @@ async fn conformance_batch_size_zero_single_page() {
     assert_batch_size_zero_single_page(&source).await;
 }
 
+// ── Check 12: discovery round-trips ───────────────────────────────────────────
+
+/// Every index `discover()` reports (`GET _cat/indices` + `GET /<idx>/_mapping`)
+/// must be genuinely selectable: deep-merge its config_patch (`{"index": …}`)
+/// onto the base config, rebuild the source, and read it (`POST /<idx>/_search`).
+/// A realistic mock of the Elasticsearch catalog + scroll API — the integration
+/// analogue of the synthetic double.
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_discover_roundtrips() {
+    let server = MockServer::start().await;
+    // Catalog: one non-system index `test`.
+    Mock::given(method("GET"))
+        .and(path("/_cat/indices"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!([{ "index": "test", "docs.count": "3" }])),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/test/_mapping"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "test": { "mappings": { "properties": { "id": { "type": "long" } } } }
+        })))
+        .mount(&server)
+        .await;
+    // Read path for the rebuilt source: one scroll page of 3 docs, then empty.
+    mount_paged_responder(&server, PagedResponder::new(1, 3)).await;
+
+    let source = ElasticsearchSource::new(ElasticsearchSourceConfig::new(server.uri(), "test"))
+        .expect("source new");
+    faucet_conformance::assert_discover_roundtrips(&source, |patch| {
+        let uri = server.uri();
+        async move {
+            let base = serde_json::to_value(ElasticsearchSourceConfig::new(&uri, "test"))
+                .expect("serialize base config");
+            let merged = faucet_conformance::merge_config_patch(base, &patch);
+            let cfg: ElasticsearchSourceConfig =
+                serde_json::from_value(merged).expect("deserialize merged config");
+            Box::new(ElasticsearchSource::new(cfg).expect("rebuilt source"))
+                as Box<dyn faucet_core::Source>
+        }
+    })
+    .await;
+}
+
 // ── Check 6: errors, not panics ──────────────────────────────────────────────
 
 /// A source pointed at an unreachable endpoint. `new()` builds (lazy HTTP

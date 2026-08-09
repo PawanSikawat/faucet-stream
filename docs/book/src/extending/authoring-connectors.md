@@ -145,6 +145,28 @@ use `assert_idempotent_replay` and `assert_capabilities_truthful` — both take 
 `distinct_count` closure that returns the destination's current row count (for a
 real sink, a `SELECT count(*)` against the target table).
 
+A **discoverable source** (one that overrides `supports_discover`) adds
+`assert_discover_roundtrips`, an *integration-level* check that proves every
+dataset `discover()` reports is genuinely selectable — it deep-merges each
+descriptor's `config_patch` onto the base config (the `merge_config_patch`
+helper does this), rebuilds the source, and reads it. Run it against the same
+live/seeded backend your other checks use:
+
+```rust,ignore
+faucet_conformance::assert_discover_roundtrips(&source, |patch| {
+    let base = /* the connection config as a serde_json::Value */;
+    let merged = faucet_conformance::merge_config_patch(base, &patch);
+    let cfg = serde_json::from_value(merged).unwrap();
+    async move { Box::new(FooSource::new(cfg).await.unwrap()) as Box<dyn faucet_core::Source> }
+})
+.await;
+```
+
+`assert_cancellation_flushes` covers the flush-completing cancellation contract
+(a mid-run `CancellationToken` stops at a page boundary and still flushes) by
+driving the real pipeline — most useful for a buffered sink (Parquet footer, S3
+multipart) whose output only commits on `flush()`.
+
 **Assert the honest branch.** Where a connector legitimately can't satisfy a
 check — an append-only sink has no idempotency mechanism, for instance — don't
 skip it: assert the honest behaviour instead. The capability method returns
