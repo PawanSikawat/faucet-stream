@@ -311,19 +311,19 @@ where
     );
 
     // Crash-replay of page 1: the pipeline compares the page token against the
-    // committed token and skips when already committed. Mimic that guard; the
-    // destination must not grow.
-    if faucet_core::parse_token(committed.as_deref().unwrap_or_default())
-        .is_some_and(|c| c >= faucet_core::parse_token(&t1).unwrap_or(0))
-    {
-        // committed >= page token ⇒ skip (no re-write), exactly as run_stream does.
-    } else {
-        panic!("[{label}] committed token did not advance to the written page's token");
-    }
-    let after_replay = count().await;
-    assert_eq!(
-        after_replay, after_first,
-        "[{label}] a guarded replay changed the destination — watermark is not honoured"
+    // committed token and *skips* the page when already committed. Assert that
+    // decision resolves to "skip" — i.e. the sink's recorded token parses and is
+    // ≥ the page token. (We deliberately do NOT re-invoke the sink and assert the
+    // row count is unchanged: the no-duplication guarantee lives in the pipeline's
+    // skip, not in the sink, so an append-mode idempotent sink re-delivered the
+    // same committed page legitimately *would* grow. Testing that here would fail
+    // correct sinks. This is the vacuous assertion #466 L4 removed.)
+    let committed_seq = faucet_core::parse_token(committed.as_deref().unwrap_or_default())
+        .unwrap_or_else(|| panic!("[{label}] committed token {committed:?} does not parse"));
+    assert!(
+        committed_seq >= faucet_core::parse_token(&t1).unwrap_or(0),
+        "[{label}] committed token did not reach the written page's token — \
+         run_stream could not skip the replay and would re-write the page"
     );
 
     // Forward progress with a new token still writes.

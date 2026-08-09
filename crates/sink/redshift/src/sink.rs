@@ -180,11 +180,33 @@ impl RedshiftSink {
             return Ok(0);
         }
 
+        // Drop records that share *no* column with the table. `present` is the
+        // union of table columns across the page, so binding such a record would
+        // emit an all-NULL row rather than the data the caller sent — the DuckDB
+        // and SQLite sinks skip it, and so do we (#466 L1). A record with at
+        // least one matching column is still inserted (missing columns → NULL).
+        let insertable: Vec<&Value> = records
+            .iter()
+            .filter(|r| crate::copy::shares_a_column(r, &present))
+            .collect();
+        let skipped = records.len() - insertable.len();
+        if skipped > 0 {
+            tracing::warn!(
+                table = %self.config.table_name,
+                skipped,
+                "redshift: skipped record(s) with no column matching the table \
+                 (would have inserted an all-NULL row)"
+            );
+        }
+        if insertable.is_empty() {
+            return Ok(0);
+        }
+
         let num_cols = present.len();
         let max_rows = (MAX_REDSHIFT_PARAMS / num_cols).max(1);
         let mut total = 0usize;
 
-        for sub in records.chunks(max_rows) {
+        for sub in insertable.chunks(max_rows) {
             let sql = insert_statement(&self.table_ref(), &present, sub.len());
             let mut q = sqlx::query(&sql);
             for record in sub {

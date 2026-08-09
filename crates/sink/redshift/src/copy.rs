@@ -112,6 +112,16 @@ pub(crate) fn columns_present<'a>(
         .collect()
 }
 
+/// Whether `record` (a JSON object) has at least one key matching a column in
+/// `present`. A record that shares no column with the table carries nothing for
+/// this destination; binding it would emit an all-NULL row, so the INSERT path
+/// skips it (#466 L1). A non-object never shares a column.
+pub(crate) fn shares_a_column(record: &Value, present: &[String]) -> bool {
+    record
+        .as_object()
+        .is_some_and(|o| present.iter().any(|c| o.contains_key(c.as_str())))
+}
+
 /// Serialize records as newline-delimited JSON (JSONL) bytes for `FORMAT AS
 /// JSON 'auto'`.
 pub(crate) fn serialize_jsonl(records: &[Value]) -> Result<Vec<u8>, FaucetError> {
@@ -269,6 +279,19 @@ mod tests {
             present.into_iter().cloned().collect::<Vec<_>>(),
             vec!["id".to_string(), "name".to_string(), "email".to_string()]
         );
+    }
+
+    #[test]
+    fn shares_a_column_detects_overlap_and_its_absence() {
+        let cols = vec!["id".to_string(), "name".to_string()];
+        assert!(shares_a_column(&json!({"id": 1}), &cols));
+        assert!(shares_a_column(&json!({"name": "x", "extra": 9}), &cols));
+        // No overlap → skipped (would otherwise be an all-NULL row, #466 L1).
+        assert!(!shares_a_column(&json!({"unrelated": 1}), &cols));
+        assert!(!shares_a_column(&json!({}), &cols));
+        // A non-object never shares a column.
+        assert!(!shares_a_column(&json!(42), &cols));
+        assert!(!shares_a_column(&json!(null), &cols));
     }
 
     #[test]
