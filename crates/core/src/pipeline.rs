@@ -996,8 +996,19 @@ where
                                         version: c.version.clone(),
                                         message: vr.violation.describe(),
                                     };
-                                    // `record_index` is the position within the PAGE
-                                    // (the frozen envelope contract).
+                                    // `record_index` must be the position within the
+                                    // original PAGE (the frozen envelope contract).
+                                    // `vr.violation.page_index` is the position within
+                                    // *this pass's input* — the quality survivors —
+                                    // which is aligned with `page_indices`, so translate
+                                    // through it. Without this, an earlier quality
+                                    // quarantine on the same page shifts every contract
+                                    // envelope's index by the count of quality-removed
+                                    // rows (#466 M1).
+                                    let page_index = page_indices
+                                        .get(vr.violation.page_index)
+                                        .copied()
+                                        .unwrap_or(vr.violation.page_index);
                                     build_envelope(
                                         &vr.record,
                                         &err,
@@ -1005,7 +1016,7 @@ where
                                         sink_name,
                                         &pipeline_name,
                                         &row,
-                                        vr.violation.page_index,
+                                        page_index,
                                     )
                                 })
                                 .collect();
@@ -4125,6 +4136,28 @@ mod tests {
         assert!(kinds.contains(&"QualityFailure"), "kinds: {kinds:?}");
         assert!(kinds.contains(&"ContractViolation"), "kinds: {kinds:?}");
         assert_eq!(result.dlq.unwrap().records_dlq, 2);
+
+        // #466 M1: the contract envelope's `record_index` must be the position in
+        // the ORIGINAL page (1 — the `"bad"` record), not its position within the
+        // quality-survivor slice (0, after the null id at page-index 0 was
+        // removed). Before the fix this reported 0, silently pointing DLQ readers
+        // at the wrong original row whenever quality also quarantined earlier.
+        let contract_env = dlq
+            .iter()
+            .find(|e| e["error"]["kind"] == "ContractViolation")
+            .expect("a contract envelope");
+        assert_eq!(
+            contract_env["record_index"], 1,
+            "contract record_index must be the original page position: {contract_env}"
+        );
+        let quality_env = dlq
+            .iter()
+            .find(|e| e["error"]["kind"] == "QualityFailure")
+            .expect("a quality envelope");
+        assert_eq!(
+            quality_env["record_index"], 0,
+            "null id was at page index 0"
+        );
     }
 
     /// Sink whose write_batch_partial fails every Nth record; drives the

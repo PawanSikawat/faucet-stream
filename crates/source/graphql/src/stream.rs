@@ -110,6 +110,7 @@ impl GraphqlStream {
         let mut cursor: Option<String> = None;
         let mut pages_fetched = 0usize;
         let mut warned_unresolved_has_next = false;
+        let mut cursor_guard = CursorGuard::new();
 
         loop {
             if let Some(max) = self.config.max_pages
@@ -142,7 +143,15 @@ impl GraphqlStream {
                             tracing::warn!("cursor loop detected, stopping pagination");
                             break;
                         }
-                        PageStep::Advance(next) => cursor = Some(next),
+                        PageStep::Advance(next) => {
+                            if cursor_guard.is_repeat(&next) {
+                                tracing::warn!(
+                                    "cursor cycle detected (cursor already seen), stopping pagination"
+                                );
+                                break;
+                            }
+                            cursor = Some(next);
+                        }
                     }
                 }
                 None => break,
@@ -344,6 +353,7 @@ impl GraphqlStream {
 
         Box::pin(async_stream::try_stream! {
             let mut cursor: Option<String> = None;
+            let mut cursor_guard = CursorGuard::new();
             let mut pages_fetched = 0usize;
             let mut warned_unresolved_has_next = false;
             // No incremental replication today — `running_max` stays `None`.
@@ -386,8 +396,15 @@ impl GraphqlStream {
                                 false
                             }
                             PageStep::Advance(next) => {
-                                cursor = Some(next);
-                                true
+                                if cursor_guard.is_repeat(&next) {
+                                    tracing::warn!(
+                                        "cursor cycle detected (cursor already seen), stopping pagination"
+                                    );
+                                    false
+                                } else {
+                                    cursor = Some(next);
+                                    true
+                                }
                             }
                         }
                     }
@@ -515,6 +532,49 @@ fn decide_next_page(
         None => (PageStep::Stop, unresolved),
         Some(next) if Some(next.as_str()) == prev_cursor => (PageStep::StopLoop, unresolved),
         Some(next) => (PageStep::Advance(next), unresolved),
+    }
+}
+
+/// Bounded record of recently-advanced pagination cursors.
+///
+/// [`decide_next_page`] only compares against the *immediately previous* cursor,
+/// so a server that returns `hasNextPage: true` while cycling its cursor across
+/// two or more values (`c1→c2→c1→c2…`) would never trip that guard and — with
+/// `max_pages` unset — paginate forever, re-emitting the same pages (#466 M2).
+/// This catches any such cycle by remembering the cursors already seen.
+///
+/// Bounded to [`Self::CAP`] entries so the streaming path keeps its O(page)
+/// memory guarantee on a legitimately large result set (whose cursors are all
+/// distinct, so eviction never causes a false positive). A cycle length beyond
+/// the cap is not realistic for a real endpoint.
+struct CursorGuard {
+    seen: HashMap<String, ()>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl CursorGuard {
+    const CAP: usize = 4096;
+
+    fn new() -> Self {
+        Self {
+            seen: HashMap::new(),
+            order: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// Record `cursor`; return `true` if it had already been seen (a cycle).
+    fn is_repeat(&mut self, cursor: &str) -> bool {
+        if self.seen.contains_key(cursor) {
+            return true;
+        }
+        if self.order.len() >= Self::CAP
+            && let Some(old) = self.order.pop_front()
+        {
+            self.seen.remove(&old);
+        }
+        self.seen.insert(cursor.to_string(), ());
+        self.order.push_back(cursor.to_string());
+        false
     }
 }
 
@@ -694,5 +754,28 @@ mod tests {
         .with_retry_policy(policy);
         assert_eq!(stream.retry_policy.max_attempts, 9);
         assert_eq!(stream.retry_policy.base, Duration::from_secs(7));
+    }
+
+    #[test]
+    fn cursor_guard_detects_repeats_and_bounds_memory() {
+        let mut g = CursorGuard::new();
+        assert!(!g.is_repeat("a"));
+        assert!(!g.is_repeat("b"));
+        // Any earlier cursor repeating is a cycle, not just the adjacent one.
+        assert!(g.is_repeat("a"));
+        assert!(g.is_repeat("b"));
+
+        // Bounded: after CAP distinct cursors, the oldest is evicted, so the
+        // set never grows without bound on a legitimately large pagination.
+        let mut g = CursorGuard::new();
+        for i in 0..CursorGuard::CAP {
+            assert!(!g.is_repeat(&format!("c{i}")));
+        }
+        assert_eq!(g.order.len(), CursorGuard::CAP);
+        // One more distinct cursor evicts the oldest ("c0").
+        assert!(!g.is_repeat("overflow"));
+        assert_eq!(g.order.len(), CursorGuard::CAP);
+        assert!(!g.seen.contains_key("c0"), "oldest cursor evicted");
+        assert!(g.seen.contains_key("overflow"));
     }
 }
