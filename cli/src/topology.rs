@@ -63,7 +63,7 @@ impl TopologyRunOptions {
 /// Empty — every top-level block is now applied to a node graph: the per-page
 /// governance passes and `resilience:` per sink node (#456 C3), and `sla:` /
 /// `notifications:` / `lineage:` / `catalog:` per sink node in
-/// [`post_run_observability`] (#459).
+/// `post_run_observability` (#459).
 ///
 /// The mechanism is kept deliberately. A declared-but-inert block is the worst
 /// kind of silence — the operator believes a guarantee is in force when nothing
