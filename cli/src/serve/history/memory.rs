@@ -269,7 +269,12 @@ impl RunHistory for MemoryHistory {
     async fn catalog_record(&self, update: &CatalogUpdate) -> Result<(), HistoryError> {
         let lock_err = |_| HistoryError::Backend("catalog lock poisoned".into());
         let mut cat = self.catalog.lock().map_err(lock_err)?;
-        for obs in [&update.source, &update.sink] {
+        // A dataset id may appear twice in one update — e.g. a source whose URI
+        // canonicalizes to the sink's. The SQL backends dedup a stats point on
+        // its `(dataset_id, recorded_at)` PK, so record each id at most once per
+        // update here too, or the two backends' volume timelines diverge (#466 L2).
+        let mut stat_ids_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for obs in update.sources.iter().chain(std::iter::once(&update.sink)) {
             let id = catalog::dataset_id(&obs.uri);
             let (ds, new_version) = catalog::apply_observation(
                 cat.datasets.get(&id),
@@ -282,24 +287,34 @@ impl RunHistory for MemoryHistory {
             if let Some(v) = new_version {
                 cat.schema_versions.entry(id.clone()).or_default().push(v);
             }
-            let points = cat.stats.entry(id.clone()).or_default();
-            points.push(CatalogStatsPoint {
-                recorded_at: update.recorded_at,
-                run_id: update.run_id.clone(),
-                records: obs.records,
-            });
-            if points.len() > catalog::STATS_RETAIN {
-                let drop_n = points.len() - catalog::STATS_RETAIN;
-                points.drain(..drop_n);
+            if stat_ids_seen.insert(id.clone()) {
+                let points = cat.stats.entry(id.clone()).or_default();
+                points.push(CatalogStatsPoint {
+                    recorded_at: update.recorded_at,
+                    run_id: update.run_id.clone(),
+                    records: obs.records,
+                });
+                if points.len() > catalog::STATS_RETAIN {
+                    let drop_n = points.len() - catalog::STATS_RETAIN;
+                    points.drain(..drop_n);
+                }
             }
             cat.datasets.insert(id, ds);
         }
-        let key = (
-            catalog::dataset_id(&update.source.uri),
-            catalog::dataset_id(&update.sink.uri),
-        );
-        let edge = catalog::apply_edge(cat.edges.get(&key), update);
-        cat.edges.insert(key, edge);
+        // One edge per input dataset — a merge/join sink has several (#459). Read
+        // every edge's prior state from a pre-loop snapshot, matching the SQL
+        // backends' single `catalog_all_edges()` read: two source nodes sharing a
+        // URI collapse to one edge that must be advanced *once*, not once per node
+        // (#466 L2).
+        let edges_before = cat.edges.clone();
+        for source in &update.sources {
+            let key = (
+                catalog::dataset_id(&source.uri),
+                catalog::dataset_id(&update.sink.uri),
+            );
+            let edge = catalog::apply_edge(edges_before.get(&key), update, source);
+            cat.edges.insert(key, edge);
+        }
         Ok(())
     }
 
@@ -332,18 +347,21 @@ impl RunHistory for MemoryHistory {
         let mut stats: Vec<CatalogStatsPoint> = cat.stats.get(id).cloned().unwrap_or_default();
         stats.reverse(); // newest first
         stats.truncate(catalog::STATS_DETAIL_LIMIT);
-        let upstream = cat
-            .edges
-            .values()
-            .filter(|e| e.dst_id == id)
-            .cloned()
-            .collect();
-        let downstream = cat
-            .edges
-            .values()
-            .filter(|e| e.src_id == id)
-            .cloned()
-            .collect();
+        // Match the SQL backends exactly: order all edges deterministically
+        // (`last_seen DESC, src_id, dst_id`), then partition by `src_id == id` so
+        // downstream owns any self-loop and upstream is the rest touching `id`.
+        // A `HashMap`-order scan with two independent filters instead put a
+        // self-loop in *both* lists and returned edges in nondeterministic order
+        // (#466 L2).
+        let mut all: Vec<CatalogLineageEdge> = cat.edges.values().cloned().collect();
+        all.sort_by(|a, b| {
+            b.last_seen
+                .cmp(&a.last_seen)
+                .then_with(|| a.src_id.cmp(&b.src_id))
+                .then_with(|| a.dst_id.cmp(&b.dst_id))
+        });
+        let (downstream, rest): (Vec<_>, Vec<_>) = all.into_iter().partition(|e| e.src_id == id);
+        let upstream = rest.into_iter().filter(|e| e.dst_id == id).collect();
         Ok(Some(CatalogDatasetDetail {
             dataset,
             schema_timeline,
@@ -964,13 +982,13 @@ mod tests {
             pipeline: "p".into(),
             row: "default".into(),
             recorded_at: Utc::now(),
-            source: DatasetObservation {
+            sources: vec![DatasetObservation {
                 uri: src.into(),
                 kind: "csv".into(),
                 role: DatasetRole::Source,
                 schema: schema.clone(),
                 records: 10,
-            },
+            }],
             sink: DatasetObservation {
                 uri: dst.into(),
                 kind: "jsonl".into(),
@@ -980,6 +998,32 @@ mod tests {
             },
             column_lineage: None,
         }
+    }
+
+    #[tokio::test]
+    async fn catalog_source_equal_sink_dedups_stats_and_self_loop() {
+        // #466 L2: when a source URI canonicalizes to the sink's, the memory
+        // backend must behave like the SQL backends — one stats point per
+        // (id, recorded_at), and the resulting self-loop edge in `downstream`
+        // only, not both lists.
+        let h = MemoryHistory::new(Duration::from_secs(3600));
+        let uri = "file:///same/path.jsonl";
+        h.catalog_record(&catalog_update(uri, uri, None))
+            .await
+            .unwrap();
+
+        let id = crate::serve::history::catalog::dataset_id(uri);
+        let detail = h.catalog_get_dataset(&id).await.unwrap().expect("dataset");
+        assert_eq!(
+            detail.stats.len(),
+            1,
+            "source==sink id must record one stats point, not two"
+        );
+        assert_eq!(detail.downstream.len(), 1, "self-loop edge is downstream");
+        assert!(
+            detail.upstream.is_empty(),
+            "a self-loop must not also appear as upstream"
+        );
     }
 
     #[tokio::test]
