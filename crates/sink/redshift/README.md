@@ -12,7 +12,9 @@ Redshift speaks the PostgreSQL wire protocol, so the sink connects through
   path.
 - **`insert`** — multi-row `INSERT INTO … VALUES (…), (…)`. Portable and needs
   no S3, but slower for bulk data. Sub-chunked to respect Redshift's bind-param
-  limit.
+  limit. Columns are the union of table columns present across the page; a
+  record that shares *no* column with the table is skipped (with a warning)
+  rather than inserted as an all-NULL row.
 
 Append-only: Redshift has no `ON CONFLICT`, and `COPY` cannot upsert, so
 `supported_write_modes()` is `[Append]`.

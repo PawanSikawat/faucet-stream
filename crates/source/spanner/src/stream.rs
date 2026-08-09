@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use faucet_common_spanner::decode::row_to_json;
+use faucet_common_spanner::decode::{column_is_numeric, row_to_json};
 use faucet_common_spanner::quote_ident_spanner;
 use faucet_common_spanner::types::{parse_spanner_type, spanner_type_to_json_schema};
 use faucet_core::replication::{filter_incremental, max_replication_value, max_value};
@@ -317,7 +317,24 @@ impl Source for SpannerSource {
                 .await
                 .map_err(|e| FaucetError::Source(format!("spanner: row stream failed: {e}")))?
             {
+                let first_page = fields.is_none();
                 let fields = fields.get_or_insert_with(|| iter.columns_metadata().clone());
+                // Fail loud on a NUMERIC incremental cursor rather than advancing
+                // a lexicographically-ordered bookmark and silently skipping or
+                // re-reading rows (#466 L3). Checked once, when the metadata
+                // first arrives.
+                if first_page
+                    && let Some(ctx) = incr.as_ref()
+                    && column_is_numeric(fields, &ctx.column)
+                {
+                    Err(FaucetError::Config(format!(
+                        "spanner: incremental cursor column `{}` is NUMERIC, which decodes to a \
+                         string and orders lexicographically (\"9\" > \"10\"), producing an \
+                         incorrect bookmark that skips or re-reads rows. Use an INT64 or \
+                         TIMESTAMP/DATE cursor column instead.",
+                        ctx.column
+                    )))?;
+                }
                 let record = row_to_json(&row, fields)
                     .map_err(|e| FaucetError::Source(format!("spanner: row decode failed: {e}")))?;
                 buffer.push(record);

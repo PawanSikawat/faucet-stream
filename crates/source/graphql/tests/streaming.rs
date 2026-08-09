@@ -469,3 +469,45 @@ async fn stuck_cursor_stops_without_extra_duplicate_page() {
     assert_eq!(hits.load(Ordering::SeqCst), 2, "must stop after 2 requests");
     assert_eq!(records.len(), 2);
 }
+
+/// #466 M2: a server that cycles its cursor across *two* values
+/// (`c1→c2→c1→c2…`) while always claiming `hasNextPage: true` must still
+/// terminate. The old guard compared only against the immediately-previous
+/// cursor, so this cycle evaded it and — with `max_pages` unset — looped
+/// forever, re-emitting the same pages. Wrapped in a timeout so a regression
+/// fails the test instead of hanging it.
+#[tokio::test]
+async fn multi_cursor_cycle_terminates() {
+    let server = MockServer::start().await;
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hits_resp = hits.clone();
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(move |req: &Request| {
+            hits_resp.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // None→c1, c1→c2, c2→c1, … always hasNextPage:true.
+            let next = match request_cursor(req).as_deref() {
+                None | Some("c2") => "c1",
+                Some("c1") => "c2",
+                other => panic!("unexpected cursor {other:?}"),
+            };
+            ResponseTemplate::new(200).set_body_json(make_page(0, 1, Some(next)))
+        })
+        .mount(&server)
+        .await;
+
+    let source = GraphqlStream::new(relay_config(&server, 10));
+    let records = tokio::time::timeout(std::time::Duration::from_secs(10), source.fetch_all())
+        .await
+        .expect("must terminate, not loop forever")
+        .expect("fetch_all ok");
+
+    // Pages: None→c1 (record 1), c1→c2 (record 2), c2→c1 — c1 already seen ⇒
+    // stop. Three requests, two records; never unbounded.
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "stops when a cursor repeats"
+    );
+    assert_eq!(records.len(), 3);
+}

@@ -49,6 +49,22 @@ fn type_code(ty: Option<&Type>) -> TypeCode {
         .unwrap_or(TypeCode::Unspecified)
 }
 
+/// Whether the named column in a result's metadata is Spanner `NUMERIC`.
+///
+/// The source uses this to reject an incremental-replication cursor on a NUMERIC
+/// column: NUMERIC decodes to a JSON *string* (to preserve precision), so the
+/// generic replication comparison orders it lexicographically (`"9" > "10"`),
+/// which would advance the bookmark incorrectly and skip or re-read rows. INT64
+/// (JSON number) and TIMESTAMP/DATE (RFC-3339 string, lexicographic == chrono)
+/// cursors are unaffected. Checked once the first page's metadata is known.
+pub fn column_is_numeric(fields: &[Field], name: &str) -> bool {
+    fields
+        .iter()
+        .find(|f| f.name == name)
+        .map(|f| type_code(f.r#type.as_ref()) == TypeCode::Numeric)
+        .unwrap_or(false)
+}
+
 /// Decode one protobuf value with its (possibly absent) Spanner type.
 pub fn decode_value(
     value: &prost_types::Value,
@@ -166,6 +182,25 @@ mod tests {
             struct_type: None,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn column_is_numeric_only_flags_numeric_columns() {
+        let field = |name: &str, code: TypeCode| Field {
+            name: name.to_string(),
+            r#type: Some(ty(code)),
+        };
+        let fields = vec![
+            field("id", TypeCode::Int64),
+            field("amount", TypeCode::Numeric),
+            field("updated_at", TypeCode::Timestamp),
+        ];
+        // Only the NUMERIC column is flagged (the #466 L3 cursor guard).
+        assert!(column_is_numeric(&fields, "amount"));
+        assert!(!column_is_numeric(&fields, "id"));
+        assert!(!column_is_numeric(&fields, "updated_at"));
+        // An unknown column is not numeric (and must not panic).
+        assert!(!column_is_numeric(&fields, "nope"));
     }
 
     #[test]
