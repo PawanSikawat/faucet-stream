@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.3.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-source-xml-v1.2.5...faucet-source-xml-v1.3.0) - 2026-08-09
+
+### Features
+
+- *(conformance,xml)* Registry-allowlist parity + capability matrix ([#465](https://github.com/faucet-hq/faucet-stream/pull/465)), soap: ergonomics block ([#468](https://github.com/faucet-hq/faucet-stream/pull/468)) ([#469](https://github.com/faucet-hq/faucet-stream/pull/469))
+
+### Testing
+
+- *(conformance)* Adopt the new capability checks across all connectors ([#470](https://github.com/faucet-hq/faucet-stream/pull/470))
+
 ## [1.2.4](https://github.com/faucet-hq/faucet-stream/compare/faucet-source-xml-v1.2.3...faucet-source-xml-v1.2.4) - 2026-07-24
 
 ### Miscellaneous

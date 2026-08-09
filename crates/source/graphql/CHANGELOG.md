@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.2.6](https://github.com/faucet-hq/faucet-stream/compare/faucet-source-graphql-v1.2.5...faucet-source-graphql-v1.2.6) - 2026-08-09
+
+### Bug Fixes
+
+- Resolve third-pass audit findings (contract DLQ index, GraphQL cycle guard, redshift null-row, spanner NUMERIC cursor) ([#467](https://github.com/faucet-hq/faucet-stream/pull/467))
+
+### Testing
+
+- *(conformance)* Adopt the new capability checks across all connectors ([#470](https://github.com/faucet-hq/faucet-stream/pull/470))
+
 ## [1.2.4](https://github.com/faucet-hq/faucet-stream/compare/faucet-source-graphql-v1.2.3...faucet-source-graphql-v1.2.4) - 2026-07-24
 
 ### Miscellaneous
