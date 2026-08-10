@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.8.1](https://github.com/faucet-hq/faucet-stream/compare/faucet-cli-v1.8.0...faucet-cli-v1.8.1) - 2026-08-10
+
+### Miscellaneous
+
+- Updated the following local packages: faucet-source-postgres, faucet-source-mysql, faucet-source-mssql, faucet-source-gcs, faucet-source-s3, faucet-source-mongodb, faucet-source-sqlite, faucet-source-elasticsearch, faucet-source-bigquery, faucet-source-snowflake, faucet-source-spanner, faucet-sink-gcs, faucet-sink-s3
+
 ## [1.8.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-cli-v1.7.1...faucet-cli-v1.8.0) - 2026-08-09
 
 ### Bug Fixes
