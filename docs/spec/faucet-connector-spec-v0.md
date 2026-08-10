@@ -169,6 +169,19 @@ checks against the real connector and passing them in CI:
 | 4 | `assert_idempotent_replay` | idempotent / keyed-upsert sinks |
 | 5 | `assert_capabilities_truthful` | every sink |
 | 6 | `assert_errors_not_panics` | every source |
+| 7 | `assert_write_modes_truthful` | sinks advertising `Upsert` / `Delete` |
+| 8 | `assert_schema_evolution_effective` | schema-evolving sinks |
+| 9 | `assert_batch_size_zero_single_page` | sources honoring the `batch_size = 0` sentinel |
+| 10 | `assert_connector_name_nonempty` | every source & sink |
+| 11 | `assert_preflight_check_wellformed` | every source & sink with a `check()` probe |
+| 12 | `assert_discover_roundtrips` *(integration)* | discoverable sources (`supports_discover`) |
+| 13 | `assert_cancellation_flushes` *(integration)* | buffered sinks / the pipeline (#146 H16) |
+
+Checks 12–13 are **integration-level**: they drive a live backend (a rebuilt
+source reading a discovered dataset) or the real `run_stream` (a mid-run
+cancellation that must flush), so they live in a connector's
+testcontainers/tempfile conformance test rather than against the synthetic
+doubles.
 
 Where a connector legitimately cannot satisfy a check (e.g. an append-only sink
 has no idempotency mechanism), it asserts the **honest branch** instead — the
