@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.3.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-conformance-v1.2.0...faucet-conformance-v1.3.0) - 2026-08-10
+
+### Features
+
+- *(conformance)* Add discover-roundtrip and cancellation-flush integration checks ([#472](https://github.com/faucet-hq/faucet-stream/pull/472))
+
 ## [1.2.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-conformance-v1.1.2...faucet-conformance-v1.2.0) - 2026-08-09
 
 ### Bug Fixes

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.5.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-source-sqlite-v1.4.3...faucet-source-sqlite-v1.5.0) - 2026-08-10
+
+### Features
+
+- *(conformance)* Add discover-roundtrip and cancellation-flush integration checks ([#472](https://github.com/faucet-hq/faucet-stream/pull/472))
+
 ## [1.4.3](https://github.com/faucet-hq/faucet-stream/compare/faucet-source-sqlite-v1.4.2...faucet-source-sqlite-v1.4.3) - 2026-08-09
 
 ### Bug Fixes
