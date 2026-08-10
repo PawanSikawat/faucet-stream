@@ -62,7 +62,12 @@
         startOnLoad: true,
         theme: 'base',
         themeVariables: lastThemeWasLight ? lightVars : darkVars,
-        flowchart: { htmlLabels: true, padding: 12, useMaxWidth: true, nodeSpacing: 36, rankSpacing: 44 },
+        // useMaxWidth:false → mermaid emits a natural-width SVG instead of one
+        // shrunk to the column. Long left-to-right pipelines (8–9 nodes) then
+        // stay legible and scroll horizontally inside their box (see the
+        // `.content .mermaid` overflow-x rule) rather than collapsing into an
+        // unreadable thin strip.
+        flowchart: { htmlLabels: true, padding: 12, useMaxWidth: false, nodeSpacing: 36, rankSpacing: 44 },
     });
 
     // Re-render diagrams in the new palette when the reader switches theme.

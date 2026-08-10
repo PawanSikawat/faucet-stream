@@ -199,7 +199,11 @@ mark {
   overflow-x: auto;
 }
 .content .mermaid svg {
-  max-width: 100%;
+  /* Render at natural size (paired with mermaid's useMaxWidth:false); the
+     enclosing .mermaid box caps width at 100% and scrolls horizontally, so a
+     long left-to-right pipeline stays legible instead of being shrunk to a
+     thin, unreadable strip. */
+  max-width: none;
   height: auto;
 }
 
