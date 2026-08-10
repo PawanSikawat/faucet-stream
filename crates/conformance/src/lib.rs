@@ -44,6 +44,14 @@
 //! 11. [`assert_preflight_check_wellformed`] — `check()` returns `Ok(CheckReport)`
 //!     with well-formed probes; a probe failure is a `Fail` probe, not an `Err`.
 //!
+//! Integration-level checks — these drive a live backend / the real pipeline,
+//! so they belong in a connector's testcontainers/tempfile conformance test
+//! (not the synthetic unit doubles):
+//! 12. [`assert_discover_roundtrips`] — a source's `discover()` descriptors are
+//!     genuinely selectable: deep-merge each `config_patch`, rebuild, and read.
+//! 13. [`assert_cancellation_flushes`] — a mid-run cancel stops at a page
+//!     boundary and flushes the sink, so buffered output survives (#146 H16).
+//!
 //! Each check has both a passing and a `#[should_panic]` failing test in this
 //! crate — a check that cannot fail is worthless.
 
@@ -810,13 +818,175 @@ fn assert_report_wellformed(
     }
 }
 
+// ── Check 12: discovery round-trips (discoverable sources) ────────────────────
+
+/// Deep-merge a discovery `config_patch` onto a base config `Value` and return
+/// the merged config — objects merge recursively, scalars and arrays replace
+/// wholesale. This mirrors the deep-merge the CLI applies when it turns a
+/// [`DatasetDescriptor`](faucet_core::DatasetDescriptor) into a matrix row, so a
+/// `rebuild` closure for [`assert_discover_roundtrips`] can compose the patch
+/// onto the real base config exactly as production does:
+///
+/// ```
+/// use faucet_conformance::merge_config_patch;
+/// use serde_json::json;
+/// let base = json!({ "url": "…", "query": "SELECT 1" });
+/// let merged = merge_config_patch(base, &json!({ "query": "SELECT * FROM t" }));
+/// assert_eq!(merged["query"], "SELECT * FROM t");
+/// assert_eq!(merged["url"], "…");
+/// ```
+pub fn merge_config_patch(mut base: Value, patch: &Value) -> Value {
+    merge_into(&mut base, patch);
+    base
+}
+
+fn merge_into(base: &mut Value, patch: &Value) {
+    match (base, patch) {
+        (Value::Object(base_map), Value::Object(patch_map)) => {
+            for (k, v) in patch_map {
+                merge_into(base_map.entry(k.clone()).or_insert(Value::Null), v);
+            }
+        }
+        (base_slot, patch) => *base_slot = patch.clone(),
+    }
+}
+
+/// **Check 12.** For a source that advertises
+/// [`supports_discover`](Source::supports_discover): enumerate its datasets via
+/// [`discover`](Source::discover), then for each descriptor deep-merge its
+/// [`config_patch`](faucet_core::DatasetDescriptor::config_patch) onto the base
+/// config (via the caller's `rebuild` closure) and assert the rebuilt source is
+/// actually readable — the dataset the catalog advertised is genuinely
+/// selectable end-to-end, not just a name in a list.
+///
+/// This is an **integration-level** check: it needs a live, seeded backend so
+/// `discover()` returns real descriptors and the rebuilt source reads real (or
+/// legitimately empty) data. Run it in a connector's testcontainers/tempfile
+/// conformance test, reusing the already-seeded backend. `rebuild` receives the
+/// descriptor's `config_patch` and returns the source built from
+/// `base config ⊕ patch` — [`merge_config_patch`] writes that closure in one
+/// line.
+///
+/// Asserts: the source advertises discovery; `discover()` returns at least one
+/// descriptor (a seeded backend must expose something — an empty catalog makes
+/// the round-trip vacuous); and every rebuilt source drains through
+/// `stream_pages` **without error** (≥ 0 rows — the selected dataset may be
+/// legitimately empty, but selecting it must not fail).
+pub async fn assert_discover_roundtrips<S, F, Fut>(source: &S, rebuild: F)
+where
+    S: Source + ?Sized,
+    F: Fn(Value) -> Fut,
+    Fut: std::future::Future<Output = Box<dyn Source>>,
+{
+    let label = source.connector_name();
+    assert!(
+        source.supports_discover(),
+        "[{label}] does not advertise discovery (supports_discover()=false) — call this only \
+         on a discoverable source"
+    );
+
+    let descriptors = source
+        .discover()
+        .await
+        .unwrap_or_else(|e| panic!("[{label}] discover() errored: {e}"));
+    assert!(
+        !descriptors.is_empty(),
+        "[{label}] discover() returned no datasets — seed the backend before the round-trip so \
+         there is a real dataset to re-select (an empty catalog makes the check vacuous)"
+    );
+
+    for descriptor in &descriptors {
+        let patch = descriptor.config_patch.clone();
+        let rebuilt = rebuild(patch.clone()).await;
+        // Drive the real read path of the rebuilt source. The dataset selected
+        // by the patch must be readable; it may legitimately hold zero rows.
+        let ctx: HashMap<String, Value> = HashMap::new();
+        let mut stream = rebuilt.stream_pages(&ctx, 100);
+        while let Some(page) = stream.next().await {
+            page.unwrap_or_else(|e| {
+                panic!(
+                    "[{label}] rebuilt source for dataset `{}` (config_patch {patch}) errored on \
+                     read: {e} — the descriptor the catalog advertised is not actually selectable",
+                    descriptor.name
+                )
+            });
+        }
+    }
+}
+
+// ── Check 13: cancellation flushes buffered output ────────────────────────────
+
+/// **Check 13.** Assert the flush-completing cancellation contract
+/// ([ADR 0011](https://github.com/faucet-hq/faucet-stream/blob/main/docs/adr/0011-cooperative-cancellation.md),
+/// #146 H16): a [`CancellationToken`](faucet_core::CancellationToken) fired
+/// mid-run stops [`run_stream`](faucet_core::run_stream) at the next page
+/// boundary, **flushes the sink** so buffered output is made durable, and
+/// returns `Ok` with the partial result — as opposed to dropping the run
+/// future, which would flush nothing and orphan a buffered sink's output (a
+/// Parquet footer, an S3 multipart).
+///
+/// Drives the **real** `faucet_core::run_stream` with a synthetic source that
+/// yields one page and then cancels the token (deterministic — no timers, no
+/// flakiness). `durable_count` reports the number of rows the sink has made
+/// **durable** (for [`BufferedSink`](doubles::BufferedSink),
+/// `|| async { sink.durable_len() }`; for a real buffered sink, whatever a
+/// reader observes *after* the run). Asserts `run_stream` returned `Ok`, the
+/// partial result counts the written page, and every written row is durable —
+/// i.e. the cancel path flushed. A sink whose `flush` does not commit fails
+/// here, as does a pipeline that skips the on-cancel flush.
+pub async fn assert_cancellation_flushes<S, F, Fut>(sink: &S, durable_count: F)
+where
+    S: Sink + ?Sized,
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = usize>,
+{
+    use faucet_core::{CancellationToken, RunStreamOptions, StreamPage, run_stream};
+
+    let label = sink.connector_name();
+    let before = durable_count().await;
+
+    let page = rows(&[1, 2, 3]);
+    let n = page.len();
+
+    let token = CancellationToken::new();
+    let stream_token = token.clone();
+    // Yield one page, then fire the token and block. The only way `run_stream`
+    // exits is the cooperative cancel at the page boundary — so the flush it
+    // performs there is exactly the #146 H16 behaviour under test.
+    let stream = Box::pin(async_stream::stream! {
+        yield Ok(StreamPage { records: page, bookmark: None });
+        stream_token.cancel();
+        futures::future::pending::<()>().await;
+    });
+
+    let result = run_stream(stream, sink, RunStreamOptions::new().with_cancel(token))
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "[{label}] a cooperative cancel must return Ok with the partial result, got \
+                 Err({e})"
+            )
+        });
+    assert_eq!(
+        result.records_written, n,
+        "[{label}] the page written before cancellation is not counted in the partial result"
+    );
+
+    let durable = durable_count().await - before;
+    assert_eq!(
+        durable, n,
+        "[{label}] the sink was not flushed on the cancel path: {durable} of {n} written rows \
+         are durable — buffered output would be lost when a run is cancelled"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use doubles::{
-        CountingSource, EmptyNameSource, ErringCheckSink, ErringCheckSource, EvolvingSink,
-        FailingSource, LyingIdempotentSink, LyingKeyedSink, MultiPageZeroSource, NoOpEvolvingSink,
-        PanickingSource, TestSink,
+        BufferedSink, CountingSource, DiscoverableSource, EmptyNameSource, ErringCheckSink,
+        ErringCheckSource, EvolvingSink, FailingSource, LyingIdempotentSink, LyingKeyedSink,
+        MultiPageZeroSource, NoOpEvolvingSink, PanickingSource, TestSink,
     };
 
     #[test]
@@ -1111,5 +1281,107 @@ mod tests {
     async fn check11_fails_when_sink_check_returns_err() {
         let ctx = faucet_core::check::CheckContext::default();
         assert_sink_preflight_check_wellformed(&ErringCheckSink, &ctx).await;
+    }
+
+    // ── merge_config_patch ────────────────────────────────────────────────────
+
+    #[test]
+    fn merge_config_patch_is_recursive_with_scalar_and_array_replace() {
+        let base = serde_json::json!({
+            "url": "keep",
+            "query": "SELECT 1",
+            "opts": { "a": 1, "b": 2 },
+            "keys": [1, 2, 3],
+        });
+        let merged = merge_config_patch(
+            base,
+            &serde_json::json!({
+                "query": "SELECT * FROM t",   // scalar replace
+                "opts": { "b": 9, "c": 3 },   // recursive object merge
+                "keys": [7],                    // array replaces wholesale
+            }),
+        );
+        assert_eq!(merged["url"], "keep");
+        assert_eq!(merged["query"], "SELECT * FROM t");
+        assert_eq!(
+            merged["opts"],
+            serde_json::json!({ "a": 1, "b": 9, "c": 3 })
+        );
+        assert_eq!(merged["keys"], serde_json::json!([7]));
+    }
+
+    // ── Check 12: discovery round-trips ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn check12_passes_when_every_dataset_rebuilds_and_reads() {
+        let source = DiscoverableSource::new();
+        assert_discover_roundtrips(&source, |patch| async move {
+            // The patch selects a dataset; a real adopter would deep-merge it
+            // onto the base config and rebuild. Here the rebuilt source just
+            // reads a small, healthy set.
+            let name = patch["dataset"].as_str().unwrap_or("");
+            assert!(!name.is_empty(), "config_patch must carry the dataset");
+            Box::new(CountingSource::new(3, 1)) as Box<dyn Source>
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "does not advertise discovery")]
+    async fn check12_fails_for_a_non_discoverable_source() {
+        let source = CountingSource::new(3, 1);
+        assert_discover_roundtrips(&source, |_patch| async {
+            Box::new(CountingSource::new(3, 1)) as Box<dyn Source>
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "returned no datasets")]
+    async fn check12_fails_when_catalog_is_empty() {
+        let source = DiscoverableSource::empty();
+        assert_discover_roundtrips(&source, |_patch| async {
+            Box::new(CountingSource::new(3, 1)) as Box<dyn Source>
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "errored on read")]
+    async fn check12_fails_when_rebuilt_source_is_unreadable() {
+        let source = DiscoverableSource::new();
+        assert_discover_roundtrips(&source, |_patch| async {
+            // The catalog advertised a dataset the rebuilt source can't read.
+            Box::new(FailingSource) as Box<dyn Source>
+        })
+        .await;
+    }
+
+    // ── Check 13: cancellation flushes ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn check13_passes_for_a_sink_that_flushes_on_cancel() {
+        let sink = BufferedSink::new();
+        let s = sink.clone();
+        assert_cancellation_flushes(&sink, || {
+            let s = s.clone();
+            async move { s.durable_len() }
+        })
+        .await;
+        // The written page was flushed to durable storage on the cancel path.
+        assert_eq!(sink.durable_len(), 3);
+        assert_eq!(sink.staged_len(), 0);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "was not flushed on the cancel path")]
+    async fn check13_fails_for_a_sink_whose_flush_drops_the_buffer() {
+        let sink = BufferedSink::broken();
+        let s = sink.clone();
+        assert_cancellation_flushes(&sink, || {
+            let s = s.clone();
+            async move { s.durable_len() }
+        })
+        .await;
     }
 }

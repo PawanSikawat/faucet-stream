@@ -81,6 +81,30 @@ async fn conformance_bounded_memory() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn conformance_discover_roundtrips() {
+    // Check 12: every dataset `discover()` reports must be genuinely selectable
+    // — deep-merge its config_patch onto the base config, rebuild, and read.
+    let (_container, url) = start_postgres().await;
+    seed(&url, 3).await;
+    let source = PostgresSource::new(PostgresSourceConfig::new(&url, "SELECT 1"))
+        .await
+        .expect("source new");
+    faucet_conformance::assert_discover_roundtrips(&source, |patch| {
+        let url = url.clone();
+        async move {
+            let base = serde_json::to_value(PostgresSourceConfig::new(&url, "SELECT 1"))
+                .expect("serialize base config");
+            let merged = faucet_conformance::merge_config_patch(base, &patch);
+            let cfg: PostgresSourceConfig =
+                serde_json::from_value(merged).expect("deserialize merged config");
+            Box::new(PostgresSource::new(cfg).await.expect("rebuilt source"))
+                as Box<dyn faucet_core::Source>
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn conformance_errors_not_panics() {
     let (_container, url) = start_postgres().await;
     // Valid connection, but the query hits a table that does not exist — the

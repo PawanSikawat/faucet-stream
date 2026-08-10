@@ -103,6 +103,45 @@ async fn conformance_bookmark_roundtrip() {
     assert_bookmark_roundtrip(&source).await;
 }
 
+// ── Check 12: discovery round-trips (Docker) ────────────────────────────────
+
+/// Every dataset `discover()` reports must be genuinely selectable: take its
+/// config_patch (`{"query": …}`), rebuild the source pointed at that query, and
+/// read it against the emulator.
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_discover_roundtrips() {
+    let Some(emu) = support::start_emulator().await else {
+        return;
+    };
+    support::create_database(
+        &emu.host,
+        "discover",
+        &["CREATE TABLE nums (id INT64 NOT NULL, v STRING(MAX)) PRIMARY KEY (id)"],
+    )
+    .await;
+    let client = support::raw_client(&emu.host, "discover").await;
+    seed_nums(&client, 3).await;
+
+    let mut base =
+        SpannerSourceConfig::new(support::PROJECT, support::INSTANCE, "discover", "SELECT 1");
+    base.connection = support::connection(&emu.host, "discover");
+    let source = SpannerSource::new(base).await.expect("source");
+
+    let host = emu.host.clone();
+    faucet_conformance::assert_discover_roundtrips(&source, |patch| {
+        let host = host.clone();
+        async move {
+            let query = patch["query"].as_str().expect("query patch").to_string();
+            let mut cfg =
+                SpannerSourceConfig::new(support::PROJECT, support::INSTANCE, "discover", query);
+            cfg.connection = support::connection(&host, "discover");
+            Box::new(SpannerSource::new(cfg).await.expect("rebuilt source"))
+                as Box<dyn faucet_core::Source>
+        }
+    })
+    .await;
+}
+
 // ── Check 6: errors, not panics (Docker) ────────────────────────────────────
 
 /// Query a table that does not exist — both `fetch_all` and `stream_pages`

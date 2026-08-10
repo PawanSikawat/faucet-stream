@@ -70,6 +70,37 @@ apply, so a community connector is typically graded on its config schema and the
 capabilities it advertises. Publish a PR adding a `verified` registry entry to
 have it scored like a built-in.
 
+## The behavioral conformance battery
+
+The score above is a **static** grade (registry entry, config schema, advertised
+capabilities). It is complemented by the
+[`faucet-conformance`](https://crates.io/crates/faucet-conformance) crate — a
+**runtime** test battery a connector calls from its own `tests/` to prove it
+actually upholds the contract, not just advertises it. There are 13 checks; each
+ships with a passing *and* a `#[should_panic]` failing test in the battery, so no
+check can be vacuous.
+
+Checks 1–11 run against synthetic in-memory doubles or a single connector
+instance (config-schema validity, bounded-memory paging, bookmark resume,
+idempotent replay, truthful capabilities/write-modes, effective schema
+evolution, `batch_size = 0` single-page, non-empty `connector_name`, well-formed
+`check()` probes). Two more are **integration-level** — they need a live backend
+or the real pipeline, so they live in a connector's testcontainers/tempfile
+test:
+
+- **`assert_discover_roundtrips`** *(discoverable sources)* — every dataset
+  `discover()` reports is genuinely selectable: deep-merge its `config_patch`,
+  rebuild the source, and read it. Adopted by all 11 catalog-backed sources
+  (postgres, mysql, mssql, sqlite, mongodb, elasticsearch, bigquery, snowflake,
+  spanner, s3, gcs).
+- **`assert_cancellation_flushes`** — a mid-run `CancellationToken` stops at a
+  page boundary and flushes the sink, so buffered output (a Parquet footer, an
+  S3 multipart) survives cancellation rather than being orphaned
+  ([ADR 0011](https://github.com/faucet-hq/faucet-stream/blob/main/docs/adr/0011-cooperative-cancellation.md)).
+
+See [Authoring connectors](../extending/authoring-connectors.md#self-certify-with-the-conformance-battery)
+for how to wire the battery into a new connector.
+
 ## Related
 
 - [`faucet conformance`](./cli.md#conformance) — the command

@@ -135,6 +135,61 @@ async fn conformance_bounded_memory() {
     faucet_conformance::assert_bounded_memory(&source, 250, 5_000).await;
 }
 
+// ── Check 12: discovery round-trips (live gRPC backend, ignored) ─────────────
+
+/// Every dataset `discover()` reports must be genuinely selectable: take its
+/// config_patch (a `{"prefix": …}` override) and rebuild the source pointed at
+/// that prefix, then read it. `#[ignore]`d for the same reason as the
+/// bounded-memory check — `discover()` and the read path both use the gRPC
+/// storage client, which `fake-gcs-server` (REST-only) cannot serve. Run with
+/// `cargo test -- --ignored` against a real GCS-compatible gRPC backend.
+#[tokio::test]
+#[ignore = "requires a real GCS-compatible gRPC backend; fake-gcs-server only speaks REST. Run with `cargo test -- --ignored` against a live backend."]
+async fn conformance_discover_roundtrips() {
+    let Some((host, bucket)) = spawn_fake_gcs().await else {
+        return;
+    };
+    seed_object(
+        &host,
+        &bucket,
+        "orders/data.jsonl",
+        &jsonl_body(3),
+        "application/x-ndjson",
+    )
+    .await;
+    seed_object(
+        &host,
+        &bucket,
+        "customers/data.jsonl",
+        &jsonl_body(3),
+        "application/x-ndjson",
+    )
+    .await;
+
+    let source = GcsSource::new(
+        GcsSourceConfig::new(&bucket)
+            .auth(GcsCredentials::Anonymous)
+            .storage_host(&host),
+    )
+    .await
+    .unwrap();
+
+    faucet_conformance::assert_discover_roundtrips(&source, |patch| {
+        let host = host.clone();
+        let bucket = bucket.clone();
+        async move {
+            let prefix = patch["prefix"].as_str().expect("prefix patch").to_string();
+            let cfg = GcsSourceConfig::new(&bucket)
+                .prefix(&prefix)
+                .auth(GcsCredentials::Anonymous)
+                .storage_host(&host);
+            Box::new(GcsSource::new(cfg).await.expect("rebuilt source"))
+                as Box<dyn faucet_core::Source>
+        }
+    })
+    .await;
+}
+
 // ── Check 6: errors, not panics (no container) ──────────────────────────────
 
 /// Point the source at an unreachable GCS storage host (`http://127.0.0.1:1`,

@@ -651,6 +651,152 @@ impl Sink for ErringCheckSink {
     }
 }
 
+/// A source with a catalog it can [`discover`](Source::discover) — used to
+/// exercise [`assert_discover_roundtrips`](crate::assert_discover_roundtrips).
+///
+/// Each discovered dataset becomes a [`DatasetDescriptor`](faucet_core::DatasetDescriptor)
+/// whose `config_patch` is `{"dataset": <name>}` — the partial override a
+/// `rebuild` closure deep-merges to select that dataset. The read path is
+/// irrelevant to the check (the `rebuild` closure returns the source that is
+/// actually read), so [`fetch_with_context`](Source::fetch_with_context)
+/// returns nothing.
+///
+/// Construct with [`DiscoverableSource::new`] for a populated catalog, or
+/// [`DiscoverableSource::empty`] to model a source that advertises discovery
+/// but finds no datasets (used to prove the check *fails* on an empty catalog).
+pub struct DiscoverableSource {
+    datasets: Vec<String>,
+}
+
+impl DiscoverableSource {
+    /// A discoverable source over two synthetic datasets (`orders`, `customers`).
+    pub fn new() -> Self {
+        Self {
+            datasets: vec!["orders".to_string(), "customers".to_string()],
+        }
+    }
+
+    /// A discoverable source whose catalog is empty — `discover()` returns no
+    /// descriptors even though `supports_discover()` is `true`.
+    pub fn empty() -> Self {
+        Self {
+            datasets: Vec::new(),
+        }
+    }
+}
+
+impl Default for DiscoverableSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl Source for DiscoverableSource {
+    async fn fetch_with_context(
+        &self,
+        _context: &HashMap<String, Value>,
+    ) -> Result<Vec<Value>, FaucetError> {
+        Ok(Vec::new())
+    }
+
+    fn supports_discover(&self) -> bool {
+        true
+    }
+
+    async fn discover(&self) -> Result<Vec<faucet_core::DatasetDescriptor>, FaucetError> {
+        Ok(self
+            .datasets
+            .iter()
+            .map(|name| {
+                faucet_core::DatasetDescriptor::new(
+                    name.clone(),
+                    "table",
+                    json!({ "dataset": name }),
+                )
+            })
+            .collect())
+    }
+
+    fn connector_name(&self) -> &'static str {
+        "discoverable-source"
+    }
+}
+
+/// A sink that buffers writes and only makes them **durable on
+/// [`flush`](Sink::flush)** — modelling a real buffered sink whose output is
+/// committed at flush time (a Parquet footer, an S3 multipart completion).
+/// Used to exercise [`assert_cancellation_flushes`](crate::assert_cancellation_flushes):
+/// the pipeline must flush at the cancellation page boundary or the staged rows
+/// are lost.
+///
+/// Construct with [`BufferedSink::new`] for a faithful sink (flush commits the
+/// staging buffer) or [`BufferedSink::broken`] for one whose `flush` silently
+/// drops the buffer (used to prove the check *fails* when a cancel does not
+/// yield durable output).
+#[derive(Clone)]
+pub struct BufferedSink {
+    staged: Arc<Mutex<Vec<Value>>>,
+    durable: Arc<Mutex<Vec<Value>>>,
+    commit_on_flush: bool,
+}
+
+impl BufferedSink {
+    /// A buffered sink whose `flush` durably commits everything staged so far.
+    pub fn new() -> Self {
+        Self {
+            staged: Arc::new(Mutex::new(Vec::new())),
+            durable: Arc::new(Mutex::new(Vec::new())),
+            commit_on_flush: true,
+        }
+    }
+
+    /// A broken buffered sink whose `flush` is a silent no-op — staged rows
+    /// never become durable, so any output buffered when the run ends is lost.
+    pub fn broken() -> Self {
+        Self {
+            commit_on_flush: false,
+            ..Self::new()
+        }
+    }
+
+    /// Number of rows that are **durable** (committed via a flush).
+    pub fn durable_len(&self) -> usize {
+        self.durable.lock().unwrap().len()
+    }
+
+    /// Number of rows currently staged but not yet flushed.
+    pub fn staged_len(&self) -> usize {
+        self.staged.lock().unwrap().len()
+    }
+}
+
+impl Default for BufferedSink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl Sink for BufferedSink {
+    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        self.staged.lock().unwrap().extend(records.iter().cloned());
+        Ok(records.len())
+    }
+
+    async fn flush(&self) -> Result<(), FaucetError> {
+        if self.commit_on_flush {
+            let mut staged = self.staged.lock().unwrap();
+            self.durable.lock().unwrap().extend(staged.drain(..));
+        }
+        Ok(())
+    }
+
+    fn connector_name(&self) -> &'static str {
+        "buffered-sink"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -824,5 +970,50 @@ mod tests {
         assert_eq!(sink.connector_name(), "erring-check-sink");
         assert_eq!(sink.write_batch(&[json!({ "x": 1 })]).await.unwrap(), 1);
         assert!(sink.check(&ctx).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn discoverable_source_enumerates_its_catalog() {
+        let s = DiscoverableSource::new();
+        assert_eq!(s.connector_name(), "discoverable-source");
+        assert!(s.supports_discover());
+        let ds = s.discover().await.unwrap();
+        assert_eq!(ds.len(), 2);
+        assert_eq!(ds[0].name, "orders");
+        assert_eq!(ds[0].config_patch, json!({ "dataset": "orders" }));
+        // The read path is deliberately empty — the rebuild closure supplies the
+        // source that is actually read.
+        assert!(
+            s.fetch_with_context(&HashMap::new())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // The empty-catalog variant still advertises discovery.
+        let empty = DiscoverableSource::empty();
+        assert!(empty.supports_discover());
+        assert!(empty.discover().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn buffered_sink_only_durable_after_flush_unless_broken() {
+        let s = BufferedSink::new();
+        assert_eq!(s.connector_name(), "buffered-sink");
+        s.write_batch(&[json!({ "id": 1 }), json!({ "id": 2 })])
+            .await
+            .unwrap();
+        // Staged, not yet durable.
+        assert_eq!(s.staged_len(), 2);
+        assert_eq!(s.durable_len(), 0);
+        s.flush().await.unwrap();
+        assert_eq!(s.staged_len(), 0);
+        assert_eq!(s.durable_len(), 2, "flush must commit the staged rows");
+
+        // The broken variant never commits, even on flush.
+        let broken = BufferedSink::broken();
+        broken.write_batch(&[json!({ "id": 1 })]).await.unwrap();
+        broken.flush().await.unwrap();
+        assert_eq!(broken.durable_len(), 0, "broken flush drops the buffer");
     }
 }

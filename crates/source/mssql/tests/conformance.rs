@@ -170,6 +170,40 @@ async fn conformance_bookmark_roundtrip() {
     // _container stays alive to here
 }
 
+// ── Check 12: discovery round-trips (Docker) ────────────────────────────────
+
+/// Every dataset `discover()` reports must be genuinely selectable: take its
+/// config_patch (`{"query": …}`), rebuild the source pointed at that query, and
+/// read it.
+#[tokio::test(flavor = "multi_thread")]
+async fn conformance_discover_roundtrips() {
+    let _serial = SERIAL.lock().await;
+    let (_container, port) = start_mssql().await;
+    let cfg = conn_cfg(port);
+    let pool = build_pool(&cfg, 4).await.expect("pool");
+    seed_events(&pool, 3).await;
+
+    let url = cfg.connection_url.clone().unwrap();
+    let tls = cfg.tls.clone();
+    let mut base = MssqlSourceConfig::new(url.clone(), "SELECT 1");
+    base.connection.tls = tls.clone();
+    let source = MssqlSource::new(base).await.expect("source new");
+
+    faucet_conformance::assert_discover_roundtrips(&source, |patch| {
+        let url = url.clone();
+        let tls = tls.clone();
+        async move {
+            let query = patch["query"].as_str().expect("query patch").to_string();
+            let mut cfg = MssqlSourceConfig::new(url, query);
+            cfg.connection.tls = tls;
+            Box::new(MssqlSource::new(cfg).await.expect("rebuilt source"))
+                as Box<dyn faucet_core::Source>
+        }
+    })
+    .await;
+    // _container stays alive to here
+}
+
 // ── Check 6: errors, not panics (Docker) ────────────────────────────────────
 
 /// The source builds against a live container (so `new()` — which eagerly
