@@ -7,11 +7,47 @@ Deploy [faucet-stream](https://github.com/faucet-hq/faucet-stream) on Kubernetes
 
 All three are toggleable; enable what you need.
 
+## Install
+
+The chart is published as an **OCI artifact** on GHCR, so no `helm repo add` is
+needed — install straight from the registry:
+
+```bash
+# Latest published version (Helm resolves the highest SemVer tag):
+helm install faucet oci://ghcr.io/faucet-hq/charts/faucet-stream
+
+# …or pin a version (recommended for CI / production — reproducible):
+helm install faucet oci://ghcr.io/faucet-hq/charts/faucet-stream --version 1.8.1
+```
+
+Preview the manifests without a cluster, or list the available versions:
+
+```bash
+helm template faucet oci://ghcr.io/faucet-hq/charts/faucet-stream --version 1.8.1
+helm show chart oci://ghcr.io/faucet-hq/charts/faucet-stream          # metadata for the latest
+```
+
+Point the chart at your image and layer in config as usual (see
+[Values reference](#values-reference)):
+
+```bash
+helm install faucet oci://ghcr.io/faucet-hq/charts/faucet-stream \
+  -n faucet --create-namespace \
+  --set image.repository=ghcr.io/you/faucet-stream \
+  --set image.tag=full \
+  -f my-values.yaml
+```
+
+To install from a local checkout instead of the registry (e.g. while editing the
+chart):
+
 ```bash
 helm install faucet ./deploy/helm/faucet-stream \
   --set image.repository=ghcr.io/you/faucet-stream \
   --set image.tag=full
 ```
+
+See [Uninstall](#uninstall) to remove a release.
 
 ---
 
