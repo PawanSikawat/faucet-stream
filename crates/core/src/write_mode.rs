@@ -57,6 +57,17 @@ pub struct WriteSpec {
     /// upsert rows before writing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delete_marker: Option<DeleteMarker>,
+    /// Optional. Act on the source's completeness claim (`complete_for`) by
+    /// deleting destination rows inside the claimed scope that this run did not
+    /// write (#478) — the only way an incremental sync can remove records that
+    /// were deleted at the source.
+    ///
+    /// Requires `write_mode: upsert` with a non-empty `key`, and a source that
+    /// declares a scope. Both sides are required so a delete can never happen
+    /// implicitly: a claim with no sink opt-in is inert, and this without a claim
+    /// is a load-time error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup: Option<crate::cleanup::CleanupMode>,
 }
 
 impl WriteSpec {
@@ -65,6 +76,16 @@ impl WriteSpec {
         if matches!(self.write_mode, WriteMode::Upsert | WriteMode::Delete) && self.key.is_empty() {
             return Err(FaucetError::Config(format!(
                 "write_mode: {} requires a non-empty `key`",
+                self.write_mode.as_str()
+            )));
+        }
+        if self.cleanup.is_some() && !matches!(self.write_mode, WriteMode::Upsert) {
+            // Cleanup means "delete what this run did not write", which is only
+            // meaningful when the run is writing the authoritative set for a
+            // scope. On an append sink there is no key to compare against; on a
+            // delete-only sink there is nothing being written.
+            return Err(FaucetError::Config(format!(
+                "cleanup requires `write_mode: upsert` (got `{}`)",
                 self.write_mode.as_str()
             )));
         }
@@ -234,6 +255,7 @@ mod tests {
             write_mode: WriteMode::Upsert,
             key: keys.iter().map(|s| s.to_string()).collect(),
             delete_marker: None,
+            cleanup: None,
         }
     }
 
@@ -294,6 +316,7 @@ mod tests {
                 field: "__op".into(),
                 values: vec!["d".into()],
             }),
+            cleanup: None,
         };
         let plan = plan_writes(
             &[
@@ -325,6 +348,7 @@ mod tests {
                 field: "__op".into(),
                 values: vec!["d".into()],
             }),
+            cleanup: None,
         };
         let plan = plan_writes(
             &[json!({"id": 1, "__op": "u"}), json!({"id": 1, "__op": "d"})],
@@ -340,6 +364,7 @@ mod tests {
             write_mode: WriteMode::Delete,
             key: vec!["id".into()],
             delete_marker: None,
+            cleanup: None,
         };
         let plan = plan_writes(&[json!({"id": 1}), json!({"id": 2})], &spec);
         assert!(plan.upserts.is_empty());
@@ -369,6 +394,7 @@ mod tests {
             write_mode: WriteMode::Upsert,
             key: vec![],
             delete_marker: None,
+            cleanup: None,
         };
         assert!(spec.validate().is_err());
     }
@@ -385,12 +411,14 @@ mod tests {
             write_mode: WriteMode::Upsert,
             key: vec!["id".into()],
             delete_marker: None,
+            cleanup: None,
         };
         assert!(upsert.dedups_by_key());
         let delete = WriteSpec {
             write_mode: WriteMode::Delete,
             key: vec!["id".into()],
             delete_marker: None,
+            cleanup: None,
         };
         assert!(delete.dedups_by_key());
         // An (invalid) keyless upsert never claims keyed dedup.
@@ -398,6 +426,7 @@ mod tests {
             write_mode: WriteMode::Upsert,
             key: vec![],
             delete_marker: None,
+            cleanup: None,
         };
         assert!(!keyless.dedups_by_key());
     }
@@ -412,6 +441,7 @@ mod tests {
                 field: "__op".into(),
                 values: vec!["d".into()],
             }),
+            cleanup: None,
         };
         let plan = plan_writes(
             &[
@@ -439,6 +469,7 @@ mod tests {
             write_mode: WriteMode::Delete,
             key: vec!["id".into()],
             delete_marker: None,
+            cleanup: None,
         };
         let plan = plan_writes(&[json!({"id": 1}), json!({"id": 1})], &spec);
         assert_eq!(plan.deletes.len(), 1);
