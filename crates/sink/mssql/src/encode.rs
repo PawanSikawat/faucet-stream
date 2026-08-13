@@ -279,6 +279,139 @@ pub(crate) fn build_merge_delete(
     ))
 }
 
+/// Session-scoped temp table holding the key tuples one invocation wrote, used
+/// by scoped cleanup (#478).
+///
+/// The `#` prefix scopes it to the connection's session, so two pipelines
+/// cleaning up concurrently on different pooled connections cannot collide on
+/// the name. It is a fixed constant — no user input reaches it — so it is
+/// interpolated bare rather than through [`quote_ident_mssql`].
+pub(crate) const CLEANUP_TEMP_TABLE: &str = "#faucet_cleanup_keys";
+
+/// Drop a leftover [`CLEANUP_TEMP_TABLE`] if one exists.
+///
+/// A pooled connection outlives a single cleanup and a `#temp` table lives for
+/// the whole session, so a previous cleanup on the same connection can still own
+/// the name. `DROP TABLE IF EXISTS` is SQL Server 2016+, so the older
+/// `OBJECT_ID(N'tempdb..#…')` guard is used instead for wider server support.
+pub(crate) fn build_cleanup_temp_drop_sql() -> String {
+    format!(
+        "IF OBJECT_ID(N'tempdb..{CLEANUP_TEMP_TABLE}') IS NOT NULL DROP TABLE {CLEANUP_TEMP_TABLE}"
+    )
+}
+
+/// Create [`CLEANUP_TEMP_TABLE`] with the *exact* column types of the target
+/// table's `key` columns.
+///
+/// `SELECT … INTO` copies each column's full declared type (length, precision,
+/// scale, collation), which reconstructing a `CREATE TABLE` from `sys.columns`
+/// would have to re-derive — and getting e.g. `nvarchar` length wrong would
+/// silently truncate a key and delete the wrong rows. `WHERE 1 = 0` means no row
+/// is ever read.
+///
+/// The `UNION ALL` derived table is load-bearing, not decoration: a plain
+/// `SELECT … INTO` **inherits the IDENTITY property** of a source column, and
+/// inserting into an identity column then fails without `IDENTITY_INSERT`. A
+/// column produced by a `UNION` never inherits it.
+///
+/// `table_quoted` must already be quoted; `key` entries are bare identifiers
+/// quoted here.
+pub(crate) fn build_cleanup_temp_create_sql(
+    table_quoted: &str,
+    key: &[String],
+) -> Result<String, FaucetError> {
+    if key.is_empty() {
+        return Err(FaucetError::Sink(
+            "cleanup: requires a non-empty `key` to build the written-key set".into(),
+        ));
+    }
+    let quoted_keys: Vec<String> = key
+        .iter()
+        .map(|k| quote_ident_mssql(k))
+        .collect::<Result<_, _>>()?;
+    let key_list = quoted_keys.join(", ");
+    Ok(format!(
+        "SELECT {key_list} INTO {CLEANUP_TEMP_TABLE} FROM \
+         (SELECT {key_list} FROM {table_quoted} WHERE 1 = 0 \
+         UNION ALL SELECT {key_list} FROM {table_quoted} WHERE 1 = 0) AS s"
+    ))
+}
+
+/// Build the multi-row `INSERT` that loads written key tuples into
+/// [`CLEANUP_TEMP_TABLE`]. Params are numbered row-major over the key columns,
+/// matching how the caller binds each [`KeyTuple`](faucet_core::KeyTuple)'s
+/// values in `key` order.
+///
+/// The caller must chunk `n_rows` by
+/// [`max_rows_per_insert(key.len())`](max_rows_per_insert): the written-key set
+/// routinely runs to tens of thousands of rows, far past MSSQL's 2100-parameter
+/// and 1000-row-values ceilings.
+pub(crate) fn build_cleanup_key_insert_sql(
+    key: &[String],
+    n_rows: usize,
+) -> Result<String, FaucetError> {
+    let quoted_keys: Vec<String> = key
+        .iter()
+        .map(|k| quote_ident_mssql(k))
+        .collect::<Result<_, _>>()?;
+    Ok(build_insert_sql(CLEANUP_TEMP_TABLE, &quoted_keys, n_rows))
+}
+
+/// Build the scoped-cleanup `DELETE`: every row matching `scope` whose key is
+/// **not** in [`CLEANUP_TEMP_TABLE`].
+///
+/// `NOT EXISTS` against the temp table rather than `key NOT IN (@P1, …)` because
+/// the written-key set can reach the cleanup ceiling (100k rows by default),
+/// hundreds of times MSSQL's 2100-parameter limit.
+///
+/// Scope predicates are bound `@P1..@Pn` in the order `scope_cols` is given, so
+/// the caller must bind its values in that same order. `table_quoted` must
+/// already be quoted; `scope_cols` / `key` entries are bare identifiers quoted
+/// here.
+pub(crate) fn build_cleanup_delete_sql(
+    table_quoted: &str,
+    scope_cols: &[&str],
+    key: &[String],
+) -> Result<String, FaucetError> {
+    if scope_cols.is_empty() {
+        // Refusing here is the difference between "delete this parent's stale
+        // rows" and "truncate the table" — an empty predicate matches everything.
+        return Err(FaucetError::Sink(
+            "cleanup: the completeness claim is empty — an empty scope would match every \
+             row in the destination"
+                .into(),
+        ));
+    }
+    if key.is_empty() {
+        return Err(FaucetError::Sink(
+            "cleanup: requires a non-empty `key` so a written row can be told apart from a \
+             stale one"
+                .into(),
+        ));
+    }
+
+    let scope_pred = scope_cols
+        .iter()
+        .enumerate()
+        .map(|(i, c)| Ok(format!("t.{} = @P{}", quote_ident_mssql(c)?, i + 1)))
+        .collect::<Result<Vec<_>, FaucetError>>()?
+        .join(" AND ");
+
+    let join_pred = key
+        .iter()
+        .map(|k| {
+            let q = quote_ident_mssql(k)?;
+            Ok(format!("c.{q} = t.{q}"))
+        })
+        .collect::<Result<Vec<_>, FaucetError>>()?
+        .join(" AND ");
+
+    Ok(format!(
+        "DELETE t FROM {table_quoted} AS t WHERE {scope_pred} \
+         AND NOT EXISTS (SELECT 1 FROM {CLEANUP_TEMP_TABLE} c WHERE {join_pred})"
+    ))
+}
+
 /// Bind one record's values in `columns` order (SQL NULL for missing keys).
 pub(crate) fn auto_row_params(record: &Value, columns: &[String]) -> Vec<BoundParam> {
     let obj = record.as_object();
@@ -506,6 +639,126 @@ mod tests {
             "{sql}"
         );
         assert!(sql.contains("WHEN MATCHED THEN DELETE"), "{sql}");
+    }
+
+    #[test]
+    fn cleanup_temp_drop_guard_is_version_portable() {
+        let sql = build_cleanup_temp_drop_sql();
+        // `DROP TABLE IF EXISTS` is 2016+; the OBJECT_ID guard works everywhere.
+        assert_eq!(
+            sql,
+            "IF OBJECT_ID(N'tempdb..#faucet_cleanup_keys') IS NOT NULL \
+             DROP TABLE #faucet_cleanup_keys"
+        );
+    }
+
+    #[test]
+    fn cleanup_temp_create_copies_key_types_via_select_into() {
+        let sql = build_cleanup_temp_create_sql("[dbo].[assoc]", &["id".to_string()]).unwrap();
+        assert_eq!(
+            sql,
+            "SELECT [id] INTO #faucet_cleanup_keys FROM \
+             (SELECT [id] FROM [dbo].[assoc] WHERE 1 = 0 \
+             UNION ALL SELECT [id] FROM [dbo].[assoc] WHERE 1 = 0) AS s"
+        );
+    }
+
+    #[test]
+    fn cleanup_temp_create_strips_identity_via_union_all() {
+        // A plain SELECT … INTO inherits the source column's IDENTITY property,
+        // which then rejects the key INSERTs. A UNION'd column never does — so
+        // the UNION ALL must survive any refactor of this statement.
+        let sql =
+            build_cleanup_temp_create_sql("[t]", &["a".to_string(), "b".to_string()]).unwrap();
+        assert!(sql.contains("UNION ALL"), "identity stripping lost: {sql}");
+        assert!(
+            sql.contains("SELECT [a], [b] INTO #faucet_cleanup_keys"),
+            "{sql}"
+        );
+        // No row is ever read out of the target table.
+        assert_eq!(sql.matches("WHERE 1 = 0").count(), 2, "{sql}");
+    }
+
+    #[test]
+    fn cleanup_temp_create_requires_a_key() {
+        let err = build_cleanup_temp_create_sql("[t]", &[]).unwrap_err();
+        assert!(err.to_string().contains("`key`"), "{err}");
+    }
+
+    #[test]
+    fn cleanup_key_insert_numbers_params_row_major() {
+        let sql = build_cleanup_key_insert_sql(&["a".to_string(), "b".to_string()], 2).unwrap();
+        assert_eq!(
+            sql,
+            "INSERT INTO #faucet_cleanup_keys ([a], [b]) VALUES (@P1, @P2), (@P3, @P4)"
+        );
+    }
+
+    #[test]
+    fn cleanup_delete_scopes_then_excludes_written_keys() {
+        let sql = build_cleanup_delete_sql("[dbo].[assoc]", &["contact_id"], &["id".to_string()])
+            .unwrap();
+        assert_eq!(
+            sql,
+            "DELETE t FROM [dbo].[assoc] AS t WHERE t.[contact_id] = @P1 \
+             AND NOT EXISTS (SELECT 1 FROM #faucet_cleanup_keys c WHERE c.[id] = t.[id])"
+        );
+    }
+
+    #[test]
+    fn cleanup_delete_ands_a_composite_scope_and_key() {
+        let sql = build_cleanup_delete_sql(
+            "[t]",
+            &["tenant", "contact_id"],
+            &["a".to_string(), "b".to_string()],
+        )
+        .unwrap();
+        // Scope params are numbered in the given column order — the caller binds
+        // its values in that same order.
+        assert!(
+            sql.contains("WHERE t.[tenant] = @P1 AND t.[contact_id] = @P2"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("WHERE c.[a] = t.[a] AND c.[b] = t.[b]"),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn cleanup_delete_refuses_an_empty_scope() {
+        // An empty predicate is a truncate, not a cleanup.
+        let err = build_cleanup_delete_sql("[t]", &[], &["id".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("every row"), "{err}");
+    }
+
+    #[test]
+    fn cleanup_delete_refuses_an_empty_key() {
+        // Without a key every row in the scope looks unwritten.
+        let err = build_cleanup_delete_sql("[t]", &["contact_id"], &[]).unwrap_err();
+        assert!(err.to_string().contains("`key`"), "{err}");
+    }
+
+    #[test]
+    fn cleanup_identifiers_are_bracket_quoted() {
+        let sql = build_cleanup_delete_sql("[t]", &["we]ird"], &["k]ey".to_string()]).unwrap();
+        assert!(sql.contains("t.[we]]ird] = @P1"), "{sql}");
+        assert!(sql.contains("c.[k]]ey] = t.[k]]ey]"), "{sql}");
+    }
+
+    #[test]
+    fn cleanup_key_insert_chunk_size_respects_param_limits() {
+        // The written-key set can reach the 100k cleanup ceiling, so the caller
+        // chunks by max_rows_per_insert(key.len()) — assert a full chunk of the
+        // widest realistic key still fits both MSSQL limits.
+        for key_cols in 1..=8 {
+            let rows = max_rows_per_insert(key_cols);
+            assert!(rows <= MAX_VALUES_ROWS, "key_cols={key_cols}");
+            assert!(
+                rows * key_cols + SP_EXECUTESQL_RESERVED <= PARAM_LIMIT,
+                "key_cols={key_cols}"
+            );
+        }
     }
 
     #[test]
