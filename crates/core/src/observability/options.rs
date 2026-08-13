@@ -53,6 +53,14 @@ pub struct RunStreamOptions {
     pub resilience: Option<crate::resilience::ResiliencePolicy>,
     /// Compiled schema-drift policy (issue #194). `None` → no drift handling.
     pub schema_drift: Option<crate::drift::SchemaDriftPolicy>,
+    /// Scoped cleanup (#478). When set, the loop accumulates the key tuples it
+    /// writes and, **only if the stream reaches its natural end uncancelled**,
+    /// asks the sink to delete rows in the claimed scope that were not written.
+    ///
+    /// The caller is responsible for the coarser gating (real root invocation,
+    /// not `--dry-run` / `--limit` / a shard) — by simply not attaching a policy.
+    /// `None` leaves the write path completely unchanged.
+    pub cleanup: Option<std::sync::Arc<crate::cleanup::CleanupPolicy>>,
 }
 
 impl RunStreamOptions {
@@ -83,6 +91,14 @@ impl RunStreamOptions {
 
     pub fn with_dlq(mut self, dlq: DlqConfig) -> Self {
         self.dlq = Some(dlq);
+        self
+    }
+
+    /// Attach a scoped-cleanup policy (#478). See
+    /// [`RunStreamOptions::cleanup`] and the [`cleanup`](crate::cleanup) module
+    /// for why the timing is load-bearing.
+    pub fn with_cleanup(mut self, policy: Arc<crate::cleanup::CleanupPolicy>) -> Self {
+        self.cleanup = Some(policy);
         self
     }
 

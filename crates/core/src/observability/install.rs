@@ -248,6 +248,7 @@ pub fn install_observability(cfg: &ObservabilityConfig) -> Result<InstallReport,
     // attempt — describe!()/set!() into a not-yet-installed recorder is a no-op,
     // so we order them last.
     crate::observability::resilience::describe();
+    crate::observability::cleanup::describe();
     crate::observability::drift::describe();
     register_build_info();
 
@@ -388,6 +389,7 @@ fn install_fanout(
 #[cfg(not(feature = "observability-install"))]
 pub fn install_observability(_cfg: &ObservabilityConfig) -> Result<InstallReport, InstallError> {
     crate::observability::resilience::describe();
+    crate::observability::cleanup::describe();
     crate::observability::drift::describe();
     crate::observability::otel::describe();
     register_build_info();
