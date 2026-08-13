@@ -199,7 +199,38 @@ pub struct WebhookConfig {
     /// Header carrying the HMAC signature (default `X-Faucet-Signature`).
     #[serde(default = "default_signature_header")]
     pub signature_header: String,
+
+    /// Static fields merged into the emitted JSON body (#480), so a callback can
+    /// be tagged with a tenant, environment, or external job id. Values go
+    /// through the normal interpolation pass, so `${env:...}` / `${vars.X}` /
+    /// `${secret:...}` all work.
+    ///
+    /// Keys that collide with a field faucet itself emits (`event`, `severity`,
+    /// `pipeline`, `row`, `title`, `message`, `details`, `run_id`,
+    /// `invocation_id`, `started_at`, `finished_at`, `duration_secs`) are
+    /// rejected at load time. A typo'd `event` key would otherwise let a config
+    /// silently spoof the success/failure signal a receiver keys off, so this
+    /// fails fast rather than dropping the key at render time.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub extra_fields: std::collections::BTreeMap<String, serde_json::Value>,
 }
+
+/// Top-level keys faucet emits in the webhook body. `extra_fields` may not
+/// shadow any of them (see [`WebhookConfig::extra_fields`]).
+pub const RESERVED_BODY_KEYS: &[&str] = &[
+    "event",
+    "severity",
+    "pipeline",
+    "row",
+    "title",
+    "message",
+    "details",
+    "run_id",
+    "invocation_id",
+    "started_at",
+    "finished_at",
+    "duration_secs",
+];
 
 fn default_webhook_method() -> String {
     "POST".to_string()
@@ -229,6 +260,22 @@ impl NotificationSpec {
             ChannelSpec::Pagerduty(c) if c.routing_key.trim().is_empty() => bad("routing_key"),
             ChannelSpec::Webhook(c) if c.url.trim().is_empty() => bad("url"),
             ChannelSpec::Webhook(c) if c.method.trim().is_empty() => bad("method"),
+            ChannelSpec::Webhook(c) => {
+                // Reject a reserved key rather than silently dropping it at
+                // render time: `extra_fields: { event: "ok" }` would otherwise
+                // look accepted while never reaching the receiver.
+                for key in c.extra_fields.keys() {
+                    if RESERVED_BODY_KEYS.contains(&key.as_str()) {
+                        return Err(CliError::Config(format!(
+                            "notifications rule `{}`: `extra_fields.{key}` collides with a field \
+                             faucet emits — reserved keys are: {}",
+                            self.name,
+                            RESERVED_BODY_KEYS.join(", ")
+                        )));
+                    }
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -334,6 +381,64 @@ mod tests {
         }
         // Empty `on` means "all kinds".
         assert!(s.on.is_empty());
+    }
+
+    /// Build a webhook rule carrying `extra_fields`.
+    fn webhook_with_extra(name: &str, key: &str) -> NotificationSpec {
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert(key.to_string(), serde_json::Value::String("x".into()));
+        NotificationSpec {
+            name: name.into(),
+            on: vec![],
+            min_severity: Severity::default(),
+            dedupe_window_secs: None,
+            dlq_threshold: None,
+            channel: ChannelSpec::Webhook(WebhookConfig {
+                url: "http://x".into(),
+                method: "POST".into(),
+                headers: Default::default(),
+                hmac_secret: None,
+                signature_header: "X-Faucet-Signature".into(),
+                extra_fields: extra,
+            }),
+        }
+    }
+
+    #[test]
+    fn extra_fields_accepts_a_non_reserved_key() {
+        assert!(webhook_with_extra("w", "tenant").validate().is_ok());
+    }
+
+    #[test]
+    fn extra_fields_rejects_every_reserved_key() {
+        // #480: a reserved key must fail fast at load time rather than be
+        // silently dropped at render time — `extra_fields: { event: "ok" }`
+        // would otherwise look accepted while never reaching the receiver, and
+        // a receiver keying off `event` would be spoofed if it *did*.
+        for key in RESERVED_BODY_KEYS {
+            let err = webhook_with_extra("w", key)
+                .validate()
+                .expect_err("reserved key must be rejected");
+            let msg = err.to_string();
+            assert!(msg.contains(key), "error should name the key: {msg}");
+            assert!(
+                msg.contains("extra_fields"),
+                "error should name the field: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn extra_fields_defaults_to_empty() {
+        let json = serde_json::json!({
+            "name": "w",
+            "channel": { "type": "webhook", "config": { "url": "http://x" } }
+        });
+        let s: NotificationSpec = serde_json::from_value(json).unwrap();
+        match &s.channel {
+            ChannelSpec::Webhook(c) => assert!(c.extra_fields.is_empty()),
+            _ => panic!("expected webhook"),
+        }
     }
 
     #[test]

@@ -422,6 +422,7 @@ mod tests {
             headers: Default::default(),
             hmac_secret: Some("s".into()),
             signature_header: "X-Faucet-Signature".into(),
+            extra_fields: Default::default(),
         });
         assert!(
             Notifier::from_specs(&[rule("w", vec![], wh)])

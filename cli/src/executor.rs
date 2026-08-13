@@ -51,6 +51,16 @@ pub struct ExecuteOptions {
     /// Pipeline name — used in log lines and as the first segment of every
     /// state key.
     pub pipeline_name: String,
+    /// Correlation id for the submitted run (#480). `faucet serve` passes the
+    /// id it returned from `POST /v1/runs` so a completion notification can be
+    /// matched back to the submission; every other runtime leaves it `None` and
+    /// each invocation falls back to its own generated id.
+    ///
+    /// Deliberately *not* the observability `run_id`: one submitted run expands
+    /// to one invocation per matrix row, and the span identity stays unique per
+    /// invocation. Notifications carry both — `run_id` (this) to correlate to
+    /// the submission, `invocation_id` to tell rows apart.
+    pub run_id: Option<String>,
     /// Override for `execution.max_concurrent`. `None` → use the value in
     /// `ExecutionSpec` or the default (`num_cpus::get().min(4)`, floored at 1).
     pub execution: Option<ExecutionSpec>,
@@ -919,6 +929,18 @@ async fn run_one_invocation(
     // Observability identity for this invocation — built once, reused by both
     // the Pipeline builder and the transform instrumentation.
     let run_id = uuid::Uuid::now_v7().to_string();
+    // Notification run identity + timing (#480). `run_id` here correlates to the
+    // *submission* (serve passes the id it returned from `POST /v1/runs`);
+    // `invocation_id` is this row's own id, so a matrix run's notifications are
+    // still individually identifiable. Monotonic `Instant` for the duration —
+    // subtracting the wall-clock stamps would go negative across an NTP step.
+    #[cfg(feature = "notify")]
+    let invocation_started = std::time::Instant::now();
+    #[cfg(feature = "notify")]
+    let notify_run = crate::notify::RunContext::start(
+        Some(opts.run_id.clone().unwrap_or_else(|| run_id.clone())),
+        Some(run_id.clone()),
+    );
     let pipeline_name = opts.pipeline_name.clone();
     let row_id = node.id.clone();
     #[cfg(feature = "lineage")]
@@ -1340,39 +1362,48 @@ async fn run_one_invocation(
         use crate::notify::NotifyEvent;
         let pipeline = obs_labels.pipeline.to_string();
         let row = obs_labels.row.to_string();
+        // Closed once here, so every event from this invocation reports the same
+        // terminal timestamp and duration.
+        let run_ctx = notify_run.clone().finish(invocation_started);
         match &result {
             Ok(r) => {
                 notifier
-                    .emit(NotifyEvent::run_success(
-                        pipeline.clone(),
-                        row.clone(),
-                        r.records_written as u64,
-                    ))
+                    .emit(
+                        NotifyEvent::run_success(
+                            pipeline.clone(),
+                            row.clone(),
+                            r.records_written as u64,
+                        )
+                        .with_run(run_ctx.clone()),
+                    )
                     .await;
                 if let Some(dlq) = &r.dlq
                     && dlq.records_dlq > 0
                 {
                     notifier
-                        .emit(NotifyEvent::dlq_threshold(
-                            pipeline.clone(),
-                            row.clone(),
-                            dlq.records_dlq as u64,
-                        ))
+                        .emit(
+                            NotifyEvent::dlq_threshold(
+                                pipeline.clone(),
+                                row.clone(),
+                                dlq.records_dlq as u64,
+                            )
+                            .with_run(run_ctx.clone()),
+                        )
                         .await;
                 }
             }
             Err(e) => {
-                notifier.emit(error_event(&pipeline, &row, e)).await;
+                notifier
+                    .emit(error_event(&pipeline, &row, e).with_run(run_ctx.clone()))
+                    .await;
             }
         }
         for v in &sla_violations {
             notifier
-                .emit(NotifyEvent::sla_breach(
-                    pipeline.clone(),
-                    row.clone(),
-                    v.kind(),
-                    v.to_string(),
-                ))
+                .emit(
+                    NotifyEvent::sla_breach(pipeline.clone(), row.clone(), v.kind(), v.to_string())
+                        .with_run(run_ctx.clone()),
+                )
                 .await;
         }
     }
@@ -1979,6 +2010,7 @@ mod tests {
             nodes,
             ExecuteOptions {
                 pipeline_name: "t".into(),
+                run_id: None,
                 execution: None,
                 dry_run: false,
                 limit: None,
@@ -2228,6 +2260,7 @@ matrix:
             nodes,
             ExecuteOptions {
                 pipeline_name: "matrix".into(),
+                run_id: None,
                 execution: None,
                 dry_run: false,
                 limit: None,
@@ -2290,6 +2323,7 @@ matrix:
             nodes,
             ExecuteOptions {
                 pipeline_name: "dagtest".into(),
+                run_id: None,
                 execution: None,
                 dry_run: false,
                 limit: None,
@@ -2517,6 +2551,7 @@ execution:
             nodes,
             ExecuteOptions {
                 pipeline_name: "stoptest".into(),
+                run_id: None,
                 execution: cfg.execution.clone(),
                 dry_run: false,
                 limit: None,
@@ -2604,6 +2639,7 @@ pipeline:
             nodes,
             ExecuteOptions {
                 pipeline_name: "bad name".into(), // space is illegal in a state key
+                run_id: None,
                 execution: None,
                 dry_run: false,
                 limit: None,
@@ -2665,6 +2701,7 @@ matrix:
             nodes,
             ExecuteOptions {
                 pipeline_name: "ok".into(),
+                run_id: None,
                 execution: None,
                 dry_run: false,
                 limit: None,
@@ -2735,6 +2772,7 @@ execution:
             nodes,
             ExecuteOptions {
                 pipeline_name: "stop_parallel".into(),
+                run_id: None,
                 execution: cfg.execution.clone(),
                 dry_run: false,
                 limit: None,
@@ -2806,6 +2844,7 @@ matrix:
             nodes,
             ExecuteOptions {
                 pipeline_name: "continuetest".into(),
+                run_id: None,
                 execution: None,
                 dry_run: false,
                 limit: None,
@@ -3060,6 +3099,7 @@ matrix:
     fn opts(name: &str) -> ExecuteOptions {
         ExecuteOptions {
             pipeline_name: name.into(),
+            run_id: None,
             execution: None,
             dry_run: false,
             limit: None,
@@ -3683,6 +3723,7 @@ matrix:
             nodes,
             ExecuteOptions {
                 pipeline_name: "projtest".into(),
+                run_id: None,
                 execution: None,
                 dry_run: false,
                 limit: None,

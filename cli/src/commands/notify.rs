@@ -55,19 +55,36 @@ async fn test(args: NotifyTestArgs) -> CliResult<()> {
 
 /// Build a synthetic event for the requested kind. DLQ uses a large count so it
 /// clears any configured `dlq_threshold`.
+///
+/// Every kind except `scheduler_stuck` carries a synthetic [`RunContext`], so a
+/// receiver being tested sees the same populated `run_id` / `invocation_id` /
+/// timing fields a real run would send (#480). `scheduler_stuck` deliberately
+/// does not — it has no owning invocation in production either, so leaving it
+/// null is the faithful shape.
 fn synth_event(kind: &str, pipeline: &str) -> CliResult<NotifyEvent> {
+    let run = || {
+        crate::notify::RunContext::start(
+            Some(format!("test-run-{}", uuid::Uuid::now_v7())),
+            Some(format!("test-invocation-{}", uuid::Uuid::now_v7())),
+        )
+        .finish(std::time::Instant::now())
+    };
     Ok(match kind {
         "run_failure" => NotifyEvent::run_failure(
             pipeline,
             "",
             "test",
             "synthetic test failure from `faucet notify test`",
-        ),
-        "run_success" => NotifyEvent::run_success(pipeline, "", 0),
-        "sla_breach" => NotifyEvent::sla_breach(pipeline, "", "staleness", "synthetic SLA breach"),
-        "circuit_open" => NotifyEvent::circuit_open(pipeline, "", 5, 30),
-        "contract_abort" => NotifyEvent::contract_abort(pipeline, "", "synthetic contract breach"),
-        "dlq_threshold" => NotifyEvent::dlq_threshold(pipeline, "", 1_000_000),
+        )
+        .with_run(run()),
+        "run_success" => NotifyEvent::run_success(pipeline, "", 0).with_run(run()),
+        "sla_breach" => NotifyEvent::sla_breach(pipeline, "", "staleness", "synthetic SLA breach")
+            .with_run(run()),
+        "circuit_open" => NotifyEvent::circuit_open(pipeline, "", 5, 30).with_run(run()),
+        "contract_abort" => {
+            NotifyEvent::contract_abort(pipeline, "", "synthetic contract breach").with_run(run())
+        }
+        "dlq_threshold" => NotifyEvent::dlq_threshold(pipeline, "", 1_000_000).with_run(run()),
         "scheduler_stuck" => NotifyEvent::scheduler_stuck(pipeline, "synthetic scheduler-stuck"),
         other => {
             return Err(CliError::Config(format!(
@@ -107,5 +124,32 @@ mod tests {
     #[test]
     fn synth_event_rejects_unknown_kind() {
         assert!(synth_event("nope", "p").is_err());
+    }
+
+    #[test]
+    fn synth_events_carry_run_identity_except_scheduler_stuck() {
+        // #480: `faucet notify test` must exercise the same payload shape a real
+        // run sends, so a receiver can be validated against populated fields.
+        for kind in [
+            "run_failure",
+            "run_success",
+            "sla_breach",
+            "circuit_open",
+            "contract_abort",
+            "dlq_threshold",
+        ] {
+            let e = synth_event(kind, "p").unwrap();
+            let run = e
+                .run
+                .as_ref()
+                .unwrap_or_else(|| panic!("{kind} needs a run context"));
+            assert!(run.run_id.is_some(), "{kind} run_id");
+            assert!(run.invocation_id.is_some(), "{kind} invocation_id");
+            assert_ne!(run.run_id, run.invocation_id, "{kind} ids must differ");
+            assert!(run.finished_at.is_some(), "{kind} finished_at");
+            assert!(run.duration.is_some(), "{kind} duration");
+        }
+        // No owning invocation in production either — faithful null shape.
+        assert!(synth_event("scheduler_stuck", "p").unwrap().run.is_none());
     }
 }

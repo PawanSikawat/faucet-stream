@@ -426,6 +426,9 @@ async fn execute_shard(
     // so the shard's pipeline flushes at its next page boundary.
     let opts = ExecuteOptions {
         pipeline_name,
+        // Correlate notifications to the submitted run (#480). Every shard of a
+        // sharded run reports the same `run_id`; they differ by `invocation_id`.
+        run_id: Some(run_id.to_string()),
         execution: cfg.execution.clone(),
         dry_run: false,
         limit: None,
@@ -1200,6 +1203,9 @@ async fn execute_run(
     });
     let opts = ExecuteOptions {
         pipeline_name,
+        // The id returned by `POST /v1/runs`, so a completion notification can be
+        // matched back to the submission (#480).
+        run_id: Some(run_id.clone()),
         execution: cfg.execution.clone(),
         dry_run: false,
         limit: None,

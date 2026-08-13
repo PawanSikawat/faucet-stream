@@ -76,6 +76,7 @@ async fn webhook_delivery_signs_body() {
             headers: Default::default(),
             hmac_secret: Some("s3cr3t".into()),
             signature_header: "X-Faucet-Signature".into(),
+            extra_fields: Default::default(),
         }),
     );
     let n = Notifier::from_specs(&[spec]).unwrap().unwrap();
@@ -248,4 +249,107 @@ async fn severity_floor_filters_delivery() {
     assert!(server.received_requests().await.unwrap().is_empty());
     n.emit(NotifyEvent::circuit_open("p", "", 3, 30)).await;
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+/// #480 acceptance: the run identity threaded through `ExecuteOptions.run_id`
+/// reaches the delivered webhook body, and a matrix row's own `invocation_id`
+/// is distinct from it. Drives a real csv → jsonl pipeline through the executor
+/// rather than emitting a synthetic event, so the whole propagation path
+/// (options → `run_one_invocation` → `RunContext` → render → HTTP) is covered.
+#[tokio::test]
+async fn executor_propagates_submitted_run_id_into_the_payload() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/cb"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.csv");
+    let output = dir.path().join("out.jsonl");
+    std::fs::write(&input, "id,name\n1,alice\n2,bob\n").unwrap();
+
+    let cfg_yaml = format!(
+        r#"
+version: 1
+name: cb_pipeline
+pipeline:
+  source:
+    type: csv
+    config:
+      path: "{}"
+  sink:
+    type: jsonl
+    config:
+      path: "{}"
+notifications:
+  - name: cb
+    on: [run_success]
+    channel:
+      type: webhook
+      config:
+        url: "{}/cb"
+        extra_fields:
+          tenant: acme
+"#,
+        input.display(),
+        output.display(),
+        server.uri()
+    );
+
+    let cfg_path = dir.path().join("p.yaml");
+    std::fs::write(&cfg_path, &cfg_yaml).unwrap();
+    let cfg =
+        faucet_cli::config::PipelineConfig::from_text(&cfg_yaml, &cfg_path).expect("config parses");
+    let nodes = faucet_cli::expand::expand(&cfg).expect("expand");
+    let notifier = faucet_cli::notify::Notifier::from_specs(&cfg.notifications)
+        .unwrap()
+        .expect("notifier built");
+
+    let opts = faucet_cli::executor::ExecuteOptions {
+        pipeline_name: "cb_pipeline".into(),
+        run_id: Some("submitted-run-42".into()),
+        execution: None,
+        dry_run: false,
+        limit: None,
+        state_path_override: None,
+        shard: None,
+        auth: Default::default(),
+        clock: chrono::Utc::now().fixed_offset(),
+        cancel: None,
+        resilience: None,
+        sla: None,
+        #[cfg(feature = "lineage")]
+        lineage: None,
+        #[cfg(feature = "lineage")]
+        lineage_cfg: None,
+        notifier: Some(notifier),
+        #[cfg(feature = "catalog")]
+        catalog: None,
+    };
+
+    let summary = faucet_cli::executor::run_expanded(nodes, opts)
+        .await
+        .expect("run");
+    assert!(!summary.had_failures(), "pipeline should succeed");
+
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 1, "exactly one run_success callback");
+    let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
+
+    assert_eq!(body["event"], "run_success");
+    // The submitted run id — what a caller correlates against.
+    assert_eq!(body["run_id"], "submitted-run-42");
+    // The per-invocation id is generated, so it must differ from the submitted id.
+    assert!(body["invocation_id"].is_string());
+    assert_ne!(body["invocation_id"], body["run_id"]);
+    // Timing is populated for a real run.
+    assert!(body["started_at"].is_string());
+    assert!(body["finished_at"].is_string());
+    assert!(body["duration_secs"].as_f64().unwrap() >= 0.0);
+    // Static metadata merged.
+    assert_eq!(body["tenant"], "acme");
+    assert_eq!(body["details"]["records_written"], 2);
 }

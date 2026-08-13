@@ -6,11 +6,66 @@
 //! Slack / PagerDuty / webhook body lives in [`crate::notify::render`].
 
 use super::spec::{EventKind, Severity};
+use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
+use std::time::Instant;
 
 /// Scrub every resolved secret from text bound for an external channel.
 fn redact(s: String) -> String {
     crate::secrets::registry::redact(&s).into_owned()
+}
+
+/// Run identity + timing for the invocation an event belongs to (#480).
+///
+/// Built once per invocation at the emit site and stamped onto every event that
+/// invocation produces, so a receiver can correlate a notification back to the
+/// run it triggered. Before this existed the only correlation keys in the
+/// payload were `pipeline` + `row`, which are **not unique per run** — two
+/// overlapping runs of one pipeline (a `schedule` `overlap: queue`, a cluster
+/// with several workers, a backfill fanning out per window) produced
+/// indistinguishable callbacks and a receiver keying off `pipeline` would
+/// mis-attribute status.
+///
+/// `duration` is measured from a monotonic [`Instant`], never by subtracting
+/// the two wall-clock stamps — an NTP step between them would otherwise yield a
+/// negative duration.
+#[derive(Debug, Clone, Default)]
+pub struct RunContext {
+    /// Correlation id for the submitted run. Under `faucet serve` this is the
+    /// serve run id returned by `POST /v1/runs`; otherwise the invocation's own
+    /// generated id. A matrix run's rows all share one `run_id` and are told
+    /// apart by `row` (and by `invocation_id`).
+    pub run_id: Option<String>,
+    /// This single invocation's id. Distinct per matrix row within one run.
+    pub invocation_id: Option<String>,
+    /// When the invocation started (UTC).
+    pub started_at: Option<DateTime<Utc>>,
+    /// When the invocation reached its terminal state (UTC).
+    pub finished_at: Option<DateTime<Utc>>,
+    /// Monotonic elapsed wall-clock for the invocation.
+    pub duration: Option<std::time::Duration>,
+}
+
+impl RunContext {
+    /// Open a context at "now", carrying the run/invocation identity. Call
+    /// [`finish`](Self::finish) when the invocation reaches a terminal state.
+    pub fn start(run_id: Option<String>, invocation_id: Option<String>) -> Self {
+        Self {
+            run_id,
+            invocation_id,
+            started_at: Some(Utc::now()),
+            finished_at: None,
+            duration: None,
+        }
+    }
+
+    /// Close the context, stamping `finished_at` and the monotonic duration
+    /// measured from `since`.
+    pub fn finish(mut self, since: Instant) -> Self {
+        self.finished_at = Some(Utc::now());
+        self.duration = Some(since.elapsed());
+        self
+    }
 }
 
 /// A single thing worth notifying about.
@@ -29,6 +84,10 @@ pub struct NotifyEvent {
     /// Structured context rendered into channel payloads (never contains
     /// secrets — the emit sites pass only safe scalars).
     pub details: Map<String, Value>,
+    /// Run identity + timing (#480). `None` for events with no owning
+    /// invocation (e.g. `scheduler_stuck`, which is emitted by the scheduler
+    /// loop itself rather than by a run).
+    pub run: Option<RunContext>,
 }
 
 impl NotifyEvent {
@@ -59,6 +118,24 @@ impl NotifyEvent {
             title: redact(title.into()),
             message: redact(message.into()),
             details: Map::new(),
+            run: None,
+        }
+    }
+
+    /// Stamp run identity + timing onto this event (#480). Emit sites build one
+    /// [`RunContext`] per invocation and apply it to every event they produce.
+    pub fn with_run(mut self, run: RunContext) -> Self {
+        self.run = Some(run);
+        self
+    }
+
+    /// Stamp run identity from an optional context — the shape emit sites
+    /// actually have, since the notifier is feature-gated and some callers have
+    /// no run to attribute.
+    pub fn with_run_opt(self, run: Option<RunContext>) -> Self {
+        match run {
+            Some(r) => self.with_run(r),
+            None => self,
         }
     }
 

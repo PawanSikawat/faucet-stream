@@ -271,6 +271,7 @@ fn make_opts(
 ) -> ExecuteOptions {
     ExecuteOptions {
         pipeline_name: pipeline_name.to_string(),
+        run_id: None,
         execution: execution.clone(),
         dry_run: false,
         limit: None,
