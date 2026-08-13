@@ -281,6 +281,129 @@ async fn check_reports_auth_and_schema_probes() {
     assert_eq!(report.failed_count(), 1);
 }
 
+// ── Scoped cleanup (#478) ───────────────────────────────────────────────────
+
+fn cleanup_spec() -> WriteSpec {
+    WriteSpec {
+        write_mode: WriteMode::Upsert,
+        key: vec!["id".to_string()],
+        delete_marker: None,
+        cleanup: Some(faucet_core::CleanupMode::DeleteMissing),
+    }
+}
+
+/// The written-key set the pipeline accumulates as pages are written.
+fn seen_ids(ids: &[i64]) -> faucet_core::SeenKeys {
+    let page: Vec<serde_json::Value> = ids.iter().map(|i| json!({"id": i})).collect();
+    let mut seen = faucet_core::SeenKeys::new();
+    seen.record_page(&page, &["id".to_string()], 1000);
+    seen
+}
+
+fn scope_v(v: &str) -> std::collections::BTreeMap<String, serde_json::Value> {
+    std::collections::BTreeMap::from([("v".to_string(), json!(v))])
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cleanup_deletes_only_unwritten_rows_inside_the_scope() {
+    let (sink, conn) = sink_for("em-cleanup", cleanup_spec()).await;
+    sink.write_batch(&[
+        json!({"id": 1, "v": "acme"}),  // written this run
+        json!({"id": 2, "v": "acme"}),  // stale — in scope, not written
+        json!({"id": 3, "v": "other"}), // outside the scope
+    ])
+    .await
+    .expect("seed");
+
+    let deleted = sink
+        .cleanup_scope(&scope_v("acme"), &seen_ids(&[1]))
+        .await
+        .expect("cleanup");
+    assert_eq!(deleted, 1);
+    assert!(fetch_row(&conn, 1).await.is_some(), "written row survives");
+    assert!(fetch_row(&conn, 2).await.is_none(), "stale row is deleted");
+    assert!(
+        fetch_row(&conn, 3).await.is_some(),
+        "a row outside the scope must never be touched"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cleanup_with_no_written_keys_empties_the_scope() {
+    // The motivating case: the source reported the scope empty, so every row in
+    // it is stale. An empty `seen` set must not short-circuit.
+    let (sink, conn) = sink_for("em-cleanup-empty", cleanup_spec()).await;
+    sink.write_batch(&[
+        json!({"id": 1, "v": "acme"}),
+        json!({"id": 2, "v": "acme"}),
+        json!({"id": 3, "v": "other"}),
+    ])
+    .await
+    .expect("seed");
+
+    let deleted = sink
+        .cleanup_scope(&scope_v("acme"), &faucet_core::SeenKeys::new())
+        .await
+        .expect("cleanup");
+    assert_eq!(deleted, 2);
+    assert_eq!(support::count_rows(&conn, "t").await, 1);
+    assert!(fetch_row(&conn, 3).await.is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cleanup_is_a_no_op_when_the_run_wrote_everything_in_the_scope() {
+    let (sink, conn) = sink_for("em-cleanup-noop", cleanup_spec()).await;
+    sink.write_batch(&[json!({"id": 1, "v": "acme"}), json!({"id": 2, "v": "acme"})])
+        .await
+        .expect("seed");
+    let deleted = sink
+        .cleanup_scope(&scope_v("acme"), &seen_ids(&[1, 2]))
+        .await
+        .expect("cleanup");
+    assert_eq!(deleted, 0);
+    assert_eq!(support::count_rows(&conn, "t").await, 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cleanup_rejects_a_scope_column_that_is_not_in_the_table() {
+    let (sink, conn) = sink_for("em-cleanup-badcol", cleanup_spec()).await;
+    sink.write_batch(&[json!({"id": 1, "v": "acme"})])
+        .await
+        .expect("seed");
+    let err = sink
+        .cleanup_scope(
+            &std::collections::BTreeMap::from([("nope".to_string(), json!(1))]),
+            &seen_ids(&[1]),
+        )
+        .await
+        .expect_err("unknown scope column must be refused");
+    assert!(
+        err.to_string().contains("does not exist on table"),
+        "got: {err}"
+    );
+    // Refused before any transaction ran — nothing was deleted.
+    assert_eq!(support::count_rows(&conn, "t").await, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cleanup_requires_the_key_to_be_the_primary_key() {
+    let (sink, _conn) = sink_for(
+        "em-cleanup-badkey",
+        WriteSpec {
+            write_mode: WriteMode::Upsert,
+            key: vec!["v".to_string()],
+            delete_marker: None,
+            cleanup: Some(faucet_core::CleanupMode::DeleteMissing),
+        },
+    )
+    .await;
+    let err = sink
+        .cleanup_scope(&scope_v("acme"), &faucet_core::SeenKeys::new())
+        .await
+        .expect_err("key != PK must be rejected");
+    assert!(err.to_string().contains("PRIMARY KEY"), "got: {err}");
+}
+
 // ── Coverage: error paths, evolve widening/relax ─────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
