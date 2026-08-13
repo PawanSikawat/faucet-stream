@@ -209,6 +209,7 @@ pub async fn replay(
         vec![node],
         ExecuteOptions {
             pipeline_name: inputs.pipeline_name,
+            run_id: None,
             execution: inputs.execution,
             dry_run: inputs.dry_run,
             limit: None,

@@ -45,6 +45,11 @@ pub struct SubmitRequest {
     pub doctor_first: bool,
     pub idempotency_key: Option<String>,
     pub clock: Option<String>,
+    /// Optional completion callback fired when this run reaches a terminal
+    /// state (#481). Validated at submit time so a bad destination is a 422 on
+    /// the submission rather than a silent no-op when the run finishes.
+    #[serde(default)]
+    pub callback: Option<crate::serve::callback::CallbackSpec>,
 }
 
 /// Wire enum mirroring `load::ConfigFormat` with serde rename.
@@ -426,6 +431,9 @@ async fn execute_shard(
     // so the shard's pipeline flushes at its next page boundary.
     let opts = ExecuteOptions {
         pipeline_name,
+        // Correlate notifications to the submitted run (#480). Every shard of a
+        // sharded run reports the same `run_id`; they differ by `invocation_id`.
+        run_id: Some(run_id.to_string()),
         execution: cfg.execution.clone(),
         dry_run: false,
         limit: None,
@@ -539,6 +547,23 @@ async fn maybe_finalize_parent(state: &ServerState, run_id: &str) {
                 failed = progress.failed,
                 "sharded run finalized"
             );
+            // Fire the parent's completion callback exactly once — `Ok(true)` is
+            // the status-fenced winner, so a near-simultaneous double-finalize
+            // from two instances delivers a single callback (#481). Re-read the
+            // record: `finalize_sharded_parent` takes fields, not the record, so
+            // this is the only way to get the persisted terminal state.
+            match state.history().get(run_id).await {
+                Ok(Some(rec)) => crate::serve::callback::fire(&rec).await,
+                Ok(None) => tracing::warn!(
+                    run_id,
+                    "sharded parent vanished before its callback could fire"
+                ),
+                Err(e) => tracing::warn!(
+                    run_id,
+                    error = %e,
+                    "could not read sharded parent for its completion callback"
+                ),
+            }
         }
         Ok(false) => {} // already finalized by another shard/instance — nothing to do
         Err(e) => {
@@ -632,6 +657,22 @@ pub async fn submit(
     let sharded = loaded.cfg.shard.as_ref().is_some_and(|s| s.count >= 2);
     warn_if_cluster_at_least_once(&loaded, state.cluster().enabled(), sharded);
 
+    // Completion-callback validation (#481) — before the queue reservation, so a
+    // malformed or refused destination costs nothing and surfaces as a 422 on
+    // the submission rather than as a silent no-op when the run finishes.
+    if let Some(cb) = req.callback.as_ref() {
+        cb.validate(state.callback_allow_hosts())
+            .map_err(|message| ServeError::Unprocessable {
+                message,
+                details: None,
+            })?;
+        cb.reject_secrets_in_cluster(state.cluster().enabled())
+            .map_err(|message| ServeError::Unprocessable {
+                message,
+                details: None,
+            })?;
+    }
+
     // Reserve a queue slot first, so a Fresh idempotency claim is always followed
     // by a spawned run (no orphaned claims — spec §20.2).
     if !state.registry().try_reserve() {
@@ -708,6 +749,7 @@ pub async fn submit(
         submitted_at,
     );
     rec.doctor_report = doctor_report;
+    rec.callback = req.callback.clone();
 
     if state.cluster().enabled() {
         // A degraded (DB-unreachable) backend can't coordinate a cluster: the
@@ -1200,6 +1242,9 @@ async fn execute_run(
     });
     let opts = ExecuteOptions {
         pipeline_name,
+        // The id returned by `POST /v1/runs`, so a completion notification can be
+        // matched back to the submission (#480).
+        run_id: Some(run_id.clone()),
         execution: cfg.execution.clone(),
         dry_run: false,
         limit: None,
@@ -1339,7 +1384,12 @@ async fn finalize(state: &ServerState, run_id: &str, started: DateTime<Utc>, ter
         // our write is a no-op and we discard our result — the reclaimer is now
         // authoritative (#197).
         match state.history().finalize_owned(&rec).await {
-            Ok(true) => metrics::record_run_finished(status, reason),
+            Ok(true) => {
+                metrics::record_run_finished(status, reason);
+                // Only the instance that won the owner-fenced write fires the
+                // callback, so a reclaimed run cannot deliver twice (#481).
+                crate::serve::callback::fire(&rec).await;
+            }
             Ok(false) => tracing::warn!(
                 run_id,
                 "finalize: run was reclaimed by another instance; discarding result"
@@ -1357,6 +1407,7 @@ async fn finalize(state: &ServerState, run_id: &str, started: DateTime<Utc>, ter
             );
         }
         metrics::record_run_finished(status, reason);
+        crate::serve::callback::fire(&rec).await;
     }
 }
 
@@ -1483,6 +1534,7 @@ mod tests {
             ui_enabled: true,
             cluster: crate::serve::cluster::ClusterConfig::disabled(),
             triggers_path: None,
+            callback_allow_hosts: Vec::new(),
         };
         let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
         let state = ServerState::new(
@@ -1510,6 +1562,7 @@ mod tests {
             labels: BTreeMap::new(),
             timeout_secs: None,
             doctor_first: false,
+            callback: None,
             idempotency_key: Some("k".into()),
             clock: None,
         };
@@ -1555,6 +1608,7 @@ mod tests {
             ui_enabled: true,
             cluster,
             triggers_path: None,
+            callback_allow_hosts: Vec::new(),
         };
         let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
         let state = ServerState::new(
@@ -1575,6 +1629,7 @@ mod tests {
             labels: BTreeMap::new(),
             timeout_secs: Some(99),
             doctor_first: false,
+            callback: None,
             idempotency_key: None,
             clock: None,
         };
@@ -1617,6 +1672,7 @@ mod tests {
             ui_enabled: true,
             cluster: crate::serve::cluster::ClusterConfig::disabled(),
             triggers_path: None,
+            callback_allow_hosts: Vec::new(),
         };
         let history = Arc::new(MemoryHistory::new(Duration::from_secs(60))) as Arc<dyn RunHistory>;
         ServerState::new(
@@ -1731,6 +1787,7 @@ mod tests {
             ui_enabled: true,
             cluster,
             triggers_path: None,
+            callback_allow_hosts: Vec::new(),
         };
         // A backend that is degraded from startup (primary unreachable).
         let history = Arc::new(FallbackHistory::degraded_at_startup(
@@ -1755,6 +1812,7 @@ mod tests {
             labels: BTreeMap::new(),
             timeout_secs: None,
             doctor_first: false,
+            callback: None,
             idempotency_key: None,
             clock: None,
         };
@@ -1817,6 +1875,7 @@ mod tests {
                 ui_enabled: true,
                 cluster: crate::serve::cluster::ClusterConfig::disabled(),
                 triggers_path: None,
+                callback_allow_hosts: Vec::new(),
             };
             ServerState::new(
                 &cfg,

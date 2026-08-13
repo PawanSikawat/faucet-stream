@@ -31,8 +31,8 @@ pub mod render;
 pub mod spec;
 
 pub use dispatch::Notifier;
-pub use event::NotifyEvent;
+pub use event::{NotifyEvent, RunContext};
 pub use spec::{
-    ChannelSpec, EventKind, NotificationSpec, PagerdutyConfig, Severity, SlackConfig,
-    WebhookConfig, validate_all,
+    ChannelSpec, EventKind, NotificationSpec, PagerdutyConfig, RESERVED_BODY_KEYS, Severity,
+    SlackConfig, WebhookConfig, validate_all,
 };

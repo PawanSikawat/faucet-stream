@@ -99,8 +99,9 @@ pub fn pagerduty(
 }
 
 /// Render a generic webhook body — a stable, machine-readable envelope.
-pub fn webhook(_cfg: &WebhookConfig, event: &NotifyEvent) -> Value {
-    json!({
+pub fn webhook(cfg: &WebhookConfig, event: &NotifyEvent) -> Value {
+    let run = event.run.as_ref();
+    let mut body = json!({
         "event": event.kind.as_str(),
         "severity": event.severity.as_str(),
         "pipeline": event.pipeline,
@@ -108,7 +109,36 @@ pub fn webhook(_cfg: &WebhookConfig, event: &NotifyEvent) -> Value {
         "title": event.title,
         "message": event.message,
         "details": Value::Object(event.details.clone()),
-    })
+        // Emitted as explicit nulls rather than omitted, so receivers can rely
+        // on a stable key set regardless of whether the event had an owning
+        // invocation (#480).
+        "run_id": run.and_then(|r| r.run_id.clone()).map_or(Value::Null, Value::String),
+        "invocation_id": run
+            .and_then(|r| r.invocation_id.clone())
+            .map_or(Value::Null, Value::String),
+        "started_at": run
+            .and_then(|r| r.started_at)
+            .map_or(Value::Null, |t| Value::String(t.to_rfc3339())),
+        "finished_at": run
+            .and_then(|r| r.finished_at)
+            .map_or(Value::Null, |t| Value::String(t.to_rfc3339())),
+        "duration_secs": run
+            .and_then(|r| r.duration)
+            .and_then(|d| serde_json::Number::from_f64(d.as_secs_f64()))
+            .map_or(Value::Null, Value::Number),
+    });
+
+    // Operator-authored static metadata. Reserved-key collisions are rejected at
+    // config-load time (`NotificationSpec::validate`), so this cannot shadow a
+    // faucet-emitted field.
+    if !cfg.extra_fields.is_empty()
+        && let Some(map) = body.as_object_mut()
+    {
+        for (k, v) in &cfg.extra_fields {
+            map.insert(k.clone(), v.clone());
+        }
+    }
+    body
 }
 
 /// Best-effort scalar stringification for Slack context lines.
@@ -201,11 +231,93 @@ mod tests {
             headers: Default::default(),
             hmac_secret: None,
             signature_header: "X-Faucet-Signature".into(),
+            extra_fields: Default::default(),
         };
         let e = NotifyEvent::dlq_threshold("p", "r", 42);
         let body = webhook(&cfg, &e);
         assert_eq!(body["event"], "dlq_threshold");
         assert_eq!(body["severity"], Severity::Warning.as_str());
         assert_eq!(body["details"]["records_dlq"], 42);
+    }
+
+    fn webhook_cfg() -> WebhookConfig {
+        WebhookConfig {
+            url: "u".into(),
+            method: "POST".into(),
+            headers: Default::default(),
+            hmac_secret: None,
+            signature_header: "X-Faucet-Signature".into(),
+            extra_fields: Default::default(),
+        }
+    }
+
+    #[test]
+    fn webhook_carries_run_identity_and_timing() {
+        // #480: the payload must let a receiver correlate the callback back to
+        // the run it triggered. `pipeline` + `row` alone cannot — two
+        // overlapping runs of one pipeline share both.
+        let run =
+            crate::notify::RunContext::start(Some("run-abc".into()), Some("invocation-1".into()))
+                .finish(std::time::Instant::now());
+        let e = NotifyEvent::run_success("p", "r", 7).with_run(run);
+        let body = webhook(&webhook_cfg(), &e);
+
+        assert_eq!(body["run_id"], "run-abc");
+        assert_eq!(body["invocation_id"], "invocation-1");
+        assert!(body["started_at"].is_string(), "started_at must be RFC3339");
+        assert!(body["finished_at"].is_string());
+        assert!(
+            body["duration_secs"].as_f64().unwrap() >= 0.0,
+            "monotonic duration is never negative"
+        );
+    }
+
+    #[test]
+    fn webhook_emits_explicit_nulls_when_no_run_context() {
+        // Stable key set regardless of whether the event had an owning
+        // invocation — receivers must not have to branch on key presence.
+        let e = NotifyEvent::scheduler_stuck("p", "no heartbeat");
+        let body = webhook(&webhook_cfg(), &e);
+        for k in [
+            "run_id",
+            "invocation_id",
+            "started_at",
+            "finished_at",
+            "duration_secs",
+        ] {
+            assert!(body.get(k).is_some(), "{k} key must be present");
+            assert!(body[k].is_null(), "{k} must be null, not omitted");
+        }
+    }
+
+    #[test]
+    fn webhook_merges_extra_fields() {
+        let mut cfg = webhook_cfg();
+        cfg.extra_fields
+            .insert("tenant".into(), Value::String("acme".into()));
+        cfg.extra_fields.insert("attempt".into(), Value::from(2));
+        let e = NotifyEvent::run_success("p", "r", 1);
+        let body = webhook(&cfg, &e);
+        assert_eq!(body["tenant"], "acme");
+        assert_eq!(body["attempt"], 2);
+        // Faucet-emitted fields still intact.
+        assert_eq!(body["event"], "run_success");
+    }
+
+    #[test]
+    fn two_runs_of_one_pipeline_are_distinguishable() {
+        // The regression this feature exists to prevent: identical pipeline+row,
+        // different runs.
+        let mk = |id: &str| {
+            NotifyEvent::run_success("p", "r", 1).with_run(
+                crate::notify::RunContext::start(Some(id.into()), Some(id.into()))
+                    .finish(std::time::Instant::now()),
+            )
+        };
+        let a = webhook(&webhook_cfg(), &mk("run-a"));
+        let b = webhook(&webhook_cfg(), &mk("run-b"));
+        assert_eq!(a["pipeline"], b["pipeline"]);
+        assert_eq!(a["row"], b["row"]);
+        assert_ne!(a["run_id"], b["run_id"]);
     }
 }

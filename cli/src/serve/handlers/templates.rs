@@ -468,6 +468,11 @@ pub struct TriggerBody {
     pub idempotency_key: Option<String>,
     #[serde(default)]
     pub clock: Option<String>,
+    /// Optional completion callback for this run (#481). The primary use case
+    /// for a per-run callback: one registered template, many callers, each
+    /// reporting to its own endpoint.
+    #[serde(default)]
+    pub callback: Option<crate::serve::callback::CallbackSpec>,
 }
 
 /// `POST /v1/templates/{id}/runs` success body (202): the ordinary submit
@@ -579,6 +584,7 @@ pub async fn trigger_template(
         doctor_first: body.doctor_first,
         idempotency_key: body.idempotency_key,
         clock: body.clock,
+        callback: body.callback,
     };
     let run = runner::submit(state.clone(), req, actor.clone()).await?;
     // `submit` already recorded `run.submit`; this second entry attributes the

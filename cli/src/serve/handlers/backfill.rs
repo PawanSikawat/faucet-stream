@@ -62,6 +62,13 @@ pub struct BackfillSubmitRequest {
     /// Per-unit run timeout.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// Accepted only so it can be **rejected** with an explanation (#481). One
+    /// `POST /v1/backfill` submits one tracked run per window unit, so a single
+    /// caller-supplied callback has no single run to attach to — firing it N
+    /// times is almost never what the caller means, and silently dropping it
+    /// would leave them waiting forever.
+    #[serde(default)]
+    pub callback: Option<crate::serve::callback::CallbackSpec>,
 }
 
 /// One planned unit's submission outcome.
@@ -95,6 +102,21 @@ pub async fn submit_backfill(
     Extension(actor): Extension<AuthContext>,
     Json(req): Json<BackfillSubmitRequest>,
 ) -> Result<(StatusCode, Json<BackfillSubmitResponse>), ServeError> {
+    // A backfill fans out into one run per window unit, so a single completion
+    // callback is ambiguous. Refuse it explicitly rather than dropping it: a
+    // caller who set it would otherwise wait on a callback that never arrives.
+    if req.callback.is_some() {
+        return Err(ServeError::Unprocessable {
+            message: "`callback` is not supported on /v1/backfill: this submits one run \
+                      per window unit, so there is no single run for a completion callback \
+                      to describe. Poll `GET /v1/runs?labels=backfill:<hash>` for unit \
+                      status, or submit the units individually via `POST /v1/runs` with a \
+                      callback on each"
+                .to_string(),
+            details: None,
+        });
+    }
+
     // Validate the config loads/expands and gate the window scoping exactly
     // like the CLI: every root's source must reference a `${backfill.*}` /
     // `${now.*}` token or each unit would replay identical data.
@@ -195,6 +217,7 @@ pub async fn submit_backfill(
             labels,
             timeout_secs: req.timeout_secs,
             doctor_first: false,
+            callback: None,
             idempotency_key: Some(format!("backfill:{hash}:{}", unit.id)),
             clock: Some(unit.start.to_rfc3339()),
         };

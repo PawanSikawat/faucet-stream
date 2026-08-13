@@ -2989,6 +2989,11 @@
           "description": "Header carrying the HMAC signature (default `X-Faucet-Signature`).",
           "type": "string",
           "default": "X-Faucet-Signature"
+        },
+        "extra_fields": {
+          "description": "Static fields merged into the emitted JSON body (#480), so a callback can\nbe tagged with a tenant, environment, or external job id. Values go\nthrough the normal interpolation pass, so `${env:...}` / `${vars.X}` /\n`${secret:...}` all work.\n\nKeys that collide with a field faucet itself emits (`event`, `severity`,\n`pipeline`, `row`, `title`, `message`, `details`, `run_id`,\n`invocation_id`, `started_at`, `finished_at`, `duration_secs`) are\nrejected at load time. A typo'd `event` key would otherwise let a config\nsilently spoof the success/failure signal a receiver keys off, so this\nfails fast rather than dropping the key at render time.",
+          "type": "object",
+          "additionalProperties": true
         }
       },
       "additionalProperties": false,

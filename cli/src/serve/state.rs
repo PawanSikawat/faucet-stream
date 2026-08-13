@@ -35,6 +35,8 @@ struct Inner {
     default_config_path: Option<PathBuf>,
     idempotency_retention: Duration,
     probe_timeout: Duration,
+    /// Allowlist of hosts a per-run completion callback may target (#481).
+    callback_allow_hosts: Vec<String>,
     cluster: crate::serve::cluster::ClusterHandle,
     #[cfg(feature = "triggers")]
     triggers: crate::serve::triggers::health::TriggersHandle,
@@ -64,6 +66,7 @@ impl ServerState {
                 default_config_path: config.default_config_path.clone(),
                 idempotency_retention: config.idempotency_retention,
                 probe_timeout: config.probe_timeout,
+                callback_allow_hosts: config.callback_allow_hosts.clone(),
                 cluster: crate::serve::cluster::ClusterHandle::from_config(config),
                 #[cfg(feature = "triggers")]
                 triggers,
@@ -133,6 +136,12 @@ impl ServerState {
         self.inner.probe_timeout
     }
 
+    /// Hosts a per-run completion callback may target. Empty = any host except
+    /// link-local / cloud-metadata addresses (#481).
+    pub fn callback_allow_hosts(&self) -> &[String] {
+        &self.inner.callback_allow_hosts
+    }
+
     pub fn cluster(&self) -> &crate::serve::cluster::ClusterHandle {
         &self.inner.cluster
     }
@@ -170,6 +179,7 @@ mod tests {
             ui_enabled: true,
             cluster: crate::serve::cluster::ClusterConfig::disabled(),
             triggers_path: None,
+            callback_allow_hosts: Vec::new(),
         }
     }
 

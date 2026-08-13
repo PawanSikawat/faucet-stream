@@ -778,6 +778,14 @@ should come from `${env:...}` / `${secret:...}` so they are log-redacted. See
 the [Notifications cookbook](../cookbook/notifications.md) for channel details,
 metrics, and `faucet notify test`. Schema: `faucet schema notifications`.
 
+The `webhook` channel additionally takes `headers`, `hmac_secret` /
+`signature_header`, and `extra_fields` (static values merged into the emitted
+body; a key colliding with a faucet-emitted field is rejected at load time). Its
+payload carries `run_id` / `invocation_id` / `started_at` / `finished_at` /
+`duration_secs` alongside the event, so it can drive an external job-status
+callback — under `faucet serve`, `run_id` is the id returned by `POST /v1/runs`.
+See the [payload table](../cookbook/notifications.md#payload).
+
 ## `replication`
 
 Present only when you run [`faucet replicate`](cli.md#replicate). It turns the
