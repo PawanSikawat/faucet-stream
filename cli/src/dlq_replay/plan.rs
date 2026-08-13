@@ -66,6 +66,7 @@ pub fn failed_dlq_spec(path: &Path, original: Option<&DlqSpec>) -> DlqSpec {
         inherit_transforms: true,
         status: None,
         tags: Vec::new(),
+        complete_for: None,
     };
     match original {
         Some(o) => DlqSpec {
@@ -291,6 +292,7 @@ mod tests {
                 inherit_transforms: true,
                 status: None,
                 tags: Vec::new(),
+                complete_for: None,
             },
             on_batch_error: OnBatchErrorSpec::DlqAll,
             max_failures_per_page: Some(5),

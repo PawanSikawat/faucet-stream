@@ -1922,6 +1922,7 @@ mod tests {
                     inherit_transforms: true,
                     status: None,
                     tags: Vec::new(),
+                    complete_for: None,
                 }),
                 sink: Some(ConnectorSpec {
                     kind: "jsonl".into(),
@@ -1930,6 +1931,7 @@ mod tests {
                     inherit_transforms: true,
                     status: None,
                     tags: Vec::new(),
+                    complete_for: None,
                 }),
                 sources: Default::default(),
                 sinks: Default::default(),
@@ -2941,6 +2943,7 @@ matrix:
                     inherit_transforms: true,
                     status: None,
                     tags: Vec::new(),
+                    complete_for: None,
                 },
                 sink: ConnectorSpec {
                     kind: "jsonl".into(),
@@ -2949,6 +2952,7 @@ matrix:
                     inherit_transforms: true,
                     status: None,
                     tags: Vec::new(),
+                    complete_for: None,
                 },
                 transforms: Vec::new(),
                 state: None,
@@ -2966,6 +2970,7 @@ matrix:
                 depends_on: Vec::new(),
                 status: crate::config::SourceStatus::Active,
                 tags: Vec::new(),
+                cleanup_scope: None,
                 deferred_refs: refs
                     .iter()
                     .map(|(rid, p)| DeferredRef {
@@ -3018,6 +3023,7 @@ matrix:
                 inherit_transforms: true,
                 status: None,
                 tags: Vec::new(),
+                complete_for: None,
             },
             sink: ConnectorSpec {
                 kind: "jsonl".into(),
@@ -3026,6 +3032,7 @@ matrix:
                 inherit_transforms: true,
                 status: None,
                 tags: Vec::new(),
+                complete_for: None,
             },
             transforms: Vec::new(),
             state: None,
@@ -3043,6 +3050,7 @@ matrix:
             depends_on: Vec::new(),
             status: crate::config::SourceStatus::Active,
             tags: Vec::new(),
+            cleanup_scope: None,
             deferred_refs: vec![DeferredRef {
                 referenced_id: "p".into(),
                 dotted_path: "".into(),
@@ -3250,6 +3258,7 @@ matrix:
                 inherit_transforms: true,
                 status: None,
                 tags: Vec::new(),
+                complete_for: None,
             },
             on_batch_error: OnBatchErrorSpec::DlqAll,
             max_failures_per_page: Some(7),
@@ -3334,6 +3343,7 @@ matrix:
                 inherit_transforms: true,
                 status: None,
                 tags: Vec::new(),
+                complete_for: None,
             },
             sink: ConnectorSpec {
                 kind: "jsonl".into(),
@@ -3342,6 +3352,7 @@ matrix:
                 inherit_transforms: true,
                 status: None,
                 tags: Vec::new(),
+                complete_for: None,
             },
             transforms: Vec::new(),
             state,
@@ -3359,6 +3370,7 @@ matrix:
             depends_on: Vec::new(),
             status: crate::config::SourceStatus::Active,
             tags: Vec::new(),
+            cleanup_scope: None,
             deferred_refs: Vec::new(),
             source_override: None,
         }
@@ -3554,6 +3566,7 @@ matrix:
                 inherit_transforms: true,
                 status: None,
                 tags: Vec::new(),
+                complete_for: None,
             },
             sink: ConnectorSpec {
                 kind: "jsonl".into(),
@@ -3562,6 +3575,7 @@ matrix:
                 inherit_transforms: true,
                 status: None,
                 tags: Vec::new(),
+                complete_for: None,
             },
             transforms: Vec::new(),
             state: None,
@@ -3579,6 +3593,7 @@ matrix:
             depends_on: Vec::new(),
             status: crate::config::SourceStatus::Active,
             tags: Vec::new(),
+            cleanup_scope: None,
             deferred_refs: Vec::new(),
             source_override: None,
         };

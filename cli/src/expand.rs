@@ -97,6 +97,12 @@ pub struct ExpandedNode {
     /// executor runs it through the normal pipeline path. `None` for every
     /// config-driven node (the executor builds the source from `source.kind`).
     pub source_override: Option<crate::dlq_replay::reader::SourceOverride>,
+    /// Scoped-cleanup claim (#478): the source's `complete_for` scope, still
+    /// carrying any `${parent.*}` / `${now.*}` tokens — the executor resolves
+    /// them per invocation, like the connector configs. `Some` only when the
+    /// destination sink also opted in with `cleanup: delete_missing`, so this
+    /// being present already means a cleanup is intended.
+    pub cleanup_scope: Option<std::collections::BTreeMap<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone)]
@@ -750,6 +756,79 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             unreachable!("delivery-guarantee derivation and the exactly-once gate diverged");
         }
 
+        // ── Scoped-cleanup gates (load-time, #478) ──────────────────────
+        // Cleanup DELETES data, so every precondition is checked before a run
+        // starts rather than discovered mid-flight.
+        let sink_cleanup = merged_sink
+            .config
+            .get("cleanup")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        // A claim on the sink side is meaningless — only a source knows whether
+        // a fetch is complete.
+        if merged_sink.complete_for.is_some() {
+            return Err(CliError::Config(format!(
+                "row '{}': `complete_for` belongs on the source, not the sink — only the \
+                 source can claim a fetch returned every record for a scope",
+                ids[i]
+            )));
+        }
+        let cleanup_scope = match (&sink_cleanup, &merged_source.complete_for) {
+            (None, _) => None,
+            (Some(mode), _) if mode != "delete_missing" => {
+                return Err(CliError::Config(format!(
+                    "row '{}': unknown cleanup mode '{}' (expected delete_missing)",
+                    ids[i], mode
+                )));
+            }
+            (Some(_), None) => {
+                // The opt-in without a claim would delete every row in the
+                // destination that this run did not write — i.e. a truncate.
+                return Err(CliError::Config(format!(
+                    "row '{}': sink `cleanup: delete_missing` requires the source to declare \
+                     `complete_for` — without a scope there is nothing bounding the delete",
+                    ids[i]
+                )));
+            }
+            (Some(_), Some(scope)) => {
+                if !crate::registry::sink_supports_cleanup(&merged_sink.kind) {
+                    return Err(CliError::Config(format!(
+                        "row '{}': cleanup is not supported by sink '{}' (cleanup-capable \
+                         sinks: {})",
+                        ids[i],
+                        merged_sink.kind,
+                        crate::registry::CLEANUP_SINK_KINDS.join(", ")
+                    )));
+                }
+                if scope.is_empty() {
+                    return Err(CliError::Config(format!(
+                        "row '{}': `complete_for` is empty — an empty scope matches every \
+                         row in the destination",
+                        ids[i]
+                    )));
+                }
+                if !matches!(mode, faucet_core::WriteMode::Upsert) {
+                    return Err(CliError::Config(format!(
+                        "row '{}': cleanup requires `write_mode: upsert` (got '{}') — on an \
+                         append sink there is no key to tell a written row from a stale one",
+                        ids[i], requested_mode
+                    )));
+                }
+                // Cleanup is a second, non-idempotent write outside the
+                // commit-token transaction, so it cannot compose with the
+                // atomic-watermark path.
+                if matches!(delivery, faucet_core::DeliveryMode::ExactlyOnce) {
+                    return Err(CliError::Config(format!(
+                        "row '{}': cleanup is incompatible with `delivery: exactly_once` — \
+                         the scoped delete happens outside the commit-token transaction, so \
+                         it cannot be replayed idempotently",
+                        ids[i]
+                    )));
+                }
+                Some(scope.clone())
+            }
+        };
+
         // Schema-drift policy gates (load-time):
         //  - `evolve` requires an evolution-capable sink.
         //  - `quarantine` (drift or incompatible) requires a DLQ, and is
@@ -804,6 +883,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             tags,
             deferred_refs: deferred,
             source_override: None,
+            cleanup_scope,
         });
     }
     Ok(out)

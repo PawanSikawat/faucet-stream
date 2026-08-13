@@ -395,6 +395,19 @@ pub struct ConnectorSpec {
     /// sinks. Validated at expand time (charset `^[a-z0-9][a-z0-9_-]*$`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+
+    /// **Completeness claim** for scoped cleanup (#478): "for these column
+    /// values, this fetch returns *all* the records". Keys are **destination**
+    /// column names; values may carry `${parent.path}` / `${now.*}` tokens,
+    /// resolved per invocation like any other config value.
+    ///
+    /// Declared on the *source* because only the source knows whether a fetch is
+    /// complete — a sink sees a page and cannot tell a complete set from page 1
+    /// of 3. It is inert on its own: the destination sink must also opt in with
+    /// `cleanup: delete_missing`, so a delete can never happen implicitly.
+    /// Meaningful only on source templates; rejected at expand time on sinks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complete_for: Option<std::collections::BTreeMap<String, Value>>,
 }
 
 /// A partial connector override carried by a matrix row. Both `type` and

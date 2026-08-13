@@ -101,6 +101,7 @@ pub fn build_source(env: &HashMap<String, String>) -> CliResult<ConnectorSpec> {
         inherit_transforms: true,
         status: None,
         tags: Vec::new(),
+        complete_for: None,
     })
 }
 
@@ -125,6 +126,7 @@ pub fn build_sink(env: &HashMap<String, String>) -> CliResult<ConnectorSpec> {
         inherit_transforms: true,
         status: None,
         tags: Vec::new(),
+        complete_for: None,
     })
 }
 
@@ -256,6 +258,7 @@ fn build_named_catalog(
                 inherit_transforms: true,
                 status: None,
                 tags: Vec::new(),
+                complete_for: None,
             },
         );
     }
