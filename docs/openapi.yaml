@@ -931,6 +931,46 @@ components:
         doctor_first: { type: boolean, default: false, description: "Run doctor probes first; 422 with report on failure." }
         idempotency_key: { type: string, nullable: true }
         clock: { type: string, format: date-time, description: "Override the ${now.*} clock (backfills)." }
+        callback: { $ref: "#/components/schemas/CallbackSpec" }
+    CallbackSpec:
+      type: object
+      required: [url]
+      description: >-
+        Completion callback for this run (#481). Fired once when the run reaches a
+        terminal state. Delivery is **at-most-once** and best-effort: it is not
+        fired when a run is failed by lease-expiry recovery inside the history
+        backend, so treat a missing callback as "unknown" and reconcile against
+        GET /v1/runs/{id}, which is always authoritative. Refused with 422 on
+        /v1/backfill (one POST fans out into N unit runs).
+      properties:
+        url:
+          type: string
+          description: >-
+            Destination. http/https only. Link-local / cloud-metadata addresses
+            are refused unless named in the server's --callback-allow-host
+            allowlist; when that allowlist is non-empty, only its hosts are
+            permitted.
+        method: { type: string, default: POST }
+        headers:
+          type: object
+          additionalProperties: { type: string }
+          description: >-
+            Extra request headers. Refused with 422 on a clustered server, which
+            persists the run record (including this map) into the shared
+            run-history database for a peer to execute.
+        extra_fields:
+          type: object
+          additionalProperties: true
+          description: >-
+            Static fields merged into the callback body. A key colliding with a
+            faucet-emitted field is refused with 422.
+        on:
+          type: array
+          items: { $ref: "#/components/schemas/RunStatus" }
+          description: >-
+            Terminal statuses to fire on. Empty (default) = all of them. A
+            callback subscribed only to `completed` will never fire for a
+            cancelled or failed run.
     SubmitResponse:
       type: object
       required: [run_id, status, submitted_at]
@@ -964,6 +1004,7 @@ components:
         error: { type: string, nullable: true }
         idempotency_key: { type: string, nullable: true }
         doctor_report: { type: object, nullable: true }
+        callback: { $ref: "#/components/schemas/CallbackSpec" }
     ListResponse:
       type: object
       required: [runs]

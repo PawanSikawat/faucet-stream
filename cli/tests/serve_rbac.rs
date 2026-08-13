@@ -49,6 +49,7 @@ fn args_with_auth_config(port: u16, auth_config: std::path::PathBuf) -> ServeArg
         cluster_poll_secs: 2,
         cluster_max_attempts: 3,
         triggers: None,
+        callback_allow_host: Vec::new(),
         mcp: false,
         mcp_allow_mutations: false,
     }

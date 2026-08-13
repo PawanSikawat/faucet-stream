@@ -103,6 +103,17 @@ pub async fn cancel_run(
         {
             crate::serve::audit::write(&state, &actor, "run.cancel", Some(id.clone()), None, "ok")
                 .await;
+            // Terminal transition that bypasses `runner::finalize` entirely, so
+            // it must fire the completion callback itself (#481).
+            match state.history().get(&id).await {
+                Ok(Some(rec)) => crate::serve::callback::fire(&rec).await,
+                Ok(None) => {}
+                Err(e) => tracing::warn!(
+                    run_id = %id,
+                    error = %e,
+                    "could not read cancelled run for its completion callback"
+                ),
+            }
             return Ok(StatusCode::ACCEPTED);
         }
         // Otherwise it is running on a peer → flag it; the peer cancels on its

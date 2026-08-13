@@ -178,6 +178,7 @@ async fn every_documented_route_is_wired_on_the_live_server() {
         cluster_poll_secs: 2,
         cluster_max_attempts: 3,
         triggers: None,
+        callback_allow_host: Vec::new(),
         mcp: false,
         mcp_allow_mutations: false,
     };

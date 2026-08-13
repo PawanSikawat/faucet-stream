@@ -232,6 +232,7 @@ mod tests {
             ui_enabled: true,
             cluster: ClusterConfig::disabled(),
             triggers_path: None,
+            callback_allow_hosts: Vec::new(),
         };
         let h = ClusterHandle::from_config(&cfg);
         h.kick();
