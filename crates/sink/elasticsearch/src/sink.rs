@@ -226,6 +226,99 @@ impl ElasticsearchSink {
         Ok(body)
     }
 
+    /// Delete documents in `scope` whose key was not written by this run (#478).
+    ///
+    /// One `POST /<index>/_delete_by_query?refresh=true` with the body built by
+    /// [`build_cleanup_query`].
+    ///
+    /// **Atomicity caveat — there is none, and it is visible.** Elasticsearch has
+    /// no transactions: `_delete_by_query` takes a snapshot of the index, then
+    /// deletes the matching documents in batches. So the scope passes through
+    /// partially-cleaned states that concurrent searches can observe, and a
+    /// mid-flight failure leaves some stale documents deleted and others not.
+    /// Two things keep that safe rather than merely tolerable:
+    ///
+    /// 1. The query excludes every written `_id`, so **no partial outcome can
+    ///    remove a document this run wrote** — only stale ones, in some order.
+    /// 2. A partial outcome is never reported as success:
+    ///    [`deleted_from_delete_by_query`] turns any failure / version conflict /
+    ///    timeout into an error naming how many documents were removed. The next
+    ///    run re-derives the same scope and finishes the job (the operation is
+    ///    idempotent — re-deleting an already-deleted document is a no-op).
+    ///
+    /// A document that another writer changes mid-delete raises a version
+    /// conflict and is left in place (`conflicts=abort`, the default) rather than
+    /// being deleted on the strength of a stale snapshot.
+    ///
+    /// An empty `seen` set is **not** a no-op — it means the source reported the
+    /// scope as empty, so every document in it is stale and must go. That is the
+    /// case this feature exists for.
+    async fn cleanup_scope_impl(
+        &self,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &faucet_core::SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        let key = &self.config.write.key;
+        if key.is_empty() {
+            return Err(FaucetError::Sink(
+                "cleanup requires a non-empty `key`".to_string(),
+            ));
+        }
+        if scope.is_empty() {
+            // Defence in depth: `CleanupPolicy::new` already refuses this. With
+            // no scope predicate the query would match the whole index — the
+            // difference between a cleanup and a wipe.
+            return Err(FaucetError::Sink(
+                "cleanup: refusing an empty completeness claim — with no scope predicate the \
+                 delete would match every document in the index"
+                    .to_string(),
+            ));
+        }
+        check_key_alignment(key, seen.keys())?;
+
+        let ids = cleanup_doc_ids(seen.keys());
+        check_cleanup_id_count(ids.len())?;
+        let body = build_cleanup_query(scope, &ids);
+
+        let auth = self.resolve_auth().await?;
+        // `refresh=true` so the deletions are visible to searches as soon as the
+        // call returns — a cleanup whose effect is invisible for the next second
+        // reads as a no-op to anything checking the destination.
+        let url = format!(
+            "{}/{}/_delete_by_query?refresh=true",
+            self.config.base_url, self.config.index
+        );
+        let req = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&body).map_err(|e| {
+                FaucetError::Sink(format!("cleanup: failed to serialize delete query: {e}"))
+            })?);
+        let resp = Self::apply_auth_value(req, &auth).send().await?;
+
+        // A missing index holds no stale documents. Detect the 404 before
+        // `check_http_response`, which treats it as an error.
+        if resp.status().as_u16() == 404 {
+            tracing::debug!(
+                index = %self.config.index,
+                "Elasticsearch scoped cleanup: index does not exist, nothing to delete"
+            );
+            return Ok(0);
+        }
+        let resp = check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
+        let resp_body: Value = resp.json().await?;
+        let deleted = deleted_from_delete_by_query(&resp_body)?;
+
+        tracing::info!(
+            deleted,
+            written_keys = ids.len(),
+            index = %self.config.index,
+            "Elasticsearch scoped cleanup complete"
+        );
+        Ok(deleted)
+    }
+
     /// Build the NDJSON bulk body for an upsert/delete [`WritePlan`](faucet_core::WritePlan).
     ///
     /// Each `plan.upserts` row becomes an `{"index":{"_id":…}}` action (an
@@ -280,6 +373,174 @@ fn doc_id_from_row(row: &Value, key: &[String]) -> String {
             .collect(),
     );
     faucet_core::key_to_doc_id(&kt, ":")
+}
+
+// ---------------------------------------------------------------------------
+// Scoped cleanup (#478) — pure query construction + response parsing.
+// ---------------------------------------------------------------------------
+
+/// Ceiling on the number of written document ids one cleanup query may carry.
+///
+/// The written keys become an `ids` query, which Elasticsearch expands into a
+/// terms lookup on `_id` and caps at `index.max_terms_count` (default 65 536).
+/// The set cannot be split across several `_delete_by_query` calls to get under
+/// the cap: each call would delete the ids the *other* calls excluded — i.e.
+/// delete the documents this run wrote. So an oversized set is refused outright.
+const MAX_CLEANUP_IDS: usize = 65_536;
+
+/// Verify every accumulated key tuple is addressed by the same fields, in the
+/// same order, as the sink's configured `key`.
+///
+/// The written-document `_id`s are derived from the tuple **in key order** (see
+/// [`doc_id_from_row`]), and the cleanup deletes everything in the scope whose
+/// `_id` is not in that list. A tuple in a different order would derive a
+/// different `_id`, making a written document look unwritten — and delete it.
+/// The pipeline builds the tuples from the sink's own `key`, so a mismatch is an
+/// internal invariant violation; it is checked anyway because the cost is a few
+/// string comparisons and the failure mode is data loss.
+fn check_key_alignment(key: &[String], seen: &[faucet_core::KeyTuple]) -> Result<(), FaucetError> {
+    for kt in seen {
+        let aligned = kt.0.len() == key.len() && kt.0.iter().zip(key).all(|((c, _), k)| c == k);
+        if !aligned {
+            let got: Vec<&str> = kt.0.iter().map(|(c, _)| c.as_str()).collect();
+            return Err(FaucetError::Sink(format!(
+                "cleanup: a written-key tuple is keyed by {got:?} but the sink's key is {key:?} \
+                 — refusing to delete, because a mismatched key derives a different document \
+                 _id and would make written documents look unwritten"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Document `_id`s for the keys this run wrote, using the **same** injective
+/// derivation the upsert path uses ([`faucet_core::key_to_doc_id`]).
+///
+/// Sharing the derivation is what makes the cleanup correct: `write_batch`
+/// indexes each upsert row under `key_to_doc_id(key)`, so "the ids this run
+/// wrote" is exactly this list — including for composite keys, which render as
+/// canonical JSON rather than a lossy separator join.
+fn cleanup_doc_ids(seen: &[faucet_core::KeyTuple]) -> Vec<String> {
+    seen.iter()
+        .map(|kt| faucet_core::key_to_doc_id(kt, ":"))
+        .collect()
+}
+
+/// Refuse a written-key set too large for one `_delete_by_query`, naming the
+/// bound and the way out.
+fn check_cleanup_id_count(ids: usize) -> Result<(), FaucetError> {
+    if ids <= MAX_CLEANUP_IDS {
+        return Ok(());
+    }
+    Err(FaucetError::Sink(format!(
+        "cleanup: this run wrote {ids} documents in the claimed scope, over this sink's ceiling \
+         of {MAX_CLEANUP_IDS} ids for one _delete_by_query (Elasticsearch caps a terms lookup at \
+         `index.max_terms_count`, 65536 by default, and the id set cannot be split across \
+         several queries without deleting documents this run wrote). Nothing was deleted — \
+         narrow the completeness claim so fewer documents fall inside one scope."
+    )))
+}
+
+/// Build the `_delete_by_query` body selecting documents in `scope` whose `_id`
+/// is **not** among the ones this run wrote (#478).
+///
+/// Shape:
+/// ```json
+/// {"query": {"bool": {
+///   "filter":   [{"term": {"contact_id": 7}}, …],
+///   "must_not": [{"ids": {"values": ["1", "2"]}}]
+/// }}}
+/// ```
+///
+/// The scope predicates go in `filter` (not `must`) — they are exact equality
+/// with no relevance contribution, so the filter context skips scoring and is
+/// cacheable. Each is a `term` query, which matches the **indexed** value: a
+/// scope field mapped as analyzed `text` will not match and the cleanup would
+/// delete nothing; such a field needs a `keyword` mapping (or a `.keyword`
+/// sub-field named in the claim).
+///
+/// The written set is excluded by `_id` rather than by `must_not` terms on the
+/// key fields, because `_id` is exactly what the upsert path addresses: it needs
+/// no mapping, works unchanged for composite keys, and cannot be defeated by an
+/// analyzed key field.
+///
+/// An empty `seen` set omits the `must_not` clause entirely, leaving the scope
+/// predicate alone so **every** document in the scope is deleted. That is not a
+/// degenerate case but the motivating one: the source claimed the scope is
+/// complete and reported no records in it.
+fn build_cleanup_query(scope: &std::collections::BTreeMap<String, Value>, ids: &[String]) -> Value {
+    let filter: Vec<Value> = scope
+        .iter()
+        .map(|(field, v)| {
+            let mut term = serde_json::Map::with_capacity(1);
+            term.insert(field.clone(), v.clone());
+            serde_json::json!({ "term": Value::Object(term) })
+        })
+        .collect();
+
+    let mut bool_query = serde_json::Map::with_capacity(2);
+    bool_query.insert("filter".to_string(), Value::Array(filter));
+    if !ids.is_empty() {
+        bool_query.insert(
+            "must_not".to_string(),
+            serde_json::json!([{ "ids": { "values": ids } }]),
+        );
+    }
+
+    serde_json::json!({ "query": { "bool": Value::Object(bool_query) } })
+}
+
+/// Read the deleted-document count out of a `_delete_by_query` response,
+/// refusing to report success on a partial run.
+///
+/// `_delete_by_query` is a scan-and-delete, so it can stop part-way and still
+/// answer `200 OK` with a body describing what it managed to do. Reporting the
+/// `deleted` count alone would tell the caller "the scope is clean" when stale
+/// documents remain, so any `failures`, version conflict, or timeout is surfaced
+/// as an error that states how many documents *were* removed. The next run
+/// re-derives the same scope and finishes the job.
+fn deleted_from_delete_by_query(body: &Value) -> Result<u64, FaucetError> {
+    let deleted = body.get("deleted").and_then(Value::as_u64).ok_or_else(|| {
+        FaucetError::Sink(
+            "cleanup: malformed _delete_by_query response — no numeric 'deleted' field".to_string(),
+        )
+    })?;
+
+    if let Some(failures) = body.get("failures").and_then(Value::as_array)
+        && !failures.is_empty()
+    {
+        return Err(FaucetError::Sink(format!(
+            "cleanup: _delete_by_query reported {} failure(s) after deleting {deleted} \
+             document(s) — the scope may still hold stale documents; first failure: {}",
+            failures.len(),
+            failures[0]
+        )));
+    }
+
+    let conflicts = body
+        .get("version_conflicts")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if conflicts > 0 {
+        return Err(FaucetError::Sink(format!(
+            "cleanup: _delete_by_query hit {conflicts} version conflict(s) after deleting \
+             {deleted} document(s) — those documents changed while the delete ran and were left \
+             in place; the scope may still hold stale documents"
+        )));
+    }
+
+    if body
+        .get("timed_out")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(FaucetError::Sink(format!(
+            "cleanup: _delete_by_query timed out after deleting {deleted} document(s) — the \
+             scope may still hold stale documents"
+        )));
+    }
+
+    Ok(deleted)
 }
 
 /// A [`faucet_core::WritePlan`] paired with, for each emitted bulk action (in
@@ -506,6 +767,24 @@ impl faucet_core::Sink for ElasticsearchSink {
             faucet_core::redact_uri_credentials(&self.config.base_url),
             self.config.index
         )
+    }
+
+    fn supports_cleanup(&self) -> bool {
+        // Unconditional: Elasticsearch addresses documents by `_id`, which every
+        // index has, so the cleanup needs nothing declared up front (there is no
+        // column-mapping mode to exclude, as on the SQL sinks). The remaining
+        // requirement — a non-empty `key`, so the written `_id`s can be derived
+        // — is enforced by `WriteSpec::validate` at config-load time (cleanup
+        // implies `write_mode: upsert`) and again in `cleanup_scope`.
+        true
+    }
+
+    async fn cleanup_scope(
+        &self,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &faucet_core::SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        self.cleanup_scope_impl(scope, seen).await
     }
 
     /// Elasticsearch is schemaless and `_id`-addressable, so all three write
@@ -1179,6 +1458,154 @@ mod tests {
         );
         // And both go through the injective core helper, not a `:`-join.
         assert!(!id1.contains("x_:y") && !id2.contains("x:_y"));
+    }
+
+    // -- scoped cleanup (#478) pure helpers ---------------------------------
+
+    fn kt(pairs: &[(&str, Value)]) -> faucet_core::KeyTuple {
+        faucet_core::KeyTuple(
+            pairs
+                .iter()
+                .map(|(c, v)| (c.to_string(), v.clone()))
+                .collect(),
+        )
+    }
+
+    fn scope_of(pairs: &[(&str, Value)]) -> std::collections::BTreeMap<String, Value> {
+        pairs
+            .iter()
+            .map(|(c, v)| (c.to_string(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn cleanup_query_filters_scope_and_excludes_written_ids() {
+        let ids = cleanup_doc_ids(&[kt(&[("id", json!(1))]), kt(&[("id", json!("a"))])]);
+        let q = build_cleanup_query(&scope_of(&[("contact_id", json!(7))]), &ids);
+        assert_eq!(
+            q,
+            json!({"query": {"bool": {
+                "filter": [{"term": {"contact_id": 7}}],
+                "must_not": [{"ids": {"values": ["1", "a"]}}],
+            }}})
+        );
+    }
+
+    #[test]
+    fn cleanup_query_empty_seen_deletes_the_whole_scope() {
+        // The motivating case: the source says "this scope is now empty", so the
+        // query is the scope predicate alone — NOT a no-op, and no `must_not`.
+        let q = build_cleanup_query(&scope_of(&[("contact_id", json!(7))]), &[]);
+        assert_eq!(
+            q,
+            json!({"query": {"bool": {"filter": [{"term": {"contact_id": 7}}]}}})
+        );
+        assert!(
+            q["query"]["bool"].get("must_not").is_none(),
+            "an empty id list must omit must_not, not send an empty ids query"
+        );
+    }
+
+    #[test]
+    fn cleanup_query_one_term_per_scope_field() {
+        let q = build_cleanup_query(
+            &scope_of(&[("a", json!(1)), ("b", json!("x"))]),
+            &["1".to_string()],
+        );
+        // BTreeMap ordering makes the scope clauses deterministic.
+        assert_eq!(
+            q["query"]["bool"]["filter"],
+            json!([{"term": {"a": 1}}, {"term": {"b": "x"}}])
+        );
+    }
+
+    #[test]
+    fn cleanup_ids_match_the_upsert_id_derivation() {
+        // The cleanup only deletes what the upsert path did NOT write, so its
+        // ids must be byte-identical to the ones `build_plan_body` indexes under
+        // — including for composite keys (canonical JSON, not a `:`-join).
+        let row = json!({"tenant": "acme", "id": 7});
+        let key = vec!["tenant".to_string(), "id".to_string()];
+        let ids = cleanup_doc_ids(&[kt(&[("tenant", json!("acme")), ("id", json!(7))])]);
+        assert_eq!(ids, vec![doc_id_from_row(&row, &key)]);
+        assert_eq!(ids[0], "[\"acme\",7]");
+    }
+
+    #[test]
+    fn key_alignment_accepts_matching_tuples() {
+        let key = vec!["tenant".to_string(), "id".to_string()];
+        let seen = vec![kt(&[("tenant", json!("acme")), ("id", json!(1))])];
+        assert!(check_key_alignment(&key, &seen).is_ok());
+    }
+
+    #[test]
+    fn key_alignment_rejects_a_reordered_or_renamed_tuple() {
+        // Order matters: `key_to_doc_id` is order-sensitive, so a reordered
+        // tuple derives a different `_id` and would delete a written document.
+        let key = vec!["tenant".to_string(), "id".to_string()];
+        let reordered = vec![kt(&[("id", json!(1)), ("tenant", json!("acme"))])];
+        let err = check_key_alignment(&key, &reordered).expect_err("must refuse");
+        assert!(err.to_string().contains("refusing to delete"), "{err}");
+
+        let renamed = vec![kt(&[("tenant", json!("acme")), ("other", json!(1))])];
+        assert!(check_key_alignment(&key, &renamed).is_err());
+    }
+
+    #[test]
+    fn id_count_within_the_ceiling_is_accepted() {
+        assert!(check_cleanup_id_count(MAX_CLEANUP_IDS).is_ok());
+    }
+
+    #[test]
+    fn oversized_id_set_is_refused_with_the_bound_named() {
+        // The id set cannot be split across queries, so an outsized one must be
+        // refused outright rather than half-issued.
+        let err = check_cleanup_id_count(MAX_CLEANUP_IDS + 1).expect_err("must refuse");
+        let msg = err.to_string();
+        assert!(msg.contains(&MAX_CLEANUP_IDS.to_string()), "{msg}");
+        assert!(msg.contains("Nothing was deleted"), "{msg}");
+    }
+
+    #[test]
+    fn delete_by_query_reports_deleted_count() {
+        let body =
+            json!({"deleted": 3, "version_conflicts": 0, "failures": [], "timed_out": false});
+        assert_eq!(deleted_from_delete_by_query(&body).unwrap(), 3);
+    }
+
+    #[test]
+    fn delete_by_query_failures_are_not_reported_as_success() {
+        // A partial delete answers 200 OK; reporting its `deleted` count would
+        // claim the scope is clean while stale documents remain.
+        let body = json!({
+            "deleted": 2,
+            "failures": [{"index": "idx", "cause": {"type": "es_rejected_execution_exception"}}],
+        });
+        let err = deleted_from_delete_by_query(&body).expect_err("must surface the failure");
+        let msg = err.to_string();
+        assert!(msg.contains("deleting 2"), "{msg}");
+        assert!(msg.contains("es_rejected_execution_exception"), "{msg}");
+    }
+
+    #[test]
+    fn delete_by_query_version_conflicts_are_surfaced() {
+        let body = json!({"deleted": 5, "version_conflicts": 2, "failures": []});
+        let err = deleted_from_delete_by_query(&body).expect_err("must surface the conflict");
+        assert!(err.to_string().contains("version conflict"), "{err}");
+    }
+
+    #[test]
+    fn delete_by_query_timeout_is_surfaced() {
+        let body = json!({"deleted": 1, "version_conflicts": 0, "failures": [], "timed_out": true});
+        let err = deleted_from_delete_by_query(&body).expect_err("must surface the timeout");
+        assert!(err.to_string().contains("timed out"), "{err}");
+    }
+
+    #[test]
+    fn delete_by_query_malformed_response_is_typed_error() {
+        let err = deleted_from_delete_by_query(&json!({"acknowledged": true}))
+            .expect_err("must refuse a body with no deleted count");
+        assert!(err.to_string().contains("malformed"), "{err}");
     }
 
     #[test]
