@@ -202,6 +202,35 @@ pipeline:
       path: ./state
 ```
 
+## Scoped cleanup
+
+`SqliteSink` implements `Sink::supports_cleanup` (`true` in `auto_map` mode) and `Sink::cleanup_scope`, so an incremental sync can remove rows that were **deleted at the source** — something `write_mode: upsert` alone can never do, because a deleted record simply stops appearing in the feed.
+
+Opt in with `cleanup: delete_missing` alongside `write_mode: upsert`, and pair it with a source that declares a completeness claim (`complete_for`):
+
+```yaml
+pipeline:
+  sink:
+    type: sqlite
+    config:
+      database_url: /data/warehouse.db
+      table_name: contact_associations
+      column_mapping: auto_map
+      write_mode: upsert
+      key: [contact_id, association_id]
+      cleanup: delete_missing
+```
+
+After a successful, uncancelled invocation the sink deletes every row matching the claimed scope whose key this run did not write:
+
+- The written keys are loaded into a `CREATE TEMP TABLE temp.faucet_cleanup_keys` (always referenced through the `temp` schema, so it can never collide with a real table of that name), and the delete is a single `DELETE … WHERE <scope> AND NOT EXISTS (SELECT 1 FROM temp.faucet_cleanup_keys …)`. Not `key NOT IN (…)`: the written-key set routinely exceeds SQLite's 32766 bind-variable limit.
+- The whole thing runs in **one transaction**, so the delete is all-or-nothing — a partial delete would remove rows the run actually wrote.
+- **An empty result set is not a no-op**: if the source reports the scope as empty, every row in that scope is deleted. That is the case the feature exists for.
+- Scope and `key` columns are validated against `PRAGMA table_info` first, so a name that is not a real column fails with a clear error naming the column and table instead of a mid-`DELETE` SQL failure. They are written in **destination** column terms.
+- Identifiers in the cleanup SQL are **backtick**-quoted, not double-quoted: SQLite's double-quoted-string misfeature would silently turn an unresolvable column into a string literal, and in a `DELETE` predicate that is the difference between an error and deleting the wrong rows.
+
+`cleanup` requires `write_mode: upsert` with a non-empty `key`, and `column_mapping: auto_map` — a single JSON payload column has no real columns for the scope predicate to address.
+
 ## Effectively-once delivery
 
 `SqliteSink` implements `Sink::supports_idempotent_writes` (returns `true`) and the two companion hooks:
