@@ -1150,6 +1150,7 @@ mod tests {
                 field: "__op".into(),
                 values: vec!["d".into()],
             }),
+            cleanup: None,
         };
         let page = vec![
             json!({"id": 1, "name": "a"}),

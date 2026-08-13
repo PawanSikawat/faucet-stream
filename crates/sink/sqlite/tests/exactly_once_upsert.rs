@@ -75,6 +75,7 @@ async fn idempotent_upsert_updates_in_place_and_advances_token() {
             write_mode: WriteMode::Upsert,
             key: vec!["id".to_string()],
             delete_marker: None,
+            cleanup: None,
         },
     };
     let sink = SqliteSink::new(cfg).await.unwrap();

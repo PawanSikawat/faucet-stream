@@ -562,6 +562,149 @@ impl PostgresSink {
         Ok(total)
     }
 
+    /// Delete rows in `scope` whose key was not written by this run (#478).
+    ///
+    /// Uses a temp table + `NOT EXISTS` rather than `key NOT IN (…)` because the
+    /// written-key set routinely exceeds PostgreSQL's 65535 bind-parameter limit
+    /// (the cleanup ceiling defaults to 100k rows). It also makes the whole thing
+    /// one transaction, so the delete is all-or-nothing: a partial delete would
+    /// remove rows the run actually wrote.
+    ///
+    /// An empty `seen` set is meaningful, not a no-op — it means the source
+    /// reported the scope as empty, so every row in it is stale and must go. That
+    /// is the case this feature exists for.
+    async fn cleanup_scope_impl(
+        &self,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &faucet_core::SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        let key = &self.config.write.key;
+        if key.is_empty() {
+            return Err(FaucetError::Sink(
+                "cleanup requires a non-empty `key`".to_string(),
+            ));
+        }
+        let table_ref = qualified_table_ref(self.config.schema.as_deref(), &self.config.table_name);
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("PostgreSQL begin failed: {e}")))?;
+
+        let udts: std::collections::HashMap<String, String> = self
+            .discover_columns(&mut tx, &table_ref)
+            .await?
+            .into_iter()
+            .collect();
+
+        // Fail with a clear message rather than letting PostgreSQL reject an
+        // unknown column mid-DELETE. The scope is written in *destination* terms,
+        // so a name that isn't a real column is a config error worth naming.
+        for col in scope.keys().chain(key.iter()) {
+            if !udts.contains_key(col) {
+                return Err(FaucetError::Sink(format!(
+                    "cleanup: column '{col}' does not exist on {table_ref} — the \
+                     completeness claim and `key` are in destination column terms"
+                )));
+            }
+        }
+        let udt_of = |c: &str| udts.get(c).cloned().unwrap_or_else(|| "text".to_string());
+
+        // Temp table mirroring the key columns' types. `ON COMMIT DROP` scopes it
+        // to this transaction, so concurrent cleanups on other connections cannot
+        // collide on the name.
+        let temp_cols = key
+            .iter()
+            .map(|k| format!("{} {}", quote_ident(k), udt_of(k)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        sqlx::query(&format!(
+            "CREATE TEMP TABLE faucet_cleanup_keys ({temp_cols}) ON COMMIT DROP"
+        ))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| FaucetError::Sink(format!("cleanup: temp table creation failed: {e}")))?;
+
+        // Load the written keys.
+        const MAX_PG_PARAMS: usize = 65535;
+        let per = (MAX_PG_PARAMS / key.len()).max(1);
+        let key_udts: Vec<String> = key.iter().map(|k| udt_of(k)).collect();
+        let col_list = key
+            .iter()
+            .map(|k| quote_ident(k))
+            .collect::<Vec<_>>()
+            .join(", ");
+        for chunk in seen.keys().chunks(per) {
+            let mut ph = 1usize;
+            let tuples: Vec<String> = chunk
+                .iter()
+                .map(|_| {
+                    let group = key_udts
+                        .iter()
+                        .map(|udt| {
+                            let s = format!("${ph}::{udt}");
+                            ph += 1;
+                            s
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("({group})")
+                })
+                .collect();
+            let sql = format!(
+                "INSERT INTO faucet_cleanup_keys ({col_list}) VALUES {}",
+                tuples.join(", ")
+            );
+            let mut q = sqlx::query(&sql);
+            for kt in chunk {
+                for ((_, v), udt) in kt.0.iter().zip(key_udts.iter()) {
+                    q = q.bind(pg_bind_text(Some(v), udt));
+                }
+            }
+            q.execute(&mut *tx)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("cleanup: loading keys failed: {e}")))?;
+        }
+
+        // DELETE everything in scope that isn't in the written-key set.
+        let mut ph = 1usize;
+        let scope_pred = scope
+            .keys()
+            .map(|c| {
+                let s = format!("t.{} = ${}::{}", quote_ident(c), ph, udt_of(c));
+                ph += 1;
+                s
+            })
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let join_pred = key
+            .iter()
+            .map(|k| {
+                let q = quote_ident(k);
+                format!("c.{q} = t.{q}")
+            })
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let sql = format!(
+            "DELETE FROM {table_ref} t WHERE {scope_pred} \
+             AND NOT EXISTS (SELECT 1 FROM faucet_cleanup_keys c WHERE {join_pred})"
+        );
+        let mut q = sqlx::query(&sql);
+        for (col, v) in scope {
+            q = q.bind(pg_bind_text(Some(v), &udt_of(col)));
+        }
+        let res = q
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("cleanup: delete failed: {e}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("cleanup: commit failed: {e}")))?;
+        Ok(res.rows_affected())
+    }
+
     /// Apply a planned upsert/delete batch on one connection.
     async fn apply_plan(
         &self,
@@ -600,6 +743,20 @@ impl faucet_core::Sink for PostgresSink {
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(PostgresSinkConfig))
             .expect("schema serialization")
+    }
+
+    fn supports_cleanup(&self) -> bool {
+        // Column-mapping mode only: the scope + key predicates address real
+        // columns, which a single JSONB payload column does not have.
+        matches!(self.config.column_mapping, PostgresColumnMapping::AutoMap)
+    }
+
+    async fn cleanup_scope(
+        &self,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &faucet_core::SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        self.cleanup_scope_impl(scope, seen).await
     }
 
     fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {

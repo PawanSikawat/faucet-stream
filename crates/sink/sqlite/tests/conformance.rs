@@ -46,6 +46,7 @@ async fn fresh_sink() -> (TempDir, String, SqliteSink) {
                 field: "__op".to_string(),
                 values: vec!["d".to_string()],
             }),
+            cleanup: None,
         },
     };
     let sink = SqliteSink::new(cfg).await.expect("sink");

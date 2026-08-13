@@ -81,6 +81,7 @@ async fn fresh_sink() -> (ContainerAsync<MssqlServer>, MssqlPool, MssqlSink) {
             field: "__op".to_string(),
             values: vec!["d".to_string()],
         }),
+        cleanup: None,
     };
     let sink = MssqlSink::new(scfg).await.expect("sink");
     (container, pool, sink)
