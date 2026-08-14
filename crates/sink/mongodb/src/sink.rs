@@ -147,6 +147,141 @@ fn command_error_code(e: &mongodb::error::Error) -> Option<i32> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Scoped cleanup (#478) — pure filter construction.
+// ---------------------------------------------------------------------------
+
+/// Ceiling on the serialized size of the scoped-cleanup `delete_many` filter.
+///
+/// The written-key set goes into the filter as a single `$nin` / `$nor` clause,
+/// and that clause **cannot be chunked**: splitting it would make each chunk
+/// delete the keys the other chunks kept — i.e. delete documents this run
+/// actually wrote. So a filter too large for one command has to be refused, not
+/// split. MongoDB rejects any command document above `maxBsonObjectSize`
+/// (16 MiB); we cut off at half of that, leaving room for the `delete` command
+/// envelope the driver wraps around the filter.
+const MAX_CLEANUP_FILTER_BYTES: usize = 8 * 1024 * 1024;
+
+/// Refuse a cleanup filter the server would reject, naming the ceiling and the
+/// way out.
+///
+/// Issuing it anyway would surface as a driver error that says nothing about how
+/// to fix it — and the natural workaround (split the keys across several
+/// deletes) is unsafe here, so the ceiling is a hard stop rather than a hint.
+fn check_cleanup_filter_size(filter_bytes: usize, written_keys: usize) -> Result<(), FaucetError> {
+    if filter_bytes <= MAX_CLEANUP_FILTER_BYTES {
+        return Ok(());
+    }
+    Err(FaucetError::Sink(format!(
+        "cleanup: the delete filter for {written_keys} written keys serializes to \
+         {filter_bytes} bytes, over this sink's ceiling of {MAX_CLEANUP_FILTER_BYTES} bytes \
+         (MongoDB rejects any command document above its 16 MiB limit, and the written-key set \
+         cannot be split across several deletes without deleting documents this run wrote). \
+         Nothing was deleted — narrow the completeness claim so fewer documents fall inside one \
+         scope."
+    )))
+}
+
+/// Verify every accumulated key tuple is addressed by the same fields, in the
+/// same order, as the sink's configured `key`.
+///
+/// The cleanup deletes everything in the scope that is *not* in this set, so a
+/// tuple naming a different field would make a written document look unwritten
+/// — and delete it. The pipeline builds the tuples from the sink's own `key`, so
+/// a mismatch is an internal invariant violation; it is checked anyway because
+/// the cost is a few string comparisons and the failure mode is data loss.
+fn check_key_alignment(key: &[String], seen: &[faucet_core::KeyTuple]) -> Result<(), FaucetError> {
+    for kt in seen {
+        let aligned = kt.0.len() == key.len() && kt.0.iter().zip(key).all(|((c, _), k)| c == k);
+        if !aligned {
+            let got: Vec<&str> = kt.0.iter().map(|(c, _)| c.as_str()).collect();
+            return Err(FaucetError::Sink(format!(
+                "cleanup: a written-key tuple is keyed by {got:?} but the sink's key is {key:?} \
+                 — refusing to delete, because a mismatched key makes written documents look \
+                 unwritten"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Build the `delete_many` filter selecting documents in `scope` whose key was
+/// **not** written by this run (#478).
+///
+/// Shape: `{"$and": [ <one clause per scope field>, <the "not written" clause> ]}`.
+/// Each predicate is its own `$and` clause rather than a sibling field in one
+/// document because a scope field may *also* be a key field (a child sync keyed
+/// on `["contact_id", "assoc_id"]` and scoped by `contact_id`) — as siblings the
+/// second occurrence would overwrite the first in the map and silently widen the
+/// delete to the whole collection.
+///
+/// The "not written" clause depends on the key width, because BSON has no tuple
+/// `$nin`:
+///
+/// - **Single-column key** → `{ <key>: { "$nin": [v, …] } }`. The operator the
+///   server can answer straight from that field's index, so this is the shape
+///   worth special-casing rather than folding into the general one.
+/// - **Composite key** → `{ "$nor": [ {a: …, b: …}, … ] }` — "matches none of
+///   the written tuples". `$nor` over per-tuple equality documents is the one
+///   construction that compares a whole tuple with plain query operators. The
+///   alternative — hashing the tuple into a derived `_id` and `$nin`-ing that —
+///   only works when the key *is* `_id`, which this sink does not require (the
+///   key is an arbitrary match filter), and it would silently mismatch every
+///   document written before the derivation existed. `$expr` was likewise
+///   rejected: it forces a full collection scan and cannot use an index.
+///
+/// Both forms also match documents in the scope that are **missing** the key
+/// field(s) — deliberately: a document with no key cannot have been written by
+/// this run, so within a claimed-complete scope it is stale by definition.
+///
+/// An empty `seen` set drops the "not written" clause entirely, leaving the
+/// scope predicate alone so **every** document in the scope is deleted. That is
+/// not a degenerate case but the motivating one: the source claimed the scope is
+/// complete and reported no records in it.
+fn cleanup_filter_json(
+    scope: &std::collections::BTreeMap<String, Value>,
+    key: &[String],
+    seen: &[faucet_core::KeyTuple],
+) -> Value {
+    let mut clauses: Vec<Value> = scope
+        .iter()
+        .map(|(field, v)| {
+            let mut m = Map::with_capacity(1);
+            m.insert(field.clone(), v.clone());
+            Value::Object(m)
+        })
+        .collect();
+
+    if !seen.is_empty() {
+        let not_written = if key.len() == 1 {
+            // Single column: `$nin` over the written values.
+            let values: Vec<Value> = seen
+                .iter()
+                .map(|kt| kt.0[0].1.clone())
+                .collect::<Vec<Value>>();
+            let mut nin = Map::with_capacity(1);
+            nin.insert("$nin".to_string(), Value::Array(values));
+            let mut m = Map::with_capacity(1);
+            m.insert(key[0].clone(), Value::Object(nin));
+            Value::Object(m)
+        } else {
+            // Composite: `$nor` over one equality document per written tuple.
+            let tuples: Vec<Value> = seen
+                .iter()
+                .map(|kt| Value::Object(faucet_core::key_to_filter(kt)))
+                .collect();
+            let mut m = Map::with_capacity(1);
+            m.insert("$nor".to_string(), Value::Array(tuples));
+            Value::Object(m)
+        };
+        clauses.push(not_written);
+    }
+
+    let mut root = Map::with_capacity(1);
+    root.insert("$and".to_string(), Value::Array(clauses));
+    Value::Object(root)
+}
+
 /// A sink that inserts JSON records into a MongoDB collection.
 ///
 /// Each record must be a JSON object. Non-object values produce an error.
@@ -285,6 +420,73 @@ impl MongoSink {
             ops.push(PlannedOp::Delete(filter));
         }
         Ok(ops)
+    }
+
+    /// Delete documents in `scope` whose key was not written by this run (#478).
+    ///
+    /// One `delete_many` with the filter built by [`cleanup_filter_json`] — no
+    /// transaction, so **no replica set is required** (unlike the exactly-once
+    /// path). That is safe here even though `delete_many` is only atomic
+    /// per-document: the predicate itself excludes every written key, so a
+    /// delete interrupted half-way can only ever have removed stale documents,
+    /// never one this run wrote. Re-running the cleanup simply finishes the job.
+    /// The cost of the missing transaction is that concurrent readers can
+    /// observe the scope mid-delete (partially cleaned), and a document inserted
+    /// into the scope by another writer while the delete runs may or may not be
+    /// removed.
+    ///
+    /// An empty `seen` set is **not** a no-op — it means the source reported the
+    /// scope as empty, so every document in it is stale and must go. That is the
+    /// case this feature exists for.
+    async fn cleanup_scope_impl(
+        &self,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &faucet_core::SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        let key = &self.config.write.key;
+        if key.is_empty() {
+            return Err(FaucetError::Sink(
+                "cleanup requires a non-empty `key`".to_string(),
+            ));
+        }
+        if scope.is_empty() {
+            // Defence in depth: `CleanupPolicy::new` already refuses this. With
+            // no scope predicate the filter would match the whole collection —
+            // the difference between a cleanup and a truncate.
+            return Err(FaucetError::Sink(
+                "cleanup: refusing an empty completeness claim — with no scope predicate the \
+                 delete would match every document in the collection"
+                    .to_string(),
+            ));
+        }
+        check_key_alignment(key, seen.keys())?;
+
+        let filter = Self::value_to_document(&cleanup_filter_json(scope, key, seen.keys()))?;
+
+        // Refuse a filter the server would reject (see MAX_CLEANUP_FILTER_BYTES
+        // for why it cannot be split into several deletes instead).
+        let filter_bytes = bson::to_vec(&filter)
+            .map_err(|e| FaucetError::Sink(format!("cleanup: filter serialization failed: {e}")))?
+            .len();
+        check_cleanup_filter_size(filter_bytes, seen.len())?;
+
+        let deleted = self
+            .client
+            .database(&self.config.database)
+            .collection::<Document>(&self.config.collection)
+            .delete_many(filter)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("cleanup: delete_many failed: {e}")))?
+            .deleted_count;
+
+        tracing::info!(
+            deleted,
+            written_keys = seen.len(),
+            database = %self.config.database,
+            collection = %self.config.collection,
+            "MongoDB scoped cleanup complete"
+        );
+        Ok(deleted)
     }
 
     /// Handle to the per-database watermark collection
@@ -439,6 +641,24 @@ impl faucet_core::Sink for MongoSink {
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(MongoSinkConfig))
             .expect("schema serialization")
+    }
+
+    fn supports_cleanup(&self) -> bool {
+        // Unconditional: MongoDB is schemaless, so the scope and key predicates
+        // address document fields that need no declaration up front (there is no
+        // column-mapping mode to exclude, as on the SQL sinks). The remaining
+        // requirement — a non-empty `key` — is enforced by `WriteSpec::validate`
+        // at config-load time (cleanup implies `write_mode: upsert`) and again in
+        // `cleanup_scope`.
+        true
+    }
+
+    async fn cleanup_scope(
+        &self,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &faucet_core::SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        self.cleanup_scope_impl(scope, seen).await
     }
 
     fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {
@@ -920,6 +1140,188 @@ mod tests {
         assert!(super::is_namespace_exists_code(Some(48)));
         assert!(!super::is_namespace_exists_code(Some(20)));
         assert!(!super::is_namespace_exists_code(None));
+    }
+
+    // -- scoped cleanup (#478) pure helpers ---------------------------------
+
+    fn kt(pairs: &[(&str, Value)]) -> faucet_core::KeyTuple {
+        faucet_core::KeyTuple(
+            pairs
+                .iter()
+                .map(|(c, v)| (c.to_string(), v.clone()))
+                .collect(),
+        )
+    }
+
+    fn scope_of(pairs: &[(&str, Value)]) -> std::collections::BTreeMap<String, Value> {
+        pairs
+            .iter()
+            .map(|(c, v)| (c.to_string(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn cleanup_filter_single_key_uses_nin() {
+        let filter = super::cleanup_filter_json(
+            &scope_of(&[("contact_id", json!(7))]),
+            &["id".to_string()],
+            &[kt(&[("id", json!(1))]), kt(&[("id", json!("a"))])],
+        );
+        assert_eq!(
+            filter,
+            json!({"$and": [
+                {"contact_id": 7},
+                {"id": {"$nin": [1, "a"]}},
+            ]})
+        );
+    }
+
+    #[test]
+    fn cleanup_filter_composite_key_uses_nor_of_tuples() {
+        // No tuple `$nin` in BSON — a composite key becomes "matches none of the
+        // written tuples", with each tuple compared as a whole.
+        let filter = super::cleanup_filter_json(
+            &scope_of(&[("contact_id", json!(7))]),
+            &["tenant".to_string(), "id".to_string()],
+            &[
+                kt(&[("tenant", json!("acme")), ("id", json!(1))]),
+                kt(&[("tenant", json!("acme")), ("id", json!(2))]),
+            ],
+        );
+        assert_eq!(
+            filter,
+            json!({"$and": [
+                {"contact_id": 7},
+                {"$nor": [
+                    {"tenant": "acme", "id": 1},
+                    {"tenant": "acme", "id": 2},
+                ]},
+            ]})
+        );
+    }
+
+    #[test]
+    fn cleanup_filter_empty_seen_deletes_the_whole_scope() {
+        // The motivating case: the source says "this scope is now empty", so the
+        // filter must be the scope predicate alone — NOT a no-op, and not an
+        // empty `$nin`/`$nor` (an empty `$nor` is rejected by the server).
+        let filter = super::cleanup_filter_json(
+            &scope_of(&[("contact_id", json!(7))]),
+            &["id".to_string()],
+            &[],
+        );
+        assert_eq!(filter, json!({"$and": [{"contact_id": 7}]}));
+    }
+
+    #[test]
+    fn cleanup_filter_keeps_scope_when_it_overlaps_the_key() {
+        // Regression guard: as sibling fields in one document, the second
+        // `contact_id` would overwrite the first and the delete would widen to
+        // the whole collection. Separate `$and` clauses keep both predicates.
+        let filter = super::cleanup_filter_json(
+            &scope_of(&[("contact_id", json!(7))]),
+            &["contact_id".to_string(), "assoc_id".to_string()],
+            &[kt(&[("contact_id", json!(7)), ("assoc_id", json!(1))])],
+        );
+        let clauses = filter["$and"].as_array().expect("$and array");
+        assert_eq!(clauses.len(), 2, "{filter}");
+        assert_eq!(clauses[0], json!({"contact_id": 7}), "scope survives");
+        assert_eq!(
+            clauses[1],
+            json!({"$nor": [{"contact_id": 7, "assoc_id": 1}]})
+        );
+    }
+
+    #[test]
+    fn cleanup_filter_and_clause_per_scope_column() {
+        let filter = super::cleanup_filter_json(
+            &scope_of(&[("a", json!(1)), ("b", json!("x"))]),
+            &["id".to_string()],
+            &[kt(&[("id", json!(5))])],
+        );
+        let clauses = filter["$and"].as_array().unwrap();
+        assert_eq!(
+            clauses.len(),
+            3,
+            "two scope clauses + the not-written clause"
+        );
+        // BTreeMap ordering makes the scope clauses deterministic.
+        assert_eq!(clauses[0], json!({"a": 1}));
+        assert_eq!(clauses[1], json!({"b": "x"}));
+    }
+
+    #[test]
+    fn cleanup_filter_converts_to_bson() {
+        let filter = super::cleanup_filter_json(
+            &scope_of(&[("contact_id", json!(7))]),
+            &["id".to_string()],
+            &[kt(&[("id", json!(1))])],
+        );
+        let doc = MongoSink::value_to_document(&filter).expect("filter converts to bson");
+        assert_eq!(doc.get_array("$and").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn key_alignment_accepts_matching_tuples() {
+        let key = vec!["tenant".to_string(), "id".to_string()];
+        let seen = vec![kt(&[("tenant", json!("acme")), ("id", json!(1))])];
+        assert!(super::check_key_alignment(&key, &seen).is_ok());
+    }
+
+    #[test]
+    fn key_alignment_rejects_a_differently_keyed_tuple() {
+        // A tuple keyed on another field would make written documents look
+        // unwritten — i.e. delete them.
+        let key = vec!["id".to_string()];
+        let seen = vec![kt(&[("other", json!(1))])];
+        let err = super::check_key_alignment(&key, &seen).expect_err("must refuse");
+        assert!(err.to_string().contains("refusing to delete"), "{err}");
+    }
+
+    #[test]
+    fn key_alignment_rejects_a_wrong_width_tuple() {
+        let key = vec!["tenant".to_string(), "id".to_string()];
+        let seen = vec![kt(&[("tenant", json!("acme"))])];
+        assert!(super::check_key_alignment(&key, &seen).is_err());
+    }
+
+    #[test]
+    fn filter_size_within_the_ceiling_is_accepted() {
+        assert!(super::check_cleanup_filter_size(super::MAX_CLEANUP_FILTER_BYTES, 10).is_ok());
+    }
+
+    #[test]
+    fn oversized_filter_is_refused_with_the_ceiling_named() {
+        // The written-key clause cannot be chunked, so an outsized key set must
+        // be refused outright rather than half-issued.
+        let err = super::check_cleanup_filter_size(super::MAX_CLEANUP_FILTER_BYTES + 1, 250_000)
+            .expect_err("must refuse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&super::MAX_CLEANUP_FILTER_BYTES.to_string()),
+            "{msg}"
+        );
+        assert!(msg.contains("250000"), "{msg}");
+        assert!(msg.contains("Nothing was deleted"), "{msg}");
+    }
+
+    #[test]
+    fn a_realistic_key_set_stays_well_under_the_ceiling() {
+        // Sanity check on the ceiling's sizing: the core cleanup default tracks
+        // up to 100k keys, and a filter that wide must still fit in one command.
+        let seen: Vec<faucet_core::KeyTuple> =
+            (0..100_000).map(|i| kt(&[("id", json!(i))])).collect();
+        let filter = super::cleanup_filter_json(
+            &scope_of(&[("contact_id", json!(7))]),
+            &["id".to_string()],
+            &seen,
+        );
+        let doc = MongoSink::value_to_document(&filter).unwrap();
+        let bytes = bson::to_vec(&doc).unwrap().len();
+        assert!(
+            super::check_cleanup_filter_size(bytes, seen.len()).is_ok(),
+            "100k scalar keys serialized to {bytes} bytes"
+        );
     }
 
     #[tokio::test]

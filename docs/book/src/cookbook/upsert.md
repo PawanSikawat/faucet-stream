@@ -175,3 +175,107 @@ schemas; lower it for very wide rows that approach the limit).
 Elasticsearch supports upsert but not the atomic watermark (`_bulk` cannot
 commit a watermark atomically) — an upsert mirror into Elasticsearch reaches
 effectively-once via the keyed-upsert mechanism instead.
+
+## Removing records deleted at the source (scoped cleanup)
+
+An upsert mirror keeps rows **fresh and additive**, but on its own it can never
+remove a record that was deleted upstream. An incremental source returns "what
+changed since X"; a deleted record simply stops appearing, so there is nothing to
+act on. The destination looks healthy, the run reports success, and stale rows
+accumulate forever.
+
+If your source emits deletions — a CDC stream, or a soft-delete field — use
+[`delete_marker`](#delete-marker) and stop here. **Scoped cleanup** is for the
+common case where it does not: a REST API with an updated-since filter and no
+tombstones.
+
+### The idea
+
+Some fetches are *complete for a scope*. Fetching one contact's associations
+returns every association that contact currently has. That is a claim only the
+**source** can make — a sink sees a page of records and cannot tell a complete
+set from page 1 of 3.
+
+Declare the claim on the source and opt the sink in:
+
+```yaml
+matrix:
+  - id: associations
+    parent: contacts
+    source:
+      type: rest
+      config:
+        url: "https://api.example.com/contacts/${contacts.id}/associations"
+      complete_for:
+        scope:
+          contact_id: "${contacts.id}"   # destination column names
+        on_missing: delete               # omit (or `ignore`) = claim is inert
+    sink:
+      ref: assoc
+      write_mode: upsert
+      key: [association_id]
+```
+
+After the run writes every page, faucet deletes the rows matching
+`contact_id = <that contact>` whose `association_id` it did not write. Other
+contacts are untouched.
+
+**Deleting is an explicit opt-in.** `on_missing` defaults to `ignore`, so adding
+a claim documents the scope without ever deleting anything; only
+`on_missing: delete` acts on it. An empty `scope` is rejected at load time —
+unbounded, it would match every row in the destination.
+
+### Scope keys are destination column names
+
+`complete_for.scope` is written in **destination** terms, because the `DELETE` runs
+against destination columns. If a transform renames `contactId` → `contact_id`
+between source and sink, the scope uses `contact_id`. Values may carry
+`${parent.*}` / `${now.*}` tokens and are resolved per invocation, exactly like
+the connector config around them.
+
+### The empty case is the point
+
+A contact whose associations were *all* removed produces a fetch returning
+**zero records**. An upsert alone writes nothing and every stale row survives.
+Cleanup still fires and empties the scope, because the claim comes from the
+parent record rather than from the records observed.
+
+### When it does not run
+
+Cleanup deletes data, so it only runs when the written set is trustworthy:
+
+| Situation | Behaviour |
+|---|---|
+| Run failed | Skipped — the run never wrote the authoritative set |
+| Run cancelled | Skipped — a partial read would delete rows that never arrived |
+| `--dry-run` / `--limit` | Skipped — the sink is a counter or a dropper, so the written set is synthetic |
+| Sharded run | Skipped — a shard reads a fraction, so the difference is other shards' rows |
+| Written rows exceed the key ceiling | **Run fails**, deleting nothing |
+| A record was quarantined by a quality / contract / drift policy | Rejected at load time — a quarantined record never reaches the sink, so cleanup could not tell it from a deleted one |
+
+That last one is deliberate. Above the ceiling the written-key set is incomplete,
+so a delete would remove rows the run wrote — but skipping quietly would leave
+the stale rows this feature exists to remove. Neither is safe to do silently, so
+the run fails and you narrow the scope.
+
+Rows routed to the DLQ or quarantined by a quality/contract check **count as
+written**. They are real source records — the source claimed them present — so
+they are never deleted even though they did not reach the destination.
+
+### Supported sinks
+
+All eight upsert-capable sinks: `postgres`, `mysql`, `mssql`, `sqlite`,
+`mongodb`, `elasticsearch`, `bigquery`, `spanner`. The SQL sinks require
+column-mapping mode (`auto_map` / `auto_columns`) — a single JSON payload column
+has no columns to predicate on.
+
+`on_missing: delete` requires `write_mode: upsert` and a non-empty `key`, and is
+incompatible with `delivery: exactly_once` (the scoped delete happens outside the commit-token
+transaction, so it cannot be replayed idempotently).
+
+### Metrics
+
+| Metric | Meaning |
+|---|---|
+| `faucet_cleanup_deleted_total{pipeline,row,connector}` | Rows deleted. Emitted even at zero — zero is the steady state a healthy mirror shows. |
+| `faucet_cleanup_runs_total{pipeline,row,outcome}` | `applied` / `skipped_cancelled` / `refused_overflow`. A non-zero `refused_overflow` means stale rows were left behind — worth alerting on. |

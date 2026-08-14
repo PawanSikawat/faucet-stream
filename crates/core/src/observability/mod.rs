@@ -4,6 +4,7 @@
 //! `docs/superpowers/specs/2026-05-23-observability-otel-prometheus-design.md`.
 
 mod bookmark;
+mod cleanup;
 #[cfg(feature = "contract")]
 mod contract;
 pub(crate) mod decorator;
@@ -23,6 +24,7 @@ mod timer;
 mod transform;
 
 pub use bookmark::update_bookmark_lag;
+pub use cleanup::{cleanup_deleted, cleanup_run};
 #[cfg(feature = "contract")]
 pub use contract::instrumented_apply_contract;
 pub use decorator::{InstrumentedSink, InstrumentedSource};

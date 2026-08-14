@@ -197,6 +197,48 @@
     "pipeline"
   ],
   "$defs": {
+    "ParamSpec": {
+      "description": "One declared parameter.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Value type. Governs coercion of the supplied value and the type\nsubstituted when `${param.NAME}` is a config value's *entire* text.",
+          "$ref": "#/$defs/ParamType",
+          "default": "string"
+        },
+        "required": {
+          "description": "When true the caller MUST supply a value; there is no fallback.\nMutually exclusive with `default` (a defaulted param is by definition\noptional).",
+          "type": "boolean",
+          "default": false
+        },
+        "default": {
+          "description": "Value used when the caller supplies none. Resolved like any other config\nscalar first, so `default: \"${env:SINCE}\"` works."
+        },
+        "secret": {
+          "description": "Marks the value as sensitive: it is registered with the redaction\nregistry the moment it is bound, so it never reaches logs, error\nstrings, API responses, or the audit log in clear.",
+          "type": "boolean",
+          "default": false
+        },
+        "description": {
+          "description": "Human-readable purpose, surfaced by `faucet template list/show`, the\nMCP `get_template` tool, and `GET /v1/templates/{id}`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ParamType": {
+      "description": "The scalar type a param carries. Params are deliberately scalar-only: a\nparam substitutes into a config *value* position, and structured overrides\nare what named templates / matrix rows are for.",
+      "type": "string",
+      "enum": [
+        "string",
+        "int",
+        "float",
+        "bool"
+      ]
+    },
     "PipelineSpec": {
       "description": "The base pipeline definition. Each matrix row is resolved against the\ntemplate catalogs below; the singular `source` / `sink` fields are the\nlegacy way to declare a single template (internally named `default`).",
       "type": "object",
@@ -313,18 +355,18 @@
           ]
         },
         "nodes": {
+          "description": "Topology-mode nodes (issue #71): an explicit graph of typed nodes\n(`source` / `transform` / `tee` / `merge` / `join` / `sink`) keyed by\nnode id. When non-empty this pipeline runs in **topology mode** and the\ntop-level `matrix:` block must be empty (they are mutually exclusive).",
+          "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/NodeSpec"
-          },
-          "description": "Topology-mode nodes (issue #71): an explicit graph of typed nodes\n(`source` / `transform` / `tee` / `merge` / `join` / `sink`) keyed by\nnode id. When non-empty this pipeline runs in **topology mode** and the\ntop-level `matrix:` block must be empty (they are mutually exclusive).",
-          "type": "object"
+          }
         },
         "edges": {
           "description": "Topology-mode edges connecting `nodes` (issue #71). Each edge names a\nproducer (`from`) and consumer (`to`); a join's incoming edges also\ncarry an `as:` label matching the join's `build`/`probe` edge names.",
+          "type": "array",
           "items": {
             "$ref": "#/$defs/EdgeSpec"
-          },
-          "type": "array"
+          }
         }
       },
       "additionalProperties": false
@@ -374,6 +416,17 @@
           "items": {
             "type": "string"
           }
+        },
+        "complete_for": {
+          "description": "**Completeness claim** for scoped cleanup (#478). Meaningful only on\nsource templates; rejected at expand time on sinks — only a source knows\nwhether a fetch returned every record for a scope.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompletenessClaim"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,
@@ -426,6 +479,41 @@
           "description": "Retired, kept for history: runs only under `--status archived`.",
           "type": "string",
           "const": "archived"
+        }
+      ]
+    },
+    "CompletenessClaim": {
+      "description": "\"For these column values, this fetch returns *all* the records\" (#478).\n\nDeclared on the source because a sink sees a page and cannot tell a complete\nset from page 1 of 3. The claim alone never deletes anything: `on_missing`\ndefaults to `ignore`, so acting on it is a separate, explicit opt-in.",
+      "type": "object",
+      "properties": {
+        "scope": {
+          "description": "The scope this fetch is authoritative for, keyed by **destination**\ncolumn names — the `DELETE` runs against destination columns, and a\ntransform chain may rename fields between source and sink. Values may\ncarry `${parent.path}` / `${now.*}` tokens, resolved per invocation like\nany other config value.",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "on_missing": {
+          "description": "What to do about destination rows inside `scope` that this run did not\nwrite. Defaults to `ignore`, so adding a claim can never start deleting\ndata on its own.",
+          "$ref": "#/$defs/OnMissing",
+          "default": "ignore"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "scope"
+      ]
+    },
+    "OnMissing": {
+      "description": "Action for destination rows inside a completeness scope that a run did not\nwrite (#478).",
+      "oneOf": [
+        {
+          "description": "Leave them alone. The claim is recorded but inert (default).",
+          "type": "string",
+          "const": "ignore"
+        },
+        {
+          "description": "Delete them — the only way an incremental sync can remove records that\nwere deleted at the source.",
+          "type": "string",
+          "const": "delete"
         }
       ]
     },
@@ -1445,6 +1533,325 @@
           "type": "string",
           "const": "quarantine"
         }
+      ]
+    },
+    "NodeSpec": {
+      "description": "A single topology node (issue #71). The `kind` discriminator selects the\nnode type; the remaining fields are kind-specific.\n\n`source` / `sink` nodes pick a template with `ref:` (defaulting to\n`default`) and may override `type` / `config` inline — the same shape as a\nmatrix row's [`PartialConnector`]. `transform` carries a `transforms:`\nlist. `tee` carries `channel_capacity` + optional `fanout`. `merge` has no\nextra fields. `join` carries the hash-join configuration.",
+      "oneOf": [
+        {
+          "description": "A data source (0 in, 1 out).",
+          "type": "object",
+          "properties": {
+            "ref": {
+              "description": "Template name in `pipeline.sources` (defaults to `default`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "description": "Inline connector-type override.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "config": {
+              "description": "Inline config override (deep-merged onto the resolved template)."
+            },
+            "kind": {
+              "type": "string",
+              "const": "source"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "A data sink (1 in, 0 out).",
+          "type": "object",
+          "properties": {
+            "ref": {
+              "description": "Template name in `pipeline.sinks` (defaults to `default`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "description": "Inline connector-type override.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "config": {
+              "description": "Inline config override (deep-merged onto the resolved template)."
+            },
+            "kind": {
+              "type": "string",
+              "const": "sink"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Transform stages applied per page (1 in, 1 out).",
+          "type": "object",
+          "properties": {
+            "transforms": {
+              "description": "Transform stages, in order.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TransformSpec"
+              },
+              "default": []
+            },
+            "kind": {
+              "type": "string",
+              "const": "transform"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Fan-out: clone each page to every downstream edge (1 in, N out).",
+          "type": "object",
+          "properties": {
+            "channel_capacity": {
+              "description": "Bounded-channel capacity for each outgoing edge.",
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0,
+              "default": 4
+            },
+            "fanout": {
+              "description": "Optional expected fan-out (outgoing edge count) sanity check.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "tee"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Fan-in: forward pages from all inputs in arrival order (N in, 1 out).",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "merge"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Hash-join two upstreams by key (2 in, 1 out).",
+          "type": "object",
+          "properties": {
+            "mode": {
+              "description": "`inner` (drop non-matches) or `left` (keep non-matches).",
+              "$ref": "#/$defs/JoinMode",
+              "default": "inner"
+            },
+            "build": {
+              "description": "The build (right) side — fully buffered as a lookup index.",
+              "$ref": "#/$defs/JoinSide"
+            },
+            "probe": {
+              "description": "The probe (left) side — streamed and enriched.",
+              "$ref": "#/$defs/JoinSide"
+            },
+            "project": {
+              "description": "Fields to copy from the matched build record onto the probe record.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Projection"
+              },
+              "default": []
+            },
+            "on_missing": {
+              "description": "Value used to fill projected fields on a `left`-mode non-match.",
+              "default": null
+            },
+            "on_duplicate": {
+              "description": "Multi-match policy: `first` or `cartesian`.",
+              "$ref": "#/$defs/OnDuplicate",
+              "default": "first"
+            },
+            "on_collision": {
+              "description": "Projection-collision policy: `overwrite` / `skip` / `error`.",
+              "$ref": "#/$defs/OnCollision",
+              "default": "overwrite"
+            },
+            "key_normalize": {
+              "description": "Key normalization: `preserve` (no coercion) or `stringify`.",
+              "$ref": "#/$defs/KeyNormalize",
+              "default": "preserve"
+            },
+            "max_build_records": {
+              "description": "Safety cap on build-side records.",
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0,
+              "default": 10000000
+            },
+            "kind": {
+              "type": "string",
+              "const": "join"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "build",
+            "probe"
+          ]
+        }
+      ]
+    },
+    "JoinMode": {
+      "description": "Join mode — how probe records with no build match are handled.",
+      "oneOf": [
+        {
+          "description": "Drop probe records that have no matching build record.",
+          "type": "string",
+          "const": "inner"
+        },
+        {
+          "description": "Pass probe records through even without a match, filling projected\nfields from [`JoinConfig::on_missing`].",
+          "type": "string",
+          "const": "left"
+        }
+      ]
+    },
+    "JoinSide": {
+      "description": "One side of a [`JoinSpec`]: the incoming edge label plus the dotted key path.",
+      "type": "object",
+      "properties": {
+        "edge": {
+          "description": "Name of the incoming edge (matches an `edges[].as` label).",
+          "type": "string"
+        },
+        "key": {
+          "description": "Dotted path to the join key inside each record on this side.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "edge",
+        "key"
+      ]
+    },
+    "Projection": {
+      "description": "A single field projection: copy `from` (a dotted path into the build\nrecord) onto the probe record under the name `as_`.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Dotted path inside each build (right) record.",
+          "type": "string"
+        },
+        "as": {
+          "description": "Output field name written onto the probe (left) record.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "as"
+      ]
+    },
+    "OnDuplicate": {
+      "description": "What to do when one probe key matches more than one build record.",
+      "oneOf": [
+        {
+          "description": "Keep only the first build-side match (deterministic given build order).",
+          "type": "string",
+          "const": "first"
+        },
+        {
+          "description": "Emit one enriched record per build-side match (may duplicate the probe\nrecord).",
+          "type": "string",
+          "const": "cartesian"
+        }
+      ]
+    },
+    "OnCollision": {
+      "description": "What to do when a projected `as` name collides with an existing field on\nthe probe record.",
+      "oneOf": [
+        {
+          "description": "Overwrite the probe record's field with the projected value.",
+          "type": "string",
+          "const": "overwrite"
+        },
+        {
+          "description": "Leave the probe record's field untouched; skip the projection.",
+          "type": "string",
+          "const": "skip"
+        },
+        {
+          "description": "Fail the record with a typed error.",
+          "type": "string",
+          "const": "error"
+        }
+      ]
+    },
+    "KeyNormalize": {
+      "description": "How to normalize keys before comparison.",
+      "oneOf": [
+        {
+          "description": "Compare keys as their JSON value (no coercion): `\"42\"` != `42`.",
+          "type": "string",
+          "const": "preserve"
+        },
+        {
+          "description": "Coerce scalar keys to their string form before comparison so `\"42\"`\nand `42` match.",
+          "type": "string",
+          "const": "stringify"
+        }
+      ]
+    },
+    "EdgeSpec": {
+      "description": "A topology edge (issue #71).",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Producer node id.",
+          "type": "string"
+        },
+        "to": {
+          "description": "Consumer node id.",
+          "type": "string"
+        },
+        "as": {
+          "description": "Optional edge label (required on a join's two incoming edges).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to"
       ]
     },
     "MatrixRow": {
@@ -3560,6 +3967,70 @@
         }
       },
       "additionalProperties": true
+    },
+    "source_xml__SoapConfig": {
+      "description": "First-class SOAP ergonomics for the XML source.\n\nThis is **sugar** over the existing XML-over-HTTP request/response path —\nnot a WSDL client. When present, the source assembles a SOAP envelope for\nthe request body, injects the version-appropriate headers, and (by default)\nresolves [`XmlStreamConfig::records_element_path`] relative to\n`Envelope.Body` and surfaces SOAP `<Fault>` responses as errors.",
+      "type": "object",
+      "properties": {
+        "version": {
+          "description": "SOAP protocol version (default `1.1`).",
+          "$ref": "#/$defs/source_xml__SoapVersion",
+          "default": "1.1"
+        },
+        "action": {
+          "description": "The SOAP action. For 1.1 it becomes the `SOAPAction` header; for 1.2 it\nis carried as the `action` parameter of the `Content-Type` header.\nOptional — omit for actionless operations.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "body_inner": {
+          "description": "The XML fragment placed inside `<soap:Body>` — typically the operation\nelement, e.g. `<GetUsers xmlns=\"urn:example\"/>`. Mutually exclusive with\nthe top-level [`XmlStreamConfig::body`].",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "namespaces": {
+          "description": "Extra namespace declarations (prefix → URI) added to the envelope\nelement. The `soap` prefix is reserved for the envelope namespace and\nany entry using it is ignored.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "path_relative_to_body": {
+          "description": "When `true` (default), [`XmlStreamConfig::records_element_path`] is\nresolved relative to `Envelope.Body` — i.e. `Envelope.Body.` is\nauto-prepended, so you write `GetUsersResponse.Users.User`. Set `false`\nto supply the fully-qualified path from the document root.",
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "default": true
+        },
+        "fault_as_error": {
+          "description": "When `true` (default), a SOAP `<Fault>` in the response raises\n[`FaucetError::Source`]. When `false`,\na fault yields zero records (logged once).",
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "default": true
+        }
+      }
+    },
+    "source_xml__SoapVersion": {
+      "description": "SOAP protocol version. Controls the envelope namespace and the HTTP\nheader shape used to carry the SOAP action.\n\nDeserializes from the wire strings `\"1.1\"` / `\"1.2\"`.",
+      "oneOf": [
+        {
+          "description": "SOAP 1.1 — envelope namespace `http://schemas.xmlsoap.org/soap/envelope/`,\naction carried in a separate `SOAPAction` header.",
+          "type": "string",
+          "const": "1.1"
+        },
+        {
+          "description": "SOAP 1.2 — envelope namespace `http://www.w3.org/2003/05/soap-envelope`,\naction carried as a `Content-Type` parameter (no `SOAPAction` header).",
+          "type": "string",
+          "const": "1.2"
+        }
+      ]
     },
     "source_xml__XmlPagination": {
       "description": "Pagination configuration for XML APIs.",
@@ -9667,30 +10138,31 @@
           "additionalProperties": false
         },
         {
-          "additionalProperties": false,
+          "type": "object",
+          "title": "xml",
           "properties": {
+            "type": {
+              "const": "xml"
+            },
             "config": {
               "anyOf": [
                 {
-                  "description": "Configuration for the XML source.",
                   "properties": {
-                    "auth": {
-                      "$ref": "#/$defs/source_xml__AuthSpec",
-                      "description": "Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`\npointer to a shared provider in the CLI's top-level `auth:` catalog."
-                    },
                     "base_url": {
                       "description": "Base URL of the API.",
                       "type": "string"
                     },
-                    "batch_size": {
-                      "default": 1000,
-                      "description": "Records per emitted [`StreamPage`](faucet_core::StreamPage). The\nevent-driven XML parser accumulates matched subtrees into a buffer\nand yields whenever the buffer reaches this size. Defaults to\n[`DEFAULT_BATCH_SIZE`].\n\n`batch_size = 0` is the \"no batching\" sentinel: the document is\ndrained end-to-end and the entire result set is emitted in a single\npage. Useful for small lookup payloads or for sinks (e.g. SQL `COPY`,\nBigQuery load jobs) that prefer one large request to many small ones.",
-                      "format": "uint",
-                      "minimum": 0,
-                      "type": [
-                        "integer",
-                        "string"
-                      ]
+                    "path": {
+                      "description": "Request path (appended to base_url).",
+                      "type": "string"
+                    },
+                    "method": {
+                      "description": "HTTP method (GET or POST for SOAP).",
+                      "type": "string"
+                    },
+                    "auth": {
+                      "description": "Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`\npointer to a shared provider in the CLI's top-level `auth:` catalog.",
+                      "$ref": "#/$defs/source_xml__AuthSpec"
                     },
                     "body": {
                       "description": "Optional request body (e.g. a raw SOAP envelope). Mutually exclusive\nwith [`SoapConfig::body_inner`] when a [`soap`](Self::soap) block is set.",
@@ -9699,50 +10171,8 @@
                         "null"
                       ]
                     },
-                    "max_pages": {
-                      "description": "Maximum number of pages to fetch.",
-                      "format": "uint",
-                      "minimum": 0,
-                      "type": [
-                        "integer",
-                        "null",
-                        "string"
-                      ]
-                    },
-                    "method": {
-                      "description": "HTTP method (GET or POST for SOAP).",
-                      "type": "string"
-                    },
-                    "pagination": {
-                      "anyOf": [
-                        {
-                          "$ref": "#/$defs/source_xml__XmlPagination"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "description": "Pagination configuration."
-                    },
-                    "path": {
-                      "description": "Request path (appended to base_url).",
-                      "type": "string"
-                    },
-                    "query_params": {
-                      "additionalProperties": {
-                        "type": "string"
-                      },
-                      "description": "Query parameters to include in every request.",
-                      "type": "object"
-                    },
-                    "records_element_path": {
-                      "description": "Dot-separated path to the repeating element in the XML response\n(e.g. `\"Envelope.Body.GetUsersResponse.Users.User\"`).",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
                     "soap": {
+                      "description": "Optional first-class SOAP ergonomics block. When present, the source\nassembles the SOAP envelope, injects the version-appropriate headers,\nand (by default) resolves `records_element_path` relative to\n`Envelope.Body`. Sugar over the raw `body` path — see [`SoapConfig`].",
                       "anyOf": [
                         {
                           "$ref": "#/$defs/source_xml__SoapConfig"
@@ -9751,18 +10181,60 @@
                           "type": "null"
                         }
                       ],
-                      "default": null,
-                      "description": "Optional first-class SOAP ergonomics block. When present, the source\nassembles the SOAP envelope, injects the version-appropriate headers,\nand (by default) resolves `records_element_path` relative to\n`Envelope.Body`. Sugar over the raw `body` path — see [`SoapConfig`]."
+                      "default": null
+                    },
+                    "records_element_path": {
+                      "description": "Dot-separated path to the repeating element in the XML response\n(e.g. `\"Envelope.Body.GetUsersResponse.Users.User\"`).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "pagination": {
+                      "description": "Pagination configuration.",
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_xml__XmlPagination"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "max_pages": {
+                      "description": "Maximum number of pages to fetch.",
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0
+                    },
+                    "query_params": {
+                      "description": "Query parameters to include in every request.",
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "batch_size": {
+                      "description": "Records per emitted [`StreamPage`](faucet_core::StreamPage). The\nevent-driven XML parser accumulates matched subtrees into a buffer\nand yields whenever the buffer reaches this size. Defaults to\n[`DEFAULT_BATCH_SIZE`].\n\n`batch_size = 0` is the \"no batching\" sentinel: the document is\ndrained end-to-end and the entire result set is emitted in a single\npage. Useful for small lookup payloads or for sinks (e.g. SQL `COPY`,\nBigQuery load jobs) that prefer one large request to many small ones.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
                     }
                   },
                   "title": "XmlStreamConfig",
+                  "description": "Configuration for the XML source.",
                   "type": "object"
                 },
                 true
               ]
-            },
-            "inherit_transforms": {
-              "type": "boolean"
             },
             "transforms": {
               "type": [
@@ -9770,15 +10242,14 @@
                 "null"
               ]
             },
-            "type": {
-              "const": "xml"
+            "inherit_transforms": {
+              "type": "boolean"
             }
           },
           "required": [
             "type"
           ],
-          "title": "xml",
-          "type": "object"
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -16303,431 +16774,6 @@
             "type"
           ],
           "additionalProperties": false
-        }
-      ]
-    },
-    "EdgeSpec": {
-      "additionalProperties": false,
-      "description": "A topology edge (issue #71).",
-      "properties": {
-        "as": {
-          "description": "Optional edge label (required on a join's two incoming edges).",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "from": {
-          "description": "Producer node id.",
-          "type": "string"
-        },
-        "to": {
-          "description": "Consumer node id.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "from",
-        "to"
-      ],
-      "type": "object"
-    },
-    "JoinMode": {
-      "description": "Join mode — how probe records with no build match are handled.",
-      "oneOf": [
-        {
-          "const": "inner",
-          "description": "Drop probe records that have no matching build record.",
-          "type": "string"
-        },
-        {
-          "const": "left",
-          "description": "Pass probe records through even without a match, filling projected\nfields from [`JoinConfig::on_missing`].",
-          "type": "string"
-        }
-      ]
-    },
-    "JoinSide": {
-      "additionalProperties": false,
-      "description": "One side of a [`JoinSpec`]: the incoming edge label plus the dotted key path.",
-      "properties": {
-        "edge": {
-          "description": "Name of the incoming edge (matches an `edges[].as` label).",
-          "type": "string"
-        },
-        "key": {
-          "description": "Dotted path to the join key inside each record on this side.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "edge",
-        "key"
-      ],
-      "type": "object"
-    },
-    "KeyNormalize": {
-      "description": "How to normalize keys before comparison.",
-      "oneOf": [
-        {
-          "const": "preserve",
-          "description": "Compare keys as their JSON value (no coercion): `\"42\"` != `42`.",
-          "type": "string"
-        },
-        {
-          "const": "stringify",
-          "description": "Coerce scalar keys to their string form before comparison so `\"42\"`\nand `42` match.",
-          "type": "string"
-        }
-      ]
-    },
-    "NodeSpec": {
-      "description": "A single topology node (issue #71). The `kind` discriminator selects the\nnode type; the remaining fields are kind-specific.\n\n`source` / `sink` nodes pick a template with `ref:` (defaulting to\n`default`) and may override `type` / `config` inline — the same shape as a\nmatrix row's [`PartialConnector`]. `transform` carries a `transforms:`\nlist. `tee` carries `channel_capacity` + optional `fanout`. `merge` has no\nextra fields. `join` carries the hash-join configuration.",
-      "oneOf": [
-        {
-          "description": "A data source (0 in, 1 out).",
-          "properties": {
-            "config": {
-              "description": "Inline config override (deep-merged onto the resolved template)."
-            },
-            "kind": {
-              "const": "source",
-              "type": "string"
-            },
-            "ref": {
-              "description": "Template name in `pipeline.sources` (defaults to `default`).",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "description": "Inline connector-type override.",
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "A data sink (1 in, 0 out).",
-          "properties": {
-            "config": {
-              "description": "Inline config override (deep-merged onto the resolved template)."
-            },
-            "kind": {
-              "const": "sink",
-              "type": "string"
-            },
-            "ref": {
-              "description": "Template name in `pipeline.sinks` (defaults to `default`).",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "description": "Inline connector-type override.",
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Transform stages applied per page (1 in, 1 out).",
-          "properties": {
-            "kind": {
-              "const": "transform",
-              "type": "string"
-            },
-            "transforms": {
-              "default": [],
-              "description": "Transform stages, in order.",
-              "items": {
-                "$ref": "#/$defs/TransformSpec"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Fan-out: clone each page to every downstream edge (1 in, N out).",
-          "properties": {
-            "channel_capacity": {
-              "default": 4,
-              "description": "Bounded-channel capacity for each outgoing edge.",
-              "format": "uint",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "fanout": {
-              "description": "Optional expected fan-out (outgoing edge count) sanity check.",
-              "format": "uint",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "kind": {
-              "const": "tee",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Fan-in: forward pages from all inputs in arrival order (N in, 1 out).",
-          "properties": {
-            "kind": {
-              "const": "merge",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Hash-join two upstreams by key (2 in, 1 out).",
-          "properties": {
-            "build": {
-              "$ref": "#/$defs/JoinSide",
-              "description": "The build (right) side — fully buffered as a lookup index."
-            },
-            "key_normalize": {
-              "$ref": "#/$defs/KeyNormalize",
-              "default": "preserve",
-              "description": "Key normalization: `preserve` (no coercion) or `stringify`."
-            },
-            "kind": {
-              "const": "join",
-              "type": "string"
-            },
-            "max_build_records": {
-              "default": 10000000,
-              "description": "Safety cap on build-side records.",
-              "format": "uint",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "mode": {
-              "$ref": "#/$defs/JoinMode",
-              "default": "inner",
-              "description": "`inner` (drop non-matches) or `left` (keep non-matches)."
-            },
-            "on_collision": {
-              "$ref": "#/$defs/OnCollision",
-              "default": "overwrite",
-              "description": "Projection-collision policy: `overwrite` / `skip` / `error`."
-            },
-            "on_duplicate": {
-              "$ref": "#/$defs/OnDuplicate",
-              "default": "first",
-              "description": "Multi-match policy: `first` or `cartesian`."
-            },
-            "on_missing": {
-              "default": null,
-              "description": "Value used to fill projected fields on a `left`-mode non-match."
-            },
-            "probe": {
-              "$ref": "#/$defs/JoinSide",
-              "description": "The probe (left) side — streamed and enriched."
-            },
-            "project": {
-              "default": [],
-              "description": "Fields to copy from the matched build record onto the probe record.",
-              "items": {
-                "$ref": "#/$defs/Projection"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "kind",
-            "build",
-            "probe"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "OnCollision": {
-      "description": "What to do when a projected `as` name collides with an existing field on\nthe probe record.",
-      "oneOf": [
-        {
-          "const": "overwrite",
-          "description": "Overwrite the probe record's field with the projected value.",
-          "type": "string"
-        },
-        {
-          "const": "skip",
-          "description": "Leave the probe record's field untouched; skip the projection.",
-          "type": "string"
-        },
-        {
-          "const": "error",
-          "description": "Fail the record with a typed error.",
-          "type": "string"
-        }
-      ]
-    },
-    "OnDuplicate": {
-      "description": "What to do when one probe key matches more than one build record.",
-      "oneOf": [
-        {
-          "const": "first",
-          "description": "Keep only the first build-side match (deterministic given build order).",
-          "type": "string"
-        },
-        {
-          "const": "cartesian",
-          "description": "Emit one enriched record per build-side match (may duplicate the probe\nrecord).",
-          "type": "string"
-        }
-      ]
-    },
-    "Projection": {
-      "description": "A single field projection: copy `from` (a dotted path into the build\nrecord) onto the probe record under the name `as_`.",
-      "properties": {
-        "as": {
-          "description": "Output field name written onto the probe (left) record.",
-          "type": "string"
-        },
-        "from": {
-          "description": "Dotted path inside each build (right) record.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "from",
-        "as"
-      ],
-      "type": "object"
-    },
-    "ParamSpec": {
-      "description": "One declared parameter.",
-      "type": "object",
-      "properties": {
-        "type": {
-          "description": "Value type. Governs coercion of the supplied value and the type\nsubstituted when `${param.NAME}` is a config value's *entire* text.",
-          "$ref": "#/$defs/ParamType",
-          "default": "string"
-        },
-        "required": {
-          "description": "When true the caller MUST supply a value; there is no fallback.\nMutually exclusive with `default` (a defaulted param is by definition\noptional).",
-          "type": "boolean",
-          "default": false
-        },
-        "default": {
-          "description": "Value used when the caller supplies none. Resolved like any other config\nscalar first, so `default: \"${env:SINCE}\"` works."
-        },
-        "secret": {
-          "description": "Marks the value as sensitive: it is registered with the redaction\nregistry the moment it is bound, so it never reaches logs, error\nstrings, API responses, or the audit log in clear.",
-          "type": "boolean",
-          "default": false
-        },
-        "description": {
-          "description": "Human-readable purpose, surfaced by `faucet template list/show`, the\nMCP `get_template` tool, and `GET /v1/templates/{id}`.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "additionalProperties": false
-    },
-    "ParamType": {
-      "description": "The scalar type a param carries. Params are deliberately scalar-only: a\nparam substitutes into a config *value* position, and structured overrides\nare what named templates / matrix rows are for.",
-      "type": "string",
-      "enum": [
-        "string",
-        "int",
-        "float",
-        "bool"
-      ]
-    },
-    "source_xml__SoapConfig": {
-      "description": "First-class SOAP ergonomics for the XML source.\n\nThis is **sugar** over the existing XML-over-HTTP request/response path —\nnot a WSDL client. When present, the source assembles a SOAP envelope for\nthe request body, injects the version-appropriate headers, and (by default)\nresolves [`XmlStreamConfig::records_element_path`] relative to\n`Envelope.Body` and surfaces SOAP `<Fault>` responses as errors.",
-      "properties": {
-        "action": {
-          "description": "The SOAP action. For 1.1 it becomes the `SOAPAction` header; for 1.2 it\nis carried as the `action` parameter of the `Content-Type` header.\nOptional — omit for actionless operations.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "body_inner": {
-          "description": "The XML fragment placed inside `<soap:Body>` — typically the operation\nelement, e.g. `<GetUsers xmlns=\"urn:example\"/>`. Mutually exclusive with\nthe top-level [`XmlStreamConfig::body`].",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "fault_as_error": {
-          "default": true,
-          "description": "When `true` (default), a SOAP `<Fault>` in the response raises\n[`FaucetError::Source`]. When `false`,\na fault yields zero records (logged once).",
-          "type": [
-            "boolean",
-            "string"
-          ]
-        },
-        "namespaces": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "default": {},
-          "description": "Extra namespace declarations (prefix → URI) added to the envelope\nelement. The `soap` prefix is reserved for the envelope namespace and\nany entry using it is ignored.",
-          "type": "object"
-        },
-        "path_relative_to_body": {
-          "default": true,
-          "description": "When `true` (default), [`XmlStreamConfig::records_element_path`] is\nresolved relative to `Envelope.Body` — i.e. `Envelope.Body.` is\nauto-prepended, so you write `GetUsersResponse.Users.User`. Set `false`\nto supply the fully-qualified path from the document root.",
-          "type": [
-            "boolean",
-            "string"
-          ]
-        },
-        "version": {
-          "$ref": "#/$defs/source_xml__SoapVersion",
-          "default": "1.1",
-          "description": "SOAP protocol version (default `1.1`)."
-        }
-      },
-      "type": "object"
-    },
-    "source_xml__SoapVersion": {
-      "description": "SOAP protocol version. Controls the envelope namespace and the HTTP\nheader shape used to carry the SOAP action.\n\nDeserializes from the wire strings `\"1.1\"` / `\"1.2\"`.",
-      "oneOf": [
-        {
-          "const": "1.1",
-          "description": "SOAP 1.1 — envelope namespace `http://schemas.xmlsoap.org/soap/envelope/`,\naction carried in a separate `SOAPAction` header.",
-          "type": "string"
-        },
-        {
-          "const": "1.2",
-          "description": "SOAP 1.2 — envelope namespace `http://www.w3.org/2003/05/soap-envelope`,\naction carried as a `Content-Type` parameter (no `SOAPAction` header).",
-          "type": "string"
         }
       ]
     }

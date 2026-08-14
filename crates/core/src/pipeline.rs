@@ -140,6 +140,7 @@ pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     delivery: crate::idempotency::DeliveryMode,
     resilience: Option<crate::resilience::ResiliencePolicy>,
     schema_drift: Option<crate::drift::SchemaDriftPolicy>,
+    cleanup: Option<std::sync::Arc<crate::cleanup::CleanupPolicy>>,
 }
 
 impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
@@ -164,6 +165,7 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             delivery: crate::idempotency::DeliveryMode::AtLeastOnce,
             resilience: None,
             schema_drift: None,
+            cleanup: None,
         }
     }
 
@@ -274,6 +276,15 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     /// and before the sink write, per page.
     pub fn with_schema_drift(mut self, policy: crate::drift::SchemaDriftPolicy) -> Self {
         self.schema_drift = Some(policy);
+        self
+    }
+
+    /// Attach a scoped-cleanup policy (#478). After a fully successful,
+    /// uncancelled run the sink is asked to delete rows in the claimed scope
+    /// that this run did not write. See [`crate::cleanup`] for why the timing
+    /// matters.
+    pub fn with_cleanup(mut self, policy: std::sync::Arc<crate::cleanup::CleanupPolicy>) -> Self {
+        self.cleanup = Some(policy);
         self
     }
 
@@ -430,7 +441,13 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
                     && self.delivery == crate::idempotency::DeliveryMode::AtLeastOnce
                     && self.schema_drift.is_none()
                     && self.adaptive.is_none()
-                    && self.resilience.is_none();
+                    && self.resilience.is_none()
+                    // The columnar fast-path bypasses `run_stream`, which is
+                    // where cleanup accumulates written keys and fires the
+                    // delete. Taking it with a policy attached would silently
+                    // skip the cleanup and leave the stale rows behind — the
+                    // exact failure this feature exists to prevent (#478).
+                    && self.cleanup.is_none();
                 #[cfg(feature = "quality")]
                 let columnar_ok = columnar_ok && self.quality.is_none();
                 #[cfg(feature = "contract")]
@@ -497,7 +514,71 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
                 .with_start_seq(start_seq)
                 .with_replay_guarantee(wrapped_source.replay_guarantee());
 
-            run_stream(pages, &wrapped_sink, opts).await
+            // ── Scoped cleanup (#478) ────────────────────────────────────
+            // The tracker wraps the sink so the written-key set is recorded by
+            // the thing doing the writing, rather than by threading a second
+            // concern through the page loop. It also keeps the policy off
+            // `RunStreamOptions`, whose shape is public API.
+            //
+            // The delete fires here, after `run_stream` returns Ok, and only
+            // when the run was not cancelled: a cancelled run read a partial set
+            // of the scope, so "delete what I didn't see" would remove rows that
+            // simply had not arrived yet.
+            match self.cleanup.clone() {
+                None => run_stream(pages, &wrapped_sink, opts).await,
+                Some(policy) => {
+                    if !wrapped_sink.supports_cleanup() {
+                        return Err(FaucetError::Config(format!(
+                            "cleanup is configured but sink '{}' does not support scoped cleanup",
+                            wrapped_sink.connector_name()
+                        )));
+                    }
+                    let tracker = crate::cleanup::CleanupTracker::new(&wrapped_sink, &policy);
+                    let result = run_stream(pages, &tracker, opts).await;
+                    match result {
+                        Ok(r) => {
+                            let cancelled = self.cancel.as_ref().is_some_and(|c| c.is_cancelled());
+                            if cancelled {
+                                tracing::warn!(
+                                    "scoped cleanup skipped: the run was cancelled, so the \
+                                     set of written keys is incomplete and a delete would \
+                                     remove rows that were never read"
+                                );
+                                crate::observability::cleanup_run(&name, &row, "skipped_cancelled");
+                            } else {
+                                let tracked = tracker.tracked();
+                                match tracker.finish(&policy).await {
+                                    Ok(deleted) => {
+                                        crate::observability::cleanup_deleted(
+                                            &name,
+                                            &row,
+                                            wrapped_sink.connector_name(),
+                                            deleted,
+                                        );
+                                        crate::observability::cleanup_run(&name, &row, "applied");
+                                        tracing::info!(
+                                            deleted,
+                                            kept = tracked,
+                                            "scoped cleanup complete: deleted destination rows \
+                                             in the claimed scope that this run did not write"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        crate::observability::cleanup_run(
+                                            &name,
+                                            &row,
+                                            "refused_overflow",
+                                        );
+                                        return Err(e);
+                                    }
+                                }
+                            }
+                            Ok(r)
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+            }
         }
         .instrument(span)
         .await;
@@ -5627,5 +5708,277 @@ mod tests {
             sink.written(),
             vec![json!({"id": 1, "name": "ok", "email": "a@x"})]
         );
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    //! Pipeline wiring for scoped cleanup (#478). The pure policy/accumulator
+    //! logic lives in `crate::cleanup`; these cover the *timing*, which is the
+    //! whole safety argument: when the delete fires, when it must not, and which
+    //! records count as "written".
+    use super::*;
+    use crate::cleanup::{CleanupPolicy, CleanupTracker, SeenKeys};
+    use async_trait::async_trait;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+    use tokio_util::sync::CancellationToken;
+
+    /// Records what `cleanup_scope` was asked to do, so a test can assert both
+    /// that it fired and with which key set.
+    #[derive(Default)]
+    struct CleanupSink {
+        written: Mutex<Vec<Value>>,
+        cleanup_calls: Mutex<Vec<Vec<String>>>,
+        supports: bool,
+        fail_writes: bool,
+    }
+
+    impl CleanupSink {
+        fn new() -> Self {
+            Self {
+                supports: true,
+                ..Default::default()
+            }
+        }
+        fn unsupported() -> Self {
+            Self::default()
+        }
+        fn failing() -> Self {
+            Self {
+                supports: true,
+                fail_writes: true,
+                ..Default::default()
+            }
+        }
+        fn calls(&self) -> Vec<Vec<String>> {
+            self.cleanup_calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Sink for CleanupSink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            if self.fail_writes {
+                return Err(FaucetError::Sink("boom".into()));
+            }
+            self.written.lock().unwrap().extend(records.iter().cloned());
+            Ok(records.len())
+        }
+        fn supports_cleanup(&self) -> bool {
+            self.supports
+        }
+        async fn cleanup_scope(
+            &self,
+            scope: &BTreeMap<String, Value>,
+            seen: &SeenKeys,
+        ) -> Result<u64, FaucetError> {
+            assert!(
+                !scope.is_empty(),
+                "the pipeline must never pass an empty scope"
+            );
+            let mut ids: Vec<String> = seen
+                .keys()
+                .iter()
+                .map(|k| {
+                    k.0.iter()
+                        .map(|(_, v)| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join("|")
+                })
+                .collect();
+            ids.sort();
+            self.cleanup_calls.lock().unwrap().push(ids);
+            Ok(3)
+        }
+    }
+
+    fn policy(max_keys: usize) -> Arc<CleanupPolicy> {
+        Arc::new(
+            CleanupPolicy::new(
+                BTreeMap::from([("contact_id".to_string(), json!(7))]),
+                vec!["id".to_string()],
+                max_keys,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// Minimal source: yields one page of `records`.
+    struct VecSource(Vec<Value>);
+
+    #[async_trait]
+    impl Source for VecSource {
+        async fn fetch_with_context(
+            &self,
+            _context: &std::collections::HashMap<String, Value>,
+        ) -> Result<Vec<Value>, FaucetError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn src(records: Vec<Value>) -> VecSource {
+        VecSource(records)
+    }
+
+    // ── CleanupTracker (the accumulator half) ────────────────────────────────
+
+    #[tokio::test]
+    async fn tracker_counts_rows_that_fail_into_the_dlq() {
+        // A row handed to the sink that fails is still a record the source
+        // claimed present, so it must count as seen — otherwise cleanup would
+        // delete its destination row.
+        let sink = CleanupSink::new();
+        let p = policy(100);
+        let tracker = CleanupTracker::new(&sink, &p);
+        let page = vec![json!({"id": 1}), json!({"id": 2})];
+        // The default `write_batch_partial` delegates to `write_batch`.
+        tracker.write_batch_partial(&page).await.unwrap();
+        assert_eq!(tracker.tracked(), 2);
+    }
+
+    #[tokio::test]
+    async fn tracker_refuses_to_delete_after_an_overflow() {
+        let sink = CleanupSink::new();
+        let p = policy(1);
+        let tracker = CleanupTracker::new(&sink, &p);
+        tracker
+            .write_batch(&[json!({"id": 1}), json!({"id": 2})])
+            .await
+            .unwrap();
+        let err = tracker
+            .finish(&p)
+            .await
+            .expect_err("an overflowed tracker must refuse");
+        assert!(err.to_string().contains("Nothing was deleted"), "{err}");
+        assert!(
+            sink.calls().is_empty(),
+            "the sink must never be asked to delete"
+        );
+    }
+
+    // ── Pipeline timing (the firing half) ────────────────────────────────────
+
+    #[tokio::test]
+    async fn fires_once_at_a_natural_end_with_every_written_key() {
+        let sink = CleanupSink::new();
+        let source = src(vec![json!({"id": 1}), json!({"id": 2}), json!({"id": 3})]);
+        let result = Pipeline::new(&source, &sink)
+            .with_cleanup(policy(100))
+            .run()
+            .await
+            .expect("run succeeds");
+        assert_eq!(result.records_written, 3);
+        let calls = sink.calls();
+        assert_eq!(calls.len(), 1, "exactly one cleanup per run");
+        assert_eq!(calls[0], vec!["1", "2", "3"]);
+    }
+
+    #[tokio::test]
+    async fn empty_result_set_still_fires_with_no_keys() {
+        // THE motivating case: a scope whose records all disappeared. The fetch
+        // returns nothing, so the delete must clear the scope. A design that
+        // inferred scopes from observed records would never fire here.
+        let sink = CleanupSink::new();
+        let source = src(vec![]);
+        Pipeline::new(&source, &sink)
+            .with_cleanup(policy(100))
+            .run()
+            .await
+            .unwrap();
+        let calls = sink.calls();
+        assert_eq!(calls.len(), 1, "must still fire on an empty fetch");
+        assert!(
+            calls[0].is_empty(),
+            "no keys written → delete the whole scope"
+        );
+    }
+
+    #[tokio::test]
+    async fn skipped_when_the_run_was_cancelled() {
+        let sink = CleanupSink::new();
+        let source = src(vec![json!({"id": 1})]);
+        let token = CancellationToken::new();
+        token.cancel();
+        Pipeline::new(&source, &sink)
+            .with_cleanup(policy(100))
+            .with_cancel(token)
+            .run()
+            .await
+            .expect("a cancelled run still returns Ok with partial output flushed");
+        assert!(
+            sink.calls().is_empty(),
+            "cleanup must not run after a cancellation"
+        );
+    }
+
+    #[tokio::test]
+    async fn not_fired_when_the_run_failed() {
+        let sink = CleanupSink::failing();
+        let source = src(vec![json!({"id": 1})]);
+        let err = Pipeline::new(&source, &sink)
+            .with_cleanup(policy(100))
+            .run()
+            .await
+            .expect_err("the write failure must propagate");
+        assert!(err.to_string().contains("boom"), "{err}");
+        assert!(
+            sink.calls().is_empty(),
+            "a failed run never wrote the authoritative set"
+        );
+    }
+
+    #[tokio::test]
+    async fn refuses_and_deletes_nothing_when_the_key_ceiling_is_breached() {
+        let sink = CleanupSink::new();
+        let source = src(vec![json!({"id": 1}), json!({"id": 2}), json!({"id": 3})]);
+        let err = Pipeline::new(&source, &sink)
+            .with_cleanup(policy(2))
+            .run()
+            .await
+            .expect_err("must fail rather than partially delete");
+        assert!(err.to_string().contains("Nothing was deleted"), "{err}");
+        assert!(sink.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejects_a_sink_that_does_not_support_cleanup() {
+        let sink = CleanupSink::unsupported();
+        let source = src(vec![json!({"id": 1})]);
+        let err = Pipeline::new(&source, &sink)
+            .with_cleanup(policy(100))
+            .run()
+            .await
+            .expect_err("unsupported sink must be rejected");
+        assert!(
+            err.to_string().contains("does not support scoped cleanup"),
+            "{err}"
+        );
+        assert!(
+            sink.written.lock().unwrap().is_empty(),
+            "must fail before writing anything"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_policy_leaves_the_write_path_untouched() {
+        let sink = CleanupSink::new();
+        let source = src(vec![json!({"id": 1})]);
+        let result = Pipeline::new(&source, &sink).run().await.unwrap();
+        assert_eq!(result.records_written, 1);
+        assert!(sink.calls().is_empty(), "no policy → no cleanup");
+    }
+
+    #[tokio::test]
+    async fn rows_missing_the_key_are_not_tracked_but_do_not_break_the_pass() {
+        let sink = CleanupSink::new();
+        let source = src(vec![json!({"id": 1}), json!({"no_key": true})]);
+        Pipeline::new(&source, &sink)
+            .with_cleanup(policy(100))
+            .run()
+            .await
+            .unwrap();
+        assert_eq!(sink.calls()[0], vec!["1"]);
     }
 }

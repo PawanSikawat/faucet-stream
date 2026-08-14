@@ -26,8 +26,9 @@ fn scope_key(scope: &str) -> String {
 
 use crate::config::{MssqlColumnMapping, MssqlSinkConfig};
 use crate::encode::{
-    BoundParam, auto_row_params, build_insert_sql, build_merge, build_merge_delete,
-    max_rows_per_insert, resolve_insert_columns,
+    BoundParam, auto_row_params, build_cleanup_delete_sql, build_cleanup_key_insert_sql,
+    build_cleanup_temp_create_sql, build_cleanup_temp_drop_sql, build_insert_sql, build_merge,
+    build_merge_delete, max_rows_per_insert, resolve_insert_columns,
 };
 
 /// Microsoft SQL Server sink.
@@ -371,30 +372,45 @@ impl MssqlSink {
         Ok(rows.len())
     }
 
-    /// Run a single `MERGE`-upsert / `MERGE`-delete statement on an
-    /// already-open connection, honouring the per-statement timeout. Returns
-    /// `Err((error, timed_out))`; on timeout the connection is desynced and the
-    /// caller must NOT issue ROLLBACK on it (mirrors `insert_rows_no_txn`).
+    /// Run a single parameterized statement on an already-open connection,
+    /// honouring the per-statement timeout, and return the rows it affected.
+    ///
+    /// `what` names the operation in the error message (`"merge"`, `"cleanup"`).
+    /// Returns `Err((error, timed_out))`; on timeout the connection is desynced
+    /// and the caller must NOT issue ROLLBACK on it (mirrors
+    /// `insert_rows_no_txn`).
+    async fn exec_params(
+        &self,
+        conn: &mut MssqlPooledConnection<'_>,
+        sql: &str,
+        refs: &[&dyn ToSql],
+        what: &str,
+    ) -> Result<u64, (FaucetError, bool)> {
+        let exec = async {
+            conn.execute(sql, refs)
+                .await
+                .map(|r| r.total())
+                .map_err(|e| FaucetError::Sink(format!("MSSQL {what} failed: {e}")))
+        };
+        match self.timeout() {
+            Some(t) => match tokio::time::timeout(t, exec).await {
+                Ok(Ok(n)) => Ok(n),
+                Ok(Err(e)) => Err((e, false)),
+                Err(_) => Err((FaucetError::Sink(format!("MSSQL {what} timed out")), true)),
+            },
+            None => exec.await.map_err(|e| (e, false)),
+        }
+    }
+
+    /// Run a single `MERGE`-upsert / `MERGE`-delete statement (see
+    /// [`exec_params`](Self::exec_params)).
     async fn exec_merge(
         &self,
         conn: &mut MssqlPooledConnection<'_>,
         sql: &str,
         refs: &[&dyn ToSql],
     ) -> Result<(), (FaucetError, bool)> {
-        let exec = async {
-            conn.execute(sql, refs)
-                .await
-                .map(|_| ())
-                .map_err(|e| FaucetError::Sink(format!("MSSQL merge failed: {e}")))
-        };
-        match self.timeout() {
-            Some(t) => match tokio::time::timeout(t, exec).await {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(e)) => Err((e, false)),
-                Err(_) => Err((FaucetError::Sink("MSSQL merge timed out".into()), true)),
-            },
-            None => exec.await.map_err(|e| (e, false)),
-        }
+        self.exec_params(conn, sql, refs, "merge").await.map(|_| ())
     }
 
     /// Upsert `upserts` into the table via `MERGE`, on an already-open
@@ -493,6 +509,147 @@ impl MssqlSink {
 
         control(&mut conn, "COMMIT TRAN").await?;
         Ok(affected)
+    }
+
+    /// Delete rows in `scope` whose key was not written by this run (#478).
+    ///
+    /// Uses a `#temp` table + `NOT EXISTS` rather than `key NOT IN (…)` because
+    /// the written-key set routinely dwarfs MSSQL's 2100-parameter ceiling (the
+    /// cleanup ceiling defaults to 100k rows). The key loads and the `DELETE`
+    /// share one transaction, so the delete is all-or-nothing: a partial delete
+    /// would remove rows the run actually wrote.
+    ///
+    /// An empty `seen` set is meaningful, not a no-op — it means the source
+    /// reported the scope as empty, so every row in it is stale and must go. That
+    /// is the case this feature exists for.
+    async fn cleanup_scope_impl(
+        &self,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &faucet_core::SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        let key = &self.config.write.key;
+        if key.is_empty() {
+            return Err(FaucetError::Sink(
+                "cleanup requires a non-empty `key`".to_string(),
+            ));
+        }
+
+        // Validate the columns *before* checking out the cleanup connection:
+        // `discover_column_types` takes its own connection from the pool, and
+        // nesting the two would deadlock a `max_connections: 1` pool.
+        let live: std::collections::HashSet<String> = self
+            .discover_column_types()
+            .await?
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect();
+        if live.is_empty() {
+            return Err(FaucetError::Sink(format!(
+                "cleanup: MSSQL table '{}' has no columns or does not exist",
+                self.config.table
+            )));
+        }
+        // Fail with a clear message rather than letting SQL Server reject an
+        // unknown column mid-DELETE. The scope is written in *destination* terms,
+        // so a name that isn't a real column is a config error worth naming.
+        for col in scope.keys().chain(key.iter()) {
+            if !live.contains(col) {
+                return Err(FaucetError::Sink(format!(
+                    "cleanup: column '{col}' does not exist on {} — the completeness \
+                     claim and `key` are in destination column terms",
+                    self.config.table
+                )));
+            }
+        }
+
+        // Build every statement up front so an identifier-quoting failure can
+        // never leave a transaction open on a pooled connection.
+        let scope_cols: Vec<&str> = scope.keys().map(String::as_str).collect();
+        let create_sql = build_cleanup_temp_create_sql(&self.table_quoted, key)?;
+        let delete_sql = build_cleanup_delete_sql(&self.table_quoted, &scope_cols, key)?;
+        let drop_sql = build_cleanup_temp_drop_sql();
+
+        let mut conn = self.checkout().await?;
+        // A `#temp` table lives for the whole session and a pooled connection
+        // outlives one cleanup, so clear any leftover from a previous run on this
+        // connection. Outside the transaction: it is a cleanup of *our* scratch
+        // state, not part of the atomic unit below.
+        control(&mut conn, &drop_sql).await?;
+
+        control(&mut conn, "BEGIN TRAN").await?;
+        match self
+            .cleanup_in_txn(&mut conn, &create_sql, &delete_sql, scope, seen)
+            .await
+        {
+            Ok(deleted) => {
+                control(&mut conn, "COMMIT TRAN").await?;
+                // Best-effort: free the scratch table so the connection returns to
+                // the pool clean. The pre-drop above is the real guarantee.
+                let _ = control(&mut conn, &drop_sql).await;
+                Ok(deleted)
+            }
+            Err((e, timed_out)) => {
+                // On timeout the exec future was dropped mid-TDS, leaving the
+                // connection desynced — ROLLBACK would run on a corrupt stream, so
+                // it is deliberately skipped and the connection dropped instead
+                // (mirrors `insert_chunk` / `apply_plan`). Otherwise ROLLBACK both
+                // undoes any loaded keys and drops the temp table, since T-SQL DDL
+                // is transactional.
+                if !timed_out {
+                    let _ = control(&mut conn, "ROLLBACK TRAN").await;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// The transactional body of [`cleanup_scope_impl`]: materialize the written
+    /// keys, then delete everything in scope that isn't among them. The caller
+    /// owns `BEGIN TRAN` / `COMMIT TRAN` / `ROLLBACK TRAN`.
+    ///
+    /// Returns `Err((error, timed_out))` with the same desync contract as
+    /// [`exec_params`](Self::exec_params).
+    async fn cleanup_in_txn(
+        &self,
+        conn: &mut MssqlPooledConnection<'_>,
+        create_sql: &str,
+        delete_sql: &str,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &faucet_core::SeenKeys,
+    ) -> Result<u64, (FaucetError, bool)> {
+        let key = &self.config.write.key;
+
+        control(conn, create_sql).await.map_err(|e| {
+            (
+                FaucetError::Sink(format!("cleanup: temp table creation failed: {e}")),
+                false,
+            )
+        })?;
+
+        // Load the written keys, chunked to stay inside MSSQL's 2100-parameter
+        // and 1000-row-values ceilings. An empty set loads nothing and leaves the
+        // `DELETE` below to remove the whole scope — the motivating case.
+        let per = max_rows_per_insert(key.len());
+        for chunk in seen.keys().chunks(per) {
+            let sql = build_cleanup_key_insert_sql(key, chunk.len()).map_err(|e| (e, false))?;
+            // Bind each tuple's values in key order, row-major — matching the @PN
+            // numbering `build_cleanup_key_insert_sql` emits.
+            let owned: Vec<BoundParam> = chunk
+                .iter()
+                .flat_map(|kt| kt.0.iter().map(|(_, v)| BoundParam::from_value(v)))
+                .collect();
+            let refs: Vec<&dyn ToSql> = owned.iter().map(|p| p.as_tosql()).collect();
+            self.exec_params(conn, &sql, &refs, "cleanup key load")
+                .await?;
+        }
+
+        // Delete everything in scope that isn't in the written-key set. Scope
+        // values bind in `scope_cols` order, which is the same `BTreeMap`
+        // iteration order the predicate was generated from.
+        let owned: Vec<BoundParam> = scope.values().map(BoundParam::from_value).collect();
+        let refs: Vec<&dyn ToSql> = owned.iter().map(|p| p.as_tosql()).collect();
+        self.exec_params(conn, delete_sql, &refs, "cleanup delete")
+            .await
     }
 }
 
@@ -754,6 +911,23 @@ impl Sink for MssqlSink {
 
     fn supports_idempotent_writes(&self) -> bool {
         true
+    }
+
+    fn supports_cleanup(&self) -> bool {
+        // Column-mapping mode only: the scope + key predicates address real
+        // columns, which a single NVARCHAR(MAX) JSON payload column does not have.
+        matches!(
+            self.config.column_mapping,
+            MssqlColumnMapping::AutoColumns { .. }
+        )
+    }
+
+    async fn cleanup_scope(
+        &self,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &faucet_core::SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        self.cleanup_scope_impl(scope, seen).await
     }
 
     fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {

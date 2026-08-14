@@ -502,6 +502,37 @@ pub trait Sink: Send + Sync {
         )))
     }
 
+    /// Whether this sink can delete a scoped set of rows for scoped cleanup
+    /// (#478). Default `false`; the upsert-capable sinks override it.
+    fn supports_cleanup(&self) -> bool {
+        false
+    }
+
+    /// Delete rows matching `scope` whose key is **not** in `seen`.
+    ///
+    /// Called at most once per invocation, only after the run completed
+    /// successfully and uncancelled — see [`crate::cleanup`] for why the timing
+    /// is load-bearing. `scope` is a set of equality predicates in destination
+    /// column terms, AND-ed together; `seen` holds the key tuples this run wrote.
+    ///
+    /// Returns the number of rows deleted. Implementations **must** be
+    /// all-or-nothing where the backend allows it: a partial delete would remove
+    /// rows the run actually wrote.
+    ///
+    /// The default is a typed "unsupported" error, so no existing or third-party
+    /// connector breaks.
+    async fn cleanup_scope(
+        &self,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &crate::cleanup::SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        let _ = (scope, seen);
+        Err(FaucetError::Sink(format!(
+            "sink '{}' does not support scoped cleanup",
+            self.connector_name()
+        )))
+    }
+
     /// Write `records` AND durably record `token` for `scope`, atomically.
     ///
     /// `scope` namespaces the watermark (the pipeline passes the per-row state

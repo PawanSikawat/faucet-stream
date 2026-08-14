@@ -832,6 +832,7 @@ async fn build_pipeline<'a>(
     pipeline_name: &str,
     row_id: &str,
     run_id: &str,
+    cleanup_scope: Option<Value>,
 ) -> CliResult<Pipeline<'a, dyn Source + 'a, dyn Sink + 'a>> {
     let mut pipeline = Pipeline::new(source, sink)
         .with_name(pipeline_name.to_owned())
@@ -888,6 +889,49 @@ async fn build_pipeline<'a>(
     // Schema-drift policy (pipeline-level in v1; same for every invocation).
     if let Some(ref sd) = node.schema {
         pipeline = pipeline.with_schema_drift(faucet_core::SchemaDriftPolicy::compile(sd));
+    }
+    // ── Scoped cleanup (#478) ────────────────────────────────────────────────
+    // Attaching the policy is what authorises a delete, so the coarse gating
+    // lives here — `run_stream` only adds "the run finished uncancelled".
+    //
+    //  - Roots only: a child fans out per parent record, and each invocation
+    //    claims its own scope, which is exactly right — but a *non-root* here
+    //    means a child, which is still a root-of-its-own-scope, so the real
+    //    exclusions are the synthetic runs below.
+    //  - `--dry-run` replaces the sink with a counter and `--limit` wraps it to
+    //    drop records: under either, "what this run wrote" is a fiction, so a
+    //    delete computed from it would remove live rows.
+    //  - A shard reads a fraction of the source, so its written-key set is
+    //    incomplete by construction — deleting the difference would delete the
+    //    other shards' rows.
+    if let Some(scope) = cleanup_scope {
+        let synthetic = opts.dry_run || opts.limit.is_some() || opts.shard.is_some();
+        if synthetic {
+            tracing::warn!(
+                row = %row_id,
+                "scoped cleanup skipped: --dry-run / --limit / shard runs do not write the \
+                 authoritative record set for the scope, so a delete would remove live rows"
+            );
+        } else {
+            let map: std::collections::BTreeMap<String, Value> = scope
+                .as_object()
+                .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .unwrap_or_default();
+            let key: Vec<String> = node
+                .sink
+                .config
+                .get("key")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let policy = faucet_core::CleanupPolicy::new(map, key, faucet_core::DEFAULT_MAX_KEYS)
+                .map_err(|e| CliError::Config(format!("cleanup: {e}")))?;
+            pipeline = pipeline.with_cleanup(Arc::new(policy));
+        }
     }
     // Execution-level adaptive batch-size controller (shared by all rows).
     if let Some(ab) = opts
@@ -973,10 +1017,25 @@ async fn run_one_invocation(
     reject_unresolved_backfill_tokens(&source_cfg, "source")?;
     reject_unresolved_backfill_tokens(&sink_cfg, "sink")?;
 
+    // Scoped-cleanup claim (#478). Resolved through the *same* token passes as
+    // the connector configs — the scope is typically `${parent.id}` on a child
+    // row, so it has to see the parent record exactly like the source URL does.
+    let mut cleanup_scope: Option<Value> = node
+        .cleanup_scope
+        .as_ref()
+        .map(|m| Value::Object(m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()));
+    if let Some(scope) = cleanup_scope.as_mut() {
+        resolve_now_inplace(scope, opts.clock)?;
+        reject_unresolved_backfill_tokens(scope, "complete_for")?;
+    }
+
     if let (Some(record), NodeRole::Child { parent_id, .. }) = (parent_record, &node.role) {
         let ctx: HashMap<String, Value> = HashMap::from([(parent_id.clone(), record.clone())]);
         resolve_inplace(&mut source_cfg, &ctx)?;
         resolve_inplace(&mut sink_cfg, &ctx)?;
+        if let Some(scope) = cleanup_scope.as_mut() {
+            resolve_inplace(scope, &ctx)?;
+        }
     }
 
     // 2) Build source + sink. `faucet dlq replay` injects a pre-built source
@@ -1182,6 +1241,7 @@ async fn run_one_invocation(
         &pipeline_name,
         &row_id,
         &run_id,
+        cleanup_scope,
     )
     .await?;
     // ── Lineage: START + heartbeat + terminal ────────────────────────────────
@@ -1953,6 +2013,7 @@ mod tests {
                     inherit_transforms: true,
                     status: None,
                     tags: Vec::new(),
+                    complete_for: None,
                 }),
                 sink: Some(ConnectorSpec {
                     kind: "jsonl".into(),
@@ -1961,6 +2022,7 @@ mod tests {
                     inherit_transforms: true,
                     status: None,
                     tags: Vec::new(),
+                    complete_for: None,
                 }),
                 sources: Default::default(),
                 sinks: Default::default(),
@@ -2980,6 +3042,7 @@ matrix:
                     inherit_transforms: true,
                     status: None,
                     tags: Vec::new(),
+                    complete_for: None,
                 },
                 sink: ConnectorSpec {
                     kind: "jsonl".into(),
@@ -2988,6 +3051,7 @@ matrix:
                     inherit_transforms: true,
                     status: None,
                     tags: Vec::new(),
+                    complete_for: None,
                 },
                 transforms: Vec::new(),
                 state: None,
@@ -3005,6 +3069,7 @@ matrix:
                 depends_on: Vec::new(),
                 status: crate::config::SourceStatus::Active,
                 tags: Vec::new(),
+                cleanup_scope: None,
                 deferred_refs: refs
                     .iter()
                     .map(|(rid, p)| DeferredRef {
@@ -3057,6 +3122,7 @@ matrix:
                 inherit_transforms: true,
                 status: None,
                 tags: Vec::new(),
+                complete_for: None,
             },
             sink: ConnectorSpec {
                 kind: "jsonl".into(),
@@ -3065,6 +3131,7 @@ matrix:
                 inherit_transforms: true,
                 status: None,
                 tags: Vec::new(),
+                complete_for: None,
             },
             transforms: Vec::new(),
             state: None,
@@ -3082,6 +3149,7 @@ matrix:
             depends_on: Vec::new(),
             status: crate::config::SourceStatus::Active,
             tags: Vec::new(),
+            cleanup_scope: None,
             deferred_refs: vec![DeferredRef {
                 referenced_id: "p".into(),
                 dotted_path: "".into(),
@@ -3290,6 +3358,7 @@ matrix:
                 inherit_transforms: true,
                 status: None,
                 tags: Vec::new(),
+                complete_for: None,
             },
             on_batch_error: OnBatchErrorSpec::DlqAll,
             max_failures_per_page: Some(7),
@@ -3374,6 +3443,7 @@ matrix:
                 inherit_transforms: true,
                 status: None,
                 tags: Vec::new(),
+                complete_for: None,
             },
             sink: ConnectorSpec {
                 kind: "jsonl".into(),
@@ -3382,6 +3452,7 @@ matrix:
                 inherit_transforms: true,
                 status: None,
                 tags: Vec::new(),
+                complete_for: None,
             },
             transforms: Vec::new(),
             state,
@@ -3399,6 +3470,7 @@ matrix:
             depends_on: Vec::new(),
             status: crate::config::SourceStatus::Active,
             tags: Vec::new(),
+            cleanup_scope: None,
             deferred_refs: Vec::new(),
             source_override: None,
         }
@@ -3594,6 +3666,7 @@ matrix:
                 inherit_transforms: true,
                 status: None,
                 tags: Vec::new(),
+                complete_for: None,
             },
             sink: ConnectorSpec {
                 kind: "jsonl".into(),
@@ -3602,6 +3675,7 @@ matrix:
                 inherit_transforms: true,
                 status: None,
                 tags: Vec::new(),
+                complete_for: None,
             },
             transforms: Vec::new(),
             state: None,
@@ -3619,6 +3693,7 @@ matrix:
             depends_on: Vec::new(),
             status: crate::config::SourceStatus::Active,
             tags: Vec::new(),
+            cleanup_scope: None,
             deferred_refs: Vec::new(),
             source_override: None,
         };

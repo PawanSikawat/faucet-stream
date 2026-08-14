@@ -16,6 +16,7 @@
 pub mod adaptive;
 pub mod auth;
 pub mod check;
+pub mod cleanup;
 #[cfg(feature = "arrow")]
 pub mod columnar;
 pub mod config;
@@ -59,6 +60,7 @@ pub use adaptive::{
 };
 pub use auth::{AuthProvider, AuthReference, AuthSpec, Credential, SharedAuthProvider};
 pub use check::{CheckContext, CheckReport, Probe, ProbeStatus};
+pub use cleanup::{CleanupMode, CleanupPolicy, DEFAULT_MAX_KEYS, SeenKeys};
 #[cfg(feature = "arrow")]
 pub use columnar::{
     ColumnarPage, infer_arrow_schema, record_batch_to_values, values_to_record_batch,

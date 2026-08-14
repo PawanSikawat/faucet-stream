@@ -395,6 +395,47 @@ pub struct ConnectorSpec {
     /// sinks. Validated at expand time (charset `^[a-z0-9][a-z0-9_-]*$`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+
+    /// **Completeness claim** for scoped cleanup (#478). Meaningful only on
+    /// source templates; rejected at expand time on sinks — only a source knows
+    /// whether a fetch returned every record for a scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complete_for: Option<CompletenessClaim>,
+}
+
+/// "For these column values, this fetch returns *all* the records" (#478).
+///
+/// Declared on the source because a sink sees a page and cannot tell a complete
+/// set from page 1 of 3. The claim alone never deletes anything: `on_missing`
+/// defaults to `ignore`, so acting on it is a separate, explicit opt-in.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CompletenessClaim {
+    /// The scope this fetch is authoritative for, keyed by **destination**
+    /// column names — the `DELETE` runs against destination columns, and a
+    /// transform chain may rename fields between source and sink. Values may
+    /// carry `${parent.path}` / `${now.*}` tokens, resolved per invocation like
+    /// any other config value.
+    pub scope: std::collections::BTreeMap<String, Value>,
+
+    /// What to do about destination rows inside `scope` that this run did not
+    /// write. Defaults to `ignore`, so adding a claim can never start deleting
+    /// data on its own.
+    #[serde(default)]
+    pub on_missing: OnMissing,
+}
+
+/// Action for destination rows inside a completeness scope that a run did not
+/// write (#478).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OnMissing {
+    /// Leave them alone. The claim is recorded but inert (default).
+    #[default]
+    Ignore,
+    /// Delete them — the only way an incremental sync can remove records that
+    /// were deleted at the source.
+    Delete,
 }
 
 /// A partial connector override carried by a matrix row. Both `type` and

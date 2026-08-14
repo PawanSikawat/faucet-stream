@@ -842,6 +842,27 @@ pub const UPSERT_SINK_KINDS: &[&str] = &[
     "spanner",
 ];
 
+/// Sink kinds that implement scoped cleanup (`Sink::cleanup_scope`, #478) —
+/// deleting destination rows inside a source's declared completeness scope that
+/// the run did not write. Kept in sync with each sink's `supports_cleanup()`
+/// override; `cli/tests/registry_capability_parity.rs` asserts they agree.
+///
+/// Currently the same set as [`UPSERT_SINK_KINDS`]: cleanup is only meaningful
+/// alongside `write_mode: upsert`, which is exactly what those sinks support.
+/// They are separate constants because that coincidence is not a guarantee — a
+/// future upsert-capable sink whose backend cannot express a scoped delete would
+/// belong in one list and not the other.
+pub const CLEANUP_SINK_KINDS: &[&str] = &[
+    "postgres",
+    "sqlite",
+    "mysql",
+    "mssql",
+    "mongodb",
+    "elasticsearch",
+    "bigquery",
+    "spanner",
+];
+
 /// Source kinds that implement live dataset discovery (`Source::discover`,
 /// issue #211) — mirrors the discoverable-source list in the connector docs.
 /// Single source of truth for the conformance scorecard (#330).
@@ -902,6 +923,11 @@ pub fn sink_supports_idempotent_writes(kind: &str) -> bool {
 /// See [`SCHEMA_EVOLUTION_SINK_KINDS`].
 pub fn sink_supports_schema_evolution(kind: &str) -> bool {
     SCHEMA_EVOLUTION_SINK_KINDS.contains(&kind)
+}
+
+/// See [`CLEANUP_SINK_KINDS`].
+pub fn sink_supports_cleanup(kind: &str) -> bool {
+    CLEANUP_SINK_KINDS.contains(&kind)
 }
 
 /// Write modes each sink kind supports. Kept in sync with each sink's

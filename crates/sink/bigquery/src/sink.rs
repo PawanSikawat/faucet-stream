@@ -10,6 +10,7 @@ use faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL;
 use gcp_bigquery_client::Client;
 use gcp_bigquery_client::error::BQError;
 use gcp_bigquery_client::model::get_query_results_parameters::GetQueryResultsParameters;
+use gcp_bigquery_client::model::job::Job;
 use gcp_bigquery_client::model::query_parameter::QueryParameter;
 use gcp_bigquery_client::model::query_parameter_type::QueryParameterType;
 use gcp_bigquery_client::model::query_parameter_value::QueryParameterValue;
@@ -35,6 +36,30 @@ const JOB_POLL_LONG_POLL_MS: i32 = 10_000;
 /// than a hard error.
 fn is_table_not_found(err: &BQError) -> bool {
     matches!(err, BQError::ResponseError { error } if error.error.code == 404)
+}
+
+/// Rows a completed DML job reported as affected
+/// (`statistics.query.numDmlAffectedRows`, which BigQuery sends as a string).
+///
+/// Reported as `0` when the field is absent or unparseable: the delete has
+/// already been verified to have committed by then, so this is a metric, never
+/// a correctness signal — an unreadable count must not fail a successful
+/// cleanup.
+fn dml_affected_rows(job: &Job) -> u64 {
+    job.statistics
+        .as_ref()
+        .and_then(|s| s.query.as_ref())
+        .and_then(|q| q.num_dml_affected_rows.as_deref())
+        .and_then(|n| n.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// Serialize the cleanup scope — a map of destination column → value — into the
+/// single JSON object bound as `@scope`.
+fn scope_to_payload(scope: &std::collections::BTreeMap<String, Value>) -> String {
+    let obj: serde_json::Map<String, Value> =
+        scope.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    Value::Object(obj).to_string()
 }
 
 /// Serialize planned delete key tuples into a JSON array of `{key_col: value}`
@@ -317,9 +342,16 @@ impl BigQuerySink {
         self.await_query_complete(resp).await
     }
 
+    /// [`await_query_job`](Self::await_query_job), discarding the job body —
+    /// the shape every caller that only needs "did it commit?" wants.
+    async fn await_query_complete(&self, initial: QueryResponse) -> Result<(), FaucetError> {
+        self.await_query_job(initial).await.map(|_| ())
+    }
+
     /// Wait for a query/script job to finish, then authoritatively verify it
-    /// succeeded. Returns `Ok(())` only once the job reaches a terminal state
-    /// with no `errorResult`.
+    /// succeeded. Returns the terminal `Job` only once it reached a terminal
+    /// state with no `errorResult` — callers that need DML statistics (the
+    /// scoped-cleanup delete count) read them off the returned body.
     ///
     /// Why `get_job` rather than the response `errors` field: the client maps
     /// only non-2xx HTTP to `Err`, so a job that fails at *runtime* (a CAST
@@ -327,7 +359,7 @@ impl BigQuerySink {
     /// failure recorded in the job body. `Job.status.error_result` is the
     /// authoritative terminal-failure signal; the `errors` array can also carry
     /// non-fatal warnings, so it must not be treated as failure on its own.
-    async fn await_query_complete(&self, initial: QueryResponse) -> Result<(), FaucetError> {
+    async fn await_query_job(&self, initial: QueryResponse) -> Result<Job, FaucetError> {
         let (job_id, location) = Self::job_reference(&initial)?;
 
         // Phase 1 — wait for completion via server-side long-poll (not a busy wait).
@@ -377,18 +409,26 @@ impl BigQuerySink {
             .get_job(&self.config.project_id, &job_id, location.as_deref())
             .await
             .map_err(|e| FaucetError::Sink(format!("BigQuery jobs.get failed: {e}")))?;
-        let status = job.status.ok_or_else(|| {
-            FaucetError::Sink(format!(
-                "BigQuery job '{job_id}' returned no status; cannot confirm durable commit"
-            ))
-        })?;
-        if let Some(err) = status.error_result {
+        // Read the two fields we judge on, then drop the borrow so the job body
+        // itself can be handed back to the caller.
+        let (state, error_result) = {
+            let status = job.status.as_ref().ok_or_else(|| {
+                FaucetError::Sink(format!(
+                    "BigQuery job '{job_id}' returned no status; cannot confirm durable commit"
+                ))
+            })?;
+            (
+                status.state.clone(),
+                status.error_result.as_ref().map(|e| e.to_string()),
+            )
+        };
+        if let Some(err) = error_result {
             return Err(FaucetError::Sink(format!(
                 "BigQuery query job '{job_id}' failed: {err}"
             )));
         }
-        match status.state.as_deref() {
-            Some("DONE") => Ok(()),
+        match state.as_deref() {
+            Some("DONE") => Ok(job),
             other => Err(FaucetError::Sink(format!(
                 "BigQuery job '{job_id}' is in state {other:?}, not DONE; cannot confirm durable commit"
             ))),
@@ -495,6 +535,75 @@ impl BigQuerySink {
         self.await_query_complete(resp).await?;
 
         Ok(plan.upserts.len() + plan.deletes.len())
+    }
+
+    /// Delete rows in `scope` whose key was not written by this run (#478).
+    ///
+    /// One `DELETE` statement, which BigQuery applies atomically — so the
+    /// cleanup is all-or-nothing, as it must be: a partial delete would remove
+    /// rows the run actually wrote. Both the scope predicate and the written-key
+    /// set travel as a single bound JSON STRING parameter each (`@scope` /
+    /// `@keys`), the same shape the typed `INSERT … SELECT FROM
+    /// UNNEST(JSON_QUERY_ARRAY(@payload))` write path uses; one parameter per
+    /// key would exceed BigQuery's parameter limits well before the scope did.
+    ///
+    /// An empty `seen` set is meaningful, not a no-op — it means the source
+    /// reported the scope as empty, so every row in it is stale and must go.
+    /// That is the case this feature exists for, and `NOT EXISTS` over an empty
+    /// `UNNEST` expresses it directly.
+    async fn cleanup_scope_impl(
+        &self,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &faucet_core::SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        let key = &self.config.write.key;
+        if key.is_empty() {
+            return Err(FaucetError::Sink(
+                "bigquery cleanup requires a non-empty `key`".to_string(),
+            ));
+        }
+        let columns = self.target_schema().await?;
+        let scope_cols: Vec<String> = scope.keys().cloned().collect();
+        merge::validate_cleanup_columns(&columns, &scope_cols, key)?;
+
+        let keys_payload = deletes_to_payload(seen.keys());
+        merge::check_cleanup_payload_size(keys_payload.len(), seen.len())?;
+
+        let sql = merge::build_cleanup_delete(
+            &columns,
+            &scope_cols,
+            key,
+            &self.config.project_id,
+            &self.config.dataset_id,
+            &self.config.table_id,
+        );
+        let mut req = QueryRequest::new(sql);
+        req.use_legacy_sql = false;
+        req.parameter_mode = Some("NAMED".to_string());
+        req.query_parameters = Some(vec![
+            Self::string_param("scope", &scope_to_payload(scope)),
+            Self::string_param("keys", &keys_payload),
+        ]);
+
+        let resp = self
+            .client
+            .job()
+            .query(&self.config.project_id, req)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("bigquery cleanup delete failed: {e}")))?;
+        let job = self.await_query_job(resp).await?;
+        let deleted = dml_affected_rows(&job);
+
+        tracing::info!(
+            table = %format!(
+                "{}.{}.{}",
+                self.config.project_id, self.config.dataset_id, self.config.table_id
+            ),
+            deleted,
+            written_keys = seen.len(),
+            "BigQuery scoped cleanup complete"
+        );
+        Ok(deleted)
     }
 }
 
@@ -722,6 +831,21 @@ impl faucet_core::Sink for BigQuerySink {
         self.config.write.dedups_by_key()
     }
 
+    /// Scoped cleanup is always available: a BigQuery table's scope and key
+    /// predicates address real columns, and the exactly-once/upsert paths
+    /// already require the target table to carry a defined schema.
+    fn supports_cleanup(&self) -> bool {
+        true
+    }
+
+    async fn cleanup_scope(
+        &self,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &faucet_core::SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        self.cleanup_scope_impl(scope, seen).await
+    }
+
     fn supports_idempotent_writes(&self) -> bool {
         true
     }
@@ -941,7 +1065,7 @@ impl faucet_core::Sink for BigQuerySink {
 
 #[cfg(test)]
 mod tests {
-    use super::deletes_to_payload;
+    use super::{Job, deletes_to_payload, dml_affected_rows, scope_to_payload};
     use faucet_core::KeyTuple;
     use serde_json::json;
 
@@ -968,6 +1092,52 @@ mod tests {
         ])]);
         let v: serde_json::Value = serde_json::from_str(&p).expect("valid JSON");
         assert_eq!(v, json!([{"tenant": "acme", "id": 7}]));
+    }
+
+    // --- scoped cleanup (issue #478) ---
+
+    #[test]
+    fn scope_to_payload_is_one_object_with_typed_values() {
+        let scope = std::collections::BTreeMap::from([
+            ("contact_id".to_string(), json!(42)),
+            ("region".to_string(), json!("eu")),
+        ]);
+        let v: serde_json::Value = serde_json::from_str(&scope_to_payload(&scope)).expect("JSON");
+        assert_eq!(v, json!({"contact_id": 42, "region": "eu"}));
+        // An integer scope value must stay a JSON number so the matching
+        // `CAST(JSON_VALUE(@scope, '$.contact_id') AS INT64)` compares like-for-like.
+        assert!(v["contact_id"].is_number());
+    }
+
+    #[test]
+    fn seen_keys_serialize_through_the_same_payload_shape() {
+        // An empty written-key set is meaningful (the source reported the scope
+        // empty), and must serialize to `[]` so `NOT EXISTS` deletes the scope.
+        assert_eq!(deletes_to_payload(&[]), "[]");
+    }
+
+    #[test]
+    fn dml_affected_rows_reads_the_job_statistics() {
+        use gcp_bigquery_client::model::job_statistics::JobStatistics;
+        use gcp_bigquery_client::model::job_statistics2::JobStatistics2;
+
+        let job = |n: Option<&str>| Job {
+            statistics: Some(JobStatistics {
+                query: Some(JobStatistics2 {
+                    num_dml_affected_rows: n.map(str::to_string),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(dml_affected_rows(&job(Some("7"))), 7);
+        assert_eq!(dml_affected_rows(&job(Some("0"))), 0);
+        // Absent / unparseable stats report 0 rather than failing: by this point
+        // the delete has already been verified to have committed.
+        assert_eq!(dml_affected_rows(&job(None)), 0);
+        assert_eq!(dml_affected_rows(&job(Some("not-a-number"))), 0);
+        assert_eq!(dml_affected_rows(&Job::default()), 0);
     }
 
     #[test]

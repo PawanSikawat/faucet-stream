@@ -10,6 +10,163 @@ use sqlx::{Row, SqlitePool};
 use std::str::FromStr;
 use std::time::Duration;
 
+/// Quote a SQLite identifier with backticks.
+///
+/// Deliberately NOT ANSI double quotes for the scoped-cleanup path: SQLite's
+/// double-quoted-string misfeature silently reinterprets a double-quoted
+/// identifier that does not resolve to a column as a **string literal**. In a
+/// cleanup that is unacceptable — a typo'd scope column would make
+/// `t."typo" = ?` a constant comparison instead of erroring, and the DELETE
+/// would then match the wrong rows (or every row in the table). Backtick-quoted
+/// identifiers are always identifiers, so an unknown column surfaces as a
+/// proper "no such column" error. Embedded backticks are doubled, preventing
+/// identifier injection. Mirrors `quote_ident_sqlite` in `faucet-source-sqlite`.
+fn quote_ident_sqlite(name: &str) -> String {
+    format!("`{}`", name.replace('`', "``"))
+}
+
+/// Transient table holding the key tuples this run wrote, joined against by the
+/// scoped-cleanup DELETE (#478).
+///
+/// Always created in — and referenced through — the `temp` schema, so it can
+/// never be confused with (or, on the defensive `DROP`, destroy) a real table of
+/// the same name in the main database.
+const CLEANUP_KEYS_TABLE: &str = "faucet_cleanup_keys";
+
+/// Schema-qualified, quoted reference to [`CLEANUP_KEYS_TABLE`].
+fn cleanup_keys_ref() -> String {
+    format!("temp.{}", quote_ident_sqlite(CLEANUP_KEYS_TABLE))
+}
+
+/// A declared SQLite column type (`PRAGMA table_info.type`) that is safe to
+/// re-emit verbatim in the cleanup temp table's DDL, or `None`.
+///
+/// The declared type comes from the database's own catalog, but SQLite lets a
+/// column be declared with *arbitrary quoted text*, so it is filtered to the
+/// shape real type specs take (`VARCHAR(255)`, `DOUBLE PRECISION`,
+/// `DECIMAL(10, 2)`) rather than pasted in blind. `None` means "declare the temp
+/// column without a type" — legal in SQLite, and only costs the column its type
+/// affinity.
+fn safe_type_spec(declared: &str) -> Option<&str> {
+    let t = declared.trim();
+    if t.is_empty() {
+        return None;
+    }
+    t.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '_' | '(' | ')' | ',' | '.'))
+        .then_some(t)
+}
+
+/// `CREATE TEMP TABLE temp.`faucet_cleanup_keys` (…)` — one column per key
+/// column, mirroring the destination column's declared type so the join
+/// comparison sees matching type affinities.
+fn build_cleanup_temp_table_sql(key_types: &[(String, String)]) -> String {
+    let cols = key_types
+        .iter()
+        .map(|(col, declared)| match safe_type_spec(declared) {
+            Some(t) => format!("{} {t}", quote_ident_sqlite(col)),
+            None => quote_ident_sqlite(col),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("CREATE TEMP TABLE {} ({cols})", cleanup_keys_ref())
+}
+
+/// `INSERT INTO temp.`faucet_cleanup_keys` (…) VALUES (?, …), …` for `rows`
+/// key tuples. The caller chunks `rows` to stay under SQLite's bind-variable
+/// cap.
+fn build_cleanup_insert_sql(key: &[String], rows: usize) -> String {
+    let col_list = key
+        .iter()
+        .map(|k| quote_ident_sqlite(k))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let tuple = format!("({})", vec!["?"; key.len()].join(", "));
+    let tuples = vec![tuple; rows].join(", ");
+    format!(
+        "INSERT INTO {} ({col_list}) VALUES {tuples}",
+        cleanup_keys_ref()
+    )
+}
+
+/// The cleanup DELETE: every row matching the scope (equality predicates,
+/// AND-ed, one bind each) whose key is absent from the written-key table.
+///
+/// The target table is referenced by name rather than an alias — a single-table
+/// `DELETE … AS alias` is a newer SQLite grammar, and the correlated reference
+/// works identically through the table name.
+fn build_cleanup_delete_sql(table: &str, scope_cols: &[String], key: &[String]) -> String {
+    let t = quote_ident_sqlite(table);
+    let scope_pred = scope_cols
+        .iter()
+        .map(|c| format!("{t}.{} = ?", quote_ident_sqlite(c)))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let join_pred = key
+        .iter()
+        .map(|k| {
+            let q = quote_ident_sqlite(k);
+            format!("c.{q} = {t}.{q}")
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    format!(
+        "DELETE FROM {t} WHERE {scope_pred} AND NOT EXISTS (SELECT 1 FROM {} c WHERE {join_pred})",
+        cleanup_keys_ref()
+    )
+}
+
+/// Check that every scope and key column exists on the destination table.
+///
+/// Fails with a clear message rather than letting SQLite reject an unknown
+/// column mid-DELETE. The scope is written in *destination* terms, so a name
+/// that isn't a real column is a config error worth naming.
+fn validate_cleanup_columns(
+    existing: &std::collections::HashSet<String>,
+    scope_cols: &[String],
+    key: &[String],
+    table: &str,
+) -> Result<(), FaucetError> {
+    for col in scope_cols.iter().chain(key.iter()) {
+        if !existing.contains(col) {
+            return Err(FaucetError::Sink(format!(
+                "cleanup: column '{col}' does not exist on table '{table}' — the \
+                 completeness claim and `key` are in destination column terms"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Bind one JSON value to a SQLite query as its native type.
+///
+/// Shared by the delete-by-key and scoped-cleanup paths so the two never drift:
+/// a key bound as a JSON string (`"7"` instead of `7`) would silently match
+/// nothing and turn a delete into a no-op.
+fn bind_value<'q>(
+    q: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    v: &Value,
+) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+    match v {
+        Value::Null => q.bind(None::<String>),
+        Value::Bool(b) => q.bind(*b),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                q.bind(i)
+            } else if let Some(f) = n.as_f64() {
+                q.bind(f)
+            } else {
+                // u64 above i64::MAX — preserve exact text.
+                q.bind(n.to_string())
+            }
+        }
+        Value::String(s) => q.bind(s.clone()),
+        // Arrays/objects have no scalar SQL representation — bind their JSON
+        // text (suitable for TEXT columns).
+        other => q.bind(other.to_string()),
+    }
+}
+
 /// Map a [`SqlBaseType`] to the SQLite column-type keyword used when adding a
 /// column during schema evolution (issue #194). SQLite uses dynamic typing
 /// (type affinity), so these are advisory affinities rather than strict types:
@@ -424,21 +581,7 @@ impl SqliteSink {
             for kt in chunk {
                 for (_, v) in &kt.0 {
                     // Bind native SQLite types — same logic as in the INSERT path.
-                    q = match v {
-                        Value::Null => q.bind(None::<String>),
-                        Value::Bool(b) => q.bind(*b),
-                        Value::Number(n) => {
-                            if let Some(i) = n.as_i64() {
-                                q.bind(i)
-                            } else if let Some(f) = n.as_f64() {
-                                q.bind(f)
-                            } else {
-                                q.bind(n.to_string())
-                            }
-                        }
-                        Value::String(s) => q.bind(s.clone()),
-                        other => q.bind(other.to_string()),
-                    };
+                    q = bind_value(q, v);
                 }
             }
             let res = q
@@ -478,6 +621,113 @@ impl SqliteSink {
             .await
             .map_err(|e| FaucetError::Sink(format!("SQLite transaction commit failed: {e}")))?;
         Ok(affected)
+    }
+
+    /// Delete rows in `scope` whose key was not written by this run (#478).
+    ///
+    /// Uses a temp table + `NOT EXISTS` rather than `key NOT IN (…)` because the
+    /// written-key set routinely exceeds SQLite's 32766 bind-variable limit (the
+    /// cleanup ceiling defaults to 100k rows). It also makes the whole thing one
+    /// transaction, so the delete is all-or-nothing: a partial delete would
+    /// remove rows the run actually wrote.
+    ///
+    /// An empty `seen` set is meaningful, not a no-op — it means the source
+    /// reported the scope as empty, so every row in it is stale and must go. That
+    /// is the case this feature exists for, and `NOT EXISTS` against an empty
+    /// table handles it without a special branch.
+    ///
+    /// Every statement runs on the transaction's own connection: the temp table
+    /// lives in that connection's `temp` schema, and with the default
+    /// single-connection pool any query sent to `&self.pool` instead would
+    /// deadlock waiting for the connection the open transaction is holding.
+    async fn cleanup_scope_impl(
+        &self,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &faucet_core::SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        let key = &self.config.write.key;
+        if key.is_empty() {
+            return Err(FaucetError::Sink(
+                "cleanup requires a non-empty `key`".to_string(),
+            ));
+        }
+        let table = &self.config.table_name;
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("SQLite transaction begin failed: {e}")))?;
+
+        // Live column set + declared types, from the table this DELETE targets.
+        let declared: std::collections::HashMap<String, String> =
+            sqlx::query(&format!("PRAGMA table_info({})", quote_ident_sqlite(table)))
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("cleanup: table_info query failed: {e}")))?
+                .iter()
+                .map(|row| (row.get::<String, _>("name"), row.get::<String, _>("type")))
+                .collect();
+
+        let scope_cols: Vec<String> = scope.keys().cloned().collect();
+        let existing: std::collections::HashSet<String> = declared.keys().cloned().collect();
+        validate_cleanup_columns(&existing, &scope_cols, key, table)?;
+
+        // A previous cleanup that failed *after* its COMMIT-less DROP could not
+        // leave the table behind (SQLite rolls DDL back), but the pooled
+        // connection is shared, so drop defensively before creating.
+        let keys_ref = cleanup_keys_ref();
+        sqlx::query(&format!("DROP TABLE IF EXISTS {keys_ref}"))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("cleanup: temp table drop failed: {e}")))?;
+
+        let key_types: Vec<(String, String)> = key
+            .iter()
+            .map(|k| (k.clone(), declared.get(k).cloned().unwrap_or_default()))
+            .collect();
+        sqlx::query(&build_cleanup_temp_table_sql(&key_types))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("cleanup: temp table creation failed: {e}")))?;
+
+        // Load the written keys, chunked at SQLite's bind-variable cap.
+        const MAX_SQLITE_VARS: usize = 32766;
+        let per = (MAX_SQLITE_VARS / key.len()).max(1);
+        for chunk in seen.keys().chunks(per) {
+            let sql = build_cleanup_insert_sql(key, chunk.len());
+            let mut q = sqlx::query(&sql);
+            for kt in chunk {
+                for (_, v) in &kt.0 {
+                    q = bind_value(q, v);
+                }
+            }
+            q.execute(&mut *tx)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("cleanup: loading keys failed: {e}")))?;
+        }
+
+        // DELETE everything in scope that isn't in the written-key set.
+        let sql = build_cleanup_delete_sql(table, &scope_cols, key);
+        let mut q = sqlx::query(&sql);
+        for v in scope.values() {
+            q = bind_value(q, v);
+        }
+        let res = q
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("cleanup: delete failed: {e}")))?;
+
+        // Drop inside the transaction so the pooled connection goes back clean.
+        sqlx::query(&format!("DROP TABLE IF EXISTS {keys_ref}"))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("cleanup: temp table drop failed: {e}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("cleanup: commit failed: {e}")))?;
+        Ok(res.rows_affected())
     }
 
     /// Ensure the commit-token watermark table exists.
@@ -543,6 +793,20 @@ impl faucet_core::Sink for SqliteSink {
                 ),
             };
         Ok(CheckReport::single(probe))
+    }
+
+    fn supports_cleanup(&self) -> bool {
+        // Column-mapping mode only: the scope + key predicates address real
+        // columns, which a single JSON payload column does not have.
+        matches!(self.config.column_mapping, SqliteColumnMapping::AutoMap)
+    }
+
+    async fn cleanup_scope(
+        &self,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &faucet_core::SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        self.cleanup_scope_impl(scope, seen).await
     }
 
     fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {
@@ -901,6 +1165,132 @@ mod tests {
         assert_eq!(sqlite_keyword(SqlBaseType::Boolean), "INTEGER");
         assert_eq!(sqlite_keyword(SqlBaseType::Text), "TEXT");
         assert_eq!(sqlite_keyword(SqlBaseType::Json), "TEXT");
+    }
+
+    // ---------------------------------------------------------------------
+    // Scoped cleanup (#478) — SQL generation and column validation
+    // ---------------------------------------------------------------------
+
+    fn cols(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn cleanup_quotes_identifiers_with_backticks() {
+        // Not double quotes: SQLite's double-quoted-string misfeature would turn
+        // a typo'd column into a string literal instead of an error.
+        assert_eq!(quote_ident_sqlite("id"), "`id`");
+        assert_eq!(quote_ident_sqlite("ev`il"), "`ev``il`");
+    }
+
+    #[test]
+    fn cleanup_temp_table_mirrors_declared_types() {
+        let sql = build_cleanup_temp_table_sql(&[
+            ("id".to_string(), "INTEGER".to_string()),
+            ("slug".to_string(), "VARCHAR(255)".to_string()),
+        ]);
+        assert_eq!(
+            sql,
+            "CREATE TEMP TABLE temp.`faucet_cleanup_keys` (`id` INTEGER, `slug` VARCHAR(255))"
+        );
+    }
+
+    #[test]
+    fn cleanup_temp_table_omits_an_unusable_type() {
+        // A typeless column is legal in SQLite; it only loses type affinity.
+        let sql = build_cleanup_temp_table_sql(&[("id".to_string(), String::new())]);
+        assert_eq!(sql, "CREATE TEMP TABLE temp.`faucet_cleanup_keys` (`id`)");
+        // A declared type that isn't type-spec-shaped is dropped rather than
+        // pasted into DDL.
+        let sql = build_cleanup_temp_table_sql(&[("id".to_string(), "INT); DROP".to_string())]);
+        assert_eq!(sql, "CREATE TEMP TABLE temp.`faucet_cleanup_keys` (`id`)");
+    }
+
+    #[test]
+    fn safe_type_spec_accepts_real_types_and_rejects_the_rest() {
+        assert_eq!(safe_type_spec("DOUBLE PRECISION"), Some("DOUBLE PRECISION"));
+        assert_eq!(safe_type_spec("DECIMAL(10, 2)"), Some("DECIMAL(10, 2)"));
+        assert_eq!(safe_type_spec("  TEXT  "), Some("TEXT"));
+        assert_eq!(safe_type_spec(""), None);
+        assert_eq!(safe_type_spec("   "), None);
+        assert_eq!(safe_type_spec("TEXT`"), None);
+        assert_eq!(safe_type_spec("TEXT'"), None);
+    }
+
+    #[test]
+    fn cleanup_insert_emits_one_tuple_per_row() {
+        let sql = build_cleanup_insert_sql(&cols(&["a", "b"]), 3);
+        assert_eq!(
+            sql,
+            "INSERT INTO temp.`faucet_cleanup_keys` (`a`, `b`) VALUES (?, ?), (?, ?), (?, ?)"
+        );
+    }
+
+    #[test]
+    fn cleanup_delete_ands_the_scope_and_excludes_written_keys() {
+        let sql = build_cleanup_delete_sql("assoc", &cols(&["contact_id"]), &cols(&["id"]));
+        assert_eq!(
+            sql,
+            "DELETE FROM `assoc` WHERE `assoc`.`contact_id` = ? \
+             AND NOT EXISTS (SELECT 1 FROM temp.`faucet_cleanup_keys` c \
+             WHERE c.`id` = `assoc`.`id`)"
+        );
+    }
+
+    #[test]
+    fn cleanup_delete_composite_scope_and_key() {
+        let sql =
+            build_cleanup_delete_sql("t", &cols(&["tenant", "contact_id"]), &cols(&["a", "b"]));
+        assert_eq!(
+            sql,
+            "DELETE FROM `t` WHERE `t`.`tenant` = ? AND `t`.`contact_id` = ? \
+             AND NOT EXISTS (SELECT 1 FROM temp.`faucet_cleanup_keys` c \
+             WHERE c.`a` = `t`.`a` AND c.`b` = `t`.`b`)"
+        );
+    }
+
+    #[test]
+    fn cleanup_validation_names_a_missing_scope_column() {
+        let existing: std::collections::HashSet<String> =
+            cols(&["id", "name"]).into_iter().collect();
+        let err = validate_cleanup_columns(&existing, &cols(&["contact_id"]), &cols(&["id"]), "t")
+            .expect_err("unknown scope column must be refused");
+        let msg = err.to_string();
+        assert!(msg.contains("contact_id"), "{msg}");
+        assert!(msg.contains("'t'"), "{msg}");
+    }
+
+    #[test]
+    fn cleanup_validation_names_a_missing_key_column() {
+        let existing: std::collections::HashSet<String> =
+            cols(&["contact_id"]).into_iter().collect();
+        let err = validate_cleanup_columns(&existing, &cols(&["contact_id"]), &cols(&["id"]), "t")
+            .expect_err("unknown key column must be refused");
+        assert!(err.to_string().contains("id"), "{err}");
+    }
+
+    #[test]
+    fn cleanup_validation_passes_when_every_column_exists() {
+        let existing: std::collections::HashSet<String> =
+            cols(&["id", "contact_id"]).into_iter().collect();
+        assert!(
+            validate_cleanup_columns(&existing, &cols(&["contact_id"]), &cols(&["id"]), "t")
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn supports_cleanup_only_in_auto_map_mode() {
+        let config = SqliteSinkConfig::new("sqlite::memory:", "t")
+            .column_mapping(SqliteColumnMapping::AutoMap);
+        let sink = SqliteSink::new(config).await.unwrap();
+        assert!(sink.supports_cleanup());
+
+        // The default mapping is a single JSON payload column — no real columns
+        // for the scope/key predicates to address.
+        let config = SqliteSinkConfig::new("sqlite::memory:", "t");
+        let sink = SqliteSink::new(config).await.unwrap();
+        assert!(!sink.supports_cleanup());
     }
 
     #[test]

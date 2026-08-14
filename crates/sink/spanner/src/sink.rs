@@ -10,6 +10,7 @@
 
 use crate::config::SpannerSinkConfig;
 use async_trait::async_trait;
+use faucet_common_spanner::decode::SpannerJson;
 use faucet_common_spanner::encode::{EncodedKind, encode_to_kind};
 use faucet_common_spanner::quote_ident_spanner;
 use faucet_common_spanner::types::{SpannerType, parse_spanner_type, spanner_type_to_json_schema};
@@ -21,6 +22,7 @@ use gcloud_spanner::key::Key;
 use gcloud_spanner::mutation::{delete, insert, insert_or_update};
 use gcloud_spanner::statement::{Statement, ToKind};
 use gcloud_spanner::value::CommitTimestamp;
+use prost_types::value::Kind;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -120,15 +122,17 @@ fn build_row_mutation(
     })
 }
 
-/// Build the delete mutation for one planned key tuple. Spanner delete keys
-/// must be supplied in **PRIMARY KEY column order**, which may differ from
-/// the configured `key` order — values are re-ordered here.
-fn build_delete_mutation(
-    table: &str,
+/// Encode a key tuple into **PRIMARY KEY column order**, which may differ from
+/// the configured `key` order — Spanner keys are always addressed in PK order.
+///
+/// Encoding through the destination column type is also what makes two key
+/// values comparable: an INT64 key written as the JSON number `1` and the same
+/// key read back from Spanner both land as `StringValue("1")`.
+fn encode_key_in_pk_order(
     key_tuple: &faucet_core::KeyTuple,
     meta: &TableMeta,
-) -> Result<Planned, String> {
-    let mut vals: Vec<EncodedKind> = Vec::with_capacity(meta.pk.len());
+) -> Result<Vec<Kind>, String> {
+    let mut vals: Vec<Kind> = Vec::with_capacity(meta.pk.len());
     for pk_col in &meta.pk {
         let (_, v) = key_tuple
             .0
@@ -138,14 +142,32 @@ fn build_delete_mutation(
         let ty = meta
             .type_of(pk_col)
             .ok_or_else(|| format!("PK column `{pk_col}` not found in table metadata"))?;
-        let kind = encode_to_kind(v, ty).map_err(|e| format!("key column `{pk_col}`: {e}"))?;
-        vals.push(EncodedKind(kind));
+        vals.push(encode_to_kind(v, ty).map_err(|e| format!("key column `{pk_col}`: {e}"))?);
     }
+    Ok(vals)
+}
+
+/// Wrap PK-ordered encoded values into a `Delete` mutation.
+fn delete_mutation_from_kinds(table: &str, kinds: Vec<Kind>) -> Planned {
+    let cells = kinds.len().max(1);
+    let vals: Vec<EncodedKind> = kinds.into_iter().map(EncodedKind).collect();
     let refs: Vec<&dyn ToKind> = vals.iter().map(|v| v as &dyn ToKind).collect();
-    Ok(Planned {
+    Planned {
         mutation: delete(table, Key::composite(&refs)),
-        cells: meta.pk.len().max(1),
-    })
+        cells,
+    }
+}
+
+/// Build the delete mutation for one planned key tuple.
+fn build_delete_mutation(
+    table: &str,
+    key_tuple: &faucet_core::KeyTuple,
+    meta: &TableMeta,
+) -> Result<Planned, String> {
+    Ok(delete_mutation_from_kinds(
+        table,
+        encode_key_in_pk_order(key_tuple, meta)?,
+    ))
 }
 
 /// Split planned mutations into commit-sized chunks: at most `batch_size`
@@ -173,6 +195,145 @@ fn chunk_by_cells(planned: Vec<Planned>, batch_size: usize, budget: usize) -> Ve
         chunks.push(current);
     }
     chunks
+}
+
+// ---------------------------------------------------------------------------
+// Scoped cleanup (issue #478)
+// ---------------------------------------------------------------------------
+
+/// SQL expression converting the STRING-bound scope parameter `@name` into the
+/// destination column's type.
+///
+/// Scope values are bound as STRING and cast in SQL rather than bound at their
+/// native type: the client derives a parameter's Spanner type from the *Rust*
+/// type it is given, and a cleanup scope carries `serde_json::Value`s whose
+/// destination type is only known at runtime from `INFORMATION_SCHEMA`. Casting
+/// in the statement keeps one binding path for every column type — the same
+/// trick the BigQuery cleanup uses with `JSON_VALUE(@scope, …)`.
+///
+/// Types with no equality semantics (JSON, ARRAY, STRUCT/PROTO) are refused
+/// rather than silently compared.
+fn scope_cast_expr(param: &str, ty: &SpannerType) -> Result<String, String> {
+    Ok(match ty {
+        // Already a STRING parameter — no conversion needed.
+        SpannerType::String => format!("@{param}"),
+        SpannerType::Bool => format!("CAST(@{param} AS BOOL)"),
+        SpannerType::Int64 => format!("CAST(@{param} AS INT64)"),
+        SpannerType::Float32 => format!("CAST(@{param} AS FLOAT32)"),
+        SpannerType::Float64 => format!("CAST(@{param} AS FLOAT64)"),
+        SpannerType::Timestamp => format!("CAST(@{param} AS TIMESTAMP)"),
+        SpannerType::Date => format!("CAST(@{param} AS DATE)"),
+        SpannerType::Numeric => format!("CAST(@{param} AS NUMERIC)"),
+        // BYTES travel base64-encoded everywhere else in this connector, so
+        // decode rather than reinterpreting the text's UTF-8 bytes.
+        SpannerType::Bytes => format!("FROM_BASE64(@{param})"),
+        SpannerType::Json | SpannerType::Array(_) | SpannerType::Other => {
+            return Err(
+                "column type does not support equality and cannot be used in a cleanup scope"
+                    .into(),
+            );
+        }
+    })
+}
+
+/// Canonical text form of a scope value for its STRING-bound parameter.
+///
+/// Routed through [`encode_to_kind`] so the scope value is validated against
+/// the destination column type exactly like a written value would be (an INT64
+/// column rejects `1.5` here rather than at the server).
+fn scope_param_text(value: &Value, ty: &SpannerType) -> Result<String, String> {
+    match encode_to_kind(value, ty)? {
+        Kind::StringValue(s) => Ok(s),
+        Kind::BoolValue(b) => Ok(b.to_string()),
+        Kind::NumberValue(n) => Ok(n.to_string()),
+        // `CleanupPolicy::new` already refuses a null scope value; this is the
+        // backstop, because `col = NULL` is never true and would silently make
+        // the cleanup a no-op instead of an error.
+        Kind::NullValue(_) => Err("scope value is null".into()),
+        _ => Err("scope value is not a scalar".into()),
+    }
+}
+
+/// `SELECT <pk…> FROM <table> WHERE <col> = <expr> AND …` — reads the primary
+/// keys of every row the invocation claimed to be authoritative for.
+fn build_scope_select_sql(table: &str, pk: &[String], preds: &[(String, String)]) -> String {
+    let cols = pk
+        .iter()
+        .map(|c| quote_ident_spanner(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let where_clause = preds
+        .iter()
+        .map(|(col, expr)| format!("{} = {expr}", quote_ident_spanner(col)))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    format!(
+        "SELECT {cols} FROM {} WHERE {where_clause}",
+        quote_ident_spanner(table)
+    )
+}
+
+/// Canonical, hashable form of one encoded key value.
+///
+/// Length-prefixed so concatenating a composite key cannot alias: the tuples
+/// `("ab", "c")` and `("a", "bc")` must not produce the same fingerprint.
+fn kind_fingerprint(kind: &Kind) -> String {
+    let (tag, body) = match kind {
+        Kind::NullValue(_) => ('n', String::new()),
+        Kind::BoolValue(b) => ('b', b.to_string()),
+        Kind::NumberValue(f) => ('f', format!("{f:?}")),
+        Kind::StringValue(s) => ('s', s.clone()),
+        // A PK column is always a scalar, so these are unreachable in practice;
+        // fall back to the structural form rather than aliasing distinct keys.
+        other => ('x', format!("{other:?}")),
+    };
+    format!("{tag}{}:{body}", body.len())
+}
+
+/// Fingerprint of a whole PK-ordered key tuple.
+fn tuple_fingerprint(vals: &[Kind]) -> String {
+    vals.iter()
+        .map(kind_fingerprint)
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+/// Pure: the live rows in the scope that this run did not write.
+///
+/// An empty `seen` set leaves every live row stale — the source reported the
+/// scope empty, which is exactly the case scoped cleanup exists for.
+fn stale_key_rows(live: Vec<Vec<Kind>>, seen: &HashSet<String>) -> Vec<Vec<Kind>> {
+    live.into_iter()
+        .filter(|vals| !seen.contains(&tuple_fingerprint(vals)))
+        .collect()
+}
+
+/// Refuse a cleanup whose delete set would exceed the per-commit cell budget.
+///
+/// Why refuse instead of chunking: the read and the delete must be one
+/// transaction (Spanner locks the rows it read, so nothing can slip into the
+/// scope between deciding and deleting), and a transaction commits exactly
+/// once. Chunking would therefore mean several commits — a partial cleanup,
+/// with every chunk after the first deciding from an already-stale snapshot.
+/// [`CELL_BUDGET`] rows is far above the per-parent scopes this feature targets
+/// (and above what core's own key ceiling makes reachable), so refusing loudly
+/// beats half-cleaning silently.
+fn check_cleanup_cell_budget(
+    rows: usize,
+    cells_per_row: usize,
+    budget: usize,
+) -> Result<(), String> {
+    let cells = rows.saturating_mul(cells_per_row.max(1));
+    if cells > budget {
+        return Err(format!(
+            "{rows} stale row(s) in the claimed scope would mutate {cells} cells, above the \
+             {budget}-cell budget for a single Spanner commit. Nothing was deleted — the read \
+             and the delete must commit together, so this cannot be split without leaving the \
+             destination half-cleaned. Narrow the completeness claim (`complete_for`) so each \
+             invocation covers fewer rows"
+        ));
+    }
+    Ok(())
 }
 
 /// Upsert/delete requires the configured `key` to be exactly the table's
@@ -488,6 +649,180 @@ impl SpannerSink {
             .await?;
         Ok(())
     }
+
+    /// Delete rows in `scope` whose key was not written by this run (#478).
+    ///
+    /// Spanner mutations address the primary key, so "delete everything in the
+    /// scope except these keys" cannot be expressed as a mutation alone: the
+    /// scope's live keys have to be read first. Both halves run inside **one
+    /// read-write transaction** — Spanner locks the rows the transaction read,
+    /// so no concurrent writer can change them between the decision and the
+    /// delete, and the whole delete set commits or none of it does. A partial
+    /// delete would remove rows the run actually wrote.
+    ///
+    /// An empty `seen` set is meaningful, not a no-op — it means the source
+    /// reported the scope as empty, so every live row in it is stale. That is
+    /// the case this feature exists for.
+    async fn cleanup_scope_impl(
+        &self,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &faucet_core::SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        let table = &self.config.table_name;
+        let key = &self.config.write.key;
+        if key.is_empty() {
+            return Err(FaucetError::Sink(
+                "spanner cleanup requires a non-empty `key`".to_string(),
+            ));
+        }
+        let meta = self.require_meta().await?;
+        // The delete is by primary key, so the same PK-equality rule the
+        // upsert/delete write path enforces applies here.
+        validate_key_matches_pk(key, &meta.pk, table)?;
+
+        // Build the scope SELECT and its parameters up front, so a config error
+        // (unknown column, non-comparable type, mistyped value) fails before a
+        // transaction is ever opened.
+        let mut preds: Vec<(String, String)> = Vec::with_capacity(scope.len());
+        let mut params: Vec<(String, String)> = Vec::with_capacity(scope.len());
+        for (idx, (col, value)) in scope.iter().enumerate() {
+            let ty = meta.type_of(col).ok_or_else(|| {
+                FaucetError::Sink(format!(
+                    "spanner cleanup: column `{col}` does not exist on table `{table}` — the \
+                     completeness claim and `key` are in destination column terms"
+                ))
+            })?;
+            let name = format!("scope_{idx}");
+            let expr = scope_cast_expr(&name, ty).map_err(|e| {
+                FaucetError::Sink(format!("spanner cleanup: scope column `{col}`: {e}"))
+            })?;
+            let text = scope_param_text(value, ty).map_err(|e| {
+                FaucetError::Sink(format!("spanner cleanup: scope column `{col}`: {e}"))
+            })?;
+            preds.push((col.clone(), expr));
+            params.push((name, text));
+        }
+        let sql = build_scope_select_sql(table, &meta.pk, &preds);
+
+        // Fingerprint what this run wrote, encoded through the destination
+        // column types so it compares like-for-like with what Spanner returns.
+        let mut seen_fingerprints = HashSet::with_capacity(seen.len());
+        for key_tuple in seen.keys() {
+            let vals = encode_key_in_pk_order(key_tuple, &meta)
+                .map_err(|e| FaucetError::Sink(format!("spanner cleanup: {e}")))?;
+            seen_fingerprints.insert(tuple_fingerprint(&vals));
+        }
+
+        let plan = Arc::new(CleanupPlan {
+            table: table.clone(),
+            sql,
+            params,
+            meta: Arc::clone(&meta),
+            seen: seen_fingerprints,
+        });
+        let (_, outcome) = self
+            .client
+            .read_write_transaction(move |tx| {
+                let plan = Arc::clone(&plan);
+                // The nested `Result` is deliberate: a *logical* failure (an
+                // undecodable key, a delete set over the cell budget) comes back
+                // as `Ok(Err(msg))` with **nothing buffered**, so the transaction
+                // commits no mutations and the message survives intact. The outer
+                // `Err` stays reserved for the client's own transport/ABORTED
+                // handling, whose retry semantics must not be disturbed.
+                Box::pin(async move {
+                    Ok::<Result<u64, String>, gcloud_spanner::client::Error>(
+                        run_cleanup_txn(tx, &plan).await,
+                    )
+                })
+            })
+            .await
+            .map_err(|e| sink_err("cleanup", e))?;
+        let deleted = outcome.map_err(|e| FaucetError::Sink(format!("spanner cleanup: {e}")))?;
+
+        tracing::info!(
+            table = %table,
+            deleted,
+            written_keys = seen.len(),
+            "Spanner scoped cleanup complete"
+        );
+        Ok(deleted)
+    }
+}
+
+/// Everything [`run_cleanup_txn`] needs, shared across transaction attempts.
+///
+/// The retry closure is `Fn` and must hold no state between attempts, so this
+/// is immutable and every attempt rebuilds its statement and mutations from it.
+struct CleanupPlan {
+    table: String,
+    sql: String,
+    params: Vec<(String, String)>,
+    meta: Arc<TableMeta>,
+    /// Fingerprints of the key tuples this run wrote.
+    seen: HashSet<String>,
+}
+
+/// One attempt at the read-then-delete cleanup transaction.
+///
+/// Returns the number of rows buffered for deletion. `Err` carries a logical
+/// failure with **no mutation buffered**, so the transaction commits nothing.
+async fn run_cleanup_txn(
+    tx: &mut gcloud_spanner::transaction_rw::ReadWriteTransaction,
+    plan: &CleanupPlan,
+) -> Result<u64, String> {
+    let mut stmt = Statement::new(plan.sql.clone());
+    for (name, text) in &plan.params {
+        stmt.add_param(name, text);
+    }
+
+    // Read every live primary key in the scope. Scoped in its own block so the
+    // row iterator's borrow of `tx` ends before the mutations are buffered.
+    let mut live: Vec<Vec<Kind>> = Vec::new();
+    {
+        let mut iter = tx
+            .query(stmt)
+            .await
+            .map_err(|e| format!("scope read failed: {e}"))?;
+        while let Some(row) = iter
+            .next()
+            .await
+            .map_err(|e| format!("scope read failed: {e}"))?
+        {
+            let mut vals = Vec::with_capacity(plan.meta.pk.len());
+            for (idx, pk_col) in plan.meta.pk.iter().enumerate() {
+                let decoded = row
+                    .column::<SpannerJson>(idx)
+                    .map_err(|e| format!("key column `{pk_col}`: {e}"))?
+                    .0;
+                let ty = plan
+                    .meta
+                    .type_of(pk_col)
+                    .ok_or_else(|| format!("PK column `{pk_col}` not found in table metadata"))?;
+                // Re-encode so a live key and a written key are compared in the
+                // one canonical form (see `encode_key_in_pk_order`).
+                vals.push(
+                    encode_to_kind(&decoded, ty)
+                        .map_err(|e| format!("key column `{pk_col}`: {e}"))?,
+                );
+            }
+            live.push(vals);
+        }
+    }
+
+    let stale = stale_key_rows(live, &plan.seen);
+    if stale.is_empty() {
+        return Ok(0);
+    }
+    check_cleanup_cell_budget(stale.len(), plan.meta.pk.len(), CELL_BUDGET)?;
+
+    let deleted = stale.len() as u64;
+    let mutations: Vec<Mutation> = stale
+        .into_iter()
+        .map(|vals| delete_mutation_from_kinds(&plan.table, vals).mutation)
+        .collect();
+    tx.buffer_write(mutations);
+    Ok(deleted)
 }
 
 #[async_trait]
@@ -511,6 +846,22 @@ impl faucet_core::Sink for SpannerSink {
 
     fn dedups_by_key(&self) -> bool {
         self.config.write.dedups_by_key()
+    }
+
+    /// Scoped cleanup is available whenever the sink can delete by key, which
+    /// on Spanner means the configured `key` is the table's PRIMARY KEY — a
+    /// requirement `cleanup_scope` re-checks against the live table (this hook
+    /// runs before any metadata read, so it cannot check it here).
+    fn supports_cleanup(&self) -> bool {
+        true
+    }
+
+    async fn cleanup_scope(
+        &self,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &faucet_core::SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        self.cleanup_scope_impl(scope, seen).await
     }
 
     fn supports_schema_evolution(&self) -> bool {
@@ -1137,6 +1488,177 @@ mod tests {
             Some(prost_types::value::Kind::StringValue(
                 "9007199254740993".into()
             ))
+        );
+    }
+
+    // --- scoped cleanup (issue #478) ---
+
+    #[test]
+    fn scope_cast_expr_per_column_type() {
+        let e = |ty| scope_cast_expr("scope_0", &ty).unwrap();
+        // STRING is already the bound parameter's type — no cast.
+        assert_eq!(e(SpannerType::String), "@scope_0");
+        assert_eq!(e(SpannerType::Int64), "CAST(@scope_0 AS INT64)");
+        assert_eq!(e(SpannerType::Bool), "CAST(@scope_0 AS BOOL)");
+        assert_eq!(e(SpannerType::Float64), "CAST(@scope_0 AS FLOAT64)");
+        assert_eq!(e(SpannerType::Float32), "CAST(@scope_0 AS FLOAT32)");
+        assert_eq!(e(SpannerType::Timestamp), "CAST(@scope_0 AS TIMESTAMP)");
+        assert_eq!(e(SpannerType::Date), "CAST(@scope_0 AS DATE)");
+        assert_eq!(e(SpannerType::Numeric), "CAST(@scope_0 AS NUMERIC)");
+        // BYTES travel base64-encoded, so decode rather than reinterpret.
+        assert_eq!(e(SpannerType::Bytes), "FROM_BASE64(@scope_0)");
+    }
+
+    #[test]
+    fn scope_cast_expr_refuses_types_without_equality() {
+        for ty in [
+            SpannerType::Json,
+            SpannerType::Array(Box::new(SpannerType::Int64)),
+            SpannerType::Other,
+        ] {
+            let err = scope_cast_expr("p", &ty).unwrap_err();
+            assert!(err.contains("does not support equality"), "{err}");
+        }
+    }
+
+    #[test]
+    fn scope_param_text_renders_scalars_and_validates_against_the_column() {
+        assert_eq!(
+            scope_param_text(&json!(42), &SpannerType::Int64).unwrap(),
+            "42"
+        );
+        assert_eq!(
+            scope_param_text(&json!("eu"), &SpannerType::String).unwrap(),
+            "eu"
+        );
+        assert_eq!(
+            scope_param_text(&json!(true), &SpannerType::Bool).unwrap(),
+            "true"
+        );
+        assert_eq!(
+            scope_param_text(&json!(1.5), &SpannerType::Float64).unwrap(),
+            "1.5"
+        );
+        // Type mismatches surface here, not at the server.
+        assert!(scope_param_text(&json!(1.5), &SpannerType::Int64).is_err());
+        // Backstop for a null the core policy already refuses: `col = NULL` is
+        // never true, which would silently make the cleanup a no-op.
+        let err = scope_param_text(&Value::Null, &SpannerType::Int64).unwrap_err();
+        assert!(err.contains("null"), "{err}");
+    }
+
+    #[test]
+    fn scope_select_sql_quotes_and_ands() {
+        let sql = build_scope_select_sql(
+            "orders",
+            &["id".into()],
+            &[("contact_id".into(), "CAST(@scope_0 AS INT64)".into())],
+        );
+        assert_eq!(
+            sql,
+            "SELECT `id` FROM `orders` WHERE `contact_id` = CAST(@scope_0 AS INT64)"
+        );
+
+        let sql = build_scope_select_sql(
+            "orders",
+            &["tenant".into(), "id".into()],
+            &[
+                ("region".into(), "@scope_0".into()),
+                ("kind".into(), "@scope_1".into()),
+            ],
+        );
+        assert_eq!(
+            sql,
+            "SELECT `tenant`, `id` FROM `orders` WHERE `region` = @scope_0 AND `kind` = @scope_1"
+        );
+    }
+
+    #[test]
+    fn key_fingerprints_do_not_alias_across_composite_boundaries() {
+        let s = |v: &str| Kind::StringValue(v.into());
+        assert_ne!(
+            tuple_fingerprint(&[s("ab"), s("c")]),
+            tuple_fingerprint(&[s("a"), s("bc")]),
+            "a length-prefixed fingerprint must keep these distinct"
+        );
+        // Different kinds carrying the same text are distinct too.
+        assert_ne!(
+            kind_fingerprint(&s("true")),
+            kind_fingerprint(&Kind::BoolValue(true))
+        );
+        // …and equal values fingerprint equally.
+        assert_eq!(kind_fingerprint(&s("x")), kind_fingerprint(&s("x")));
+    }
+
+    #[test]
+    fn written_and_live_keys_compare_after_encoding() {
+        // The source may hand a stringified integer while Spanner returns a JSON
+        // number for the same INT64 key; encoding both through the destination
+        // column type is what makes them compare equal.
+        let written = encode_key_in_pk_order(
+            &faucet_core::KeyTuple(vec![("id".into(), json!("7"))]),
+            &meta(),
+        )
+        .unwrap();
+        let live = vec![encode_to_kind(&json!(7), &SpannerType::Int64).unwrap()];
+        assert_eq!(tuple_fingerprint(&written), tuple_fingerprint(&live));
+    }
+
+    #[test]
+    fn stale_rows_are_the_live_keys_this_run_did_not_write() {
+        let k = |n: &str| vec![Kind::StringValue(n.into())];
+        let live = vec![k("1"), k("2"), k("3")];
+        let seen: HashSet<String> = [k("1"), k("3")]
+            .iter()
+            .map(|v| tuple_fingerprint(v))
+            .collect();
+        assert_eq!(stale_key_rows(live, &seen), vec![k("2")]);
+    }
+
+    #[test]
+    fn an_empty_seen_set_makes_every_live_row_stale() {
+        // The motivating case: the source reported the scope empty, so all of
+        // it must go. This must never be treated as "nothing to do".
+        let live = vec![
+            vec![Kind::StringValue("1".into())],
+            vec![Kind::StringValue("2".into())],
+        ];
+        let stale = stale_key_rows(live.clone(), &HashSet::new());
+        assert_eq!(stale, live);
+    }
+
+    #[test]
+    fn cleanup_cell_budget_refuses_rather_than_half_cleaning() {
+        assert!(check_cleanup_cell_budget(10, 2, 100).is_ok());
+        assert!(check_cleanup_cell_budget(50, 2, 100).is_ok());
+        let err = check_cleanup_cell_budget(51, 2, 100).unwrap_err();
+        assert!(err.contains("102 cells"), "{err}");
+        assert!(err.contains("Nothing was deleted"), "{err}");
+        assert!(err.contains("complete_for"), "{err}");
+        // A zero-width PK still counts one cell per row rather than dividing by
+        // zero or reporting a free delete.
+        assert!(check_cleanup_cell_budget(101, 0, 100).is_err());
+    }
+
+    #[test]
+    fn cleanup_deletes_address_the_primary_key_in_pk_order() {
+        let stale = vec![vec![
+            Kind::StringValue("acme".into()),
+            Kind::StringValue("7".into()),
+        ]];
+        let p = delete_mutation_from_kinds("t", stale.into_iter().next().unwrap());
+        assert_eq!(p.cells, 2);
+        let Some(Operation::Delete(d)) = &p.mutation.operation else {
+            panic!("expected delete");
+        };
+        let vals = &d.key_set.as_ref().expect("key set").keys[0].values;
+        assert_eq!(
+            vals[0].kind,
+            Some(prost_types::value::Kind::StringValue("acme".into()))
+        );
+        assert_eq!(
+            vals[1].kind,
+            Some(prost_types::value::Kind::StringValue("7".into()))
         );
     }
 

@@ -218,6 +218,35 @@ pipeline:
 
 Pair `write_mode: upsert` with the [`cdc_unwrap`](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html) transform to mirror a CDC source into MySQL. See the [upsert cookbook](https://faucet-hq.github.io/faucet-stream/cookbook/upsert.html).
 
+## Scoped cleanup
+
+`MysqlSink` implements `Sink::supports_cleanup` (`true` in `auto_map` mode) and `Sink::cleanup_scope`, so an incremental sync can remove rows that were **deleted at the source** — something `write_mode: upsert` alone can never do, because a deleted record simply stops appearing in the feed.
+
+Opt in with `cleanup: delete_missing` alongside `write_mode: upsert`, and pair it with a source that declares a completeness claim (`complete_for`):
+
+```yaml
+pipeline:
+  sink:
+    type: mysql
+    config:
+      connection_url: mysql://writer:pass@localhost:3306/warehouse
+      table_name: contact_associations
+      column_mapping: auto_map
+      write_mode: upsert
+      key: [contact_id, association_id]
+      cleanup: delete_missing
+```
+
+After a successful, uncancelled invocation the sink deletes every row matching the claimed scope whose key this run did not write:
+
+- The written keys are loaded into a session-scoped `CREATE TEMPORARY TABLE faucet_cleanup_keys`, and the delete is a single `DELETE … WHERE <scope> AND NOT EXISTS (SELECT 1 FROM faucet_cleanup_keys …)`. Not `key NOT IN (…)`: the written-key set routinely exceeds MySQL's 65535-placeholder limit.
+- The whole thing runs in **one transaction** (`CREATE`/`DROP TEMPORARY TABLE` are the DDL statements MySQL does not implicitly commit), so the delete is all-or-nothing — a partial delete would remove rows the run actually wrote.
+- **An empty result set is not a no-op**: if the source reports the scope as empty, every row in that scope is deleted. That is the case the feature exists for.
+- Scope and `key` columns are validated against `INFORMATION_SCHEMA.COLUMNS` first, so a name that is not a real column fails with a clear error naming the column and table instead of a mid-`DELETE` SQL failure. They are written in **destination** column terms.
+- The connection user needs the `CREATE TEMPORARY TABLES` privilege.
+
+`cleanup` requires `write_mode: upsert` with a non-empty `key`, and `column_mapping: auto_map` — a single JSON payload column has no real columns for the scope predicate to address.
+
 ## Effectively-once delivery
 
 `MysqlSink` implements `Sink::supports_idempotent_writes` (`true`) and the two companion hooks:
