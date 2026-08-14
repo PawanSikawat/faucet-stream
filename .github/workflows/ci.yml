@@ -517,6 +517,10 @@ jobs:
     needs: changes
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the patch-coverage gate below can resolve a merge
+          # base against origin/main.
+          fetch-depth: 0
       - name: Free runner disk space
         # The all-features instrumented build (bundled DuckDB + the full
         # connector tree) plus the coverage profraw data and testcontainer
@@ -576,6 +580,21 @@ jobs:
           # so they are excluded here and in codecov.yml (kept in sync).
           cargo llvm-cov report --lcov --output-path lcov.info \
             --ignore-filename-regex '(/tests?/|/examples?/|/benches?/|build\.rs$|crates/source/gcs/src/stream\.rs$|crates/sink/gcs/src/sink\.rs$)'
+      - name: Enforce >=90% patch coverage
+        # The project standard is >=90% coverage of changed lines. `codecov/patch`
+        # reports the same number but posts unreliably — of the eight PRs merged
+        # before this gate landed, only one carried a codecov status on its head
+        # commit (including a large code PR that carried none), so it cannot be a
+        # required check without blocking PRs on "Expected — waiting for status".
+        # This runs inside the already-required Coverage job instead, where the
+        # result is deterministic.
+        if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.code == 'true' }}
+        run: |
+          git fetch --no-tags --depth=0 origin "${{ github.base_ref }}" || true
+          python3 scripts/patch-coverage.py \
+            --lcov lcov.info \
+            --base "origin/${{ github.base_ref }}" \
+            --min 90
       - name: Upload to Codecov
         if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
         continue-on-error: true
