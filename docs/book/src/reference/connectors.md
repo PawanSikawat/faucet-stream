@@ -211,6 +211,13 @@ schemaless sinks (MongoDB, Elasticsearch) map `key` to a match filter / `_id`.
 Iceberg upsert is not yet supported (a follow-up, blocked on `iceberg-rust`). See
 [Upsert / mirror tables](../cookbook/upsert.md).
 
+Every sink in this column also supports **scoped cleanup** (`cleanup:
+delete_missing`), which deletes destination rows inside a source's declared
+`complete_for` scope that a run did not write — the only way an incremental sync
+can remove records deleted at the source. The two sets are identical today, so
+there is no separate column; see
+[Removing records deleted at the source](../cookbook/upsert.md#removing-records-deleted-at-the-source-scoped-cleanup).
+
 ## Arrow columnar (Parquet) fast path
 
 An opt-in, additive Arrow columnar path (RFC 0002 / #375, behind a crate-local
