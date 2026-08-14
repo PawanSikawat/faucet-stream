@@ -98,7 +98,11 @@ Request body:
   "timeout_secs": 3600,
   "doctor_first": true,
   "idempotency_key": "airflow-task-123-attempt-2",
-  "clock": "2026-05-29T00:00:00Z"
+  "clock": "2026-05-29T00:00:00Z",
+  "callback": {
+    "url": "https://caller.example/jobs/abc/complete",
+    "extra_fields": { "job_id": "abc" }
+  }
 }
 ```
 
@@ -113,6 +117,7 @@ Request body:
   submit returns `422` with the doctor report in `error.details`.
 - **`idempotency_key`** — replay protection (see cookbook).
 - **`clock`** — overrides the `${now.*}` clock for backfills (default: submit time).
+- **`callback`** — a per-run completion callback; see below.
 
 Response (`202`):
 
@@ -308,6 +313,79 @@ already-submitted units replay their existing run, the rest submit (a full
 queue marks the remainder `not_submitted`; re-POST to continue). A config
 carrying `shard: {count}` makes each unit a sharded run tracked via shard
 progress. Requires `RunWrite` (operator); audited as `backfill.submit`.
+
+## Completion callbacks
+
+Instead of polling, a submission can name an endpoint to be POSTed when the run
+reaches a terminal state. The destination rides the *submission*, not the config,
+so one registered pipeline (or template) can serve many callers each reporting to
+their own endpoint.
+
+```json
+"callback": {
+  "url": "https://caller.example/jobs/abc/complete",
+  "method": "POST",
+  "headers": { "X-Caller": "orchestrator" },
+  "extra_fields": { "job_id": "abc" },
+  "on": ["completed", "failed", "cancelled"]
+}
+```
+
+Accepted on `POST /v1/runs` and `POST /v1/templates/{id}/runs`. The body:
+
+```json
+{
+  "event": "run.completed",
+  "run_id": "0192…",
+  "status": "completed",
+  "name": "nightly-rollup",
+  "labels": { "requester": "airflow" },
+  "submitted_at": "2026-05-29T12:00:00Z",
+  "started_at": "2026-05-29T12:00:01Z",
+  "finished_at": "2026-05-29T12:04:11Z",
+  "elapsed_secs": 250.4,
+  "records_written": 14203,
+  "error": null,
+  "attempt": 0,
+  "job_id": "abc"
+}
+```
+
+`run_id` is the id returned by the submission. `error` is redacted. `extra_fields`
+are merged at the top level; a key colliding with any field above is refused with
+`422` at submit time rather than silently dropped.
+
+`on` defaults to **every** terminal status. Narrowing it is a footgun: a callback
+subscribed only to `completed` never fires for a failed or cancelled run, and a
+caller waiting on it will hang.
+
+> **Delivery is at-most-once, and best-effort.** The callback fires from the
+> in-process terminal transitions. It is **not** fired when a run is failed by
+> lease-expiry orphan recovery, by cluster reclaim-poison, or by the
+> sharded-parent completion sweep — those happen inside the history backend.
+> So treat a missing callback as **unknown**, never as "still running", and
+> reconcile against `GET /v1/runs/{id}`, which is always authoritative. A
+> non-2xx response is retried a few times with backoff, then dropped with a
+> warning; the run's recorded outcome is never affected.
+
+Refusals (all `422` at submit time, so a bad destination never becomes a silent
+no-op an hour later):
+
+| Condition | Why |
+|---|---|
+| Scheme is not `http`/`https` | |
+| Host is link-local / cloud-metadata (`169.254.0.0/16`, `fe80::/10`, `metadata.google.internal`, …) | Closes the instance-metadata SSRF hole. Override by naming the host in `--callback-allow-host`. |
+| `--callback-allow-host` is set and the host is not in it | Explicit allowlist mode. |
+| `headers` supplied on a **clustered** server | A clustered submit persists the run record — including these values — into the shared run-history database for a peer to execute, which would store them in clear text. Authenticate without a request header (e.g. a capability token in a single-use URL path), or submit to a non-clustered server. |
+| `extra_fields` key collides with a faucet-emitted field | Would let a submission spoof the `status`/`event` a receiver keys off. |
+| `on` contains a non-terminal status | |
+| Supplied on `POST /v1/backfill` | One backfill POST fans out into N unit runs, so a single callback has no single run to describe. Poll the unit runs by their `backfill` label instead. |
+
+**Egress posture.** This guard closes the metadata hole; it is not a general
+egress control. A caller who can submit a run can already point a `rest` source
+at an arbitrary address, so the deployment-level mitigations in the
+[serve cookbook](../cookbook/serve.md) still apply. Use `--callback-allow-host`
+(repeatable) when you want callbacks restricted to known receivers.
 
 ## Error envelope
 

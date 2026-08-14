@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Lifecycle state of a submitted run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
     Queued,
@@ -117,6 +117,14 @@ pub struct RunRecord {
     /// is backward-compatible with records written before the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay_of: Option<String>,
+    /// Caller-supplied completion callback (#481). Carried on the record rather
+    /// than on the in-flight request because every terminal transition that
+    /// fires it — `finalize`, the sharded-parent finalize, the pending-cancel
+    /// path — only ever has the record, never the original `SubmitRequest`.
+    /// Lives in the SQL `body` column, so a defaulted `Option` is
+    /// backward-compatible with records written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback: Option<crate::serve::callback::CallbackSpec>,
 }
 
 impl RunRecord {
@@ -148,6 +156,7 @@ impl RunRecord {
             clock: None,
             attempt: 0,
             replay_of: None,
+            callback: None,
         }
     }
 }

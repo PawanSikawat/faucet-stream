@@ -42,6 +42,7 @@ fn args_on(port: u16, token: Option<&str>) -> ServeArgs {
         cluster_poll_secs: 2,
         cluster_max_attempts: 3,
         triggers: None,
+        callback_allow_host: Vec::new(),
         mcp: false,
         mcp_allow_mutations: false,
     }

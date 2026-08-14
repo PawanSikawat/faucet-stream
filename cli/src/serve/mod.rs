@@ -5,6 +5,7 @@
 
 pub mod audit;
 pub mod auth;
+pub mod callback;
 pub mod cluster;
 pub mod config;
 pub mod error;

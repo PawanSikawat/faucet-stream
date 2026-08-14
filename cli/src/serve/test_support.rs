@@ -35,6 +35,7 @@ pub fn test_config() -> ServeConfig {
         ui_enabled: true,
         cluster: ClusterConfig::disabled(),
         triggers_path: None,
+        callback_allow_hosts: Vec::new(),
     }
 }
 

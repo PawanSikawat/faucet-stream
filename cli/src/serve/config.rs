@@ -104,6 +104,9 @@ pub struct ServeConfig {
     /// Path to a `--triggers` file. `None` = no event-driven triggers. The file
     /// is loaded + validated at startup (gated on the `triggers` feature).
     pub triggers_path: Option<PathBuf>,
+    /// Allowlist of hosts a per-run completion callback may target (#481).
+    /// Empty = any host except link-local / cloud-metadata addresses.
+    pub callback_allow_hosts: Vec<String>,
 }
 
 fn default_max_concurrent() -> usize {
@@ -255,6 +258,7 @@ impl ServeConfig {
             ui_enabled: !args.no_ui,
             cluster,
             triggers_path: args.triggers,
+            callback_allow_hosts: args.callback_allow_host,
         })
     }
 }
@@ -288,6 +292,7 @@ mod tests {
             cluster_poll_secs: 2,
             cluster_max_attempts: 3,
             triggers: None,
+            callback_allow_host: Vec::new(),
             mcp: false,
             mcp_allow_mutations: false,
         }

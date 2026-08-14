@@ -944,6 +944,12 @@ pub struct ServeArgs {
     /// the `triggers` feature. See `faucet schema triggers`.
     #[arg(long)]
     pub triggers: Option<std::path::PathBuf>,
+    /// Restrict per-run completion callbacks (`callback` on a submit) to these
+    /// hosts. Repeatable. When unset, any host is permitted **except**
+    /// link-local / cloud-metadata addresses, which are always refused unless
+    /// named here. See the HTTP API reference for the egress posture.
+    #[arg(long = "callback-allow-host")]
+    pub callback_allow_host: Vec<String>,
     /// Mount the MCP (Model Context Protocol) endpoint at `/mcp`, exposing
     /// faucet as agent tool calls. Effective only in a build with the `mcp`
     /// feature; the endpoint inherits serve's bearer-auth + RBAC + audit.

@@ -246,6 +246,7 @@ pub(crate) async fn execute(
         nodes,
         ExecuteOptions {
             pipeline_name: pipeline_name.clone(),
+            run_id: None,
             execution: cfg.execution.clone(),
             dry_run: args.dry_run,
             limit: args.limit,

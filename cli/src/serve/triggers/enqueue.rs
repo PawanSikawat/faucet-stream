@@ -73,6 +73,12 @@ pub fn build_submit_request(
         doctor_first: false,
         idempotency_key: Some(context::idempotency_key(name, event)),
         clock: None,
+        // Triggers carry no per-run callback (#481). A trigger is declared in the
+        // triggers file, so its destination is static — which is exactly what the
+        // config's `notifications:` block already expresses. A per-run callback
+        // exists for the opposite case: an external caller submitting a run and
+        // naming its own endpoint.
+        callback: None,
     }
 }
 

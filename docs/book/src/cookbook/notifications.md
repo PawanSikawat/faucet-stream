@@ -121,7 +121,56 @@ channel:
     headers: { X-Env: prod }                  # optional extra headers
     hmac_secret: "${env:FAUCET_WEBHOOK_SECRET}"
     signature_header: "X-Faucet-Signature"    # default
+    extra_fields:                             # optional static body fields
+      tenant: "${vars.tenant}"
+      environment: prod
 ```
+
+#### Payload
+
+```json
+{
+  "event": "run_success",
+  "severity": "info",
+  "pipeline": "contacts-sync",
+  "row": "associations",
+  "run_id": "0199f3c1-8a2e-7c40-9f1b-2d7e5a6c3b04",
+  "invocation_id": "0199f3c1-8a31-7d02-b8aa-91c4e0f7d215",
+  "started_at": "2026-08-13T09:14:02.117Z",
+  "finished_at": "2026-08-13T09:16:41.402Z",
+  "duration_secs": 159.285,
+  "title": "Pipeline `contacts-sync` succeeded",
+  "message": "Run completed, 14203 records written.",
+  "details": { "records_written": 14203 }
+}
+```
+
+| Field | Notes |
+|---|---|
+| `event` | One of the event kinds listed above. |
+| `severity` | `info` / `warning` / `error` / `critical`. |
+| `pipeline`, `row` | Config identity. **Not unique per run** — see `run_id`. |
+| `run_id` | Correlates to the submitted run. Under `faucet serve` this is exactly the id returned by `POST /v1/runs`, so a completion callback can be matched to the submission. |
+| `invocation_id` | This matrix row's own id. One submitted run emits one notification per row, all sharing `run_id` and differing here. |
+| `started_at`, `finished_at` | RFC 3339 UTC. |
+| `duration_secs` | Monotonic elapsed seconds — never negative, even across a clock step. |
+| `details` | Per-event structured context (e.g. `records_written`, `error_kind`, `records_dlq`). |
+
+Every key is always present; identity and timing fields are `null` for events
+with no owning invocation (e.g. `scheduler_stuck`, emitted by the scheduler loop
+itself). Receivers can therefore rely on a stable key set.
+
+`extra_fields` merges static values into the top level of that body — useful for
+tagging a callback with a tenant or an external job id. Values go through the
+normal interpolation pass. A key that collides with any field above is
+**rejected by `faucet validate`** rather than silently dropped, so a typo can
+never spoof the `event` a receiver keys off.
+
+> Using this as a job-status callback? `run_id` is the correlation key. Two
+> overlapping runs of one pipeline — a `schedule` with `overlap: queue`, a
+> cluster with several workers, or a backfill fanning out per window — produce
+> notifications identical in `pipeline` and `row`, so keying off those will
+> mis-attribute status.
 
 ## Secrets
 
