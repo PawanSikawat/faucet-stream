@@ -15,6 +15,7 @@ pub mod auth_catalog;
 pub mod backfill;
 #[cfg(feature = "catalog")]
 pub mod catalog;
+pub mod chunking;
 pub mod cli;
 pub mod commands;
 pub mod compose;
