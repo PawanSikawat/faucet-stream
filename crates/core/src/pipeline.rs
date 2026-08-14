@@ -140,6 +140,7 @@ pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     delivery: crate::idempotency::DeliveryMode,
     resilience: Option<crate::resilience::ResiliencePolicy>,
     schema_drift: Option<crate::drift::SchemaDriftPolicy>,
+    cleanup: Option<std::sync::Arc<crate::cleanup::CleanupPolicy>>,
 }
 
 impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
@@ -164,6 +165,7 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             delivery: crate::idempotency::DeliveryMode::AtLeastOnce,
             resilience: None,
             schema_drift: None,
+            cleanup: None,
         }
     }
 
@@ -274,6 +276,15 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
     /// and before the sink write, per page.
     pub fn with_schema_drift(mut self, policy: crate::drift::SchemaDriftPolicy) -> Self {
         self.schema_drift = Some(policy);
+        self
+    }
+
+    /// Attach a scoped-cleanup policy (#478). After a fully successful,
+    /// uncancelled run the sink is asked to delete rows in the claimed scope
+    /// that this run did not write. See [`crate::cleanup`] for why the timing
+    /// matters.
+    pub fn with_cleanup(mut self, policy: std::sync::Arc<crate::cleanup::CleanupPolicy>) -> Self {
+        self.cleanup = Some(policy);
         self
     }
 
@@ -430,7 +441,13 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
                     && self.delivery == crate::idempotency::DeliveryMode::AtLeastOnce
                     && self.schema_drift.is_none()
                     && self.adaptive.is_none()
-                    && self.resilience.is_none();
+                    && self.resilience.is_none()
+                    // The columnar fast-path bypasses `run_stream`, which is
+                    // where cleanup accumulates written keys and fires the
+                    // delete. Taking it with a policy attached would silently
+                    // skip the cleanup and leave the stale rows behind — the
+                    // exact failure this feature exists to prevent (#478).
+                    && self.cleanup.is_none();
                 #[cfg(feature = "quality")]
                 let columnar_ok = columnar_ok && self.quality.is_none();
                 #[cfg(feature = "contract")]
@@ -491,6 +508,9 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             }
             if let Some(p) = self.schema_drift {
                 opts = opts.with_schema_drift(p);
+            }
+            if let Some(c) = self.cleanup.clone() {
+                opts = opts.with_cleanup(c);
             }
             opts = opts
                 .with_delivery(self.delivery)

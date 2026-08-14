@@ -503,6 +503,18 @@ impl<'a, S: Sink + ?Sized> Sink for InstrumentedSink<'a, S> {
         self.inner.supported_write_modes()
     }
 
+    fn supports_cleanup(&self) -> bool {
+        self.inner.supports_cleanup()
+    }
+
+    async fn cleanup_scope(
+        &self,
+        scope: &std::collections::BTreeMap<String, Value>,
+        seen: &crate::cleanup::SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        self.inner.cleanup_scope(scope, seen).await
+    }
+
     fn supports_idempotent_writes(&self) -> bool {
         self.inner.supports_idempotent_writes()
     }
