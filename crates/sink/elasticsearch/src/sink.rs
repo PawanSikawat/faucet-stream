@@ -1621,7 +1621,6 @@ mod tests {
                     field: "__op".to_string(),
                     values: vec!["d".to_string()],
                 }),
-                cleanup: None,
             },
             ..ElasticsearchSinkConfig::new("http://localhost:9200", "idx")
         };

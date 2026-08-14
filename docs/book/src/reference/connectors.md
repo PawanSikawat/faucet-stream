@@ -211,9 +211,9 @@ schemaless sinks (MongoDB, Elasticsearch) map `key` to a match filter / `_id`.
 Iceberg upsert is not yet supported (a follow-up, blocked on `iceberg-rust`). See
 [Upsert / mirror tables](../cookbook/upsert.md).
 
-Every sink in this column also supports **scoped cleanup** (`cleanup:
-delete_missing`), which deletes destination rows inside a source's declared
-`complete_for` scope that a run did not write — the only way an incremental sync
+Every sink in this column also supports **scoped cleanup**
+(`complete_for.on_missing: delete` on the source), which deletes destination rows
+inside the declared scope that a run did not write — the only way an incremental sync
 can remove records deleted at the source. The two sets are identical today, so
 there is no separate column; see
 [Removing records deleted at the source](../cookbook/upsert.md#removing-records-deleted-at-the-source-scoped-cleanup).

@@ -207,25 +207,27 @@ matrix:
       config:
         url: "https://api.example.com/contacts/${contacts.id}/associations"
       complete_for:
-        contact_id: "${contacts.id}"     # destination column names
+        scope:
+          contact_id: "${contacts.id}"   # destination column names
+        on_missing: delete               # omit (or `ignore`) = claim is inert
     sink:
       ref: assoc
       write_mode: upsert
       key: [association_id]
-      cleanup: delete_missing
 ```
 
 After the run writes every page, faucet deletes the rows matching
 `contact_id = <that contact>` whose `association_id` it did not write. Other
 contacts are untouched.
 
-**Both sides are required.** A claim with no sink opt-in is inert; the opt-in
-with no claim is rejected at load time — unbounded, it would delete every row the
-run did not write.
+**Deleting is an explicit opt-in.** `on_missing` defaults to `ignore`, so adding
+a claim documents the scope without ever deleting anything; only
+`on_missing: delete` acts on it. An empty `scope` is rejected at load time —
+unbounded, it would match every row in the destination.
 
 ### Scope keys are destination column names
 
-`complete_for` is written in **destination** terms, because the `DELETE` runs
+`complete_for.scope` is written in **destination** terms, because the `DELETE` runs
 against destination columns. If a transform renames `contactId` → `contact_id`
 between source and sink, the scope uses `contact_id`. Values may carry
 `${parent.*}` / `${now.*}` tokens and are resolved per invocation, exactly like
@@ -249,6 +251,7 @@ Cleanup deletes data, so it only runs when the written set is trustworthy:
 | `--dry-run` / `--limit` | Skipped — the sink is a counter or a dropper, so the written set is synthetic |
 | Sharded run | Skipped — a shard reads a fraction, so the difference is other shards' rows |
 | Written rows exceed the key ceiling | **Run fails**, deleting nothing |
+| A record was quarantined by a quality / contract / drift policy | Rejected at load time — a quarantined record never reaches the sink, so cleanup could not tell it from a deleted one |
 
 That last one is deliberate. Above the ceiling the written-key set is incomplete,
 so a delete would remove rows the run wrote — but skipping quietly would leave
@@ -266,8 +269,8 @@ All eight upsert-capable sinks: `postgres`, `mysql`, `mssql`, `sqlite`,
 column-mapping mode (`auto_map` / `auto_columns`) — a single JSON payload column
 has no columns to predicate on.
 
-`cleanup` requires `write_mode: upsert` and a non-empty `key`, and is incompatible
-with `delivery: exactly_once` (the scoped delete happens outside the commit-token
+`on_missing: delete` requires `write_mode: upsert` and a non-empty `key`, and is
+incompatible with `delivery: exactly_once` (the scoped delete happens outside the commit-token
 transaction, so it cannot be replayed idempotently).
 
 ### Metrics

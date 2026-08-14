@@ -418,12 +418,15 @@
           }
         },
         "complete_for": {
-          "description": "**Completeness claim** for scoped cleanup (#478): \"for these column\nvalues, this fetch returns *all* the records\". Keys are **destination**\ncolumn names; values may carry `${parent.path}` / `${now.*}` tokens,\nresolved per invocation like any other config value.\n\nDeclared on the *source* because only the source knows whether a fetch is\ncomplete — a sink sees a page and cannot tell a complete set from page 1\nof 3. It is inert on its own: the destination sink must also opt in with\n`cleanup: delete_missing`, so a delete can never happen implicitly.\nMeaningful only on source templates; rejected at expand time on sinks.",
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": true
+          "description": "**Completeness claim** for scoped cleanup (#478). Meaningful only on\nsource templates; rejected at expand time on sinks — only a source knows\nwhether a fetch returned every record for a scope.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompletenessClaim"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,
@@ -476,6 +479,41 @@
           "description": "Retired, kept for history: runs only under `--status archived`.",
           "type": "string",
           "const": "archived"
+        }
+      ]
+    },
+    "CompletenessClaim": {
+      "description": "\"For these column values, this fetch returns *all* the records\" (#478).\n\nDeclared on the source because a sink sees a page and cannot tell a complete\nset from page 1 of 3. The claim alone never deletes anything: `on_missing`\ndefaults to `ignore`, so acting on it is a separate, explicit opt-in.",
+      "type": "object",
+      "properties": {
+        "scope": {
+          "description": "The scope this fetch is authoritative for, keyed by **destination**\ncolumn names — the `DELETE` runs against destination columns, and a\ntransform chain may rename fields between source and sink. Values may\ncarry `${parent.path}` / `${now.*}` tokens, resolved per invocation like\nany other config value.",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "on_missing": {
+          "description": "What to do about destination rows inside `scope` that this run did not\nwrite. Defaults to `ignore`, so adding a claim can never start deleting\ndata on its own.",
+          "$ref": "#/$defs/OnMissing",
+          "default": "ignore"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "scope"
+      ]
+    },
+    "OnMissing": {
+      "description": "Action for destination rows inside a completeness scope that a run did not\nwrite (#478).",
+      "oneOf": [
+        {
+          "description": "Leave them alone. The claim is recorded but inert (default).",
+          "type": "string",
+          "const": "ignore"
+        },
+        {
+          "description": "Delete them — the only way an incremental sync can remove records that\nwere deleted at the source.",
+          "type": "string",
+          "const": "delete"
         }
       ]
     },
@@ -6964,16 +7002,6 @@
         }
       }
     },
-    "sink_bigquery__CleanupMode": {
-      "description": "What to do about destination rows inside the claimed scope that this run did\nnot write.\n\nSerialized as the sink-config field `cleanup:` via\n[`WriteSpec`](crate::write_mode::WriteSpec), so every upsert-capable sink\naccepts it without a per-connector config change.",
-      "oneOf": [
-        {
-          "description": "Delete rows in the scope whose key was not written by this invocation.",
-          "type": "string",
-          "const": "delete_missing"
-        }
-      ]
-    },
     "sink_bigquery__BigQueryLoadConfig": {
       "description": "GCS-staged Parquet load-job configuration for the Arrow columnar path.",
       "type": "object",
@@ -7263,16 +7291,6 @@
         }
       }
     },
-    "sink_postgres__CleanupMode": {
-      "description": "What to do about destination rows inside the claimed scope that this run did\nnot write.\n\nSerialized as the sink-config field `cleanup:` via\n[`WriteSpec`](crate::write_mode::WriteSpec), so every upsert-capable sink\naccepts it without a per-connector config change.",
-      "oneOf": [
-        {
-          "description": "Delete rows in the scope whose key was not written by this invocation.",
-          "type": "string",
-          "const": "delete_missing"
-        }
-      ]
-    },
     "sink_postgres__PostgresWriteMethod": {
       "description": "How rows are shipped to PostgreSQL in append mode.",
       "oneOf": [
@@ -7505,16 +7523,6 @@
         }
       }
     },
-    "sink_mysql__CleanupMode": {
-      "description": "What to do about destination rows inside the claimed scope that this run did\nnot write.\n\nSerialized as the sink-config field `cleanup:` via\n[`WriteSpec`](crate::write_mode::WriteSpec), so every upsert-capable sink\naccepts it without a per-connector config change.",
-      "oneOf": [
-        {
-          "description": "Delete rows in the scope whose key was not written by this invocation.",
-          "type": "string",
-          "const": "delete_missing"
-        }
-      ]
-    },
     "sink_mssql__MssqlTls": {
       "description": "TLS configuration for an MSSQL connection.\n\nMatches the YAML shape `tls: { type: <mode>, ca_cert_path: <path> }`.",
       "type": "object",
@@ -7647,16 +7655,6 @@
         }
       }
     },
-    "sink_mssql__CleanupMode": {
-      "description": "What to do about destination rows inside the claimed scope that this run did\nnot write.\n\nSerialized as the sink-config field `cleanup:` via\n[`WriteSpec`](crate::write_mode::WriteSpec), so every upsert-capable sink\naccepts it without a per-connector config change.",
-      "oneOf": [
-        {
-          "description": "Delete rows in the scope whose key was not written by this invocation.",
-          "type": "string",
-          "const": "delete_missing"
-        }
-      ]
-    },
     "sink_sqlite__SqliteColumnMapping": {
       "description": "How to map JSON records to table columns.",
       "oneOf": [
@@ -7718,16 +7716,6 @@
           }
         }
       }
-    },
-    "sink_sqlite__CleanupMode": {
-      "description": "What to do about destination rows inside the claimed scope that this run did\nnot write.\n\nSerialized as the sink-config field `cleanup:` via\n[`WriteSpec`](crate::write_mode::WriteSpec), so every upsert-capable sink\naccepts it without a per-connector config change.",
-      "oneOf": [
-        {
-          "description": "Delete rows in the scope whose key was not written by this invocation.",
-          "type": "string",
-          "const": "delete_missing"
-        }
-      ]
     },
     "sink_duckdb__DuckdbColumnMapping": {
       "description": "How to map JSON records to table columns.",
@@ -8069,16 +8057,6 @@
         }
       }
     },
-    "sink_mongodb__CleanupMode": {
-      "description": "What to do about destination rows inside the claimed scope that this run did\nnot write.\n\nSerialized as the sink-config field `cleanup:` via\n[`WriteSpec`](crate::write_mode::WriteSpec), so every upsert-capable sink\naccepts it without a per-connector config change.",
-      "oneOf": [
-        {
-          "description": "Delete rows in the scope whose key was not written by this invocation.",
-          "type": "string",
-          "const": "delete_missing"
-        }
-      ]
-    },
     "sink_redis__RedisSinkType": {
       "description": "The type of Redis data structure to write to.",
       "oneOf": [
@@ -8291,16 +8269,6 @@
           }
         }
       }
-    },
-    "sink_elasticsearch__CleanupMode": {
-      "description": "What to do about destination rows inside the claimed scope that this run did\nnot write.\n\nSerialized as the sink-config field `cleanup:` via\n[`WriteSpec`](crate::write_mode::WriteSpec), so every upsert-capable sink\naccepts it without a per-connector config change.",
-      "oneOf": [
-        {
-          "description": "Delete rows in the scope whose key was not written by this invocation.",
-          "type": "string",
-          "const": "delete_missing"
-        }
-      ]
     },
     "sink_kafka__KafkaSinkTopic": {
       "oneOf": [
@@ -8962,16 +8930,6 @@
           }
         }
       }
-    },
-    "sink_spanner__CleanupMode": {
-      "description": "What to do about destination rows inside the claimed scope that this run did\nnot write.\n\nSerialized as the sink-config field `cleanup:` via\n[`WriteSpec`](crate::write_mode::WriteSpec), so every upsert-capable sink\naccepts it without a per-connector config change.",
-      "oneOf": [
-        {
-          "description": "Delete rows in the scope whose key was not written by this invocation.",
-          "type": "string",
-          "const": "delete_missing"
-        }
-      ]
     },
     "sink_http__AuthSpec": {
       "description": "A connector's `auth:` field: **either** an inline auth definition `A`\n(the `{ type, config }` shape), **or** a `{ ref: <name> }` reference to a\nshared provider defined in the top-level `auth:` catalog.\n\n`ref` is mutually exclusive with inline fields — supplying both is a\ndeserialization error.",
@@ -14114,17 +14072,6 @@
                         }
                       ]
                     },
-                    "cleanup": {
-                      "description": "Optional. Act on the source's completeness claim (`complete_for`) by\ndeleting destination rows inside the claimed scope that this run did not\nwrite (#478) — the only way an incremental sync can remove records that\nwere deleted at the source.\n\nRequires `write_mode: upsert` with a non-empty `key`, and a source that\ndeclares a scope. Both sides are required so a delete can never happen\nimplicitly: a claim with no sink opt-in is inert, and this without a claim\nis a load-time error.",
-                      "anyOf": [
-                        {
-                          "$ref": "#/$defs/sink_bigquery__CleanupMode"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
                     "bulk_load": {
                       "description": "Arrow columnar **load-job** mode (#380): buffer Arrow `RecordBatch`es to\nParquet, stage them on a GCS bucket, then run a BigQuery `PARQUET` load\njob (`jobs.insert`) instead of the per-row `insertAll` path. Only\npresent in `arrow` builds; drives the columnar fast path the pipeline\nnegotiates when the source and sink are both columnar. Load jobs are\nappend/truncate only, so the sink advertises columnar support **only**\nwhen the write mode is `append` — upsert/delete stay on the MERGE path.",
                       "anyOf": [
@@ -14328,17 +14275,6 @@
                       "anyOf": [
                         {
                           "$ref": "#/$defs/sink_postgres__DeleteMarker"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "cleanup": {
-                      "description": "Optional. Act on the source's completeness claim (`complete_for`) by\ndeleting destination rows inside the claimed scope that this run did not\nwrite (#478) — the only way an incremental sync can remove records that\nwere deleted at the source.\n\nRequires `write_mode: upsert` with a non-empty `key`, and a source that\ndeclares a scope. Both sides are required so a delete can never happen\nimplicitly: a claim with no sink opt-in is inert, and this without a claim\nis a load-time error.",
-                      "anyOf": [
-                        {
-                          "$ref": "#/$defs/sink_postgres__CleanupMode"
                         },
                         {
                           "type": "null"
@@ -14586,17 +14522,6 @@
                           "type": "null"
                         }
                       ]
-                    },
-                    "cleanup": {
-                      "description": "Optional. Act on the source's completeness claim (`complete_for`) by\ndeleting destination rows inside the claimed scope that this run did not\nwrite (#478) — the only way an incremental sync can remove records that\nwere deleted at the source.\n\nRequires `write_mode: upsert` with a non-empty `key`, and a source that\ndeclares a scope. Both sides are required so a delete can never happen\nimplicitly: a claim with no sink opt-in is inert, and this without a claim\nis a load-time error.",
-                      "anyOf": [
-                        {
-                          "$ref": "#/$defs/sink_mysql__CleanupMode"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
                     }
                   },
                   "title": "MysqlSinkConfig",
@@ -14733,17 +14658,6 @@
                           "type": "null"
                         }
                       ]
-                    },
-                    "cleanup": {
-                      "description": "Optional. Act on the source's completeness claim (`complete_for`) by\ndeleting destination rows inside the claimed scope that this run did not\nwrite (#478) — the only way an incremental sync can remove records that\nwere deleted at the source.\n\nRequires `write_mode: upsert` with a non-empty `key`, and a source that\ndeclares a scope. Both sides are required so a delete can never happen\nimplicitly: a claim with no sink opt-in is inert, and this without a claim\nis a load-time error.",
-                      "anyOf": [
-                        {
-                          "$ref": "#/$defs/sink_mssql__CleanupMode"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
                     }
                   },
                   "title": "MssqlSinkConfig",
@@ -14820,17 +14734,6 @@
                       "anyOf": [
                         {
                           "$ref": "#/$defs/sink_sqlite__DeleteMarker"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "cleanup": {
-                      "description": "Optional. Act on the source's completeness claim (`complete_for`) by\ndeleting destination rows inside the claimed scope that this run did not\nwrite (#478) — the only way an incremental sync can remove records that\nwere deleted at the source.\n\nRequires `write_mode: upsert` with a non-empty `key`, and a source that\ndeclares a scope. Both sides are required so a delete can never happen\nimplicitly: a claim with no sink opt-in is inert, and this without a claim\nis a load-time error.",
-                      "anyOf": [
-                        {
-                          "$ref": "#/$defs/sink_sqlite__CleanupMode"
                         },
                         {
                           "type": "null"
@@ -15367,17 +15270,6 @@
                           "type": "null"
                         }
                       ]
-                    },
-                    "cleanup": {
-                      "description": "Optional. Act on the source's completeness claim (`complete_for`) by\ndeleting destination rows inside the claimed scope that this run did not\nwrite (#478) — the only way an incremental sync can remove records that\nwere deleted at the source.\n\nRequires `write_mode: upsert` with a non-empty `key`, and a source that\ndeclares a scope. Both sides are required so a delete can never happen\nimplicitly: a claim with no sink opt-in is inert, and this without a claim\nis a load-time error.",
-                      "anyOf": [
-                        {
-                          "$ref": "#/$defs/sink_mongodb__CleanupMode"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
                     }
                   },
                   "title": "MongoSinkConfig",
@@ -15570,17 +15462,6 @@
                       "anyOf": [
                         {
                           "$ref": "#/$defs/sink_elasticsearch__DeleteMarker"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "cleanup": {
-                      "description": "Optional. Act on the source's completeness claim (`complete_for`) by\ndeleting destination rows inside the claimed scope that this run did not\nwrite (#478) — the only way an incremental sync can remove records that\nwere deleted at the source.\n\nRequires `write_mode: upsert` with a non-empty `key`, and a source that\ndeclares a scope. Both sides are required so a delete can never happen\nimplicitly: a claim with no sink opt-in is inert, and this without a claim\nis a load-time error.",
-                      "anyOf": [
-                        {
-                          "$ref": "#/$defs/sink_elasticsearch__CleanupMode"
                         },
                         {
                           "type": "null"
@@ -16023,17 +15904,6 @@
                       "anyOf": [
                         {
                           "$ref": "#/$defs/sink_spanner__DeleteMarker"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "cleanup": {
-                      "description": "Optional. Act on the source's completeness claim (`complete_for`) by\ndeleting destination rows inside the claimed scope that this run did not\nwrite (#478) — the only way an incremental sync can remove records that\nwere deleted at the source.\n\nRequires `write_mode: upsert` with a non-empty `key`, and a source that\ndeclares a scope. Both sides are required so a delete can never happen\nimplicitly: a claim with no sink opt-in is inert, and this without a claim\nis a load-time error.",
-                      "anyOf": [
-                        {
-                          "$ref": "#/$defs/sink_spanner__CleanupMode"
                         },
                         {
                           "type": "null"

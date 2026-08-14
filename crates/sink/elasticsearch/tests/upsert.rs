@@ -43,7 +43,6 @@ async fn upsert_emits_index_action_with_key_id_and_no_marker() {
                 field: "__op".to_string(),
                 values: vec!["d".to_string()],
             }),
-            cleanup: None,
         },
         ..ElasticsearchSinkConfig::new(server.uri(), "idx")
     };
@@ -85,7 +84,6 @@ async fn delete_marker_emits_delete_action_with_no_doc_line() {
                 field: "__op".to_string(),
                 values: vec!["d".to_string()],
             }),
-            cleanup: None,
         },
         ..ElasticsearchSinkConfig::new(server.uri(), "idx")
     };
@@ -120,7 +118,6 @@ async fn delete_mode_emits_delete_action_by_key() {
             write_mode: WriteMode::Delete,
             key: vec!["id".to_string()],
             delete_marker: None,
-            cleanup: None,
         },
         ..ElasticsearchSinkConfig::new(server.uri(), "idx")
     };
@@ -155,7 +152,6 @@ async fn composite_key_id_is_canonical_json() {
             write_mode: WriteMode::Upsert,
             key: vec!["tenant".to_string(), "id".to_string()],
             delete_marker: None,
-            cleanup: None,
         },
         ..ElasticsearchSinkConfig::new(server.uri(), "idx")
     };
@@ -187,7 +183,6 @@ async fn composite_key_id_does_not_collide_separator_style() {
             write_mode: WriteMode::Upsert,
             key: vec!["a".to_string(), "b".to_string()],
             delete_marker: None,
-            cleanup: None,
         },
         ..ElasticsearchSinkConfig::new(server.uri(), "idx")
     };
@@ -225,7 +220,6 @@ async fn duplicate_keys_collapse_last_write_wins() {
             write_mode: WriteMode::Upsert,
             key: vec!["id".to_string()],
             delete_marker: None,
-            cleanup: None,
         },
         ..ElasticsearchSinkConfig::new(server.uri(), "idx")
     };
@@ -264,7 +258,6 @@ async fn write_batch_partial_routes_missing_key_to_failed() {
             write_mode: WriteMode::Upsert,
             key: vec!["id".to_string()],
             delete_marker: None,
-            cleanup: None,
         },
         ..ElasticsearchSinkConfig::new(server.uri(), "idx")
     };

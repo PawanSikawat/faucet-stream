@@ -63,7 +63,9 @@ pipeline:
     config:
       path: "{csv}"
     complete_for:
-      contact_id: 7
+      scope:
+        contact_id: 7
+      on_missing: {on_missing}
   sink:
     type: sqlite
     config:
@@ -72,15 +74,10 @@ pipeline:
       column_mapping: auto_map
       write_mode: upsert
       key: [id]
-{cleanup_line}
 "#,
         csv = csv.display(),
         db = db,
-        cleanup_line = if cleanup {
-            "      cleanup: delete_missing"
-        } else {
-            ""
-        }
+        on_missing = if cleanup { "delete" } else { "ignore" }
     )
 }
 
@@ -266,13 +263,18 @@ fn expand_err(yaml: &str) -> String {
 }
 
 #[test]
-fn sink_opt_in_without_a_source_claim_is_rejected() {
-    // Unbounded, this would delete every destination row the run did not write.
+fn an_empty_scope_is_rejected() {
+    // An empty scope matches every row in the destination — a truncate.
     let err = expand_err(
         r#"
 version: 1
 pipeline:
-  source: { type: csv, config: { path: "./x.csv" } }
+  source:
+    type: csv
+    config: { path: "./x.csv" }
+    complete_for:
+      scope: {}
+      on_missing: delete
   sink:
     type: sqlite
     config:
@@ -281,10 +283,36 @@ pipeline:
       column_mapping: auto_map
       write_mode: upsert
       key: [id]
-      cleanup: delete_missing
 "#,
     );
-    assert!(err.contains("complete_for"), "{err}");
+    assert!(err.contains("empty"), "{err}");
+}
+
+#[test]
+fn a_claim_without_on_missing_delete_is_inert() {
+    // Adding a claim must never start deleting on its own.
+    let path = std::path::PathBuf::from("p.yaml");
+    let cfg = PipelineConfig::from_text(
+        r#"
+version: 1
+pipeline:
+  source:
+    type: csv
+    config: { path: "./x.csv" }
+    complete_for:
+      scope: { contact_id: 7 }
+  sink:
+    type: jsonl
+    config: { path: "./out.jsonl" }
+"#,
+        &path,
+    )
+    .expect("config parses");
+    let nodes = expand(&cfg).expect("an inert claim must not be gated at all");
+    assert!(
+        nodes[0].cleanup_scope.is_none(),
+        "on_missing defaults to ignore, so no cleanup is scheduled"
+    );
 }
 
 #[test]
@@ -296,17 +324,18 @@ pipeline:
   source:
     type: csv
     config: { path: "./x.csv" }
-    complete_for: { contact_id: 7 }
+    complete_for:
+      scope: { contact_id: 7 }
+      on_missing: delete
   sink:
     type: jsonl
     config:
       path: "./out.jsonl"
-      cleanup: delete_missing
 "#,
     );
     assert!(
-        err.contains("cleanup") && err.contains("jsonl"),
-        "error should name the mode and the sink: {err}"
+        err.contains("jsonl"),
+        "error should name the unsupported sink: {err}"
     );
 }
 
@@ -324,8 +353,47 @@ pipeline:
       database_url: "sqlite://x.db"
       table_name: t
       column_mapping: auto_map
-    complete_for: { contact_id: 7 }
+    complete_for:
+      scope: { contact_id: 7 }
 "#,
     );
     assert!(err.contains("complete_for"), "{err}");
+}
+
+#[test]
+fn quarantining_quality_policy_is_rejected() {
+    // A quarantined record never reaches the sink, so the cleanup tracker never
+    // records its key — and the delete would then remove its destination row,
+    // losing data the source still has.
+    let err = expand_err(
+        r#"
+version: 1
+pipeline:
+  source:
+    type: csv
+    config: { path: "./x.csv" }
+    complete_for:
+      scope: { contact_id: 7 }
+      on_missing: delete
+  sink:
+    type: sqlite
+    config:
+      database_url: "sqlite://x.db"
+      table_name: t
+      column_mapping: auto_map
+      write_mode: upsert
+      key: [id]
+  quality:
+    record:
+      - type: not_null
+        field: id
+        on_failure: quarantine
+  dlq:
+    sink: { type: jsonl, config: { path: "./dlq.jsonl" } }
+"#,
+    );
+    assert!(
+        err.contains("quarantin"),
+        "error should explain the quarantine incompatibility: {err}"
+    );
 }

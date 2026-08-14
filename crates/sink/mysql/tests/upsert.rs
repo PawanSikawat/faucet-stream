@@ -63,7 +63,6 @@ fn make_upsert_sink_config(url: &str, key: Vec<String>) -> MysqlSinkConfig {
         write_mode: WriteMode::Upsert,
         key,
         delete_marker: None,
-        cleanup: None,
     };
     config
 }
@@ -125,7 +124,6 @@ async fn upsert_with_delete_marker_removes_row() {
             field: "__op".to_string(),
             values: vec!["d".to_string()],
         }),
-        cleanup: None,
     };
     let sink = MysqlSink::new(config).await.expect("sink new");
 
@@ -234,7 +232,6 @@ async fn new_rejects_upsert_without_key() {
         write_mode: WriteMode::Upsert,
         key: vec![], // missing key → rejected before any connection attempt
         delete_marker: None,
-        cleanup: None,
     };
 
     let err = MysqlSink::new(config)
@@ -257,7 +254,6 @@ async fn new_rejects_upsert_with_json_column_mapping() {
         write_mode: WriteMode::Upsert,
         key: vec!["id".to_string()],
         delete_marker: None,
-        cleanup: None,
     };
 
     let err = MysqlSink::new(config)

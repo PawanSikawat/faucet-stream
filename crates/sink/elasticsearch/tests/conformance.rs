@@ -121,7 +121,6 @@ async fn conformance_write_modes_truthful() {
                 field: DELETE_MARKER_FIELD.to_string(),
                 values: vec![DELETE_MARKER_VALUE.to_string()],
             }),
-            cleanup: None,
         },
         ..ElasticsearchSinkConfig::new(server.uri(), "idx")
     };

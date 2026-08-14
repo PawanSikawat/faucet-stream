@@ -53,6 +53,7 @@
 //! a partial delete that would destroy rows it simply forgot about.
 
 use crate::error::FaucetError;
+use crate::traits::Sink;
 use crate::write_mode::KeyTuple;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -211,6 +212,161 @@ impl SeenKeys {
              (a smaller `complete_for`), or raise the ceiling if the destination can take \
              a delete of this size"
         ))
+    }
+}
+
+/// A sink wrapper that records the key tuples written through it (#478).
+///
+/// This is how scoped cleanup tracks "what this run wrote" **without** adding a
+/// field to [`RunStreamOptions`](crate::RunStreamOptions), which is an
+/// externally-constructible struct whose shape is part of the public API. It is
+/// also the more honest home for the bookkeeping: the thing that writes the rows
+/// is the thing that knows which rows were written, and it composes with the
+/// existing sink-decorator pattern (`InstrumentedSink`) rather than threading a
+/// second concern through the page loop.
+///
+/// Every write path is counted, including [`write_batch_partial`](Sink::write_batch_partial).
+/// That is deliberate: a row handed to the sink that fails and lands in the DLQ
+/// is still a record the source claimed present, so it must count as seen or the
+/// cleanup would delete its destination row.
+///
+/// Records that never reach the sink at all — quarantined by a quality, contract,
+/// or drift policy — are consequently *not* counted, which is why those
+/// combinations are rejected at config-load time rather than silently deleting
+/// the quarantined rows' destination counterparts.
+pub struct CleanupTracker<'a, S: Sink + ?Sized> {
+    inner: &'a S,
+    key: Vec<String>,
+    max_keys: usize,
+    seen: std::sync::Mutex<SeenKeys>,
+}
+
+impl<'a, S: Sink + ?Sized> CleanupTracker<'a, S> {
+    pub fn new(inner: &'a S, policy: &CleanupPolicy) -> Self {
+        Self {
+            inner,
+            key: policy.key.clone(),
+            max_keys: policy.max_keys,
+            seen: std::sync::Mutex::new(SeenKeys::new()),
+        }
+    }
+
+    fn record(&self, records: &[Value]) {
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.record_page(records, &self.key, self.max_keys);
+        }
+    }
+
+    /// Run the scoped delete against the wrapped sink. Call **only** after a
+    /// fully successful, uncancelled run — see the module docs.
+    pub async fn finish(&self, policy: &CleanupPolicy) -> Result<u64, FaucetError> {
+        // Take the set out and drop the guard *before* awaiting: holding a
+        // `MutexGuard` across an await makes the whole run future non-`Send`,
+        // which the executor's `JoinSet` requires.
+        let seen = {
+            let mut guard = self
+                .seen
+                .lock()
+                .map_err(|_| FaucetError::Sink("cleanup: key tracker poisoned".into()))?;
+            if guard.overflowed() {
+                // Refuse rather than partially delete: the tracked set is
+                // incomplete, so a delete would remove rows the run wrote.
+                return Err(guard.overflow_error(policy.max_keys));
+            }
+            std::mem::take(&mut *guard)
+        };
+        self.inner.cleanup_scope(&policy.scope, &seen).await
+    }
+
+    /// Number of keys tracked so far (for logging).
+    pub fn tracked(&self) -> usize {
+        self.seen.lock().map(|g| g.len()).unwrap_or(0)
+    }
+}
+
+#[async_trait::async_trait]
+impl<S: Sink + ?Sized> Sink for CleanupTracker<'_, S> {
+    async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        let n = self.inner.write_batch(records).await?;
+        self.record(records);
+        Ok(n)
+    }
+
+    async fn write_batch_partial(
+        &self,
+        records: &[Value],
+    ) -> Result<Vec<crate::traits::RowOutcome>, FaucetError> {
+        let out = self.inner.write_batch_partial(records).await?;
+        // Count every row handed to the sink, including the ones that failed and
+        // will be routed to the DLQ — see the type docs.
+        self.record(records);
+        Ok(out)
+    }
+
+    async fn write_batch_idempotent(
+        &self,
+        records: &[Value],
+        scope: &str,
+        token: &str,
+    ) -> Result<usize, FaucetError> {
+        let n = self
+            .inner
+            .write_batch_idempotent(records, scope, token)
+            .await?;
+        self.record(records);
+        Ok(n)
+    }
+
+    async fn flush(&self) -> Result<(), FaucetError> {
+        self.inner.flush().await
+    }
+
+    // ── Pure forwarding below ────────────────────────────────────────────────
+    fn supports_cleanup(&self) -> bool {
+        self.inner.supports_cleanup()
+    }
+    async fn cleanup_scope(
+        &self,
+        scope: &BTreeMap<String, Value>,
+        seen: &SeenKeys,
+    ) -> Result<u64, FaucetError> {
+        self.inner.cleanup_scope(scope, seen).await
+    }
+    fn supports_idempotent_writes(&self) -> bool {
+        self.inner.supports_idempotent_writes()
+    }
+    async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
+        self.inner.last_committed_token(scope).await
+    }
+    fn supported_write_modes(&self) -> &'static [crate::write_mode::WriteMode] {
+        self.inner.supported_write_modes()
+    }
+    fn dedups_by_key(&self) -> bool {
+        self.inner.dedups_by_key()
+    }
+    fn sink_guarantee(&self) -> crate::idempotency::SinkGuarantee {
+        self.inner.sink_guarantee()
+    }
+    async fn current_schema(&self) -> Result<Option<Value>, FaucetError> {
+        self.inner.current_schema().await
+    }
+    fn supports_schema_evolution(&self) -> bool {
+        self.inner.supports_schema_evolution()
+    }
+    async fn evolve_schema(
+        &self,
+        evolution: &crate::drift::SchemaEvolution,
+    ) -> Result<(), FaucetError> {
+        self.inner.evolve_schema(evolution).await
+    }
+    fn config_schema(&self) -> Value {
+        self.inner.config_schema()
+    }
+    fn connector_name(&self) -> &'static str {
+        self.inner.connector_name()
+    }
+    fn dataset_uri(&self) -> String {
+        self.inner.dataset_uri()
     }
 }
 

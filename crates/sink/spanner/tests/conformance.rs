@@ -44,7 +44,6 @@ async fn fresh_sink(database: &str) -> SpannerSink {
         write_mode: WriteMode::Upsert,
         key: vec!["id".to_string()],
         delete_marker: None,
-        cleanup: None,
     };
     SpannerSink::new(cfg).await.expect("sink")
 }
@@ -73,7 +72,6 @@ async fn fresh_sink_delete(database: &str) -> SpannerSink {
             field: faucet_conformance::doubles::DELETE_MARKER_FIELD.to_string(),
             values: vec![faucet_conformance::doubles::DELETE_MARKER_VALUE.to_string()],
         }),
-        cleanup: None,
     };
     SpannerSink::new(cfg).await.expect("sink")
 }

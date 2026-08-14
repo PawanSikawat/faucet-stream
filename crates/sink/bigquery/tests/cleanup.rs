@@ -169,7 +169,6 @@ fn cleanup_config() -> BigQuerySinkConfig {
     config_with(|c| {
         c.write.write_mode = faucet_core::WriteMode::Upsert;
         c.write.key = vec!["id".into()];
-        c.write.cleanup = Some(faucet_core::CleanupMode::DeleteMissing);
     })
 }
 

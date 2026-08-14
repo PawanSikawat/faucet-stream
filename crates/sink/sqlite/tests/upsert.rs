@@ -69,7 +69,6 @@ fn upsert_config(url: &str) -> SqliteSinkConfig {
             write_mode: WriteMode::Upsert,
             key: vec!["id".to_string()],
             delete_marker: None,
-            cleanup: None,
         },
     }
 }
@@ -126,7 +125,6 @@ async fn delete_marker_removes_row() {
                 field: "__op".to_string(),
                 values: vec!["d".to_string()],
             }),
-            cleanup: None,
         },
     };
     let sink = SqliteSink::new(config).await.unwrap();

@@ -759,13 +759,6 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
         // ── Scoped-cleanup gates (load-time, #478) ──────────────────────
         // Cleanup DELETES data, so every precondition is checked before a run
         // starts rather than discovered mid-flight.
-        let sink_cleanup = merged_sink
-            .config
-            .get("cleanup")
-            .and_then(|v| v.as_str())
-            .map(str::to_owned);
-        // A claim on the sink side is meaningless — only a source knows whether
-        // a fetch is complete.
         if merged_sink.complete_for.is_some() {
             return Err(CliError::Config(format!(
                 "row '{}': `complete_for` belongs on the source, not the sink — only the \
@@ -773,44 +766,35 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
                 ids[i]
             )));
         }
-        let cleanup_scope = match (&sink_cleanup, &merged_source.complete_for) {
-            (None, _) => None,
-            (Some(mode), _) if mode != "delete_missing" => {
-                return Err(CliError::Config(format!(
-                    "row '{}': unknown cleanup mode '{}' (expected delete_missing)",
-                    ids[i], mode
-                )));
+        let cleanup_scope = match merged_source.complete_for.as_ref() {
+            None => None,
+            Some(claim) if claim.on_missing == crate::config::OnMissing::Ignore => {
+                // A claim with no action is inert by design — it documents the
+                // scope without authorising a delete.
+                None
             }
-            (Some(_), None) => {
-                // The opt-in without a claim would delete every row in the
-                // destination that this run did not write — i.e. a truncate.
-                return Err(CliError::Config(format!(
-                    "row '{}': sink `cleanup: delete_missing` requires the source to declare \
-                     `complete_for` — without a scope there is nothing bounding the delete",
-                    ids[i]
-                )));
-            }
-            (Some(_), Some(scope)) => {
+            Some(claim) => {
+                if claim.scope.is_empty() {
+                    return Err(CliError::Config(format!(
+                        "row '{}': `complete_for.scope` is empty — an empty scope matches \
+                         every row in the destination",
+                        ids[i]
+                    )));
+                }
                 if !crate::registry::sink_supports_cleanup(&merged_sink.kind) {
                     return Err(CliError::Config(format!(
-                        "row '{}': cleanup is not supported by sink '{}' (cleanup-capable \
-                         sinks: {})",
+                        "row '{}': `complete_for.on_missing: delete` is not supported by sink \
+                         '{}' (cleanup-capable sinks: {})",
                         ids[i],
                         merged_sink.kind,
                         crate::registry::CLEANUP_SINK_KINDS.join(", ")
                     )));
                 }
-                if scope.is_empty() {
-                    return Err(CliError::Config(format!(
-                        "row '{}': `complete_for` is empty — an empty scope matches every \
-                         row in the destination",
-                        ids[i]
-                    )));
-                }
                 if !matches!(mode, faucet_core::WriteMode::Upsert) {
                     return Err(CliError::Config(format!(
-                        "row '{}': cleanup requires `write_mode: upsert` (got '{}') — on an \
-                         append sink there is no key to tell a written row from a stale one",
+                        "row '{}': `complete_for.on_missing: delete` requires \
+                         `write_mode: upsert` (got '{}') — on an append sink there is no key \
+                         to tell a written row from a stale one",
                         ids[i], requested_mode
                     )));
                 }
@@ -819,13 +803,49 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
                 // atomic-watermark path.
                 if matches!(delivery, faucet_core::DeliveryMode::ExactlyOnce) {
                     return Err(CliError::Config(format!(
-                        "row '{}': cleanup is incompatible with `delivery: exactly_once` — \
-                         the scoped delete happens outside the commit-token transaction, so \
-                         it cannot be replayed idempotently",
+                        "row '{}': `complete_for.on_missing: delete` is incompatible with \
+                         `delivery: exactly_once` — the scoped delete happens outside the \
+                         commit-token transaction, so it cannot be replayed idempotently",
                         ids[i]
                     )));
                 }
-                Some(scope.clone())
+                // A quarantined record never reaches the sink, so the cleanup
+                // tracker never sees its key — and the delete would then remove
+                // its destination row, losing data the source still has. Reject
+                // rather than silently delete.
+                let mut quarantines: Vec<&str> = Vec::new();
+                #[cfg(feature = "quality")]
+                if let Some(q) = cfg.pipeline.quality.as_ref()
+                    && faucet_core::CompiledQuality::compile(q)
+                        .map(|c| c.requires_dlq())
+                        .unwrap_or(false)
+                {
+                    quarantines.push("quality");
+                }
+                #[cfg(feature = "contract")]
+                if let Some(c) = cfg.pipeline.contract.as_ref()
+                    && faucet_core::CompiledContract::compile(c)
+                        .map(|c| c.requires_dlq())
+                        .unwrap_or(false)
+                {
+                    quarantines.push("contract");
+                }
+                if let Some(sd) = cfg.pipeline.schema.as_ref()
+                    && faucet_core::SchemaDriftPolicy::compile(sd).requires_dlq()
+                {
+                    quarantines.push("schema");
+                }
+                if !quarantines.is_empty() {
+                    return Err(CliError::Config(format!(
+                        "row '{}': `complete_for.on_missing: delete` is incompatible with a \
+                         quarantining `{}` policy — a quarantined record never reaches the \
+                         sink, so cleanup cannot tell it from a record deleted at the source \
+                         and would delete its destination row",
+                        ids[i],
+                        quarantines.join("`/`")
+                    )));
+                }
+                Some(claim.scope.clone())
             }
         };
 

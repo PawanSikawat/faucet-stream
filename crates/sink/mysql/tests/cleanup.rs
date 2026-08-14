@@ -88,7 +88,6 @@ fn cleanup_sink_config(url: &str) -> MysqlSinkConfig {
         write_mode: WriteMode::Upsert,
         key: vec!["contact_id".to_string(), "id".to_string()],
         delete_marker: None,
-        cleanup: Some(faucet_core::CleanupMode::DeleteMissing),
     };
     config
 }

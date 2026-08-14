@@ -75,7 +75,6 @@ fn upsert_sink_config(url: &str) -> MysqlSinkConfig {
         write_mode: WriteMode::Upsert,
         key: vec!["id".to_string()],
         delete_marker: None,
-        cleanup: None,
     };
     config
 }

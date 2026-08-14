@@ -64,7 +64,6 @@ fn upsert_sink_config(url: &str) -> PostgresSinkConfig {
         write_mode: WriteMode::Upsert,
         key: vec!["id".into()],
         delete_marker: None,
-        cleanup: None,
     };
     config
 }

@@ -37,7 +37,6 @@ fn upsert_spec() -> WriteSpec {
         write_mode: WriteMode::Upsert,
         key: vec!["id".to_string()],
         delete_marker: None,
-        cleanup: None,
     }
 }
 
@@ -122,7 +121,6 @@ async fn delete_marker_strips_marker_and_deletes() {
                 field: "__op".into(),
                 values: vec!["d".into()],
             }),
-            cleanup: None,
         },
     )
     .await;
@@ -242,7 +240,6 @@ async fn upsert_key_must_match_pk() {
             write_mode: WriteMode::Upsert,
             key: vec!["v".to_string()],
             delete_marker: None,
-            cleanup: None,
         },
     )
     .await;
@@ -288,7 +285,6 @@ fn cleanup_spec() -> WriteSpec {
         write_mode: WriteMode::Upsert,
         key: vec!["id".to_string()],
         delete_marker: None,
-        cleanup: Some(faucet_core::CleanupMode::DeleteMissing),
     }
 }
 
@@ -393,7 +389,6 @@ async fn cleanup_requires_the_key_to_be_the_primary_key() {
             write_mode: WriteMode::Upsert,
             key: vec!["v".to_string()],
             delete_marker: None,
-            cleanup: Some(faucet_core::CleanupMode::DeleteMissing),
         },
     )
     .await;
