@@ -1,0 +1,516 @@
+You are acting as a Principal Engineer and Open Source Maintainer for this repository.
+
+Your task is NOT to add new runtime features or optimize the code.
+
+Instead, your goal is to significantly improve the project's engineering maturity, maintainability, contributor experience, and long-term architectural sustainability.
+
+Assume this project aims to become one of the best open-source data movement / ETL / connector frameworks.
+
+Think like the maintainers of:
+
+- Kubernetes
+- Rust
+- Apache Arrow
+- dbt
+- Apache Airflow
+- Dagster
+- DuckDB
+- Terraform
+- Tokio
+
+Your mission is to leave the repository in a significantly better state than before, without changing its external behavior.
+
+----------------------------------------
+OBJECTIVES
+----------------------------------------
+
+Improve the repository by adding missing engineering artifacts, architecture documentation, design documentation, contributor guidance, and long-term governance.
+
+Do NOT make cosmetic documentation.
+
+Everything should help future contributors understand WHY the system is designed the way it is.
+
+Focus on maintainability over features.
+
+----------------------------------------
+TASK 1 — Create Architecture Documentation
+----------------------------------------
+
+Create a new directory:
+
+docs/architecture/
+
+Populate it with comprehensive documentation.
+
+Suggested structure:
+
+docs/
+└── architecture/
+    ├── README.md
+    ├── overview.md
+    ├── execution.md
+    ├── pipeline.md
+    ├── stream-pages.md
+    ├── connector-sdk.md
+    ├── state-management.md
+    ├── retries.md
+    ├── recovery.md
+    ├── observability.md
+    ├── resilience.md
+    ├── batching.md
+    ├── schema.md
+    ├── quality.md
+    ├── contracts.md
+    ├── masking.md
+    ├── performance.md
+    ├── extensibility.md
+    └── roadmap.md
+
+Each document should explain:
+
+• Why this subsystem exists
+• What problem it solves
+• Major components
+• Execution flow
+• Important invariants
+• Trade-offs
+• Failure scenarios
+• Future evolution
+• Related modules
+
+Do not simply describe code.
+
+Explain architecture.
+
+----------------------------------------
+TASK 2 — Architecture Decision Records
+----------------------------------------
+
+Create
+
+docs/adr/
+
+Write Architecture Decision Records for every major architectural decision.
+
+Examples:
+
+0001-stream-pages.md
+
+0002-checkpoint-ordering.md
+
+0003-builder-pattern.md
+
+0004-json-record-model.md
+
+0005-runtime-recovery.md
+
+0006-state-management.md
+
+0007-retries.md
+
+0008-observability.md
+
+0009-schema-validation.md
+
+0010-pipeline-runtime.md
+
+Each ADR should contain
+
+- Status
+- Context
+- Problem
+- Decision
+- Alternatives Considered
+- Trade-offs
+- Consequences
+- Future Work
+
+Do not invent decisions.
+
+Infer them from the implementation.
+
+----------------------------------------
+TASK 3 — Architecture Diagrams
+----------------------------------------
+
+Create Mermaid diagrams throughout the documentation.
+
+Examples:
+
+Pipeline execution
+
+Connector lifecycle
+
+Retry flow
+
+Recovery flow
+
+Checkpoint lifecycle
+
+State management
+
+Execution runtime
+
+Quality pipeline
+
+Masking pipeline
+
+Contract validation
+
+Observability flow
+
+Every major subsystem should have a visual diagram.
+
+----------------------------------------
+TASK 4 — Contributor Guide
+----------------------------------------
+
+Create
+
+docs/contributing/
+
+Include
+
+architecture.md
+
+connector-authoring.md
+
+testing.md
+
+performance.md
+
+debugging.md
+
+common-mistakes.md
+
+Explain
+
+How to add connectors
+
+How checkpoints work
+
+How pagination works
+
+How retries work
+
+How state is managed
+
+How testing should be written
+
+What abstractions should be reused
+
+What NOT to do
+
+----------------------------------------
+TASK 5 — Engineering Principles
+----------------------------------------
+
+Create
+
+docs/engineering-principles.md
+
+Describe principles such as
+
+Composition over inheritance
+
+Small focused traits
+
+Progressive APIs
+
+Observable by default
+
+Explicit state
+
+Deterministic retries
+
+Backward compatibility
+
+Safe defaults
+
+Minimal allocations
+
+Developer ergonomics
+
+Explain WHY every principle exists.
+
+----------------------------------------
+TASK 6 — Repository Roadmap
+----------------------------------------
+
+Create
+
+docs/roadmap.md
+
+Divide work into
+
+Near Term
+
+Medium Term
+
+Long Term
+
+Examples
+
+Documentation
+
+Connector ecosystem
+
+Plugin system
+
+Capability traits
+
+Arrow integration
+
+Zero-copy execution
+
+Performance
+
+Certification
+
+Benchmark suite
+
+SDK improvements
+
+Avoid promises.
+
+Focus on architectural direction.
+
+----------------------------------------
+TASK 7 — Repository Standards
+----------------------------------------
+
+Create
+
+docs/standards/
+
+Include
+
+api-design.md
+
+error-handling.md
+
+logging.md
+
+testing.md
+
+performance.md
+
+state.md
+
+Each document should define repository-wide conventions.
+
+----------------------------------------
+TASK 8 — Public API Stability
+----------------------------------------
+
+Create
+
+docs/stability.md
+
+Categorize APIs into
+
+Stable
+
+Experimental
+
+Internal
+
+Deprecated
+
+Explain compatibility expectations.
+
+----------------------------------------
+TASK 9 — RFC Process
+----------------------------------------
+
+Create
+
+rfcs/
+
+Include templates for future RFCs.
+
+Also include several example RFCs.
+
+Examples
+
+Capability Traits
+
+Arrow Support
+
+Plugin System
+
+Streaming Improvements
+
+Async Connector Runtime
+
+Each RFC should explain motivation and trade-offs.
+
+----------------------------------------
+TASK 10 — Architecture Review
+----------------------------------------
+
+Create
+
+docs/architecture-review.md
+
+Write an objective review of the repository.
+
+Include
+
+Strengths
+
+Weaknesses
+
+Future Risks
+
+Scalability
+
+Technical Debt
+
+Architectural Debt
+
+Maintenance Risks
+
+Contributor Experience
+
+Testing
+
+Documentation
+
+Performance
+
+Extensibility
+
+Do not fabricate problems.
+
+Support every observation with evidence from the implementation.
+
+----------------------------------------
+TASK 11 — Design Invariants
+----------------------------------------
+
+Document critical invariants.
+
+Examples
+
+Bookmarks are never persisted before durable writes.
+
+Retries never advance state.
+
+State reflects committed work.
+
+StreamPage ordering.
+
+Execution guarantees.
+
+Cancellation semantics.
+
+Recovery guarantees.
+
+These invariants should become part of the official documentation.
+
+----------------------------------------
+TASK 12 — Review Existing Documentation
+----------------------------------------
+
+Review every existing markdown document.
+
+Improve them where necessary.
+
+Avoid duplication.
+
+Cross-reference related documents.
+
+Maintain consistent terminology.
+
+----------------------------------------
+TASK 13 — Cross Linking
+----------------------------------------
+
+Every documentation page should reference related pages.
+
+For example
+
+Execution
+
+↓
+
+State
+
+↓
+
+Recovery
+
+↓
+
+Retries
+
+↓
+
+Observability
+
+The documentation should feel like a coherent book rather than isolated files.
+
+----------------------------------------
+TASK 14 — Documentation Quality
+----------------------------------------
+
+Documentation should read like official engineering documentation.
+
+Not blog posts.
+
+Not tutorials.
+
+Not marketing.
+
+Every statement should help future maintainers.
+
+----------------------------------------
+TASK 15 — Final Review
+----------------------------------------
+
+Before finishing
+
+Perform a complete review.
+
+Ensure
+
+No duplicated concepts
+
+Consistent terminology
+
+Consistent diagrams
+
+Consistent style
+
+Correct cross references
+
+No dead links
+
+Good navigation
+
+Logical progression
+
+The documentation should feel like something maintained by a large engineering organization.
+
+----------------------------------------
+IMPORTANT
+----------------------------------------
+
+Do NOT rewrite the runtime.
+
+Do NOT introduce breaking changes.
+
+Do NOT redesign working abstractions.
+
+Do NOT replace serde_json.
+
+Do NOT split crates unnecessarily.
+
+Do NOT optimize code without evidence.
+
+The objective is engineering maturity, documentation quality, contributor experience, architectural clarity, and long-term maintainability.
+
+If you identify implementation improvements while working, document them separately rather than changing behavior automatically.
+
+The final result should make this repository feel like a flagship open-source project with world-class documentation and architecture guidance.
