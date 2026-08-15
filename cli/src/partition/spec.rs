@@ -35,8 +35,9 @@ pub enum PartitionSpec {
     Integer {
         /// Inclusive lower bound.
         from: i64,
-        /// Upper bound, interpreted per `bounds`.
-        to: i64,
+        /// Upper bound, interpreted per `bounds`. Either a literal, or a probe
+        /// that discovers it (`{from_source: …, value_path: …}`).
+        to: IntBound,
         /// Values per chunk. Must be > 0.
         chunk_size: u64,
         /// Whether `to` (and each chunk's `end`) is inclusive or exclusive.
@@ -47,10 +48,14 @@ pub enum PartitionSpec {
         /// boundary. Neither raises.
         bounds: Bounds,
         /// Render the final chunk without an upper bound, so rows appended above
-        /// `to` between planning and execution are still read. Costs nothing when
-        /// the range is genuinely closed.
-        #[serde(default)]
-        to_unbounded: bool,
+        /// `to` between planning and execution are still read.
+        ///
+        /// Unset defaults to **`true` when `to` is discovered** and `false` when
+        /// it is a literal: a probed bound is stale the moment it is read, so the
+        /// open tail is what keeps late rows from being missed. An explicit value
+        /// always wins, for a range the user knows is closed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_unbounded: Option<bool>,
     },
 
     /// Split a time range — the same windowing `faucet backfill` uses, including
@@ -72,11 +77,47 @@ pub enum PartitionSpec {
     /// Split a countable result set into offset/limit slices — the parallel form
     /// of what a source's serial offset pagination already does.
     Offset {
-        /// Total rows in the result set.
-        total: u64,
+        /// Total rows in the result set. Either a literal, or a probe that
+        /// discovers it.
+        total: CountBound,
         /// Rows per chunk. Must be > 0.
         chunk_size: u64,
     },
+}
+
+/// A discoverable upper bound for an integer range.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(untagged)]
+pub enum IntBound {
+    /// Known up front.
+    Literal(i64),
+    /// Discovered by running a probe source once — `SELECT MAX(id)`, or a
+    /// `?sort=-id&limit=1` request.
+    Discovered(BoundProbe),
+}
+
+/// A discoverable row count for an offset range.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(untagged)]
+pub enum CountBound {
+    Literal(u64),
+    Discovered(BoundProbe),
+}
+
+/// Discover a bound by running a source once and reading one field out of its
+/// first record.
+///
+/// Any source works — the probe is an ordinary connector config, so a SQL
+/// `SELECT MAX(id)`, a REST "last record" request, or anything else the registry
+/// can build. That keeps discovery source-agnostic for the same reason the
+/// substitution is: no connector needs to know this feature exists.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BoundProbe {
+    /// A full source config, `{type, config}`, run once before planning.
+    pub from_source: crate::config::ConnectorSpec,
+    /// JSONPath into the probe's **first** record, e.g. `$.max_id`.
+    pub value_path: String,
 }
 
 impl PartitionSpec {
@@ -169,10 +210,10 @@ mod tests {
             s,
             PartitionSpec::Integer {
                 from: 0,
-                to: 100,
+                to: IntBound::Literal(100),
                 chunk_size: 10,
                 bounds: Bounds::Inclusive,
-                to_unbounded: false
+                to_unbounded: None
             }
         ));
         s.validate().unwrap();
@@ -200,7 +241,7 @@ mod tests {
         assert!(matches!(
             s,
             PartitionSpec::Offset {
-                total: 250,
+                total: CountBound::Literal(250),
                 chunk_size: 100
             }
         ));

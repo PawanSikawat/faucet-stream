@@ -16,7 +16,7 @@
 //! produced, and it produces them from typed fields — an `i64` start/end, a
 //! `u64` offset/limit, a chrono-formatted timestamp.
 
-use super::spec::PartitionSpec;
+use super::spec::{CountBound, IntBound, PartitionSpec};
 use crate::chunking::{self, Bounds};
 use crate::error::{CliError, CliResult};
 use serde_json::Value;
@@ -50,12 +50,21 @@ pub fn plan(spec: &PartitionSpec) -> CliResult<Vec<PartitionChunk>> {
             bounds,
             to_unbounded,
         } => {
-            let chunks = chunking::plan_int_chunks(*from, *to, *chunk_size, *bounds)?;
+            let to = match to {
+                IntBound::Literal(v) => *v,
+                IntBound::Discovered(_) => {
+                    return Err(CliError::Internal(
+                        "partition: an undiscovered bound reached the planner —                          `resolve_bounds` must run before `plan`"
+                            .into(),
+                    ));
+                }
+            };
+            let chunks = chunking::plan_int_chunks(*from, to, *chunk_size, *bounds)?;
             Ok(chunks
                 .into_iter()
                 .enumerate()
                 .map(|(i, c)| {
-                    let open = *to_unbounded && c.is_last;
+                    let open = to_unbounded.unwrap_or(false) && c.is_last;
                     let mut tokens = BTreeMap::new();
                     tokens.insert("start".into(), c.start.to_string());
                     tokens.insert("end".into(), c.end.to_string());
@@ -108,7 +117,16 @@ pub fn plan(spec: &PartitionSpec) -> CliResult<Vec<PartitionChunk>> {
         }
 
         PartitionSpec::Offset { total, chunk_size } => {
-            let chunks = chunking::plan_offset_chunks(*total, *chunk_size)?;
+            let total = match total {
+                CountBound::Literal(v) => *v,
+                CountBound::Discovered(_) => {
+                    return Err(CliError::Internal(
+                        "partition: an undiscovered total reached the planner —                          `resolve_bounds` must run before `plan`"
+                            .into(),
+                    ));
+                }
+            };
+            let chunks = chunking::plan_offset_chunks(total, *chunk_size)?;
             Ok(chunks
                 .into_iter()
                 .enumerate()
@@ -200,10 +218,10 @@ mod tests {
     fn int_spec(to_unbounded: bool) -> PartitionSpec {
         PartitionSpec::Integer {
             from: 0,
-            to: 24,
+            to: IntBound::Literal(24),
             chunk_size: 10,
             bounds: Bounds::Inclusive,
-            to_unbounded,
+            to_unbounded: to_unbounded.then_some(true),
         }
     }
 
@@ -233,7 +251,7 @@ mod tests {
     #[test]
     fn offset_chunks_carry_offset_and_limit() {
         let chunks = plan(&PartitionSpec::Offset {
-            total: 25,
+            total: CountBound::Literal(25),
             chunk_size: 10,
         })
         .unwrap();
@@ -311,7 +329,7 @@ mod tests {
         // Guards the kind/token mismatch: a config written for an id range but
         // partitioned by offset fails loudly instead of sending literal text.
         let chunks = plan(&PartitionSpec::Offset {
-            total: 10,
+            total: CountBound::Literal(10),
             chunk_size: 5,
         })
         .unwrap();

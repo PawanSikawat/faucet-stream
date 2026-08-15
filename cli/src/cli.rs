@@ -1311,6 +1311,8 @@ pub enum SchemaTarget {
     Replication,
     /// JSON Schema for the `backfill:` (window replay defaults) block.
     Backfill,
+    /// JSON Schema for the `partition:` (range partitioning) block.
+    Partition,
     /// JSON Schema for the top-level `execution:` block.
     Execution,
     /// JSON Schema for the top-level `resilience:` block.

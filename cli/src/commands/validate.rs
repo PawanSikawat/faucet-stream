@@ -110,7 +110,30 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         return Ok(());
     }
 
+    // `validate` is offline by design, so a discoverable bound is not probed
+    // here. Report it rather than silently validating a plan we could not build.
+    let unprobed: Vec<String> = std::iter::once(("<pipeline>", cfg.partition.as_ref()))
+        .chain(
+            cfg.matrix
+                .iter()
+                .map(|r| (r.id.as_deref().unwrap_or("<row>"), r.partition.as_ref())),
+        )
+        .filter_map(|(id, p)| {
+            p.filter(|s| crate::partition::needs_probe(s))
+                .map(|_| id.to_string())
+        })
+        .collect();
+
     let nodes = expand(&cfg)?;
+
+    if !unprobed.is_empty() {
+        println!(
+            "partition: {} row(s) discover their bound at run time ({}) — the chunk count \
+             cannot be planned offline, so it is not validated here",
+            unprobed.len(),
+            unprobed.join(", ")
+        );
+    }
 
     // Validate the replication block (snapshot source / CDC source / state) so
     // `faucet validate` catches misconfiguration without running.

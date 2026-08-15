@@ -274,6 +274,7 @@ faucet schema secrets
 faucet schema triggers
 faucet schema catalog
 faucet schema params
+faucet schema partition
 ```
 
 `faucet schema config` prints a composed JSON Schema for the **entire**

@@ -786,6 +786,39 @@ payload carries `run_id` / `invocation_id` / `started_at` / `finished_at` /
 callback — under `faucet serve`, `run_id` is the id returned by `POST /v1/runs`.
 See the [payload table](../cookbook/notifications.md#payload).
 
+## `partition`
+
+Split a row into N independent invocations over a chunked range (#479), each
+scoped by `${partition.*}` tokens substituted into the connector configs. Set at
+the top level (applies to every root row) or on an individual `matrix` row, which
+overrides it.
+
+```yaml
+partition:
+  kind: integer            # integer | timestamp | offset
+  from: 0
+  to: 1000000              # or a probe: { from_source: {…}, value_path: "$.max_id" }
+  chunk_size: 10000
+  bounds: inclusive        # integer only — REQUIRED, no default
+  to_unbounded: false      # defaults ON when `to` is discovered
+```
+
+| Kind | Fields | Tokens |
+|---|---|---|
+| `integer` | `from`, `to`, `chunk_size`, `bounds`, `to_unbounded` | `start`, `end`, `index`, `id` |
+| `timestamp` | `from`, `to`, `chunk_size`, `timezone` | `start`, `end`, `start_date`, `end_date`, `start_unix`, `end_unix`, `index`, `id` |
+| `offset` | `total`, `chunk_size` | `offset`, `limit`, `index`, `id` |
+
+`bounds` has **no default** — inclusive and half-open differ by one at every
+boundary, and picking wrong silently duplicates or drops a record per chunk.
+`total` (a count) exists only on `offset` and `to` (a key) only on `integer`, so
+the two cannot be confused.
+
+Chunks are ordinary sibling rows: they share `execution.max_concurrent`, get
+per-chunk state keys, and obey `execution.on_error`. A partitioned row cannot be
+referenced by another row's `parent:` or `depends_on:`. Schema: `faucet schema
+partition`. See [Parallel range partitioning](../cookbook/partitioning.md).
+
 ## `replication`
 
 Present only when you run [`faucet replicate`](cli.md#replicate). It turns the

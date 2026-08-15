@@ -7,7 +7,28 @@
 //! the mechanism and [`spec`] for why the kinds are a tagged enum.
 
 pub mod plan;
+pub mod probe;
 pub mod spec;
 
 pub use plan::{PartitionChunk, plan, references_partition, substitute};
-pub use spec::PartitionSpec;
+pub use probe::{needs_probe, resolve_bounds};
+
+/// Resolve every discoverable partition bound in `cfg` in place (#479).
+///
+/// Runs before `expand`, because planning needs concrete bounds and `expand` is
+/// synchronous with no registry access. A config with no probes does no I/O.
+pub async fn resolve_config_bounds(
+    cfg: &mut crate::config::PipelineConfig,
+    auth: &crate::auth_catalog::AuthCatalog,
+) -> crate::error::CliResult<()> {
+    if let Some(spec) = cfg.partition.clone() {
+        cfg.partition = Some(resolve_bounds(&spec, auth).await?);
+    }
+    for row in &mut cfg.matrix {
+        if let Some(spec) = row.partition.clone() {
+            row.partition = Some(resolve_bounds(&spec, auth).await?);
+        }
+    }
+    Ok(())
+}
+pub use spec::{BoundProbe, CountBound, IntBound, PartitionSpec};
