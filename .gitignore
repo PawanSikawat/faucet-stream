@@ -41,6 +41,7 @@ docs/superpowers/
 !/scripts/check-doc-counts.sh
 !/scripts/sync-doc-counts.py
 !/scripts/inject-page-meta.py
+!/scripts/patch-coverage.py
 
 # Benchmark generated artifacts (harness + configs are tracked; outputs are not)
 /.bench-venv/
