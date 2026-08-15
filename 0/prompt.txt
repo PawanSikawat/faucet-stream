@@ -1,0 +1,1 @@
+Capture every tenant which broke down, other than the 401 issue, and you need to re-try them at the end of the script.
