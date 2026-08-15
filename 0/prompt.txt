@@ -1,0 +1,1 @@
+For the rest of the connectors, can you implement the new confirmation test that has been enabled? Should we do it in the same VR? Also, I want the faucet source XML to not get a major bump. Figure out how it can be done.
