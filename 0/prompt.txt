@@ -1,0 +1,1 @@
+Is there any other popular source of sync that I should take care of, like Google Spanner and Databricks we are not able to catch? I wanted to think extensively for the popular one.
