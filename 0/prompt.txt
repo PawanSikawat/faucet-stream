@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bczjdge7z</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/25d0f5a6-8938-4915-ab73-d349bfe5721f/tasks/bczjdge7z.output</output-file>
+<status>completed</status>
+<summary>Monitor "PR 486 final CI settle" ended without producing output (exit 0)</summary>
+</task-notification>
