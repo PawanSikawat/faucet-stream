@@ -1,0 +1,3 @@
+The background, I think, should be light teal, same as what we used in the logo, and then the text could be either white or black. You decide what is better. Secondly, there is this blue line coming on expanding a particular section. That blue line is not looking good compared to the teal area. 
+
+Again, why do I have to tell you all this stuff? You need to figure this out. You are an expert. I am asking you to wear a UX expert hat. You should be a front-end and UX expert.
