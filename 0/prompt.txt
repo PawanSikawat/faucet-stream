@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>baj37gzfj</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/822fc7c7-6ae9-40ea-8a15-77d7db4ec709/tasks/baj37gzfj.output</output-file>
+<status>completed</status>
+<summary>Background command "Ship sidebar rhythm fix and watch deploy" completed (exit code 0)</summary>
+</task-notification>
