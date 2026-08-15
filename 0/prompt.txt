@@ -1,0 +1,181 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   - **Initial:** "lets solve 444 and 447" + "in same pr" — implement GitHub issues #444 (`feat(serve): pipeline template registry + parameterized trigger API`) and #447 (`bug(release): wave-publish silently skips crates`) in a single PR.
+   - **CI fix request:** "ci is failing can u check? also update the branch as well" (with link to the failing `Docs` job), later "test and coverage is also failiung".
+   - **Design evolution (the substantive part):** The user progressively reshaped the versioning model:
+     1. "should we make the default as stable? also from the versions page user should be able to specify a version as prod, staging and so on. latest and previous are auto calculated. how does that sound? should we have a proper ui for it?"
+     2. "for each numbered version, user should be able to specify the tag that its prod stable preprod and so on"
+     3. Core rationale: a nightly/feature release shouldn't move existing callers; **`latest` should mean the latest *stable***; the **default should be stable** so unpinned users don't fail; bumping stable is a "mindful increment"; **`previous` = the last stable version specified**, null until one exists.
+     4. "Or maybe what we can do is we can have a launched template and an in-progress template… The template could be of multiple types: Deprecated template / Launch template / In-work-in-progress template"
+     5. **Correction:** "No, I didn't mean this to be the version status. Rather, this will be the status of the template itself, so the template could be deprecated, launched, or draft."
+   - **Decisions the user made via AskUserQuestion:** (a) `stable` + `newest`, **drop `latest`**; (b) **Add the UI to this PR**; (c) first version is **draft until launched**, with a `--launch` shortcut; (d) **yes** to an explicit `rollback` verb.
+
+2. **Key Technical Concepts:**
+   - Rust workspace (faucet-stream), 64 crates, `faucet-cli` binary; feature-gated modules
+   - New `templates` Cargo feature (`= ["serve"]`), CLI-only, in `full` not `default`
+   - Typed run parameters (`params:` block, `${param.NAME}`), pre-parse per-scalar binding
+   - npm dist-tag / release-channel semantics: numeric builds + movable named channels
+   - Append-only launch log as source of truth for derived pointers + audit trail
+   - `RunHistory` trait with defaulted-inert methods; memory + SQL (Postgres/SQLite via `impl_sql_history!` macro) + `FallbackHistory` forwarding
+   - axum handlers, RBAC permissions/roles, audit log, OpenAPI two-way sync test
+   - MCP (JSON-RPC 2.0) tools with mutation gate
+   - clap derive args; `RunArgs` derives `Default`
+   - rustdoc `-D warnings` (private-intra-doc-links, broken-intra-doc-links)
+   - Local constraints: `--all-features` cannot link on arm64 macOS (`ld: B/BL out of range`); disk exhaustion (95GB `target/`)
+
+3. **Files and Code Sections:**
+
+   **`.github/workflows/release.yml`** (#447) — Rewrote the `Release` step. Added bash helpers `index_path()`, `index_has()`, `wait_for_index()`, `publish_one()`; `INDEX_POLL=10`, `INDEX_TIMEOUT=600`, `PUBLISH_ATTEMPTS=5`, `PUBLISH_RETRY_WAIT=60`, `RATE_LIMIT_WAIT=630`. Pushes bump commit + tags before publishing; fails loudly listing unpublished crates. Catch-up push step now `if: ${{ !inputs.dry_run && always() }}`.
+
+   **`cli/src/params/spec.rs`** (new) — `ParamType {String,Int,Float,Bool}` with `as_str()`/`placeholder()`; `ParamSpec {kind (serde rename "type"), required, default, secret, description}`; `ParamsSpec = BTreeMap<String, ParamSpec>`; `validate()` (name charset `^[A-Za-z_][A-Za-z0-9_]*
+
+, rejects required+default, null/mistyped defaults); `coerce()` accepting both JSON and string wire shapes.
+
+   **`cli/src/params/bind.rs`** (new) — `PARAMS_KEY="params"`, `PARAM_ID="param"`, `BindMode::{Strict,Placeholder}`, `SuppliedParams`, `BoundParams {values, secret_names}` with `redacted()`/`has_secrets()`, `declared()`, `resolve()`, `bind_document()`, `reject_directives()` (rejects `${` in supplied values), `substitute()`, `whole_token()` (typed replacement when the token is the entire scalar), `rewrite_text()`, `lookup()`, `parse_cli_param()`, `collect_cli_params()`, `collect_env_overrides()`.
+
+   **`cli/src/serve/history/templates.rs`** (new, then heavily reworked) — Current contents:
+   ```rust
+   pub const MAX_ID_LEN: usize = 64;
+   pub const DEFAULT_CHANNEL: &str = "stable";
+   pub const REJECTED_LATEST: &str = "latest";
+
+   pub enum VersionChannel { Stable /*default*/, Previous, Newest, Prod, PreProd, Staging, Canary, Test, Dev }
+   // ALL = [Stable, Previous, Newest, Dev, Test, Staging, PreProd, Canary, Prod]
+   // ASSIGNABLE = [Dev, Test, Staging, PreProd, Canary, Prod]
+   // is_derived() = Stable|Previous|Newest; parse() normalizes case/separators,
+   // rejects "latest" with a bespoke ambiguity message naming stable + newest
+
+   pub enum TemplateStatus { Draft, Launched, Deprecated }
+   impl TemplateStatus { pub fn derive(has_launch: bool, deprecated: bool) -> Self }
+
+   pub enum VersionSelector { Channel(VersionChannel), Pinned(u32) }
+   // Default = stable(); stable(), newest(), is_stable(), pinned(), channel()
+   // Deserialize accepts "stable" | "2" | 2
+
+   pub struct LaunchRecord { seq: u32, version: u32, launched_at, launched_by: Option<String> }
+   pub struct DeprecationRecord { deprecated_at, deprecated_by, reason }
+   pub struct TemplateState { status, versions, stable, previous, newest, tags, deprecation }
+   impl TemplateState { pub fn assemble(versions, launches, tags, deprecation) -> Self; pub fn derived(channel) -> Option<u32> }
+   pub fn stable_version(&[LaunchRecord]) -> Option<u32>   // launches[0].version
+   pub fn previous_version(&[LaunchRecord]) -> Option<u32> // first entry != current
+   pub struct TemplateId(String);  // ^[a-z0-9][a-z0-9_-]*$
+   pub struct TemplateRecord { id, version, name, description, body, format, params, created_at, created_by }
+   impl TemplateRecord { summary(), summary_with(state) }
+   pub struct TemplateSummary { ..., state: Option<TemplateState> }
+   pub struct TemplateDraft { id, name, description, body, format, params, created_by }
+   pub const VERSION_RETAIN: usize = 20;
+   pub fn latest_per_id(...) / versions_to_prune(...)
+   ```
+
+   **`cli/src/templates/store.rs`** — Orchestration:
+   ```rust
+   pub type TemplateStore = Arc<dyn RunHistory>;
+   pub struct RegisterRequest { id, body, format, description, tags: Vec<VersionChannel>, launch: bool, created_by }
+   pub struct MaterializedConfig { template_id, version, name, body, params_redacted, used_secret_params }
+   pub async fn register(...)          // placeholder-bind validate, expand or validate_topology_spec, append version, set tags, optional launch
+   pub async fn resolve_version(store, id, selector) -> CliResult<u32>   // returns concrete u32
+   fn unresolved_channel(id, channel, state) -> CliError                 // per-channel guidance
+   pub async fn template_state(store, id) -> CliResult<TemplateState>
+   pub async fn list_with_state(store) -> CliResult<Vec<TemplateSummary>>
+   pub async fn promote(store, id, tag, target) -> CliResult<u32>
+   pub struct LaunchOutcome { version, replaced, already_launched, first_launch }
+   pub async fn launch(store, id, target, launched_by) -> CliResult<LaunchOutcome>  // refuses if deprecated
+   pub async fn rollback(store, id, launched_by) -> CliResult<LaunchOutcome>
+   pub async fn set_deprecated(store, id, reason, by, deprecated) -> CliResult<TemplateStatus>
+   pub async fn materialize(store, id, version: u32, supplied, env_overrides) -> CliResult<MaterializedConfig>
+   pub async fn resolve_store_url(url) -> CliResult<TemplateStore>   // memory | sqlite: | postgres://
+   fn reject_derived(tag) -> CliResult<()>
+   ```
+
+   **`cli/src/serve/history/mod.rs`** — `RunHistory` gained: `template_register`, `template_get`, `template_list`, `template_versions`, `template_delete`, `template_set_tag`, `template_tags`, `template_delete_tag`, `template_launch(id, version, launched_by) -> Option<u32>`, `template_launches`, `template_set_deprecation`, `template_deprecation`, and a **provided** `template_state()` that calls the four primitives and `TemplateState::assemble`.
+
+   **`cli/src/serve/history/sql.rs`** — DDL added: `faucet_templates(id, version, name, created_at, body, PK(id,version))`, `faucet_template_tags(id, tag, version, updated_at, PK(id,tag))`, `faucet_template_launches(id, seq, version, launched_at, launched_by, PK(id,seq))`, `faucet_template_deprecations(id PK, deprecated_at, deprecated_by, reason)`. Added `pub fn parse_ts(raw: &str) -> DateTime<Utc>` next to `fmt_ts` and reused it in `list_audit`. Register + launch both use read-max-then-insert with bounded PK-conflict retry (`CLAIM_ATTEMPTS`).
+
+   **`cli/src/serve/history/memory.rs`** — Added `template_tags`, `template_launches`, `template_deprecations` Mutex maps; delete cascades tags + launch entries (single version and whole template).
+
+   **`cli/src/serve/handlers/templates.rs`** — `register_template` (201), `list_templates` (uses `list_with_state`), `get_template` (GetResponse flattens `TemplateState` + `is_stable` + `launches`), `delete_template` (selector resolves to concrete version; omitted = all), `promote_template` (`POST .../tags`), `launch_template` (`LaunchBody`, defaults to `newest`), `rollback_template`, `deprecate_template` (`DeprecateBody {reason, undo}`), `trigger_template` (resolves via `resolve_version`, warns + returns `deprecated` field when retired, refuses secret params on clustered). `finish_launch()` shared tail.
+
+   **`cli/src/commands/template.rs`** — subcommands `register` (with `--tag`, `--launch`), `list`, `show`, `promote`, `launch`, `rollback`, `deprecate`, `delete`, `run`. `report_launch()` helper. `list` shows `ID / STATUS / LIVE / NEWEST / PARAMS / DESCRIPTION`; `show` prints identity, then one row per version with its channels, deprecation, launch history, params, config.
+
+   **`cli/src/cli.rs`** — `Command::Template(TemplateArgs)`; `TemplateCommand::{Register,List,Show,Launch,Rollback,Deprecate,Promote,Delete,Run}`; `TemplateStoreArgs {store (env FAUCET_TEMPLATE_STORE), env_file, no_env_file, json}`; per-verb arg structs. **`default_value` fixed:** `"stable"` for show/run/promote, `"newest"` for launch. `RunArgs` derives `Default`, gained `--param`/`--param-env`. `SchemaTarget::Params`.
+
+   **`cli/src/config.rs`** — `PipelineConfig.params: ParamsSpec`; `RunInputs {params, env, mode}` with `placeholders()`/`with_params()`; `resolve_document(text, path, inputs)` (env/file/secret then param bind); `from_path_with`, `from_path_tolerating_secrets_with`, `from_path_async_with`.
+
+   **`cli/src/interpolate.rs`** — `EnvOverlay`, `interpolate_with_env`, `interpolate_value_with_env`, `value_to_string` now `pub(crate)`.
+
+   **`cli/src/topology.rs`** — `pub fn validate_topology_spec(cfg)` raising `CliError::MatrixAndNodesBothPresent` and `CliError::EdgeEndpointMissing`; called as a fail-fast prelude in `build_topology`, which had its duplicate endpoint check **deleted**.
+
+   **Also modified:** `error.rs` (`MissingParam`, `UnknownParam`, `UnknownParamRef`, `UnknownPipelineTemplate`), `expand.rs` (RESERVED_IDS + `param` message in `check_refs`), `commands/run.rs` (`run()`/`execute()` split), `commands/validate.rs`, `commands/schema.rs`, `commands/fmt.rs` (KEY_ORDER + "params"), `schema_compose.rs`, `serve/load.rs` (bind params), `serve/rbac.rs`, `serve/server.rs`, `serve/mcp_route.rs`, `commands/mcp.rs` (`--template-store`), `mcp/mod.rs` (`McpContext.templates`), `mcp/tools.rs`, `serve/test_support.rs` (new), `cli/tests/{serve_openapi,examples_roundtrip,plan_diff_e2e,lineage_run}.rs`, `cli/Cargo.toml`, `.github/workflows/ci.yml`, `dist-workspace.toml`, `schemas/faucet.schema.json`, `docs/openapi.yaml`, `docs/book/src/**`, `cli/README.md`, `.claude/rules/{architecture,maintenance}.md`.
+
+4. **Errors and fixes:**
+   - **`UnknownTemplate` collision** with the existing source/sink-template error → renamed mine to `UnknownPipelineTemplate`.
+   - **Missing `params` field** in `env_config.rs` and `executor.rs` test `PipelineConfig` initializers → added `params: Default::default()`.
+   - **`RunHistory` isn't `Debug`** → used `match` instead of `unwrap_err()` in a test.
+   - **`commands/fmt.rs` KEY_ORDER** test failed → added `"params"` after `"vars"`.
+   - **`schemas/faucet.schema.json` stale** → first attempt re-serialized the whole file (27k-line diff); learned `json.dumps(indent=2, ensure_ascii=False)` round-trips byte-identically and `$defs` must not be sorted; final splice is **49 added lines**.
+   - **`examples_roundtrip.rs`** failed on my new example's required params → switched it to `PipelineConfig::from_path_with(..., &RunInputs::placeholders())`.
+   - **CI `Docs` failure:** two rustdoc errors — `RunArgs` doc linked `pub(crate) crate::commands::run::execute` (removed the link), and `resolve_document`'s doc referenced `[interpolate_value]` after rename (full-path link to `interpolate_value_with_env` + `crate::params::bind_document`).
+   - **CI `Test`+`Coverage` failure:** `rejects_edge_{to,from}_unknown_node` — my `validate_topology_spec` invented `CliError::Config` where typed `CliError::EdgeEndpointMissing` existed. Fixed by raising the typed error and deleting the now-duplicate check in `build_topology`.
+   - **Real bug (channel trigger):** `trigger_template` used `VersionSelector::pinned()` which returns `None` for any channel → `{"version":"prod"}` silently ran `latest`. Caused by an earlier edit no-op'ing after rustfmt reflowed the call. Fixed to route through `resolve_version`; audited all call sites.
+   - **Real bug (clap defaults):** three `default_value = "latest"` became invalid once `latest` was rejected → changed to `"stable"` (show/run/promote) and `"newest"` (launch). Caught by live smoke test.
+   - **Mangled error message** whitespace from lost `\` line continuations in the ambiguous-`latest` message → rewrote it.
+   - **Duplicated tests** after a python dedup, plus a missing closing `}` of the tests module → fixed both.
+   - **MCP tests** registered without launching then ran unpinned → correctly refused by the new model; updated to `"launch": true`.
+   - **Environment:** `cargo test --workspace --all-features` cannot link locally (`ld: B/BL out of range` from wasmtime+DuckDB) and exhausted disk twice (`errno=28`). Reclaimed via `rm -rf target/debug/{examples,incremental,doc}` and `cargo clean -p libduckdb-sys -p duckdb -p wasmtime -p faucet-transform-sql -p faucet-transform-wasm -p rdkafka-sys` (19.4 GB).
+
+5. **Problem Solving:**
+   - Established the ordering guarantee: env/file/secret resolve *before* params bind, so caller input is never re-scanned for directives; supplied values containing `${` are rejected outright.
+   - Secret-param persistence: refused on clustered servers (422) because the materialized config is persisted for peer execution and the history DB is not a secret store.
+   - `resolve_version` returning concrete `u32` (and `materialize` taking `u32`) structurally eliminates the "None quietly means newest" bug class.
+   - Re-launching the already-live version is a no-op, keeping `previous` a real rollback target.
+   - Deleting a version cascades to channels **and** launch entries so no pointer outlives its target.
+   - `TemplateStatus` and all pointers are derived from the launch log + deprecation marker, so status can never disagree with stored rows.
+   - Verified the whole lifecycle live: `out-v1-b.jsonl` (unpinned after v2 registered → still v1), `out-v2-c.jsonl` (after launching v2), `out-v1-d.jsonl` (after rollback).
+
+6. **All user messages:**
+   - "lets solve 444 and 447"
+   - "[Request interrupted by user]" … "in same pr"
+   - "https://github.com/faucet-hq/faucet-stream/actions/runs/31177859674/job/92863949769?pr=452 \n\n ci is failing can u check? also update the branch as well"
+   - "test and coverage is also failiung"
+   - "should we make the default as stable? also from the versions page user should be able to specify a version as prod, staging and so on. latest and previous are auto calculated. how does that sound?\n\nshould we have a proper ui for it?"
+   - (AskUserQuestion rejected) "The user wants to clarify these questions."
+   - "for each numbered version, user should be able to specify the tag that its prod stable preprod and so on"
+   - "I have one thing. For example, let's say I'm working with software, and the software gets a nightly release or some feature release or anything like that. In that case, the latest version gets updated because there is a new release that has come up, but I don't want my existing features and all to use that. Maybe that might be a test version, maybe that might be a feature version which is still being tested or on pre-prod staging.\n\nIdeally, the latest should be the latest stable version. This is what I feel: the default version should be the stable version so that anybody who is using that doesn't end up failing. Whenever I have to increment something, stable becomes a mindful increment so that every other person who's using that template has a mindful release happen whenever they don't provide the version for it.\n\nThis is what I feel should be. Same with previous: I want the idea of previous to be the last stable release. What was the last stable that was specified? Maybe in the initial time there won't be any last stable, so previous would always defer to null or something like that, or it won't have any value. I only want the last stable version that was specified to be the previous. Does it make sense?"
+   - AskUserQuestion answers: "`stable` + `newest`, drop `latest` (recommended)" and "Add it to this PR"
+   - "Or maybe what we can do is we can have a launched template and an in-progress template. What a launched and work-in-progress template would mean is that when I am working on a new template which is still getting tested, developed, or something, once I launch it, I launch it again by specifying a stable version of it."
+   - "Or maybe what we can do is we can have a launched template and an in-progress template… The template could be of multiple types:  \n- Deprecated template  \n- Launch template  \n- In-work-in-progress template"
+   - AskUserQuestion answers: "Draft until launched, `--launch` shortcut (recommended)" and "Yes — explicit `rollback` verb (recommended)"
+   - "No, I didn't mean this to be the version status. Rather, this will be the status of the template itself, so the template could be deprecated, launched, or draft."
+
+7. **Pending Tasks:**
+   - **#11 (in progress):** Templates console view — `cli/src/serve/ui/views/templates.js`: template list, per-version rows with status + tags, assign-channel dropdown, launch/rollback/deprecate/trigger actions. **Must verify with rendered screenshots** (user's standing rule for UI work).
+   - **#12:** Update docs for the lifecycle model — rewrite `docs/book/src/cookbook/templates.md` channel/lifecycle sections, `reference/{cli,http-api,config}.md`, `cookbook/mcp.md` + `web-console.md`, `cli/README.md`, `cli/examples/rest_to_jsonl_templated.yaml`, `.claude/rules/{architecture,maintenance}.md`.
+   - `docs/openapi.yaml`: add `/v1/templates/{id}/{launch,rollback,deprecate}` paths, update `VersionChannel` enum (drop `latest`, add `newest`), `TemplateDetail` (replace `latest_version`/`is_latest`/`tags` with the flattened `TemplateState` + `is_stable` + `launches`), `RegisterTemplateRequest.launch`, `TemplateStatus`.
+   - Full verification: `cargo fmt`, workspace clippy `--all-features`, near-full `faucet-cli` test suite, `serve_openapi` test, then commit + push to PR #452.
+
+8. **Current Work:**
+   Immediately before the summary request I had committed the lifecycle work (`a3fae254 feat(templates): release lifecycle — launch/rollback/deprecate + stable default`) after: `cargo fmt --all`, a clean scoped clippy run, 97 passing `templates`/`params` lib tests, 6 passing `commands::template` tests, and a successful live end-to-end smoke of register→draft-refusal→launch→nightly-doesn't-move→promote→launch-from-channel→rollback→deprecate→`latest`-rejected.
+
+   I had then begun task #11 (the Templates console view) by inspecting the existing UI conventions:
+   - `ls cli/src/serve/ui/` → `api.js app.js index.html mark.svg router.js schema-form.js sse.js styles.css utils.js views`
+   - `ls cli/src/serve/ui/views/` → `datasets.js detail.js lineage.js runs.js schemas.js submit.js`
+   - Read `cli/src/serve/ui/router.js`: hash router with `route(pattern, render)` where `render(container, params)` may return a `teardown()`; `navigate(hash)`; default route `#/runs`; `startRouter(container)`.
+
+   No UI file had been created yet.
+
+9. **Optional Next Step:**
+   Create `cli/src/serve/ui/views/templates.js` (plus registration in `app.js`/`router.js` and any `ui_assets` wiring), implementing the versions page the user described: "from the versions page user should be able to specify a version as prod, staging and so on" — i.e. one row per version showing its status/channels with an assign-channel dropdown, plus launch/rollback/deprecate/trigger actions. This follows the user's explicit choice to "Add it to this PR", and must be verified with rendered screenshots per the standing UI rule. The layout I proposed and the user did not object to:
+
+   ```
+   v4  [latest]                          [ assign ▾ ]
+   v3  [prod] [stable]                   [ assign ▾ ]
+   v2  [previous]                        [ assign ▾ ]
+   v1  [dev]                             [ assign ▾ ]
+   ```
+   (to be updated for the final model: `newest`/`live`/`previous` derived, assignable `dev`/`test`/`staging`/`pre-prod`/`canary`/`prod`).
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/c-sikawats/.claude/projects/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/49d99f48-971c-4cdc-934c-eb898ae4494d.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
