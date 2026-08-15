@@ -1,0 +1,1 @@
+Add the OCI install command to the chart README
