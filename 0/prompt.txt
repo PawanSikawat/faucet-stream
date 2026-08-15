@@ -1,0 +1,1 @@
+I want to install the latest version. Can I skip the version tag?
