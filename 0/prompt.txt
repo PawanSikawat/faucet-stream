@@ -1,0 +1,154 @@
+<task-notification>
+<task-id>a6647c9ce13905f5e</task-id>
+<tool-use-id>toolu_019mv4dWu1KmMm7yywGyHxF7</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/0769bdc5-ea65-4d70-8cfd-25b3984f6ccd/tasks/a6647c9ce13905f5e.output</output-file>
+<status>completed</status>
+<summary>Agent "Scaffold ClickHouse connector (#348)" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All files are written and I've verified the wiring surfaces. Here's the complete report.
+
+## Summary
+
+Built the **ClickHouse source + sink connector pair** (issue #348) over the ClickHouse HTTP interface using `reqwest`, in three new crates. No shared/existing files were edited — all wiring is provided as paste-ready snippets below.
+
+## 1. Files created (15, all under new dirs)
+
+```
+crates/common/clickhouse/Cargo.toml
+crates/common/clickhouse/README.md
+crates/common/clickhouse/src/lib.rs
+crates/source/clickhouse/Cargo.toml
+crates/source/clickhouse/README.md
+crates/source/clickhouse/src/config.rs
+crates/source/clickhouse/src/lib.rs
+crates/source/clickhouse/src/stream.rs
+crates/source/clickhouse/tests/integration.rs
+crates/sink/clickhouse/Cargo.toml
+crates/sink/clickhouse/README.md
+crates/sink/clickhouse/src/config.rs
+crates/sink/clickhouse/src/lib.rs
+crates/sink/clickhouse/src/sink.rs
+crates/sink/clickhouse/tests/integration.rs
+```
+
+**Design highlights**
+- `faucet-common-clickhouse`: `ClickHouseConnection` (`url` **or** `host`+`http_port`+`tls`, `database`, `user`/`password`; `Debug` masks password), `base_url()`, `build_client`, `query_params`, `apply_auth` (`X-ClickHouse-User`/`X-ClickHouse-Key` headers — never URL params), `parse_json_each_row`/`build_json_each_row`, and injection-safe `sql_literal`.
+- Source: streams the `JSONEachRow` response body via `reqwest` `bytes_stream()` with a line-buffering decoder (safe across chunk boundaries), `batch_size` pages, incremental `ReplicationMethod` with `@bookmark` server-side pushdown (as a safe SQL literal) + client-side filter backstop, `state_key`/`apply_start_bookmark`, `Source::check` (`SELECT 1`), `config_schema`. Output format set via `default_format=JSONEachRow` setting (no SQL mangling).
+- Sink: batched `INSERT INTO &lt;quoted_table&gt; FORMAT JSONEachRow` (statement in the `query` URL param, NDJSON in the body), `async_insert`/`wait_for_async_insert` toggles, `batch_size` re-chunking, identifier-quoted table (via `faucet_core::util::quote_ident`, per-segment for `db.table`), `Sink::check` (non-mutating `SELECT 1`), `config_schema`. Append-only — upsert documented as engine-dependent (`ReplacingMergeTree`), not emulated.
+- **Coverage**: extensive unit tests on all pure logic (NDJSON encode/decode, URL/settings builder, `sql_literal` incl. injection cases, line-splitter across chunks, bookmark/incremental filter, config validation, state-key derivation, table quoting, insert-params). `check()` I/O covered by offline connection-refused tests (`127.0.0.1:1`). Integration tests (`tests/integration.rs`) are env-gated on `FAUCET_TEST_CLICKHOUSE_URL` and skip cleanly when absent — no hard network dep.
+
+## 2. Wiring (exact snippets)
+
+**a) Root `Cargo.toml` — `[workspace] members`** (add):
+```toml
+    "crates/common/clickhouse",
+    "crates/source/clickhouse",
+    "crates/sink/clickhouse",
+```
+
+**b) Root `Cargo.toml` — `[workspace.dependencies]`** (add):
+```toml
+faucet-common-clickhouse = { path = "crates/common/clickhouse", version = "1.0.0" }
+faucet-source-clickhouse = { path = "crates/source/clickhouse", version = "1.0.0" }
+faucet-sink-clickhouse = { path = "crates/sink/clickhouse", version = "1.0.0" }
+```
+**No new external crates.** All deps reuse existing `[workspace.dependencies]`: `reqwest` (source adds its `"stream"` feature locally), `serde`, `serde_json`, `async-trait`, `schemars`, `tokio`, `futures`, `async-stream`, `url`. Errors come from `faucet-core` (no direct `thiserror`).
+
+**c) `faucet-stream/Cargo.toml`** — add to the `source = [` and `sink = [` aggregate arrays:
+```toml
+    "source-clickhouse",
+```
+```toml
+    "sink-clickhouse",
+```
+add per-connector feature defs (near the other `source-*`/`sink-*` lines):
+```toml
+source-clickhouse = ["dep:faucet-source-clickhouse"]
+sink-clickhouse = ["dep:faucet-sink-clickhouse"]
+```
+add to `[dependencies]` (common crate is transitive — mirrors elasticsearch, not listed):
+```toml
+faucet-source-clickhouse = { workspace = true, optional = true }
+faucet-sink-clickhouse = { workspace = true, optional = true }
+```
+
+**d) `cli/Cargo.toml`** — same four edits: add `"source-clickhouse"` to `source = [`, `"sink-clickhouse"` to `sink = [`, the two feature defs, and the two optional `[dependencies]` (identical lines as above). `cli` `default` includes the `source`/`sink` aggregates, so ClickHouse ships in the default `faucet` binary.
+
+**e) `cli/src/registry.rs`** — build arms (note: both `new()` are **non-async**):
+```rust
+        #[cfg(feature = "source-clickhouse")]
+        "clickhouse" =&gt; {
+            let cfg = decode::&lt;faucet_source_clickhouse::ClickHouseSourceConfig&gt;(
+                "source",
+                "clickhouse",
+                config,
+            )?;
+            Ok(Box::new(faucet_source_clickhouse::ClickHouseSource::new(cfg)?))
+        }
+```
+```rust
+        #[cfg(feature = "sink-clickhouse")]
+        "clickhouse" =&gt; {
+            let cfg = decode::&lt;faucet_sink_clickhouse::ClickHouseSinkConfig&gt;(
+                "sink",
+                "clickhouse",
+                config,
+            )?;
+            Ok(Box::new(faucet_sink_clickhouse::ClickHouseSink::new(cfg)?))
+        }
+```
+schema arms:
+```rust
+        #[cfg(feature = "source-clickhouse")]
+        "clickhouse" =&gt; Ok(schema::&lt;faucet_source_clickhouse::ClickHouseSourceConfig&gt;()),
+```
+```rust
+        #[cfg(feature = "sink-clickhouse")]
+        "clickhouse" =&gt; Ok(schema::&lt;faucet_sink_clickhouse::ClickHouseSinkConfig&gt;()),
+```
+descriptions (in `builtin_source_descriptions` / `builtin_sink_descriptions`):
+```rust
+    #[cfg(feature = "source-clickhouse")]
+    v.push(("clickhouse", "ClickHouse query source (HTTP interface, JSONEachRow streaming)"));
+```
+```rust
+    #[cfg(feature = "sink-clickhouse")]
+    v.push(("clickhouse", "ClickHouse sink (HTTP INSERT … FORMAT JSONEachRow; optional async inserts)"));
+```
+*No changes* to `EXACTLY_ONCE_SOURCE_KINDS`, `IDEMPOTENT_SINK_KINDS`, `SCHEMA_EVOLUTION_SINK_KINDS`, `UPSERT_SINK_KINDS`, or `DISCOVER_SOURCE_KINDS` — ClickHouse implements none of those capabilities in v1.
+
+**f) `cli/connectors/registry.json`** — add two entries to the `connectors` array (required, or the `registry_index`/conformance test fails under `--all-features`):
+```json
+    {
+      "name": "clickhouse",
+      "kind": "source",
+      "verified": true,
+      "description": "ClickHouse query source (HTTP interface, JSONEachRow streaming)"
+    },
+    {
+      "name": "clickhouse",
+      "kind": "sink",
+      "verified": true,
+      "description": "ClickHouse sink (HTTP INSERT … FORMAT JSONEachRow; optional async inserts)"
+    },
+```
+
+**g) `.github/workflows/ci.yml`** — add to the `feature-check` matrix `feature:` list:
+```yaml
+          - source-clickhouse
+```
+(alongside the sink block)
+```yaml
+          - sink-clickhouse
+```
+
+## 3. Assumptions &amp; spots that warrant a real compile
+
+- **`reqwest` `stream` feature**: the source crate adds `features = ["stream"]` to its `reqwest` dep for `Response::bytes_stream()`. No other crate uses it, so this is a first — worth a `cargo check -p faucet-source-clickhouse` to confirm 0.13 exposes it as expected (it does per reqwest docs).
+- **ClickHouse HTTP insert shape**: statement in the `query` URL param + NDJSON in the body is the standard ClickHouse pattern; a live integration run (`FAUCET_TEST_CLICKHOUSE_URL`) confirms the concatenation behaves. The sink integration test does exactly this.
+- **`tokio` features**: both crates declare `tokio = { workspace = true, features = ["time"] }` in `[dependencies]` (needed for `tokio::time::timeout` in `check`) — required for the feature-isolation CI matrix, per the "declare crate features for isolation CI" convention.
+- **Identifier quoting**: ClickHouse accepts ANSI double-quoted identifiers, so `faucet_core::util::quote_ident` (double-quote) is used, split per `.`-segment so `db.table` → `"db"."table"`.
+- I did **not** update the docs site / capability matrix / crate-count prose in `docs/**` (out of scope per constraints); those are the standard docs-sync follow-ups when this lands.
+- Ran no `cargo build`/`test` (shared `target/` constraint) — logic verified by reading trait signatures and mirroring the postgres/mssql/elasticsearch/http templates exactly.</result>
+<usage><subagent_tokens>306242</subagent_tokens><tool_uses>42</tool_uses><duration_ms>872315</duration_ms></usage>
+</task-notification>
