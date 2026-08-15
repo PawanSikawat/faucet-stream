@@ -1,0 +1,37 @@
+<task-notification>
+<task-id>a9193c01e913809b8</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/25d0f5a6-8938-4915-ab73-d349bfe5721f/tasks/a9193c01e913809b8.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement cleanup on mysql+sqlite" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Implemented scoped cleanup (#478) for `faucet-sink-mysql` and `faucet-sink-sqlite`, mirroring the postgres reference. Nothing committed; changes are in the working tree.
+
+## What changed
+
+**`crates/sink/sqlite/src/sink.rs`**
+- `supports_cleanup()` → gated on `column_mapping: auto_map`; `cleanup_scope()` delegates to a new `cleanup_scope_impl`.
+- `cleanup_scope_impl`: one transaction → `PRAGMA table_info` (column validation + declared types) → `DROP TABLE IF EXISTS temp.faucet_cleanup_keys` → `CREATE TEMP TABLE` mirroring the key columns' declared types → chunked key `INSERT`s → `DELETE … WHERE &lt;scope&gt; AND NOT EXISTS (…)` → drop → commit. All statements run on the transaction's own connection (the default pool is single-connection; querying `&amp;self.pool` would deadlock).
+- New pure helpers, all unit-tested: `quote_ident_sqlite`, `safe_type_spec`, `build_cleanup_temp_table_sql`, `build_cleanup_insert_sql`, `build_cleanup_delete_sql`, `validate_cleanup_columns`, plus a shared `bind_value` (now also used by `delete_by_keys`, replacing a duplicated bind match).
+
+**`crates/sink/mysql/src/sink.rs`** — same shape with `CREATE TEMPORARY TABLE`, `quote_ident_mysql`, a 65535-placeholder chunk size, and a new `read_cleanup_columns` (full `COLUMN_TYPE` + charset + collation, on the tx connection, with the `CAST … AS CHAR` INFORMATION_SCHEMA workaround). Pure helpers `safe_type_spec`, `safe_charset_name`, `cleanup_temp_column_def`, the three SQL builders, `validate_cleanup_columns`, `bind_value` — all unit-tested.
+
+**Tests** — 11 new sqlite unit tests + 12 new mysql unit tests; `crates/sink/sqlite/tests/cleanup.rs` (7 tempfile-backed end-to-end tests, no Docker) and `crates/sink/mysql/tests/cleanup.rs` (3 testcontainer tests in the existing `upsert.rs` style). **READMEs**: added a "Scoped cleanup" section to both crates (project rule for any modified crate).
+
+## Dialect decisions worth flagging
+
+1. **SQLite quoting is backticks**, unlike the rest of that sink (which uses `faucet_core::util::quote_ident` → double quotes). SQLite's double-quoted-string misfeature turns an unresolvable `"col"` into a *string literal* — in a `DELETE` predicate that silently deletes the wrong rows instead of erroring. I added a local `quote_ident_sqlite` for the cleanup path only and did not re-quote existing code (out of scope, and it would churn existing test expectations).
+2. **Temp table qualification.** SQLite: always `temp.faucet_cleanup_keys` so the defensive `DROP` can never hit a real table of that name. MySQL: `CREATE/DROP TEMPORARY TABLE` — session-scoped, shadows a base table only for that session, and (crucially) these are the two DDL statements MySQL does *not* implicitly commit, so the delete stays all-or-nothing inside the transaction.
+3. **No `DELETE … AS alias`** in either dialect — MySQL only allows it from 8.0.16, and the correlated reference works identically via the table name. Verified empirically for SQLite by the integration tests.
+4. **MySQL temp columns carry `CHARACTER SET`/`COLLATE`** copied from the destination column; without it, a table whose key column overrides the schema default raises "Illegal mix of collations" on the join. Type specs are re-emitted from the catalog behind a shape allowlist (fallback `LONGTEXT` for MySQL, typeless column for SQLite).
+5. Both drop the temp table defensively before creating (pooled connection reuse) and again before commit.
+
+Empty `seen` is explicitly not short-circuited in either sink — `NOT EXISTS` against an empty key table deletes the whole scope, and there are dedicated tests for it in both crates.
+
+## Verification
+
+`cargo check --all-targets`, `cargo test --lib` (42 mysql / 31 sqlite pass), `cargo clippy --all-features --all-targets -- -D warnings` (clean, with a `touch` first so clippy re-analysed), and `cargo fmt --all` — all clean with the pinned 1.96.0 toolchain. The full `faucet-sink-sqlite` suite (incl. the 7 new end-to-end cleanup tests) passes locally. **The MySQL integration tests were not run**: Colima refuses to start on this machine (`disk shrinking is not supported` — the lima instance is 100 GiB but the config says 60 GiB), so that file is compile-verified only and will first execute in CI.
+
+One caveat: `cargo fmt --all` formats the whole workspace, and there is parallel in-progress work on `crates/sink/bigquery` and `crates/sink/spanner` in this same working tree. If those files were unformatted, my run reformatted them (no semantic change). I made no other edits outside the two assigned crates.</result>
+<usage><subagent_tokens>258891</subagent_tokens><tool_uses>54</tool_uses><duration_ms>1039990</duration_ms></usage>
+</task-notification>
