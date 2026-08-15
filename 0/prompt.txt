@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b6jol3io1</task-id>
+<tool-use-id>6d8520f6-d872-4cbd-b7ad-a5f2ee78fcdd:inner</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/57cd5ede-b766-47a0-8671-63ea28675cda/tasks/b6jol3io1.output</output-file>
+<status>failed</status>
+<summary>Background command " bash /private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/57cd5ede-b766-47a0-8671-63ea28675cda/scratchpad/run_sync_dtx_401_700.sh" failed with exit code 1</summary>
+</task-notification>
