@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bxduuwaag</task-id>
+<summary>Monitor event: "release-plz publish run (18 crates → crates.io)"</summary>
+<event>release-plz publish FAILED: failure — needs investigation</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
