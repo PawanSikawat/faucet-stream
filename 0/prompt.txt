@@ -1,0 +1,3 @@
+Now, leave it. The current blue one, blue shade one, looks good. Is there anything we can do with the lower section, which is plain white? What do you think? Use your UX hat and decide. 
+
+I think it was checking the dark theme on some browser because maybe the theme is set to dark in that browser. In another browser, it is giving white.
