@@ -1,0 +1,16 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────┬─────────────────────┬───────────────────────────────────────────────────┐
+  │                                               Approach                                               │  Catches deletes?   │                       Cost                        │
+  ├──────────────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────┼───────────────────────────────────────────────────┤
+  │ CDC source (postgres-cdc / mysql-cdc / mongodb-cdc) + cdc_unwrap → write_mode: upsert with           │ ✅ real deletes as  │ needs logical replication on the source; not      │
+  │ delete_marker                                                                                        │ events              │ available for a REST API                          │
+  ├──────────────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────┼───────────────────────────────────────────────────┤
+  │ Source emits soft-delete / tombstone in the incremental feed (an archived: true or deleted_at) → map │ ✅ if the API       │ depends entirely on the API                       │
+  │  to write_mode: delete via delete_marker                                                             │ exposes it          │                                                   │
+  ├──────────────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────┼───────────────────────────────────────────────────┤
+  │ Periodic full refresh of associations (append/replace)                                               │ ✅                  │ expensive, not incremental                        │
+  ├──────────────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────┼───────────────────────────────────────────────────┤
+  │ Reconciliation / diff sweep — periodically pull the full set of association keys per parent and      │ ✅                  │ needs a full key scan; not built today            │
+  │ delete-what's-missing                                                                                │                     │                                                   │
+  └─────────────────────────────────
+
+i want a cleanup section or something of that sort, like a sink can define the where filtere of a records to cleanup for upsert
