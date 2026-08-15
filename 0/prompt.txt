@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>btb72rbb6</task-id>
+<summary>Monitor event: "prebuilt-binaries build (faucet-cli-v1.7.0)"</summary>
+<event>prebuilt binaries + Homebrew formula published ✅</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
