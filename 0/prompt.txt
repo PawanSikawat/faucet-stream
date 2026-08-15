@@ -1,0 +1,8 @@
+Major achievements
+
+Let's name it Achievements Highlight? 
+
+
+A fast, config-driven ETL framework in Rust — solo-authored — with 19 source and 16 sink connectors and an SDK for third-party extensions, driven from YAML or embedded as a typed library. First-class data features: inline transforms, data-quality checks, secret resolution from external managers, dead-letter queues, PostgreSQL CDC, auto-adjusted batch sizing, and state management for resumable, incremental replication. Ships as a single binary with three run modes — faucet run (one-shot), faucet serve (a REST control plane with bounded concurrency, durable run history, and lease-based orphan fencing across instances), and faucet schedule (cron-style recurring runs).
+
+Now this segment is much more advanced. Maybe take a look at the main branch of Mehrabhub right now. Maybe check the README or something, and then figure out what you need to write over here. This section should be especially glorifying. It should be strong and glorifying.
