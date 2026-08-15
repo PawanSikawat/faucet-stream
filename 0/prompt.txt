@@ -1,0 +1,1 @@
+In some cases, I wouldn't have the two parameters. What do we do in that case? Those things can be derived either via an API call which gives the count or via getting the max ID from the source. How do we handle that?
