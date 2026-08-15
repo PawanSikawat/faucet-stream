@@ -1,0 +1,36 @@
+<task-notification>
+<task-id>a7e10d5f2fc1d4e29</task-id>
+<tool-use-id>toolu_01Mf2GbgHKtVN4JMVfsGHq2Q</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/9b06b94c-7e86-46b1-a92f-5dd7a714b733/tasks/a7e10d5f2fc1d4e29.output</output-file>
+<status>completed</status>
+<summary>Agent "Verify dlq discard atomicity finding" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I've confirmed the implementation. The verdict is clear.
+
+**IS_REAL: true**
+**CONFIDENCE: high**
+**SEVERITY: low** (as framed — a manual admin op on already-dead-letter data)
+
+## REASONING
+
+The code matches the claim exactly.
+
+**Non-atomic overwrite (cli/src/dlq_replay/mod.rs:275):**
+```rust
+std::fs::write(file, kept.as_bytes()).map_err(|e| {
+    CliError::Internal(format!("rewriting DLQ file '{}': {e}", file.display()))
+})?;
+```
+`std::fs::write` opens with truncate+write (it is `OpenOptions::new().write(true).create(true).truncate(true)` under the hood), so it truncates the DLQ file to zero and then streams `kept` back in. This is **not** a write-temp-then-`rename` atomic replace. A crash between truncation and completion leaves the file with a partial prefix of the kept envelopes — the un-discarded rows past the write cursor are lost.
+
+**`--delete` skips any backup (lines 260-273):**
+- In archive mode (`delete = false`), only the *removed* lines are appended to `&lt;file&gt;.archived.jsonl` (lines 270-273), and that append happens *before* the truncating rewrite. So the discarded rows survive a crash, but the **kept** rows still only exist in the file being truncated — they have no backup either way.
+- In delete mode (`delete = true`), lines 260-263 skip building `removed` entirely and no `archive_path`/`append_to` call runs. Nothing is backed up. A crash mid-`fs::write` truncates the file with no recovery copy of either kept or removed envelopes.
+
+So the scenario in the claim is accurate: `discard --delete` on a 10k-line file truncates and rewrites 7k kept envelopes with no archive; a kill mid-write leaves a truncated prefix and permanently loses the un-discarded remainder.
+
+**Assessment:** This is a genuine durability gap, not guarded or intended-away — the doc comment (lines 227-233) describes the archive/delete behavior but says nothing about atomicity, and there is no temp-file+rename or fsync anywhere in `discard`/`append_to`. The fix would be to write to `&lt;file&gt;.tmp` and `std::fs::rename` over the original (rename is atomic on the same filesystem).
+
+Severity is correctly low: it requires a process kill during a manual, interactive admin command operating on data that is already in the dead-letter queue (i.e. already failed delivery), and the crash window is a single file write. Real, but low blast radius and low probability.</result>
+<usage><subagent_tokens>114185</subagent_tokens><tool_uses>1</tool_uses><duration_ms>29556</duration_ms></usage>
+</task-notification>
