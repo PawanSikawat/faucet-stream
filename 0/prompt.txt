@@ -1,0 +1,4 @@
+i am thinking of few fetures:
+1. adding a callback url once the job completes to update status
+2. say i have an api which has filter support for, like id from and to, time from and to. in that case we can actually parallelize the api calls to download multiple chunks in parallel. is that possible?
+3. say i have 1 source contacts, which has a child source associations. this is incremental sync so basically i get all contacts which are updated, and then i get the associations for the associations table. now some of the associations for a contact may not exist anymore, so would my sync delete the old associations which are there in sync?
