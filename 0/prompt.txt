@@ -1,0 +1,3 @@
+https://pydantic.dev/docs/validation/latest/get-started/
+
+CanadaDocs.net said we made it as good as this one. Can our doc's website be made as good as it seems?
