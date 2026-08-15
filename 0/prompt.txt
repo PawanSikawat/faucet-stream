@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bst9rr4p6</task-id>
+<summary>Monitor event: "PR 463 merge watch"</summary>
+<event>PR 463 MERGED</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
