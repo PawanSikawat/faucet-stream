@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>btb72rbb6</task-id>
+<tool-use-id>toolu_01Cekkkv21WbWgW6mFW5ZHg5</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/57cd5ede-b766-47a0-8671-63ea28675cda/tasks/btb72rbb6.output</output-file>
+<status>completed</status>
+<summary>Monitor "prebuilt-binaries build (faucet-cli-v1.7.0)" stream ended</summary>
+</task-notification>
