@@ -1,0 +1,1 @@
+I already gave you the curl. That curl has the bearer token. Use that bearer token to create that 500 runnet bash script.
