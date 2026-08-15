@@ -1,0 +1,2 @@
+<bash-stdout></bash-stdout><bash-stderr>(eval):2: no such file or directory: /Users/c-sikawats/Documents/GitHub/Personal/faucet-stream/target/package
+</bash-stderr>
