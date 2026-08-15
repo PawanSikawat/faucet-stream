@@ -1,7 +1,7 @@
 //! GCS source configuration.
 
 use faucet_common_gcs::GcsCredentials;
-use faucet_core::{DEFAULT_BATCH_SIZE, FaucetError, validate_batch_size};
+use faucet_core::DEFAULT_BATCH_SIZE;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -54,7 +54,7 @@ pub struct GcsSourceConfig {
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
     /// Verify each object's byte length against the `size` GCS reports for it,
-    /// failing the read with [`FaucetError::Source`]
+    /// failing the read with [`FaucetError::Source`](faucet_core::FaucetError::Source)
     /// on a short (truncated) or over-long transfer (#161). Cheap (a byte
     /// counter over the body that is read anyway) and defaults to `true`.
     /// The check is automatically skipped for an object served with a
@@ -175,15 +175,19 @@ impl GcsSourceConfig {
     }
 
     /// Validate the config at load time so a bad config fails fast with a typed
-    /// [`FaucetError::Config`] instead of surfacing deep in a run: rejects an
+    /// `FaucetError::Config` instead of surfacing deep in a run: rejects an
     /// out-of-range `batch_size` (`> MAX_BATCH_SIZE`) and an empty `bucket`.
-    pub fn validate(&self) -> Result<(), FaucetError> {
+    ///
+    /// `faucet_core` is referenced by full path here (rather than imported) so
+    /// the field-doc links above keep their explicit targets and the committed
+    /// config JSON Schema stays byte-identical.
+    pub fn validate(&self) -> Result<(), faucet_core::FaucetError> {
         if self.bucket.trim().is_empty() {
-            return Err(FaucetError::Config(
+            return Err(faucet_core::FaucetError::Config(
                 "GCS source requires a non-empty `bucket`".into(),
             ));
         }
-        validate_batch_size(self.batch_size)?;
+        faucet_core::validate_batch_size(self.batch_size)?;
         Ok(())
     }
 }
@@ -307,15 +311,19 @@ mod tests {
 
     #[test]
     fn validate_rejects_oversized_batch_size() {
-        let config = GcsSourceConfig::new("my-bucket").with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
-        assert!(matches!(config.validate(), Err(FaucetError::Config(_))));
+        let config =
+            GcsSourceConfig::new("my-bucket").with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(matches!(
+            config.validate(),
+            Err(faucet_core::FaucetError::Config(_))
+        ));
     }
 
     #[test]
     fn validate_rejects_empty_bucket() {
         assert!(matches!(
             GcsSourceConfig::new("   ").validate(),
-            Err(FaucetError::Config(_))
+            Err(faucet_core::FaucetError::Config(_))
         ));
     }
 }
