@@ -1,0 +1,38 @@
+<task-notification>
+<task-id>af659ab1eb616487f</task-id>
+<tool-use-id>toolu_01JHdunfbebFF3QGbQAvoTEt</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/c52ee385-5ec5-464a-91ae-a39a0cbdf230/tasks/af659ab1eb616487f.output</output-file>
+<status>completed</status>
+<summary>Agent "Adopt conformance checks: HTTP/API" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All 10 crates compile and pass. The `cargo fmt` touched only my 10 crates (the other conformance.rs files in the diff-stat are other agents' in-progress work on this shared branch — I did not touch them). The ES-sink linter change was a cosmetic line-wrap of the `items` builder, already covered by the passing run.
+
+## Report
+
+Adopted the new `faucet-conformance` checks into all 10 assigned connectors. Every crate compiles and its conformance suite **passes locally** (all wiremock/in-process, no Docker). No existing checks were weakened; no git actions taken.
+
+### Per-connector (checks ADDED → local result)
+
+| Connector | Added | Skipped (why) | Result |
+|---|---|---|---|
+| **source/rest** | 9 (batch_size=0, new wiremock single-page), 10, 11 | — | 5/5 pass |
+| **source/graphql** | 9 (batch_size=0, new one-response mock), 10, 11 | — | 6/6 pass |
+| **source/xml** | 9 (batch_size=0), 10, 11 | — | 6/6 pass |
+| **source/elasticsearch** | 9 (batch_size=0 non-scroll `_search`), 10, 11 | — | 6/6 pass |
+| **source/websocket** | 10, 11 (overridden TCP-connect probe → Fail-in-Ok) | 9 (push-based) | 5/5 pass |
+| **source/webhook** | 10, 11 (overridden bind probe, bindable `127.0.0.1:0` → Pass) | 9 (buffer-shaped) | 4/4 pass |
+| **source/grpc** | 10, 11 (unary unreachable → default check Fail-in-Ok) | 9 (unary no paging primitive) | 5/5 pass |
+| **source/singer** | 10, 11 (overridden tap/catalog probes) | 9 (subprocess, awkward) | 6/6 pass |
+| **sink/http** | 10 (value form) | 7/8 (append-only, no upsert/evolution) | 3/3 pass |
+| **sink/elasticsearch** | 7 (stateful `_bulk` doc-store mock), 8 (stateful `_mapping` GET/PUT mock), 10, 11 (health+HEAD mock) | — | 5/5 pass |
+
+### Key implementation notes
+- **Check 10** added to every connector (the universal requirement).
+- **Check 11**: rest/graphql/xml/es-source use the default `Source::check` (probes real read path → `Fail` probe inside `Ok(report)` against an unreachable endpoint — verified). websocket/webhook/singer/es-sink override `check()`; all return well-formed `Ok(report)` — verified against unreachable/bindable/mock instances.
+- **Check 9**: each overriding source treats its **config** `batch_size` as authoritative, so I built sources with `with_batch_size(0)` (or `None` pagination for rest) and a single-response mock so the whole set emits as one `StreamPage`.
+- **ES sink checks 7/8**: wrote two small stateful wiremock responders — a `_bulk` responder maintaining a `_id`-keyed `HashSet` (so the distinct-count closure reflects real upsert/delete convergence) and a shared-`props` `_mapping` GET/PUT pair (so a fresh `current_schema()` reflects the evolved column). Sink configured `write_mode: upsert, key: ["id"], delete_marker: {__op: [d]}` via the shared conformance constants.
+
+### Environment note
+Mid-run the workspace volume filled (`No space left on device`); I reclaimed space by deleting regenerable `target/debug/incremental`, `target/release/incremental`, and `target/debug/examples` (all gitignored build artifacts), then completed all runs. ~17 GiB free at finish.</result>
+<usage><subagent_tokens>251737</subagent_tokens><tool_uses>63</tool_uses><duration_ms>1207033</duration_ms></usage>
+</task-notification>
