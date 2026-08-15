@@ -1,0 +1,3 @@
+should we make the default as stable? also from the versions page user should be able to specify a version as prod, staging and so on. latest and previous are auto calculated. how does that sound?
+
+should we have a proper ui for it?
