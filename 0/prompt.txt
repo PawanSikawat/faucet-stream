@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bb1vf0t1h</task-id>
+<summary>Monitor event: "sync-dtx milestone progress (every ~25 tenants + done)"</summary>
+<event>reached tenant 575 | 200:100 401:64 other:11</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
