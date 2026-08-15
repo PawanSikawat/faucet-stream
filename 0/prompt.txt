@@ -1,0 +1,8 @@
+2. A conformance score per connector — that's a genuinely new, good idea. Let me confirm it doesn't already exist and check the issue tracker before I file it (per the repo's
+  "capture ideas as issues immediately" rule):
+
+
+
+Conformance score → filed as #330 ✅ 
+
+lets solev this
