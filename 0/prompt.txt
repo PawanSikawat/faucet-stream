@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bvthlrf5m</task-id>
+<summary>Monitor event: "sync-dtx resume+retry — progress &amp; completion"</summary>
+<event>in progress → 13:09:24Z  RETRY tenant 488 attempt 3: HTTP ERR</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
