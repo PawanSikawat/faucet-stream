@@ -68,7 +68,7 @@ faucet run pipeline.yaml
 | `scroll_timeout` | string | `"1m"` | Scroll-context keep-alive sent on the initial and every follow-up scroll request (e.g. `"1m"`, `"5m"`). Must exceed the time taken to process one page downstream. |
 | `auth` | `ElasticsearchAuth` | `{ type: none }` | Authentication — inline `{ type, config }` or `{ ref: <name> }`. See [Authentication](#authentication). |
 | `max_pages` | int | *(unset = no limit)* | Maximum number of scroll responses to emit. The cap applies *after* a page is yielded. |
-| `batch_size` | int | `1000` | Docs per emitted `StreamPage`, also the scroll API `size` parameter. **`0` = no batching**: a single non-scroll `_search?size=10000` is issued instead. Validated against `MAX_BATCH_SIZE` (1,000,000) at construction. |
+| `batch_size` | int | `1000` | Docs per emitted `StreamPage`, also the scroll API `size` parameter. **`0` = no batching**: a single non-scroll `_search?size=10000` is issued instead. Validated against `MAX_BATCH_SIZE` (1,000,000) at construction (an empty `base_url` / `index` is likewise rejected with `FaucetError::Config`). |
 
 ### Authentication
 

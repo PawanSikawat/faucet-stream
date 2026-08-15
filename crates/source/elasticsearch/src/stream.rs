@@ -25,10 +25,10 @@ pub struct ElasticsearchSource {
 
 impl ElasticsearchSource {
     /// Create a new Elasticsearch source from the given configuration.
-    /// Construction does no I/O; it fails only on an invalid config (an
-    /// out-of-range `batch_size`).
+    /// Construction does no I/O; it fails only on an invalid config (an empty
+    /// `base_url` / `index` or an out-of-range `batch_size`).
     pub fn new(config: ElasticsearchSourceConfig) -> Result<Self, FaucetError> {
-        faucet_core::validate_batch_size(config.batch_size)?;
+        config.validate()?;
         Ok(Self {
             config,
             client: Client::new(),

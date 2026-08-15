@@ -1,6 +1,6 @@
 //! GraphQL source configuration.
 
-use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE};
+use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE, FaucetError, validate_batch_size};
 use reqwest::header::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -153,6 +153,25 @@ impl GraphqlStreamConfig {
         self.batch_size = batch_size;
         self
     }
+
+    /// Validate the config at load time so a bad config fails fast with a typed
+    /// [`FaucetError::Config`] instead of surfacing deep in a run: rejects an
+    /// out-of-range `batch_size` (`> MAX_BATCH_SIZE`) and an empty `endpoint` or
+    /// `query`.
+    pub fn validate(&self) -> Result<(), FaucetError> {
+        if self.endpoint.trim().is_empty() {
+            return Err(FaucetError::Config(
+                "GraphQL source requires a non-empty `endpoint`".into(),
+            ));
+        }
+        if self.query.trim().is_empty() {
+            return Err(FaucetError::Config(
+                "GraphQL source requires a non-empty `query`".into(),
+            ));
+        }
+        validate_batch_size(self.batch_size)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -236,5 +255,37 @@ mod tests {
         }"#;
         let config: GraphqlStreamConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, 500);
+    }
+
+    #[test]
+    fn validate_accepts_valid_config() {
+        assert!(
+            GraphqlStreamConfig::new("https://api.example.com/graphql", "query { x }")
+                .validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_rejects_oversized_batch_size() {
+        let config = GraphqlStreamConfig::new("https://api.example.com/graphql", "query { x }")
+            .with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(matches!(config.validate(), Err(FaucetError::Config(_))));
+    }
+
+    #[test]
+    fn validate_rejects_empty_endpoint() {
+        assert!(matches!(
+            GraphqlStreamConfig::new("  ", "query { x }").validate(),
+            Err(FaucetError::Config(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_empty_query() {
+        assert!(matches!(
+            GraphqlStreamConfig::new("https://api.example.com/graphql", "").validate(),
+            Err(FaucetError::Config(_))
+        ));
     }
 }

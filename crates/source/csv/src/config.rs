@@ -1,6 +1,6 @@
 //! CSV source configuration.
 
-use faucet_core::DEFAULT_BATCH_SIZE;
+use faucet_core::{DEFAULT_BATCH_SIZE, FaucetError, validate_batch_size};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +24,7 @@ pub struct CsvSourceConfig {
     ///
     /// When `false` (the default), a row whose field count does not match the
     /// expected width is a structural defect and aborts the run with a typed
-    /// [`FaucetError::Source`](faucet_core::FaucetError::Source) naming the
+    /// [`FaucetError::Source`] naming the
     /// offending line — silently emitting an incomplete record would corrupt
     /// downstream consumers. Set to `true` only when ragged rows are expected
     /// and acceptable (short rows yield records missing the trailing columns;
@@ -123,6 +123,19 @@ impl CsvSourceConfig {
         self.compression = c;
         self
     }
+
+    /// Validate the config at load time so a bad config fails fast with a typed
+    /// [`FaucetError::Config`] instead of surfacing deep in a run: rejects an
+    /// out-of-range `batch_size` (`> MAX_BATCH_SIZE`) and an empty `path`.
+    pub fn validate(&self) -> Result<(), FaucetError> {
+        if self.path.trim().is_empty() {
+            return Err(FaucetError::Config(
+                "CSV source requires a non-empty `path`".into(),
+            ));
+        }
+        validate_batch_size(self.batch_size)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -205,5 +218,25 @@ mod tests {
         }"#;
         let config: CsvSourceConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, 250);
+    }
+
+    #[test]
+    fn validate_accepts_valid_config() {
+        assert!(CsvSourceConfig::new("/tmp/data.csv").validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_oversized_batch_size() {
+        let config =
+            CsvSourceConfig::new("/tmp/data.csv").with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(matches!(config.validate(), Err(FaucetError::Config(_))));
+    }
+
+    #[test]
+    fn validate_rejects_empty_path() {
+        assert!(matches!(
+            CsvSourceConfig::new("   ").validate(),
+            Err(FaucetError::Config(_))
+        ));
     }
 }

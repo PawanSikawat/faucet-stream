@@ -287,6 +287,7 @@ pub async fn build_source(
         "graphql" => {
             let cfg =
                 decode::<faucet_source_graphql::GraphqlStreamConfig>("source", "graphql", config)?;
+            cfg.validate()?;
             let mut s = faucet_source_graphql::GraphqlStream::new(cfg);
             if let Some(name) = &auth_ref {
                 s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
@@ -440,6 +441,7 @@ pub async fn build_source(
         #[cfg(feature = "source-csv")]
         "csv" => {
             let cfg = decode::<faucet_source_csv::CsvSourceConfig>("source", "csv", config)?;
+            cfg.validate()?;
             Ok(Box::new(faucet_source_csv::CsvSource::new(cfg)))
         }
         #[cfg(feature = "source-singer")]
@@ -1752,6 +1754,50 @@ mod tests {
             Ok(_) => panic!("expected InvalidConnectorConfig, got Ok"),
             Err(other) => panic!("expected InvalidConnectorConfig, got {other:?}"),
         }
+    }
+
+    // The CSV / GraphQL sources construct infallibly (`new() -> Self`), so the
+    // registry is their config-load fail-fast point: an out-of-range
+    // `batch_size` or an empty required field must be rejected at `build_source`
+    // (a typed `FaucetError::Config`), not surfaced deep in a run.
+    #[cfg(feature = "source-csv")]
+    #[tokio::test]
+    async fn build_source_csv_rejects_oversized_batch_size() {
+        let res = build_source(
+            "csv",
+            serde_json::json!({
+                "path": "/tmp/x.csv",
+                "batch_size": faucet_core::MAX_BATCH_SIZE + 1
+            }),
+            &AuthCatalog::new(),
+            None,
+        )
+        .await;
+        assert!(matches!(
+            res,
+            Err(CliError::Faucet(faucet_core::FaucetError::Config(_)))
+        ));
+    }
+
+    #[cfg(feature = "source-graphql")]
+    #[tokio::test]
+    async fn build_source_graphql_rejects_empty_endpoint() {
+        let res = build_source(
+            "graphql",
+            serde_json::json!({
+                "endpoint": "",
+                "query": "query { x }",
+                "variables": {},
+                "auth": { "type": "none" }
+            }),
+            &AuthCatalog::new(),
+            None,
+        )
+        .await;
+        assert!(matches!(
+            res,
+            Err(CliError::Faucet(faucet_core::FaucetError::Config(_)))
+        ));
     }
 
     // `source_schema` must return a JSON object that surfaces the connector's
