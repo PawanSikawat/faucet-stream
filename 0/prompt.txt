@@ -1,0 +1,44 @@
+<task-notification>
+<task-id>a3996fcd46e82cea6</task-id>
+<tool-use-id>toolu_011pJdTHvyQ7jSREPr77jkdC</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/c52ee385-5ec5-464a-91ae-a39a0cbdf230/tasks/a3996fcd46e82cea6.output</output-file>
+<status>completed</status>
+<summary>Agent "Adopt conformance checks: CDC + mongo" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All six crates compile with `--no-run` and `cargo fmt` produced no diffs. Done. Here is the report.
+
+## Summary
+
+Adopted the new `faucet-conformance` checks (#465) into all six connectors. No git actions taken. Every crate compiles (`cargo test -p &lt;crate&gt; --test conformance --no-run`) and is `cargo fmt`-clean.
+
+### CDC sources (all four — same pattern)
+Each `check()` is an overridden, read-only preflight probe (verified the bodies: connect + slot/binlog/topology/CDC-status metadata queries, never a page pull), so preflight is safe in the live test. Added inside the existing live `conformance_bounded_memory` test, right after the source is built:
+- **`assert_connector_name_nonempty(&amp;source)`** — Check 10 (pure).
+- **`assert_preflight_check_wellformed(&amp;source, &amp;CheckContext::default())`** — Check 11.
+
+Applied to: `postgres-cdc`, `mysql-cdc`, `mongodb-cdc`, `mssql-cdc` (mssql-cdc's test is `#[ignore]`d as before — compiles).
+- **Skipped for all CDC sources (as instructed):** `assert_batch_size_zero_single_page` (change-streams, not batch) and `assert_write_modes_truthful` (sources).
+
+### mongodb source (`crates/source/mongodb`)
+- **Check 10 `assert_connector_name_nonempty`** — added twice: in the offline `conformance_errors_not_panics` (always runs, no Docker) and in the live `conformance_bounded_memory`.
+- **Check 9 `assert_batch_size_zero_single_page`** — added to the live test; builds a second source with `.with_batch_size(0)` reusing the same container + seeded 5000 docs (no new boot). Changed the existing `MongoSourceConfig::new(uri, …)` to `uri.as_str()` so `uri` stays usable.
+- **Check 11 `assert_preflight_check_wellformed`** — added to the live test (source uses the default page-pull probe against the live seeded collection → Pass; non-mutating find).
+
+### mongodb sink (`crates/sink/mongodb`)
+- **Check 10 `assert_connector_name_nonempty_value(sink.connector_name(), sink.connector_name())`** — new offline test (`MongoSink::new` builds lazily, no Docker).
+- **Check 7 `assert_write_modes_truthful`** — new live test in the `idempotent` mod. Added a `keyed_sink()` helper (reuses the existing repl-set boot + `count_docs`) configured `write_mode: upsert`, `key: ["id"]`, `delete_marker: { field: DELETE_MARKER_FIELD ("__op"), values: [DELETE_MARKER_VALUE ("d")] }` from `faucet_conformance::doubles`. Verified the sink advertises `[Append, Upsert, Delete]`, `dedups_by_key()` reflects config, and `write_batch` routes non-append modes through `plan_writes` — so upsert-convergence, delete-marker removal, and missing/null-key-failed sub-checks all wire cleanly.
+- **`assert_schema_evolution_effective` deliberately NOT added** (mongodb has no schema evolution, per instructions).
+
+### Compile results
+| crate | `--no-run` |
+|---|---|
+| faucet-source-postgres-cdc | pass |
+| faucet-source-mysql-cdc | pass |
+| faucet-source-mongodb-cdc | pass |
+| faucet-source-mssql-cdc | pass |
+| faucet-source-mongodb | pass |
+| faucet-sink-mongodb | pass |
+
+Docker-gated tests were not executed (run in CI), as instructed.</result>
+<usage><subagent_tokens>179440</subagent_tokens><tool_uses>40</tool_uses><duration_ms>744754</duration_ms></usage>
+</task-notification>
