@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>brke3wxie</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/527b5f34-fef8-46aa-98db-6c23556fc8c1/tasks/brke3wxie.output</output-file>
+<status>killed</status>
+<summary>Background command "Background CI watcher for PR 322" was stopped</summary>
+</task-notification>
