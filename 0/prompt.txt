@@ -1,0 +1,43 @@
+<task-notification>
+<task-id>a629f2241bca66b5e</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/9b06b94c-7e86-46b1-a92f-5dd7a714b733/tasks/a629f2241bca66b5e.output</output-file>
+<status>completed</status>
+<summary>Agent "Verify dry-run bookmark persist finding" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have enough evidence to render a verdict.
+
+## Verdict
+
+**IS_REAL: true**
+**CONFIDENCE: high**
+**SEVERITY: high (data-loss)**
+
+## Reasoning
+
+I traced the full data path and confirmed the defect from the actual code.
+
+**1. State store is attached unconditionally — no dry_run/limit guard.**
+- `build_state_for_node` (cli/src/executor.rs:1390-1410) branches only on `node.state` and `state_path_override`. It never inspects `opts.dry_run` or `opts.limit`.
+- The store is attached to the pipeline at cli/src/executor.rs:983-986 with no preview-mode guard: `Some(store) =&gt; pipeline.with_state_store(store)`.
+- Contrast this with the SLA pass (lines 785-786) and catalog pass (lines 1217-1218), which *do* explicitly skip on `opts.dry_run || opts.limit.is_some()`. State persistence has no equivalent guard.
+
+**2. The preview sinks return `Ok` without a real write.**
+- `--dry-run`: `raw_sink = CountingSink` (line 841-842). `CountingSink::write_batch` returns `Ok(records.len())` while writing nothing (lines 1754-1757).
+- `--limit N`: `LimitedSink` returns `Ok(written)` for the first N, then `Ok(0)` once the cap is hit (lines 1718-1729) — the source keeps streaming further pages.
+
+**3. The partial fix at line 1073 only covers exactly-once tokens, not at-least-once bookmarks.**
+- `effective_delivery` is forced to `AtLeastOnce` under dry_run/limit (lines 1073-1077). The comment reasons explicitly that a *token* for a truncated page would corrupt the watermark — but says nothing about ordinary bookmark persistence, which stays active.
+
+**4. run_stream persists the bookmark after any `Ok` sink write, regardless of what actually landed.**
+- DLQ-disabled path (the common case for previews), crates/core/src/pipeline.rs:1460-1471: on `Some(bookmark)` it flushes the (no-op) sink and calls `store.put(key, &amp;bookmark)`. There is no check on `records_written` or on whether the sink is a preview shim.
+- Same unconditional `store.put` in the DLQ path (line 1346) and the exactly-once/AtLeastOnce sub-branch (line 1416/1468).
+
+**5. Resumable/CDC sources emit `Some(bookmark)` with a `state_key`.**
+- Confirmed sources emitting `bookmark: Some(...)`: `crates/source/kinesis/src/stream.rs` (cumulative per-shard sequence bookmark on *every* page) and `crates/source/mysql-cdc/src/stream.rs`; state_key overrides also exist for postgres-cdc, mongodb-cdc, kafka, mssql, rest, singer, spanner.
+
+**Concrete failure:** `faucet run --dry-run` (or `--limit N`) on e.g. a Kinesis or mysql-cdc source with a durable `state:` block → CountingSink/LimitedSink returns `Ok` without writing → each bookmark-carrying page's bookmark is persisted to the state store → the next real `faucet run` reads the advanced bookmark via `apply_start_bookmark` and resumes past records that were never written. For postgres-cdc this is worse: the persisted LSN, once applied on the next run, advances `confirmed_flush_lsn`, letting Postgres recycle WAL for changes that were never delivered — permanent, silent data loss.
+
+Not guarded, not documented as intended (a `--dry-run` preview is expected to be side-effect-free), and not a misread. The claim's file/line citations (executor.rs:939, ~1073; pipeline.rs persistence) are accurate.</result>
+<usage><subagent_tokens>141626</subagent_tokens><tool_uses>15</tool_uses><duration_ms>152417</duration_ms></usage>
+</task-notification>
