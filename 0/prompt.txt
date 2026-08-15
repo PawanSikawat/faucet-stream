@@ -1,0 +1,1 @@
+Should we create a CLI command to create the whole architecture of a new connector? It's like Fawcett Neo Connector that we develop at the moment.
