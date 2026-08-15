@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bdccmub9i</task-id>
+<tool-use-id>toolu_011FtKJ7xBL6WWM9dcsdjcPu</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/822fc7c7-6ae9-40ea-8a15-77d7db4ec709/tasks/bdccmub9i.output</output-file>
+<status>completed</status>
+<summary>Background command "Cancel stale runs and watch deploy" completed (exit code 0)</summary>
+</task-notification>
