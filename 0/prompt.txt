@@ -1,0 +1,16 @@
+2. Parallelize an API by filter chunks → yes, possible today (with one caveat)
+
+  The REST source has exactly this via partitions + partition_concurrency (crates/source/rest/src/config.rs:100). Each partition is a map of placeholder values substituted into the
+  URL/query, fetched concurrently under a semaphore:
+
+  source:
+    type: rest
+    config:
+      url: "https://api.example/records?id_from={id_from}&id_to={id_to}"
+      partition_concurrency: 8
+      partitions:
+        - { id_from: "0",     id_to: "9999" }
+        - { id_from: "10000", id_to: "19999" }
+        # ...
+
+i just want to specify the chunk size
