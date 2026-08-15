@@ -1,0 +1,61 @@
+<task-notification>
+<task-id>ace96e2edce8e76bf</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/9b06b94c-7e86-46b1-a92f-5dd7a714b733/tasks/ace96e2edce8e76bf.output</output-file>
+<status>completed</status>
+<summary>Agent "Verify backfill --restart finding" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I've read the full orchestrator and state modules. The claim is verifiable directly from the code.
+
+## Verification
+
+**What `--restart` actually does** (orchestrator.rs:417-441):
+```rust
+let marker = match store.get(&amp;marker_k).await? {
+    Some(v) if opts.restart =&gt; {
+        let prior = BackfillState::from_value(v)?;
+        tracing::warn!(... "--restart: discarding the previous progress marker for this range");
+        BackfillState::new(descriptor.clone())   // fresh in-memory marker
+    }
+    ...
+};
+```
+`--restart` only replaces the **progress marker** (`{name}::__backfill__::{hash}`, see state.rs:83-85) with a fresh empty one. It is later written back at orchestrator.rs:487 (`store.put(&amp;marker_k, ...)`). Nowhere does it delete the per-unit scoped state keys.
+
+**No deletion of scoped keys anywhere.** The entire file has exactly three store write/read paths: the marker (lines 417, 487, 544), and the bookmark seed (line 593). There is **no `store.delete` call at all**, and specifically none targeting `unit_state_key` (`{name}::backfill::{unit}`, state.rs:90-92).
+
+**The seed guard (orchestrator.rs:588-594):**
+```rust
+if let BackfillRange::Bookmark { from, to, field } = range {
+    let key = unit_state_key(&amp;opts.pipeline_name, &amp;unit.id);
+    if store.get(&amp;key).await?.is_none() {   // only seed if absent
+        store.put(&amp;key, from).await?;
+    }
+    ...
+}
+```
+The comment (lines 589-590) confirms intent: "Seed the scoped bookmark once — a resumed unit keeps its own further-along position."
+
+**Trace of the claimed scenario (bookmark mode):**
+1. First run seeds `{name}::backfill::bookmark` = `from` (0), source advances it to id=500, operator interrupts.
+2. Re-run with `--restart`: marker reset to `BackfillState::new` → unit "bookmark" is not marked done → `split_remaining` (state.rs:102-108) returns it in the todo list → `run_one_unit` executes.
+3. In `run_one_unit`, the seed guard sees `store.get(&amp;key)` = `Some(500)` (not `None`) → **skips the re-seed** → the persisted 500 survives.
+4. `run_expanded` runs the pipeline, whose `StateStore` bookmark for row `backfill::bookmark` is read before fetch → source resumes from 500. Records 1..500 are silently never re-backfilled.
+
+The marker key and the scoped unit key are provably distinct (state.rs:83-85 vs 90-92; the state.rs test at lines 134-149 asserts they differ), so resetting one leaves the other untouched.
+
+**Documented intent vs. behavior:** `--restart` is documented as "Discard a previous marker for this range and start over" (orchestrator.rs:96-97) and warns "start over" (line 429-436 error text). "Start over" implies full replay, but the surviving scoped bookmark makes it a silent resume — a real divergence, not intended behavior.
+
+**Time-mode caveat:** the description's secondary claim ("same skip affects time-mode backfills whose source is bookmark/incremental-capable") is also plausible — time-mode never enters the `BackfillRange::Bookmark` block, so its scoped key is whatever the executor last persisted and is likewise never cleared; an incremental source applying that start bookmark would skip within the window. This depends on the source being incremental+stateful, but the primary bookmark-mode path is airtight regardless.
+
+No test covers restart clearing scoped state (tests are dry-run only), so nothing guards against this.
+
+## Verdict
+
+IS_REAL: true
+CONFIDENCE: high
+SEVERITY: high
+
+REASONING: `--restart` discards only the progress marker (`BackfillState::new` at orchestrator.rs:425, written at :487) and never deletes the per-unit scoped state key `{name}::backfill::{unit}`. Combined with the seed-only-if-absent guard at orchestrator.rs:592 (`if store.get(&amp;key).await?.is_none()`), a previously-advanced bookmark survives `--restart`, so a "start over" actually resumes from the last persisted position — silently skipping records the operator expects to be re-backfilled. This is a genuine, unguarded correctness/data-loss defect provable from the code, matching the cited lines (418/425 restart branch, 592 seed guard).</result>
+<usage><subagent_tokens>129113</subagent_tokens><tool_uses>2</tool_uses><duration_ms>56986</duration_ms></usage>
+</task-notification>
