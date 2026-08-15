@@ -1,0 +1,54 @@
+<task-notification>
+<task-id>adbdaa9d97c9d4880</task-id>
+<tool-use-id>toolu_01LPavYCiR2Bv4vRJ894qnnR</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/c52ee385-5ec5-464a-91ae-a39a0cbdf230/tasks/adbdaa9d97c9d4880.output</output-file>
+<status>completed</status>
+<summary>Agent "Adopt conformance checks: object/file" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All formatting clean. Done. Here's the report.
+
+## Summary
+
+Adopted the new `faucet-conformance` (#465) checks into all 17 of my object-store/file connectors' `tests/conformance.rs`. Every crate compiles; all offline connectors were run locally and pass; cloud connectors were compile-verified (`--no-run`), reusing existing mock/lazy-build patterns (no new container boots). All touched crates pass `cargo fmt --check`.
+
+### Sources
+
+| Connector | Checks added | Verified |
+|---|---|---|
+| **csv** | 9 (batch_size=0, offline fixture), 10 (connector_name), 11 (preflight) | **Ran — 6/6 pass** |
+| **parquet** | 9 (small single-row-group fixture), 10, 11 | **Ran — 6/6 pass** |
+| **delta** | 9 (small single-commit table), 10, 11 | **Ran — 6/6 pass** |
+| **s3** | 10 (offline lazy build); 9 folded into existing MinIO test (reuses the seeded bucket) | Compile-only (Docker) |
+| **gcs** | 10 (offline lazy build) | Compile-only |
+| **azure-blob** | 10 (offline lazy build) | Compile-only |
+| **sftp** | 10 (offline lazy build) | Compile-only |
+
+### Sinks
+
+| Connector | Checks added | Verified |
+|---|---|---|
+| **csv** | 10 (connector_name_value), 11 (preflight, valid temp dir) | **Ran — 4/4 pass** |
+| **jsonl** | 10, 11 | **Ran — 4/4 pass** |
+| **stdout** | 10, 11 | **Ran — 4/4 pass** |
+| **parquet** | 10, 11 | **Ran — 4/4 pass** |
+| **delta** | 10, 11 (metadata-open probe) | **Ran — 4/4 pass** |
+| **iceberg** | 10 (offline SQLite catalog + local-FS warehouse, gated `catalog-sql`) | **Ran — 2/2 pass** |
+| **s3** | 10 (offline lazy build) | Compile-only (Docker) |
+| **gcs** | 10 (added imports; offline lazy build) | Compile-only |
+| **azure-blob** | 10 (offline lazy build) | Compile-only |
+| **sftp** | 10 (offline lazy build) | Compile-only |
+
+### Skipped (with reason)
+- **Check 9 for gcs source** — like its bounded-memory check, the `batch_size=0` read path needs the gRPC backend that `fake-gcs-server` can't serve; its bounded check is already `#[ignore]`d. Noted in the file.
+- **Check 9 for azure-blob / sftp sources** — no bounded-memory/live-read instance exists to reuse for those source crates without booting a new container; skipped per the "no new container boots" rule.
+- **Checks 7 (write modes) &amp; 8 (schema evolution)** — none of these connectors advertise upsert or schema evolution (all append-only/schemaless), so per instructions they were not added.
+- **Preflight (11) for cloud connectors** — skipped (uncertain offline `check()` behavior; conservative rule).
+
+### Key findings
+- parquet/delta use **native row-group cadence** at `batch_size==0` (not a forced single page), so those check-9 fixtures use a **small single-row-group / single-commit** table rather than a large one — verified passing.
+- All offline `check()` impls (csv/jsonl/stdout/parquet/delta sinks; default page-pull for csv/parquet/delta sources) return `Ok(report)` with a well-formed probe — confirmed by running check 11.
+- Updated the now-stale "checks exercised" module-doc comments in csv/parquet/delta sources and delta/iceberg sinks.
+
+Note: the workspace `target/` filled the disk mid-run; I reclaimed space by removing regenerable caches (`target/debug/incremental`, `target/doc`) only. `cargo clean` and broader `rm` were blocked by the sandbox classifier — not needed in the end. No commits or git actions taken.</result>
+<usage><subagent_tokens>248346</subagent_tokens><tool_uses>84</tool_uses><duration_ms>1596070</duration_ms></usage>
+</task-notification>
