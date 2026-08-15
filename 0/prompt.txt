@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>b8d6lwqib</task-id>
+<summary>Monitor event: "PR 455 CI (rerun after fixes) — failures and final verdict"</summary>
+<event>Feature isolation (sink-duckdb): fail</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
