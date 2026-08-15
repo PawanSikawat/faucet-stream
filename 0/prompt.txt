@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bki9x06m6</task-id>
+<summary>Monitor event: "sync-dtx progress (tenant reached + 200/401 counts)"</summary>
+<event>reached tenant 477  |  200:33  401:43  other:1</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
