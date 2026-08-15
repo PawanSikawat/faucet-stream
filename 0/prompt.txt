@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b2210f8lt</task-id>
+<summary>Monitor event: "PR #426 merge/CI status (after ld-retry fix)"</summary>
+<event>PR #426 CI FAILURE detected:
+Test | fail | 1h18m19s | https://github.com/PawanSikawat/faucet-stream/actions/runs/30584248670/job/91011753918 |</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
