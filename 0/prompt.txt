@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b616psr0m</task-id>
+<tool-use-id>toolu_011H9z4HKbgieKMkdC9427iU</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/c52ee385-5ec5-464a-91ae-a39a0cbdf230/tasks/b616psr0m.output</output-file>
+<status>completed</status>
+<summary>Background command "Lean monitor: wait for Coverage terminal or merge" completed (exit code 0)</summary>
+</task-notification>
