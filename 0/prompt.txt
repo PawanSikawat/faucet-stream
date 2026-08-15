@@ -1,0 +1,37 @@
+<task-notification>
+<task-id>aba8fe2b9e174e8de</task-id>
+<tool-use-id>toolu_01AvonrvDdNs6xFnEkMjsEZn</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/c52ee385-5ec5-464a-91ae-a39a0cbdf230/tasks/aba8fe2b9e174e8de.output</output-file>
+<status>completed</status>
+<summary>Agent "Adopt conformance checks: cloud DB" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>The duckdb build failed — but the error is in the bundled `libduckdb-sys` C++ build (`cc-rs` failing to compile DuckDB's `ub_src_transaction.cpp`), a local toolchain issue unrelated to my Rust test edits. This is exactly the "bundled DuckDB is heavy / won't build — rely on CI" case the task anticipated. My duckdb edits mirror existing patterns in those files exactly (same `seed`/`DuckdbSource::new`/`with_batch_size` helpers, `Sink` trait already imported).
+
+All non-duckdb crates compiled cleanly with `--no-run`. Formatting applied only to my 10 listed crates.
+
+## Report
+
+Adopted the new `faucet-conformance` checks into my cloud-DB/warehouse connectors. All edits confined to the listed crates.
+
+**Sources**
+
+- **bigquery** — added `assert_connector_name_nonempty` (reused the offline instance in `conformance_errors_not_panics`). Compiles ✓. Skipped batch_size=0 (wiremock 3-HTTP-page fixture; single-page behavior unverified) and preflight (uncertain `check()` returns `Ok` vs `Err` against unreachable).
+- **snowflake** — added `assert_connector_name_nonempty` (reused offline errors-test instance). Compiles ✓. Skipped batch_size=0 (partition fixture) and preflight (uncertain).
+- **clickhouse** — added `assert_connector_name_nonempty` (reused offline errors-test instance). Compiles ✓. Skipped batch_size=0 and preflight (uncertain).
+- **databricks** — added `assert_connector_name_nonempty` (reused wiremock instance in bounded_memory). Compiles ✓. Skipped batch_size=0/preflight (uncertain).
+- **spanner** — added `assert_connector_name_nonempty` (reused live emulator instance in bounded_memory). Compiles ✓. Skipped batch_size=0 (gRPC streaming single-page unverified) and preflight.
+- **duckdb** — added `assert_connector_name_nonempty` (reused offline instance) **and** `assert_batch_size_zero_single_page` (new test; verified in `stream.rs` that `batch_size==0` buffers into a single terminal page, so it clearly applies). Could NOT compile locally (libduckdb-sys C++ build failure, environment issue) — relying on CI.
+- **redshift** — skipped entirely. Conformance file is deliberately schema-only (PG-wire, no mock path); constructing an instance needs `RedshiftConnection` scaffolding/possible extra dev-dep, and `connector_name` is already unit-tested in the crate's own `src`. Conservative skip.
+
+**Sinks**
+
+- **spanner** — added `assert_connector_name_nonempty_value` (reused live sink), `assert_schema_evolution_effective` (new Docker test; spanner advertises evolution), and `assert_write_modes_truthful` (new Docker test with a `fresh_sink_delete` helper configured `delete_marker: {field: __op, values: [d]}` via `faucet_conformance::doubles` constants). Compiles ✓.
+- **duckdb** — added `assert_connector_name_nonempty_value` (reused the offline `:memory:` capabilities sink). Not compiled locally (same libduckdb-sys C++ issue) — relying on CI. Append-only, so no evolution/write-modes.
+- **clickhouse** — added offline `assert_connector_name_nonempty_value` plain test (lazy sink). Compiles ✓. Append-only → no evolution/write-modes.
+- **snowflake** — added offline `assert_connector_name_nonempty_value` plain test (lazy `SnowflakeSink::new`). Compiles ✓. Not in schema-evolution/upsert registry sets.
+- **bigquery** — skipped. Conformance file is schema-only with no live instance; `connector_name` would require building a full gcp `Client` (embedded RSA key + tempfile, ~40 lines — not a one-line reuse), and schema-evolution/write-modes need a real BigQuery backend (MERGE/`current_schema` have no wiremock path). Noted per conservative rule.
+- **redshift** — skipped (schema-only, PG-wire, no live instance).
+
+**Compile results:** verified `cargo test -p &lt;crate&gt; --no-run` passes for source-{bigquery, snowflake, clickhouse, databricks, spanner} and sink-{spanner, clickhouse, snowflake}. duckdb source+sink could not be built locally due to the bundled-DuckDB C++ toolchain failure (unrelated to my edits) — those two rely on CI. No commits or git changes made.</result>
+<usage><subagent_tokens>212810</subagent_tokens><tool_uses>48</tool_uses><duration_ms>1079982</duration_ms></usage>
+</task-notification>
