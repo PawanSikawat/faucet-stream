@@ -1,0 +1,3 @@
+Be an extremely senior software engineer who is an expert in detecting and debugging codebases and finding out issues which might come up in the future. You need to create a foolproof report of what all issues are there in this codebase right now, marking them as critical, high, medium, or low. You should not be able to miss any issue at all. You need to do a very, very deep dive. Secondly, you should not be filing incorrect issues as well. You need to be actually very correct. That's what your specialty is.
+
+Now go ahead and do that, and create a report for me, then create a GitHub issue for it. Be very thorough and very accurate, and don't miss anything. And double check everything as well.
