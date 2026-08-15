@@ -1,0 +1,203 @@
+<task-notification>
+<task-id>a5c4a1496a728a48f</task-id>
+<tool-use-id>toolu_01CwqiNtEfwWZoXEHAoj5g1T</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/0769bdc5-ea65-4d70-8cfd-25b3984f6ccd/tasks/a5c4a1496a728a48f.output</output-file>
+<status>completed</status>
+<summary>Agent "Scaffold Azure Blob connector (#349)" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All API assumptions verified against `object_store` 0.13.2 source, and `#[serde(flatten)]`+`JsonSchema` is an established pattern here. Everything is in place. Here is the complete report.
+
+---
+
+## Summary
+
+Built the **Azure Blob Storage / ADLS Gen2** source + sink connector pair (issue #349) as three new crates using `object_store`'s `azure` feature (the low-risk path — same crate parquet already uses). The connectors are faithful clones of the GCS/S3 object connectors, sharing an `object_store`-backed client builder in a new `faucet-common-azure` crate. All `object_store` 0.13.2 API calls were verified against the vendored crate source (builder methods, `get`/`put`/`list` on `Arc&lt;dyn ObjectStore&gt;` via the `#[async_trait]` base trait, `AzureConfigKey::from_str` aliases, `PutPayload: From&lt;Bytes&gt;`).
+
+## 1. Files created (all under new dirs only)
+
+```
+crates/common/azure/Cargo.toml
+crates/common/azure/README.md
+crates/common/azure/src/lib.rs
+crates/source/azure-blob/Cargo.toml
+crates/source/azure-blob/README.md
+crates/source/azure-blob/src/lib.rs
+crates/source/azure-blob/src/config.rs
+crates/source/azure-blob/src/stream.rs
+crates/source/azure-blob/tests/conformance.rs
+crates/source/azure-blob/tests/integration.rs
+crates/sink/azure-blob/Cargo.toml
+crates/sink/azure-blob/README.md
+crates/sink/azure-blob/src/lib.rs
+crates/sink/azure-blob/src/config.rs
+crates/sink/azure-blob/src/sink.rs
+crates/sink/azure-blob/tests/integration.rs
+```
+
+Key design points:
+- `faucet-common-azure` holds `AzureCredentials` (`account_key`/`sas_token`/`connection_string`/`managed_identity`/`service_principal`/`default`), `AzureConnection` (container/account/auth/endpoint/allow_http/use_emulator), and `build_store()`. Credential resolution is a **pure** `config_entries()` returning `Vec&lt;(&amp;'static str, String)&gt;` mapped onto `MicrosoftAzureBuilder::with_config(AzureConfigKey::from_str(...), v)` — fully unit-tested without a live store.
+- **`connection_string`** is parsed into the account/key/sas/endpoint config keys `object_store` actually understands (it has no single connection-string key).
+- Source: list `prefix`/`object_keys`, `json_lines`/`json_array`/`raw_text`, `buffer_unordered(concurrency)`, `stream_pages` with `batch_size=0` sentinel, per-object-key compression (`auto`/`gzip`/`zstd`), `Source::check` (bounded list probe), `config_schema`, `dataset_uri` (`az://…`).
+- Sink: JSONL blobs, `batch_size`/`max_records_per_file` rollover, UUIDv7 time-sortable keys, compression, `Sink::check`, `config_schema`. Kind string / `connector_name`: **`azure-blob`**.
+- **Deliberately out of scope for v1** (noted below): sharding, `discover`, and the GCS/S3 `verify_length`/`verify_checksum` integrity machinery (`object_store` validates content-length on `get`).
+
+## 2. Wiring (exact snippets — I did NOT edit these shared files)
+
+### `object_store` azure feature — how enabled
+Enabled **per-crate** on the shared workspace dep, exactly mirroring how `crates/source/parquet` enables `aws`. No root `Cargo.toml` change to the `object_store = "0.13"` line. Each of the three new `Cargo.toml`s already contains:
+```toml
+object_store = { workspace = true, features = ["azure"] }
+```
+
+### Root `Cargo.toml` — `members` (add under the common / source / sink groups)
+```toml
+    "crates/common/azure",
+```
+```toml
+    "crates/source/azure-blob",
+```
+```toml
+    "crates/sink/azure-blob",
+```
+
+### Root `Cargo.toml` — `[workspace.dependencies]` (new crates start at 1.0.0)
+```toml
+faucet-common-azure = { path = "crates/common/azure", version = "1.0.0" }
+faucet-source-azure-blob = { path = "crates/source/azure-blob", version = "1.0.0" }
+faucet-sink-azure-blob = { path = "crates/sink/azure-blob", version = "1.0.0" }
+```
+
+### `faucet-stream/Cargo.toml`
+Add to the `source = [ … ]` aggregate:
+```toml
+    "source-azure-blob",
+```
+Add to the `sink = [ … ]` aggregate:
+```toml
+    "sink-azure-blob",
+```
+Add feature definitions (mirroring `source-gcs`/`sink-gcs`, which pull the common crate):
+```toml
+source-azure-blob = ["dep:faucet-source-azure-blob", "dep:faucet-common-azure"]
+sink-azure-blob = ["dep:faucet-sink-azure-blob", "dep:faucet-common-azure"]
+```
+Add to the `compression = [ … ]` aggregate (optional-dep `?` forwarding):
+```toml
+    "faucet-source-azure-blob?/compression",
+    "faucet-sink-azure-blob?/compression",
+```
+Add optional deps in `[dependencies]`:
+```toml
+faucet-common-azure = { workspace = true, optional = true }
+faucet-source-azure-blob = { workspace = true, optional = true }
+faucet-sink-azure-blob = { workspace = true, optional = true }
+```
+
+### `cli/Cargo.toml`
+Add to the `source = [ … ]` and `sink = [ … ]` aggregates:
+```toml
+    "source-azure-blob",
+```
+```toml
+    "sink-azure-blob",
+```
+Add feature definitions (CLI style — no common dep, matching `source-gcs`):
+```toml
+source-azure-blob = ["dep:faucet-source-azure-blob"]
+sink-azure-blob = ["dep:faucet-sink-azure-blob"]
+```
+Add to the CLI `compression = [ … ]` aggregate:
+```toml
+    "faucet-source-azure-blob?/compression",
+    "faucet-sink-azure-blob?/compression",
+```
+Add optional deps in `[dependencies]`:
+```toml
+faucet-source-azure-blob = { workspace = true, optional = true }
+faucet-sink-azure-blob = { workspace = true, optional = true }
+```
+
+### `cli/src/registry.rs` — six arms (mirroring the `gcs` arms)
+`build_source` (near the `source-gcs` arm):
+```rust
+        #[cfg(feature = "source-azure-blob")]
+        "azure-blob" =&gt; {
+            let cfg = decode::&lt;faucet_source_azure_blob::AzureBlobSourceConfig&gt;(
+                "source",
+                "azure-blob",
+                config,
+            )?;
+            Ok(Box::new(
+                faucet_source_azure_blob::AzureBlobSource::new(cfg).await?,
+            ))
+        }
+```
+`build_sink` (near the `sink-gcs` arm):
+```rust
+        #[cfg(feature = "sink-azure-blob")]
+        "azure-blob" =&gt; {
+            let cfg = decode::&lt;faucet_sink_azure_blob::AzureBlobSinkConfig&gt;(
+                "sink",
+                "azure-blob",
+                config,
+            )?;
+            Ok(Box::new(faucet_sink_azure_blob::AzureBlobSink::new(cfg).await?))
+        }
+```
+`source_schema`:
+```rust
+        #[cfg(feature = "source-azure-blob")]
+        "azure-blob" =&gt; Ok(schema::&lt;faucet_source_azure_blob::AzureBlobSourceConfig&gt;()),
+```
+`sink_schema`:
+```rust
+        #[cfg(feature = "sink-azure-blob")]
+        "azure-blob" =&gt; Ok(schema::&lt;faucet_sink_azure_blob::AzureBlobSinkConfig&gt;()),
+```
+`source_descriptions` (push):
+```rust
+    #[cfg(feature = "source-azure-blob")]
+    v.push((
+        "azure-blob",
+        "Azure Blob Storage / ADLS Gen2 source — JSONL, JSON array, or raw text",
+    ));
+```
+`sink_descriptions` (push):
+```rust
+    #[cfg(feature = "sink-azure-blob")]
+    v.push((
+        "azure-blob",
+        "Azure Blob Storage / ADLS Gen2 sink — JSONL files",
+    ));
+```
+(`source_kinds()`/`sink_kinds()` derive from the descriptions, so no further edit.)
+
+### `cli/connectors/registry.json` — two entries
+```json
+    { "name": "azure-blob", "kind": "source", "verified": true, "description": "Azure Blob Storage / ADLS Gen2 source — JSONL, JSON array, or raw text" },
+```
+```json
+    { "name": "azure-blob", "kind": "sink", "verified": true, "description": "Azure Blob Storage / ADLS Gen2 sink — JSONL files" },
+```
+
+### `.github/workflows/ci.yml` — `feature-check` matrix
+Add under `# Sources` and `# Sinks` (checks `faucet-stream` features; the `compression` aggregate variant already exercises the compression forwarding, so no separate variant is needed — matching gcs/s3):
+```yaml
+          - source-azure-blob
+```
+```yaml
+          - sink-azure-blob
+```
+
+## 3. Assumptions &amp; spots that need a real compile
+
+- **`object_store` 0.13.2 Azure API — verified against the vendored source**, not assumed: `MicrosoftAzureBuilder::{from_env, with_account, with_container_name, with_use_emulator, with_endpoint(String), with_allow_http, with_config(AzureConfigKey, impl Into&lt;String&gt;), build}`; `ObjectStore` base trait is `#[async_trait]` (dyn-safe) so `get`/`put`/`list` work on `Arc&lt;dyn ObjectStore&gt;`; `GetResult::into_stream() -&gt; BoxStream&lt;'static, Result&lt;Bytes&gt;&gt;`; `put(&amp;Path, PutPayload)` with `impl From&lt;Bytes&gt; for PutPayload`; `ObjectMeta.location: Path` (Display). The `AzureConfigKey::from_str` aliases used are all present: `azure_storage_account_name`, `azure_storage_access_key`, `azure_storage_sas_key`, `azure_storage_client_id`, `azure_storage_client_secret`, `azure_storage_tenant_id`, `azure_storage_endpoint`. **Two aliases that do NOT exist were avoided**: there is no connection-string key (parsed manually) and `use_azure_cli` is `azure_use_azure_cli` not `azure_storage_use_azure_cli`.
+- **`build()` laziness**: I assume `MicrosoftAzureBuilder::build()` performs no network I/O and defers credential validation to request time (matching parquet's lazy `AmazonS3Builder::build()`). The `build_store_succeeds_lazily_*` and `new_builds_lazily_with_emulator` unit tests depend on this; if `build()` eagerly rejects an incomplete service-principal/emulator config, those few tests would need adjusting. Confidence high (mirrors S3).
+- **Managed identity**: user-assigned sets `azure_storage_client_id`; system-assigned emits no key and relies on `object_store`'s default credential chain reaching IMDS. Worth a live-backend sanity check but correct per the builder's credential resolution.
+- **Integration tests use Azurite** (`mcr.microsoft.com/azure-storage/azurite`) and skip cleanly when Docker is absent; the read/write **assertion** tests are `#[ignore]`d (seeding Azurite needs SharedKey-signed container-create/upload — the analog of GCS's ignored emulator tests), with a non-ignored "builds against emulator" test + a non-ignored conformance "errors, not panics" test that runs unconditionally. Run the ignored ones with `cargo test -- --ignored` against a backend with the container pre-created.
+- **Coverage**: pure logic (credential→config-key mapping incl. connection-string parsing, format parsing, key capping, chunk-size/key generation, config serde/builders, compression resolution, batch-size validation, container-empty rejection) is unit-tested inline to hit the ≥90% patch bar; the object-store I/O paths are covered by the ignored Azurite tests.
+- **Docs-sync surfaces NOT touched** (per hard constraints — flag for a follow-up in the same PR): `docs/book/src/reference/connectors.md` capability matrix + counts, root `README.md` connector table/counts, a `cli/examples/*_to_azure_blob.yaml` (+ `examples/README.md`), and the crate table in `.claude/rules/architecture.md`. These are the maintenance.md "add a connector" surfaces I could not edit here.
+
+Nothing was built/compiled (shared `target/`); all API claims are grounded in the vendored `object_store-0.13.2` source and the existing GCS/S3/parquet connector patterns.</result>
+<usage><subagent_tokens>293331</subagent_tokens><tool_uses>75</tool_uses><duration_ms>1059471</duration_ms></usage>
+</task-notification>
