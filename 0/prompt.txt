@@ -1,0 +1,8 @@
+Let's do one thing. Currently, while all the document entails everything, the document needs to be developer-friendly. Any beginner who picks up this needs to see it like a story. The whole architecture should seem like that.
+Also, if possible, we can switch toggles. There could be a toggle in the document where, if the user clicks on "Architect-based documentation" versus "If you are a beginner's guide and you are learning something from scratch," then you:
+1. Start with basic connectors.
+2. Start with normal fetch.
+3. Cover fetch with incremental.
+4. Cover streaming.
+5. Cover a set of things, like what all additional things can be implemented: DLL queues and other stuff.
+Do that. I hope you are clear.
