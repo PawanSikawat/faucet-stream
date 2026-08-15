@@ -1,6 +1,6 @@
 //! Elasticsearch source configuration.
 
-use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE};
+use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE, FaucetError, validate_batch_size};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -92,6 +92,25 @@ impl ElasticsearchSourceConfig {
         self.batch_size = batch_size;
         self
     }
+
+    /// Validate the config at load time so a bad config fails fast with a typed
+    /// [`FaucetError::Config`] instead of surfacing deep in a run: rejects an
+    /// out-of-range `batch_size` (`> MAX_BATCH_SIZE`) and an empty `base_url` or
+    /// `index`.
+    pub fn validate(&self) -> Result<(), FaucetError> {
+        if self.base_url.trim().is_empty() {
+            return Err(FaucetError::Config(
+                "Elasticsearch source requires a non-empty `base_url`".into(),
+            ));
+        }
+        if self.index.trim().is_empty() {
+            return Err(FaucetError::Config(
+                "Elasticsearch source requires a non-empty `index`".into(),
+            ));
+        }
+        validate_batch_size(self.batch_size)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -176,5 +195,37 @@ mod tests {
         }"#;
         let config: ElasticsearchSourceConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn validate_accepts_valid_config() {
+        assert!(
+            ElasticsearchSourceConfig::new("http://localhost:9200", "idx")
+                .validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_rejects_oversized_batch_size() {
+        let config = ElasticsearchSourceConfig::new("http://localhost:9200", "idx")
+            .with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(matches!(config.validate(), Err(FaucetError::Config(_))));
+    }
+
+    #[test]
+    fn validate_rejects_empty_base_url() {
+        assert!(matches!(
+            ElasticsearchSourceConfig::new("  ", "idx").validate(),
+            Err(FaucetError::Config(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_empty_index() {
+        assert!(matches!(
+            ElasticsearchSourceConfig::new("http://localhost:9200", "").validate(),
+            Err(FaucetError::Config(_))
+        ));
     }
 }

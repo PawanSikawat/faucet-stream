@@ -77,7 +77,7 @@ With a header row of `id,name,email`, the file produces records like
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `batch_size` | int | `1000` | Rows per emitted `StreamPage` in `Source::stream_pages`. **`0` = no batching**: the entire file is drained into a single page (handy for small lookup tables or load-job sinks that prefer one large request). Capped at `MAX_BATCH_SIZE` (1,000,000); validated at config-load time. |
+| `batch_size` | int | `1000` | Rows per emitted `StreamPage` in `Source::stream_pages`. **`0` = no batching**: the entire file is drained into a single page (handy for small lookup tables or load-job sinks that prefer one large request). Capped at `MAX_BATCH_SIZE` (1,000,000); validated at config-load time (an empty `path` is likewise rejected with `FaucetError::Config`). |
 
 ### Format
 

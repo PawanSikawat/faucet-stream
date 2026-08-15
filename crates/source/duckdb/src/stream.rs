@@ -50,7 +50,7 @@ fn open(config: &DuckdbSourceConfig) -> Result<Connection, FaucetError> {
 impl DuckdbSource {
     /// Create a new DuckDB source, opening (and reusing) one connection.
     pub async fn new(config: DuckdbSourceConfig) -> Result<Self, FaucetError> {
-        faucet_core::validate_batch_size(config.batch_size)?;
+        config.validate()?;
         let cfg = config.clone();
         let conn = tokio::task::spawn_blocking(move || open(&cfg))
             .await

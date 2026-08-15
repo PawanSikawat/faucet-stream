@@ -96,7 +96,7 @@ faucet run pipeline.yaml
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `batch_size` | int | `1000` | Records per emitted `StreamPage` **and** the value injected as the page-size variable (`first:`). Max `1_000_000`. **`0` = no batching**: the page-size variable is omitted so the upstream uses its own default page size, and the whole response is emitted as a single page. See [Streaming & batching](#streaming--batching). |
+| `batch_size` | int | `1000` | Records per emitted `StreamPage` **and** the value injected as the page-size variable (`first:`). Max `1_000_000`. **`0` = no batching**: the page-size variable is omitted so the upstream uses its own default page size, and the whole response is emitted as a single page. See [Streaming & batching](#streaming--batching). Validated at config load: an empty `endpoint` / `query`, or a `batch_size` above `MAX_BATCH_SIZE` (1,000,000), is rejected with `FaucetError::Config`. |
 
 ## Authentication
 

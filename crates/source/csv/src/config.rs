@@ -123,6 +123,23 @@ impl CsvSourceConfig {
         self.compression = c;
         self
     }
+
+    /// Validate the config at load time so a bad config fails fast with a typed
+    /// `FaucetError::Config` instead of surfacing deep in a run: rejects an
+    /// out-of-range `batch_size` (`> MAX_BATCH_SIZE`) and an empty `path`.
+    ///
+    /// `faucet_core` is referenced by full path here (rather than imported) so
+    /// the field-doc links above keep their explicit targets and the committed
+    /// config JSON Schema stays byte-identical.
+    pub fn validate(&self) -> Result<(), faucet_core::FaucetError> {
+        if self.path.trim().is_empty() {
+            return Err(faucet_core::FaucetError::Config(
+                "CSV source requires a non-empty `path`".into(),
+            ));
+        }
+        faucet_core::validate_batch_size(self.batch_size)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -205,5 +222,28 @@ mod tests {
         }"#;
         let config: CsvSourceConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, 250);
+    }
+
+    #[test]
+    fn validate_accepts_valid_config() {
+        assert!(CsvSourceConfig::new("/tmp/data.csv").validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_oversized_batch_size() {
+        let config =
+            CsvSourceConfig::new("/tmp/data.csv").with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(matches!(
+            config.validate(),
+            Err(faucet_core::FaucetError::Config(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_empty_path() {
+        assert!(matches!(
+            CsvSourceConfig::new("   ").validate(),
+            Err(faucet_core::FaucetError::Config(_))
+        ));
     }
 }

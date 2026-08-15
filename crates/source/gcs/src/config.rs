@@ -173,6 +173,23 @@ impl GcsSourceConfig {
         self.compression = c;
         self
     }
+
+    /// Validate the config at load time so a bad config fails fast with a typed
+    /// `FaucetError::Config` instead of surfacing deep in a run: rejects an
+    /// out-of-range `batch_size` (`> MAX_BATCH_SIZE`) and an empty `bucket`.
+    ///
+    /// `faucet_core` is referenced by full path here (rather than imported) so
+    /// the field-doc links above keep their explicit targets and the committed
+    /// config JSON Schema stays byte-identical.
+    pub fn validate(&self) -> Result<(), faucet_core::FaucetError> {
+        if self.bucket.trim().is_empty() {
+            return Err(faucet_core::FaucetError::Config(
+                "GCS source requires a non-empty `bucket`".into(),
+            ));
+        }
+        faucet_core::validate_batch_size(self.batch_size)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -285,5 +302,28 @@ mod tests {
         }"#;
         let config: GcsSourceConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn validate_accepts_valid_config() {
+        assert!(GcsSourceConfig::new("my-bucket").validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_oversized_batch_size() {
+        let config =
+            GcsSourceConfig::new("my-bucket").with_batch_size(faucet_core::MAX_BATCH_SIZE + 1);
+        assert!(matches!(
+            config.validate(),
+            Err(faucet_core::FaucetError::Config(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_empty_bucket() {
+        assert!(matches!(
+            GcsSourceConfig::new("   ").validate(),
+            Err(faucet_core::FaucetError::Config(_))
+        ));
     }
 }
