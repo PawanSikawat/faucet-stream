@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bsy1j2vuu</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/49d99f48-971c-4cdc-934c-eb898ae4494d/tasks/bsy1j2vuu.output</output-file>
+<status>completed</status>
+<summary>Monitor "PR 455 — CI workflow run for head 2574d23a" stream ended</summary>
+</task-notification>
