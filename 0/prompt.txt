@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b85qc8fsf</task-id>
+<tool-use-id>toolu_01JGT225ja1vwxfZfoPv9WRY</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/822fc7c7-6ae9-40ea-8a15-77d7db4ec709/tasks/b85qc8fsf.output</output-file>
+<status>completed</status>
+<summary>Background command "Cancel stale runs and watch docs deploy" completed (exit code 0)</summary>
+</task-notification>
