@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.4.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-sink-mssql-v1.3.4...faucet-sink-mssql-v1.4.0) - 2026-08-15
+
+### Features
+
+- Scoped cleanup — delete records missing from a source's completeness claim ([#484](https://github.com/faucet-hq/faucet-stream/pull/484))
+
 ## [1.3.4](https://github.com/faucet-hq/faucet-stream/compare/faucet-sink-mssql-v1.3.3...faucet-sink-mssql-v1.3.4) - 2026-08-09
 
 ### Bug Fixes

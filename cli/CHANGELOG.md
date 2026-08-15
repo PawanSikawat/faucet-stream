@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.9.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-cli-v1.8.1...faucet-cli-v1.9.0) - 2026-08-15
+
+### Features
+
+- Generic range partitioning with bound discovery ([#486](https://github.com/faucet-hq/faucet-stream/pull/486))
+- Scoped cleanup — delete records missing from a source's completeness claim ([#484](https://github.com/faucet-hq/faucet-stream/pull/484))
+- *(serve)* Per-run completion callbacks, with run identity in the notify payload ([#482](https://github.com/faucet-hq/faucet-stream/pull/482))
+
 ## [1.8.1](https://github.com/faucet-hq/faucet-stream/compare/faucet-cli-v1.8.0...faucet-cli-v1.8.1) - 2026-08-10
 
 ### Miscellaneous
