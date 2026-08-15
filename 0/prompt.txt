@@ -1,0 +1,44 @@
+<task-notification>
+<task-id>a4afebba3d1da38f4</task-id>
+<tool-use-id>toolu_01E6dEYjT6M5g5dQRkKZ52Ab</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/c52ee385-5ec5-464a-91ae-a39a0cbdf230/tasks/a4afebba3d1da38f4.output</output-file>
+<status>completed</status>
+<summary>Agent "Adopt conformance checks: core SQL" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All offline sqlite tests pass, including every new check (batch_size_zero, preflight, connector_name on the source; connector_name, schema_evolution, write_modes incl. the delete sub-check, and preflight on the sink). Since the Docker-gated postgres/mysql/mssql crates are structurally identical and all 8 compile, this validates the approach end-to-end.
+
+## Report
+
+Adopted the new `faucet-conformance` checks into all 8 core-SQL connector conformance tests on branch `feat/conformance-adoption`. No git actions taken.
+
+### Approach (conservative, no new container boots)
+New checks needing a live instance were folded into the connectors' **existing** live/offline tests rather than booting new containers. For sinks, `write_modes_truthful` needs a clean table (the capabilities check writes rows first), so I added a small `reset_rows` helper (`DELETE FROM t`) and run it before that check within the same reused container. All four sink `fresh_sink()` helpers gained `delete_marker: { field: "__op", values: ["d"] }` so the delete sub-check can pass.
+
+### Per connector
+
+**Sources** (added to the existing live `conformance_bounded_memory`, except sqlite connector_name which went in the offline schema test):
+- postgres / mysql / mssql / sqlite — added **connector_name** (check 10), **preflight_check_wellformed** (check 11, live `Source::check` → Ok/Pass), and **batch_size_zero_single_page** (check 9, a second source built with `batch_size: 0` against the same seeded container/db).
+
+**Sinks** (added to existing live `conformance_idempotent_replay` and `conformance_capabilities_truthful`):
+- postgres / mysql / mssql / sqlite — added **connector_name** (check 10, value form), **schema_evolution_effective** (check 8, after the replay — schema-only, no row conflict), **sink_preflight_check_wellformed** (check 11, non-mutating, first), and **write_modes_truthful** (check 7, after a table reset). Added `DeleteMarker` (+`Sink`) imports and the `delete_marker` config.
+
+### Skipped
+Nothing was skipped as inapplicable — all requested checks that apply to these four SQL source+sink connectors were added. (Checks 1–6 were already present and left untouched.)
+
+### Compile results (`cargo test -p &lt;crate&gt; --no-run`, pinned 1.96.0 toolchain)
+- faucet-source-sqlite — OK
+- faucet-sink-sqlite — OK
+- faucet-source-postgres — OK
+- faucet-sink-postgres — OK
+- faucet-source-mysql — OK
+- faucet-sink-mysql — OK
+- faucet-source-mssql — OK
+- faucet-sink-mssql — OK
+
+### Offline test runs (non-Docker)
+- `faucet-source-sqlite --test conformance`: 3 passed, 0 failed
+- `faucet-sink-sqlite --test conformance`: 3 passed, 0 failed (exercises the new schema_evolution, write_modes+delete, preflight, connector_name paths live)
+
+`cargo fmt` run on all 8 crates. The postgres/mysql/mssql live tests remain Docker-gated and will run in CI as before.</result>
+<usage><subagent_tokens>187885</subagent_tokens><tool_uses>33</tool_uses><duration_ms>845276</duration_ms></usage>
+</task-notification>
