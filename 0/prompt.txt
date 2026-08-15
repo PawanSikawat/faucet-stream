@@ -1,0 +1,2 @@
+<bash-input> rm -rf /Users/c-sikawats/Documents/GitHub/Personal/faucet-stream/target/debug/incremental /Users/c-sikawats/Documents/GitHub/Personal/faucet-stream/target/doc
+  /Users/c-sikawats/Documents/GitHub/Personal/faucet-stream/target/package && df -h /</bash-input>
