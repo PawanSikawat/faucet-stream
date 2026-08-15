@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>blldsg9p2</task-id>
+<summary>Monitor event: "CI status for PR 457 (failures + completion)"</summary>
+<event>FAILED: Docs</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
