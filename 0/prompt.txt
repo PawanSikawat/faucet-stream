@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bovlt2v59</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/49d99f48-971c-4cdc-934c-eb898ae4494d/tasks/bovlt2v59.output</output-file>
+<status>completed</status>
+<summary>Monitor "PR 457 merge/failure watch" stream ended</summary>
+</task-notification>
