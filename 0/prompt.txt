@@ -1,0 +1,9 @@
+<task-notification>
+<task-id>ba9ubnzxv</task-id>
+<tool-use-id>toolu_01Xp6jfcy6LRDN1uL8Gy4Hyx</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/49d99f48-971c-4cdc-934c-eb898ae4494d/tasks/ba9ubnzxv.output</output-file>
+<status>completed</status>
+<summary>Background command "export PATH="$HOME/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin:$PATH" &amp;&amp; export RUSTC=$HOME/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/rustc &amp;&amp; CARGO=$HOME/.rustup/toolchains/1.96.0-aarch64-apple-darwin/bin/cargo
+FEATS="default,schedule,serve,serve-ui,serve-history-postgres,serve-history-sqlite,catalog,lineage,notify,triggers,triggers-object-store,templates,cli-dev,encryption,mcp,source,sink,state,quality,quality-jsonschema,contract,masking"
+$CARGO test -p faucet-cli --no-default-features --features "$FEATS" &gt; /private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/49d99f48-971c-4cdc-934c-eb898ae4494d/scratchpad/final-test.log 2&gt;&amp;1; echo "EXIT=$?"" completed (exit code 0)</summary>
+</task-notification>
