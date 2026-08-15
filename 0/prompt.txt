@@ -1,0 +1,137 @@
+<task-notification>
+<task-id>ac792a6e1a268a467</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/0769bdc5-ea65-4d70-8cfd-25b3984f6ccd/tasks/ac792a6e1a268a467.output</output-file>
+<status>completed</status>
+<summary>Agent "Scaffold Pub/Sub connector (#347)" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All 20 files are written and the three crates are self-contained. Here is the complete report.
+
+## 1. Files created
+
+**`faucet-common-pubsub`** (`crates/common/pubsub/`)
+- `Cargo.toml`, `README.md`
+- `src/lib.rs` — re-exports `PubsubCredentials`, `PubsubConnection`, `build_client`, and `PubsubMessage`
+- `src/config.rs` — `PubsubCredentials` enum (adc / service_account_json_file / service_account_json_inline / anonymous) + `PubsubConnection { project_id, endpoint, emulator_host, credentials }`
+- `src/client.rs` — **the only SDK-touching module in the crate**: `build_client(&amp;PubsubConnection)`
+
+**`faucet-source-pubsub`** (`crates/source/pubsub/`)
+- `Cargo.toml`, `README.md`
+- `src/lib.rs`, `src/config.rs` (validate + serde), `src/convert.rs` (pure decode + `message_to_record`), `src/state.rs` (pure bookmark + `state_key`), `src/stream.rs` (Source impl, SDK-touching)
+- `tests/integration.rs` (emulator-gated, skips without `PUBSUB_EMULATOR_HOST`)
+
+**`faucet-sink-pubsub`** (`crates/sink/pubsub/`)
+- `Cargo.toml`, `README.md`
+- `src/lib.rs`, `src/config.rs`, `src/encode.rs` (pure ordering-key/payload/attributes → `Prepared`), `src/sink.rs` (Sink impl, SDK-touching; pure `encode_records`/`assemble_row_outcomes` extracted for coverage)
+- `tests/integration.rs` (emulator-gated)
+
+Key design decisions: source acks **at durable page boundaries** (buffer `ReceivedMessage`s per yielded page, ack at the top of the next poll — the point at which the previous page is written+persisted — plus a final ack after the terminal yield), exactly mirroring the Kafka commit-on-next-poll mechanism. Termination requires at least one of `idle_termination_secs`/`max_messages` (typed error otherwise). Exactly-once is **not** advertised on either side (documented in both READMEs).
+
+## 2. Wiring snippets (all in shared files I did NOT edit)
+
+**Root `Cargo.toml` — `members`** (add three):
+```toml
+    "crates/common/pubsub",
+    "crates/source/pubsub",
+    "crates/sink/pubsub",
+```
+
+**Root `Cargo.toml` — `[workspace.dependencies]`** (path entries + external crates):
+```toml
+faucet-common-pubsub = { path = "crates/common/pubsub", version = "1.0.0" }
+faucet-source-pubsub = { path = "crates/source/pubsub", version = "1.0.0" }
+faucet-sink-pubsub   = { path = "crates/sink/pubsub", version = "1.0.0" }
+
+# Google Cloud Pub/Sub (yoshidan gcloud-* family, matching the Spanner stack).
+# default-features=false + jwt-rust-crypto is REQUIRED to avoid the dual-jwt
+# `compile_error!` in gcloud-auth (gcloud-spanner already pins jwt-rust-crypto).
+gcloud-pubsub = { version = "1", default-features = false, features = ["auth", "rustls-tls", "jwt-rust-crypto"] }
+gcloud-auth   = { version = "1.3", default-features = false, features = ["rustls-tls", "jwt-rust-crypto"] }
+```
+(`gcloud-googleapis` with the `pubsub` feature is declared directly in `crates/common/pubsub/Cargo.toml` as `{ version = "1.3", features = ["pubsub"] }` — same 1.3 as the existing workspace `spanner`-featured entry, so it unifies; no workspace edit needed for it.)
+
+**`faucet-stream/Cargo.toml`** — features + optional deps + aggregates:
+```toml
+# [features]
+source-pubsub = ["dep:faucet-source-pubsub", "dep:faucet-common-pubsub"]
+sink-pubsub   = ["dep:faucet-sink-pubsub", "dep:faucet-common-pubsub"]
+# add "source-pubsub" to the `source = [ … ]` aggregate list
+# add "sink-pubsub"   to the `sink = [ … ]` aggregate list  (full = ["source","sink",…] picks them up transitively)
+
+# [dependencies]
+faucet-common-pubsub = { workspace = true, optional = true }
+faucet-source-pubsub = { workspace = true, optional = true }
+faucet-sink-pubsub   = { workspace = true, optional = true }
+```
+
+**`cli/Cargo.toml`** — features + optional deps + aggregates:
+```toml
+# [features]
+source-pubsub = ["dep:faucet-source-pubsub"]
+sink-pubsub   = ["dep:faucet-sink-pubsub"]
+# add "source-pubsub" to the `source = [ … ]` aggregate list
+# add "sink-pubsub"   to the `sink = [ … ]` aggregate list
+
+# [dependencies]
+faucet-source-pubsub = { workspace = true, optional = true }
+faucet-sink-pubsub   = { workspace = true, optional = true }
+```
+
+**`cli/src/registry.rs`** — four arms (mirror the kinesis arms):
+```rust
+// build_source (near line 446)
+#[cfg(feature = "source-pubsub")]
+"pubsub" =&gt; {
+    let cfg = decode::&lt;faucet_source_pubsub::PubsubSourceConfig&gt;("source", "pubsub", config)?;
+    Ok(Box::new(faucet_source_pubsub::PubsubSource::new(cfg).await?))
+}
+// build_sink (near line 622)
+#[cfg(feature = "sink-pubsub")]
+"pubsub" =&gt; {
+    let cfg = decode::&lt;faucet_sink_pubsub::PubsubSinkConfig&gt;("sink", "pubsub", config)?;
+    Ok(Box::new(faucet_sink_pubsub::PubsubSink::new(cfg).await?))
+}
+// source_schema (near line 835)
+#[cfg(feature = "source-pubsub")]
+"pubsub" =&gt; Ok(schema::&lt;faucet_source_pubsub::PubsubSourceConfig&gt;()),
+// sink_schema (near line 901)
+#[cfg(feature = "sink-pubsub")]
+"pubsub" =&gt; Ok(schema::&lt;faucet_sink_pubsub::PubsubSinkConfig&gt;()),
+// builtin_source_descriptions (near line 979)
+#[cfg(feature = "source-pubsub")]
+v.push(("pubsub", "Google Cloud Pub/Sub consumer. Streaming pull with per-message records, attribute mapping, and ack at durable page boundaries (at-least-once)."));
+// builtin_sink_descriptions (near line 1054)
+#[cfg(feature = "sink-pubsub")]
+v.push(("pubsub", "Google Cloud Pub/Sub producer. Batched publish with optional ordering keys, bounded concurrency, and partial-failure retry (DLQ-routable)."));
+```
+
+**`cli/connectors/registry.json`** — two entries (verified):
+```json
+{ "name": "pubsub", "kind": "source", "verified": true, "description": "Google Cloud Pub/Sub consumer with ack at durable page boundaries" },
+{ "name": "pubsub", "kind": "sink", "verified": true, "description": "Google Cloud Pub/Sub producer with ordering keys and partial-failure retry" },
+```
+
+**`.github/workflows/ci.yml`** — `feature-check` matrix (add under Sources / Sinks):
+```yaml
+          - source-pubsub
+          - sink-pubsub
+```
+
+Also worth updating (docs-sync, not compile-blocking): `docs/book/src/reference/connectors.md` capability matrix, connector counts, and a `cli/examples/*.yaml` — I left all `docs/**` untouched per constraints.
+
+## 3. Assumptions + SDK call sites most likely to need a real-compile fixup
+
+**Version strings I wrote (verify/bump against crates.io):**
+- `gcloud-pubsub = "1"` — the yoshidan crate renamed from `google-cloud-pubsub`; siblings resolve at `gcloud-auth 1.3`, `gcloud-gax 1.4`, `gcloud-googleapis 1.3` (all in the local cargo cache). I used `"1"` (not a pin) so the newest 1.x resolves; **confirm the latest 1.x and that it depends on gcloud-googleapis ^1.3 / gcloud-gax ^1.4** (it should, keeping the whole gcloud stack coherent). `gcloud-pubsub` was **not** in the local registry cache, so its API is written from the stable yoshidan `google-cloud-pubsub` API, not verified against the exact crate.
+- `gcloud-auth = "1.3"` — **confirmed** from cached source (`CredentialsFile::{new, new_from_file, new_from_str}` exist).
+- `gcloud-googleapis = "1.3"` with `pubsub` feature — **confirmed** cached (`google.pubsub.v1.rs`, `pubsub` feature, `PubsubMessage` fields `data`/`attributes`/`message_id`/`publish_time{seconds,nanos}`/`ordering_key` all verified).
+
+**SDK call sites to check first (short, isolated list):**
+1. `crates/common/pubsub/src/client.rs::build_client` — **highest risk.** `ClientConfig::default()` + fields `.project_id` / `.endpoint`, `ClientConfig::with_auth()`, `ClientConfig::with_credentials(CredentialsFile)`, `Client::new(config).await`. Also the `unsafe { std::env::set_var("PUBSUB_EMULATOR_HOST", …) }` for the emulator override (edition-2024 unsafe; guarded to fire only when the var is unset).
+2. `crates/source/pubsub/src/stream.rs` — `client.subscription(id)`, `subscription.pull(i32, None)`, `ReceivedMessage.message` **field** access + `m.ack().await`, `subscription.exists(None)`. (If `.message`/`.ack_id` are methods not fields, or `pull`'s 2nd arg type differs, fix here.)
+3. `crates/sink/pubsub/src/sink.rs` — `client.topic(id)`, `topic.new_publisher(Some(PublisherConfig { enable_message_ordering, ..default }))`, `publisher.publish(PubsubMessage).await` → `Awaiter`, `awaiter.get().await -&gt; Result&lt;String, _&gt;`, `topic.exists(None)`.
+4. `crates/{source,sink}/pubsub/tests/integration.rs` — `create_topic`, `create_subscription(id, topic.fully_qualified_name(), Default::default(), None)`, `topic.new_publisher`. Only reachable with the emulator, but must still compile under `cargo test --workspace --all-features`.
+
+All pure logic (config validation, value-format decode/encode, attribute mapping, ordering-key extraction, message↔record conversion, termination validation, bookmark, row-outcome merging) is in SDK-free modules with thorough unit tests, so the ≥90% patch-coverage target rests on pure code; the thin I/O shims above are the emulator-integration-tested remainder.</result>
+<usage><subagent_tokens>260094</subagent_tokens><tool_uses>52</tool_uses><duration_ms>1137389</duration_ms></usage>
+</task-notification>
