@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>b19a9ygd1</task-id>
+<summary>Monitor event: "PR 455 final CI verdict (after wasm-fixture fix)"</summary>
+<event>ALL CHECKS DONE — pr_state=OPEN failing=[none]</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
