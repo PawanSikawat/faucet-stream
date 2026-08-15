@@ -238,7 +238,9 @@ pub fn plan_windows(
 
 /// Whether a chunk's upper edge is included. See the module docs — this has no
 /// default on purpose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Bounds {
     /// `end` is the last value in the chunk: `[start, end]`. For a source whose

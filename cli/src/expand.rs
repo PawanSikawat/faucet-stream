@@ -25,7 +25,15 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 /// Row ids that callers can never use because they collide with
 /// load-time interpolation prefixes or future runtime scopes.
 pub const RESERVED_IDS: &[&str] = &[
-    "env", "file", "secret", "matrix", "pipeline", "now", "backfill", "param",
+    "env",
+    "file",
+    "secret",
+    "matrix",
+    "pipeline",
+    "now",
+    "backfill",
+    "param",
+    "partition",
 ];
 
 /// One fully-merged matrix row, ready for the executor.
@@ -1012,6 +1020,7 @@ fn check_refs(value: &Value, id_set: &HashSet<&str>, owner: &str) -> CliResult<(
             if let Directive::Deferred { id, .. } = dir
                 && id != "now"
                 && id != "backfill"
+                && id != "partition"
                 && !id_set.contains(id)
             {
                 return Err(CliError::UnknownInterpolationId {
@@ -1087,10 +1096,11 @@ fn collect_deferred(value: &Value, out: &mut Vec<DeferredRef>) {
     let _ = walk_strings(value, &mut |s| {
         for (token, dir) in iter_directives(s) {
             if let Directive::Deferred { id, path } = dir {
-                // `now` / `backfill` are reserved built-ins resolved at run
-                // time, not parent-record dependencies — skip them so the
-                // executor doesn't treat them as deferred parent-record refs.
-                if id == "now" || id == "backfill" {
+                // `now` / `backfill` / `partition` are reserved built-ins
+                // resolved at run time, not parent-record dependencies — skip
+                // them so the executor doesn't treat them as deferred
+                // parent-record refs.
+                if id == "now" || id == "backfill" || id == "partition" {
                     continue;
                 }
                 out.push(DeferredRef {

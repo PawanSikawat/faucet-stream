@@ -42,6 +42,7 @@ pub mod merge;
 pub mod notify;
 pub mod obs;
 pub mod params;
+pub mod partition;
 pub mod pipeline_test;
 #[cfg(feature = "cli-progress")]
 pub mod progress;
