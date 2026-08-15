@@ -1,0 +1,43 @@
+<task-notification>
+<task-id>a46bf4530d949189b</task-id>
+<tool-use-id>toolu_01WWa4RiVBpzpaiXdhzzSN8o</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/25d0f5a6-8938-4915-ab73-d349bfe5721f/tasks/a46bf4530d949189b.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement cleanup on mongodb+elasticsearch" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All gates pass. Summary of the work:
+
+## Changes (additions only — no lines removed in either file)
+
+**`crates/sink/mongodb/src/sink.rs`**
+- New pure helpers in a "Scoped cleanup (#478)" section: `cleanup_filter_json`, `check_key_alignment`, `check_cleanup_filter_size`, and `MAX_CLEANUP_FILTER_BYTES` (8 MiB).
+- `MongoSink::cleanup_scope_impl` — a single `delete_many`, no session/transaction, so **no replica set is required**.
+- `Sink::supports_cleanup` → `true` unconditionally (schemaless; the non-empty-`key` requirement is already enforced by `WriteSpec::validate`, which makes `cleanup` imply `write_mode: upsert`), plus `Sink::cleanup_scope` delegating to the impl.
+- 12 unit tests over the filter shape, key alignment, and the size ceiling.
+
+**`crates/sink/elasticsearch/src/sink.rs`**
+- Pure helpers: `build_cleanup_query`, `cleanup_doc_ids`, `check_key_alignment`, `check_cleanup_id_count`, `deleted_from_delete_by_query`, and `MAX_CLEANUP_IDS` (65 536).
+- `ElasticsearchSink::cleanup_scope_impl` — `POST /&lt;index&gt;/_delete_by_query?refresh=true`, reusing the crate's existing `resolve_auth` / `apply_auth_value` / `check_http_response` pattern; a 404 (index absent) returns `Ok(0)`, mirroring `current_schema`.
+- `supports_cleanup` / `cleanup_scope` trait overrides.
+- 14 unit tests over the query JSON, id derivation, alignment, the bound, and response parsing.
+
+## MongoDB composite-key approach
+BSON has no tuple `$nin`, so the "not written" clause is key-width dependent and documented as such:
+- **Single-column key** → `{ &lt;key&gt;: { "$nin": [v, …] } }` (index-servable).
+- **Composite key** → `{ "$nor": [ {a: …, b: …}, … ] }` — "matches none of the written tuples". Rejected alternatives are documented inline: a derived `_id` only works when the key *is* `_id` (this sink treats `key` as an arbitrary match filter, and it would mismatch pre-existing documents), and `$expr` forces a collection scan with no index use.
+
+Everything is wrapped in `{"$and": [...]}` with one clause per predicate rather than sibling fields, because a scope field may also be a key field (`contact_id` scope + `["contact_id","assoc_id"]` key) — as siblings the duplicate map entry would drop the scope predicate and widen the delete to the whole collection. There's a regression test for exactly that. Empty `seen` drops the negation clause (also avoiding an invalid empty `$nor`), leaving the scope predicate alone so the whole scope is deleted.
+
+## Elasticsearch atomicity caveat (documented on `cleanup_scope_impl`)
+ES has no transactions: `_delete_by_query` snapshots, then deletes in batches, so the scope passes through partially-cleaned states that concurrent searches observe, and a mid-flight failure leaves some stale docs deleted and others not. Two things make that safe rather than merely tolerable, and both are stated in the comment: (1) the query excludes every written `_id`, so no partial outcome can remove a document this run wrote — only stale ones, in some order; (2) a partial outcome is never reported as success — `deleted_from_delete_by_query` converts any `failures`, `version_conflicts`, or `timed_out` into an error naming how many documents *were* removed, and the next run re-derives the same scope and finishes (deletion is idempotent). Version conflicts leave the document in place (`conflicts=abort` default) rather than deleting on a stale snapshot.
+
+Two extra correctness guards on both sinks: a `check_key_alignment` refusal if a written-key tuple isn't keyed by the sink's `key` in order (for ES the order is load-bearing — `key_to_doc_id` is order-sensitive), and an explicit refusal of an empty scope at the sink boundary (defence in depth behind `CleanupPolicy::new`).
+
+Bounds are hard stops, not chunking, in both sinks — splitting the written-key set across queries would make each query delete the keys the others excluded. Errors name the ceiling, the server limit behind it, and say "Nothing was deleted".
+
+## Verification
+`cargo check --all-targets`, `cargo test --lib` (40 mongo / 35 ES, all pass), `cargo clippy --all-features --all-targets -- -D warnings`, and `cargo fmt --all` (`--check` clean) — all with the pinned 1.96.0 toolchain. Nothing committed.
+
+Two notes: (1) I did not add crate-README sections, matching the reference postgres commit `4f65d784`, which touched no READMEs — say the word if you want them. (2) `cargo fmt --all` formats the whole workspace; the working tree also contains in-progress changes in `crates/sink/{bigquery,mysql,sqlite}` that aren't mine, and fmt may have normalized formatting there (no semantic change).</result>
+<usage><subagent_tokens>222620</subagent_tokens><tool_uses>31</tool_uses><duration_ms>798718</duration_ms></usage>
+</task-notification>
