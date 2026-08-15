@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bb68dmlhm</task-id>
+<summary>Monitor event: "CI status for PR 457 after clippy fix"</summary>
+<event>[Monitor timed out — re-arm if needed.]</event>
+</task-notification>
