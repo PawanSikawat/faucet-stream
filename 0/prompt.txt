@@ -1,0 +1,42 @@
+<task-notification>
+<task-id>afbaab3143ba2ef1a</task-id>
+<tool-use-id>toolu_01UQy4jWJTQkW5bHTjfK1krJ</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/9b06b94c-7e86-46b1-a92f-5dd7a714b733/tasks/afbaab3143ba2ef1a.output</output-file>
+<status>completed</status>
+<summary>Agent "Verify Vault null finding" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have all the evidence needed. Let me render the verdict.
+
+## Verification result
+
+I read the actual code in `cli/src/secrets/vault.rs` (`VaultResolver::resolve`) and the helper `extract_field` in `cli/src/secrets/mod.rs`.
+
+**The relevant no-field branch** (vault.rs ~line 87-90):
+```rust
+// KV v2: secret map lives at .data.data
+let data = &amp;body["data"]["data"];
+match field {
+    Some(f) =&gt; extract_field("vault", reference, &amp;data.to_string(), f),
+    None =&gt; Ok(data.to_string()),
+}
+```
+
+Checking each point of the claim:
+
+1. **What the no-#field branch returns / stringifies a possibly-null Value:** Confirmed. `body["data"]["data"]` uses serde_json's `Index` impl, which returns `Value::Null` for any missing key rather than erroring. The `None =&gt; Ok(data.to_string())` arm then stringifies it. `serde_json::Value::Null.to_string()` produces the literal 4-char string `"null"`. So a 200 response whose map is not at `.data.data` yields `Ok("null")`.
+
+2. **Any is_null / existence guard:** None. Between the JSON parse and the `match field`, there is only the comment and the index expression — no `is_null()`, no shape validation. The only guards are HTTP-status guards earlier (`404 → SecretNotFound`, `401/403 → SecretAuthFailed`, `error_for_status`). None of these fire for a 200 with a KV-v1-shaped body (`{"data":{"password":"..."}}` → `.data.data` absent → Null).
+
+3. **#field branch really errors while no-field doesn't:** Confirmed contrast. The `Some(f)` branch calls `extract_field("vault", reference, &amp;data.to_string(), f)`. With `data` = Null, `data.to_string()` = `"null"`; inside `extract_field`, `serde_json::from_str("null")` parses to `Value::Null`, then `json.as_object()` returns `None` → `Err(CliError::SecretNotJson)`. So the `#field` path surfaces a typed error, while the no-field path silently returns `Ok("null")`.
+
+4. **`.to_string()` on `Value::Null` == "null":** Correct — serde_json's `Display` for `Value` serializes `Null` to `null`.
+
+**Scenario is realistic and not intended behavior:** The code comment ("KV v2: secret map lives at .data.data") documents an *assumption*, not a validation. A KV v1 mount (very common Vault config) or any 200 with a differently-shaped body triggers this. There is no test covering the no-field-missing-path case (`reads_kv_v2_field` uses a `#field`; `missing_secret_is_not_found` uses a 404 + `#field`). The result is a connector silently configured with the credential string `"null"` — exactly the "silent downstream corruption" class the project treats as most severe. Note the redaction boundary also would not scrub `"null"` meaningfully, but the core defect is the silent wrong credential.
+
+Severity: the finder's "high / data-corruption" is defensible under this project's own standard (silent incorrect credential). One could argue "medium" since the practical downstream effect is usually a later auth failure rather than data being written wrong — but for connectors that don't strictly validate, or where "null" is an accepted-but-wrong value, it is a genuine silent misconfiguration.
+
+IS_REAL=true CONFIDENCE=high SEVERITY=high
+
+REASONING: The no-`#field` branch (`None =&gt; Ok(data.to_string())` over `&amp;body["data"]["data"]`) has no null/existence guard; serde_json indexing yields `Value::Null` for a missing path and `.to_string()` renders it as the literal `"null"`, so a 200 response not shaped as KV-v2 (e.g. a KV-v1 mount returning `{"data":{...}}`) returns `Ok("null")` — a silently wrong credential. The `#field` branch, by contrast, routes through `extract_field`, where `Value::Null.as_object()` is `None` and returns `Err(SecretNotJson)`, confirming the asymmetry the finder describes. The only guards present are HTTP-status checks (404/401/403/error_for_status), none of which cover a 200 with an unexpected body shape. Bug confirmed as described.</result>
+<usage><subagent_tokens>119128</subagent_tokens><tool_uses>8</tool_uses><duration_ms>101564</duration_ms></usage>
+</task-notification>
