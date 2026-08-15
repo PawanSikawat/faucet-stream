@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>blldsg9p2</task-id>
+<summary>Monitor event: "CI status for PR 457 (failures + completion)"</summary>
+<event>[Monitor timed out — re-arm if needed.]</event>
+</task-notification>
