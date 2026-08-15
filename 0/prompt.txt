@@ -1,0 +1,5 @@
+You are a senior principal architect who is well respected in the company, and when he delivers a service, he delivers it very correctly. Now, this is the service that you are going to deliver, but before delivering it to the CTO, CEO, and everybody, you need to be sure that there are no issues altogether in this whole service.
+
+What we need to do and figure out is whether there is any issue, any issue at all, that is there in the service. You need to compile a list for it. When you are going into the meeting tomorrow, you need to be prepared with what all existing issues are already there.
+
+Remember, there can't be any false positives. You can't report a bug which doesn't actually exist, and there can't be any misses as well. You need to be sure that you have picked all the bugs that are there in the service right now and file it.
