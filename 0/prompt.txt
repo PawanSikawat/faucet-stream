@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bj6td0tmm</task-id>
+<summary>Monitor event: "PR 463 CI watch after fix"</summary>
+<event>FAILED: Clippy</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
