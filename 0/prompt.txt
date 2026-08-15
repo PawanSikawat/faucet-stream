@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9jtf9gx4</task-id>
+<tool-use-id>toolu_01EAMvhvFmxNEuWxvWArYUwi</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/c52ee385-5ec5-464a-91ae-a39a0cbdf230/tasks/b9jtf9gx4.output</output-file>
+<status>killed</status>
+<summary>Background command "Verify schema diff + re-arm CI monitor" was stopped</summary>
+</task-notification>
