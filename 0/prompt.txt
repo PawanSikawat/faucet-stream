@@ -1,0 +1,3 @@
+https://github.com/faucet-hq/faucet-stream/issues/479
+
+This shouldn't just be for fetch source. I can use any other source as well, so make it generic in that sense.
