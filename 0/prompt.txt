@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>b3k7i5nvg</task-id>
+<summary>Monitor event: "sync-dtx retry — per-tenant outcome + completion"</summary>
+<event>retrying tenant 637 | of 27: 16 attempted, 9 recovered so far</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
