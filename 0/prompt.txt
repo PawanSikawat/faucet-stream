@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>btp5oclcc</task-id>
+<summary>Monitor event: "final crate faucet-cli 1.7.0 → crates.io"</summary>
+<event>faucet-cli 1.7.0 LIVE — all 18 crates published ✅</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
