@@ -25,7 +25,15 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 /// Row ids that callers can never use because they collide with
 /// load-time interpolation prefixes or future runtime scopes.
 pub const RESERVED_IDS: &[&str] = &[
-    "env", "file", "secret", "matrix", "pipeline", "now", "backfill", "param",
+    "env",
+    "file",
+    "secret",
+    "matrix",
+    "pipeline",
+    "now",
+    "backfill",
+    "param",
+    "partition",
 ];
 
 /// One fully-merged matrix row, ready for the executor.
@@ -281,6 +289,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             dlq: None,
             delivery: None,
             tags: Vec::new(),
+            partition: None,
         }];
         &synthetic_row
     } else {
@@ -879,7 +888,75 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             }
         }
 
-        out.push(ExpandedNode {
+        // ── Range partitioning (#479) ───────────────────────────────────
+        // A partitioned row becomes N nodes, one per chunk, each with the
+        // chunk's `${partition.*}` tokens already substituted into its connector
+        // configs. Everything downstream — the executor, state keys, the
+        // concurrency semaphore — then treats them as ordinary sibling rows,
+        // which is why the fan-out costs no executor changes.
+        let partition_spec = row.partition.clone().or_else(|| {
+            // The top-level block is a default for *root* rows only. A child
+            // fans out per parent record already; combining both would multiply
+            // the two fan-outs, which is never what a top-level default meant.
+            matches!(role, NodeRole::Root)
+                .then(|| cfg.partition.clone())
+                .flatten()
+        });
+        let chunks = match partition_spec.as_ref() {
+            None => Vec::new(),
+            Some(spec) => {
+                // A partitioned row's id gains a chunk suffix, so any row that
+                // names it as `parent:` or in `depends_on:` would resolve to a
+                // node that no longer exists. Reject rather than silently
+                // dropping the dependent's edge.
+                let me = ids[i].as_str();
+                let dependents: Vec<&str> = rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, r)| {
+                        *j != i
+                            && (r.parent.as_deref() == Some(me)
+                                || r.depends_on.iter().any(|d| d == me))
+                    })
+                    .map(|(j, _)| ids[j].as_str())
+                    .collect();
+                if !dependents.is_empty() {
+                    return Err(CliError::Config(format!(
+                        "row '{}': a partitioned row cannot be referenced by another row \
+                         (`parent:` or `depends_on:`) — it expands into one node per chunk, \
+                         so there is no single node for '{}' to attach to. Partition the \
+                         dependent row instead, or drop the reference",
+                        me,
+                        dependents.join("', '")
+                    )));
+                }
+                let serialized = merged_source.config.to_string();
+                if !crate::partition::references_partition(&serialized) {
+                    return Err(CliError::Config(format!(
+                        "row '{}': a `partition:` block is set but the source config references \
+                         no `${{partition.*}}` token — every chunk would run the identical \
+                         query. Scope the source to the chunk (e.g. \
+                         `?id_from=${{partition.start}}&id_to=${{partition.end}}`). Available \
+                         tokens for kind `{}`: {}",
+                        ids[i],
+                        spec.kind_str(),
+                        spec.token_names().join(", ")
+                    )));
+                }
+                crate::partition::plan(spec)
+                    .map_err(|e| CliError::Config(format!("row '{}': {e}", ids[i])))?
+            }
+        };
+        if chunks.len() >= crate::chunking::WARN_UNITS {
+            tracing::warn!(
+                row = %ids[i],
+                chunks = chunks.len(),
+                "this row plans a very large number of partitions; each is a full pipeline \
+                 invocation with its own connector clients"
+            );
+        }
+
+        let base = ExpandedNode {
             id: ids[i].clone(),
             row_index: i,
             role,
@@ -904,7 +981,25 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             deferred_refs: deferred,
             source_override: None,
             cleanup_scope,
-        });
+        };
+
+        if chunks.is_empty() {
+            out.push(base);
+        } else {
+            // One node per chunk. The id carries the chunk suffix so state keys
+            // (`{name}::{row}::partition::{chunk}`) and log lines stay distinct,
+            // and `row_index` is kept identical so partitions of one row sort
+            // together ahead of the next row.
+            for chunk in &chunks {
+                let mut n = base.clone();
+                n.id = format!("{}::partition::{}", base.id, chunk.id);
+                crate::partition::substitute(&mut n.source.config, chunk)
+                    .map_err(|e| CliError::Config(format!("row '{}': {e}", ids[i])))?;
+                crate::partition::substitute(&mut n.sink.config, chunk)
+                    .map_err(|e| CliError::Config(format!("row '{}': {e}", ids[i])))?;
+                out.push(n);
+            }
+        }
     }
     Ok(out)
 }
@@ -1012,6 +1107,7 @@ fn check_refs(value: &Value, id_set: &HashSet<&str>, owner: &str) -> CliResult<(
             if let Directive::Deferred { id, .. } = dir
                 && id != "now"
                 && id != "backfill"
+                && id != "partition"
                 && !id_set.contains(id)
             {
                 return Err(CliError::UnknownInterpolationId {
@@ -1087,10 +1183,11 @@ fn collect_deferred(value: &Value, out: &mut Vec<DeferredRef>) {
     let _ = walk_strings(value, &mut |s| {
         for (token, dir) in iter_directives(s) {
             if let Directive::Deferred { id, path } = dir {
-                // `now` / `backfill` are reserved built-ins resolved at run
-                // time, not parent-record dependencies — skip them so the
-                // executor doesn't treat them as deferred parent-record refs.
-                if id == "now" || id == "backfill" {
+                // `now` / `backfill` / `partition` are reserved built-ins
+                // resolved at run time, not parent-record dependencies — skip
+                // them so the executor doesn't treat them as deferred
+                // parent-record refs.
+                if id == "now" || id == "backfill" || id == "partition" {
                     continue;
                 }
                 out.push(DeferredRef {
@@ -2695,5 +2792,135 @@ pipeline:
     on_drift: evolve
 "#);
         assert!(expand(&c).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod partition_tests {
+    //! Row fan-out for the `partition:` block (#479).
+    use super::*;
+    use crate::config::PipelineConfig;
+
+    fn cfg(yaml: &str) -> PipelineConfig {
+        PipelineConfig::from_text(yaml, std::path::Path::new("p.yaml")).expect("config parses")
+    }
+
+    const SCOPED_SOURCE: &str = r#"
+    type: rest
+    config:
+      base_url: "https://api.example.com"
+      path: "/records?id_from=${partition.start}&id_to=${partition.end}""#;
+
+    fn doc(partition: &str, source: &str) -> String {
+        format!(
+            "version: 1\nname: p\npipeline:\n  source:{source}\n  sink:\n    type: jsonl\n    config:\n      path: ./out.jsonl\n{partition}"
+        )
+    }
+
+    #[test]
+    fn a_partitioned_row_expands_into_one_node_per_chunk() {
+        let nodes = expand(&cfg(&doc(
+            "partition:\n  kind: integer\n  from: 0\n  to: 24\n  chunk_size: 10\n  bounds: inclusive\n",
+            SCOPED_SOURCE,
+        )))
+        .expect("expand");
+        assert_eq!(nodes.len(), 3, "24 values / 10 = 3 chunks");
+        // Each node's source carries its own substituted range.
+        let urls: Vec<String> = nodes
+            .iter()
+            .map(|n| n.source.config["path"].as_str().unwrap().to_string())
+            .collect();
+        assert!(urls[0].contains("id_from=0&id_to=9"), "{:?}", urls[0]);
+        assert!(urls[1].contains("id_from=10&id_to=19"), "{:?}", urls[1]);
+        assert!(urls[2].contains("id_from=20&id_to=24"), "{:?}", urls[2]);
+    }
+
+    #[test]
+    fn chunk_ids_are_distinct_and_namespaced_so_state_keys_cannot_collide() {
+        let nodes = expand(&cfg(&doc(
+            "partition:\n  kind: integer\n  from: 0\n  to: 24\n  chunk_size: 10\n  bounds: inclusive\n",
+            SCOPED_SOURCE,
+        )))
+        .unwrap();
+        let ids: std::collections::BTreeSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids.len(), nodes.len(), "ids must be unique");
+        assert!(nodes.iter().all(|n| n.id.contains("::partition::")));
+    }
+
+    #[test]
+    fn an_unpartitioned_config_is_completely_unchanged() {
+        let nodes = expand(&cfg(&doc(
+            "",
+            "\n    type: csv\n    config:\n      path: ./in.csv",
+        )))
+        .unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert!(!nodes[0].id.contains("partition"));
+    }
+
+    #[test]
+    fn a_partition_block_whose_source_ignores_the_tokens_is_rejected() {
+        // Otherwise every chunk runs the identical query N times.
+        let err = expand(&cfg(&doc(
+            "partition:\n  kind: integer\n  from: 0\n  to: 9\n  chunk_size: 5\n  bounds: inclusive\n",
+            "\n    type: csv\n    config:\n      path: ./in.csv",
+        )))
+        .expect_err("must be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("no `${partition.*}` token"), "{msg}");
+        assert!(msg.contains("start"), "should list available tokens: {msg}");
+    }
+
+    #[test]
+    fn a_wrong_kind_token_is_rejected_naming_the_real_tokens() {
+        let err = expand(&cfg(&doc(
+            "partition:\n  kind: offset\n  total: 20\n  chunk_size: 10\n",
+            SCOPED_SOURCE,
+        )))
+        .expect_err("id-range tokens are not offset tokens");
+        let msg = err.to_string();
+        assert!(msg.contains("start"), "{msg}");
+        assert!(msg.contains("offset"), "{msg}");
+    }
+
+    #[test]
+    fn a_partitioned_row_cannot_be_a_parent_or_a_dependency() {
+        // Its id gains a chunk suffix, so a dependent would resolve to nothing.
+        for edge in ["parent: a\n    parent_key: id", "depends_on: [a]"] {
+            let yaml = format!(
+                "version: 1\nname: p\npipeline:\n  source:\n    type: csv\n    config:\n      path: ./in.csv\n  sink:\n    type: jsonl\n    config:\n      path: ./out.jsonl\nmatrix:\n  - id: a\n    partition:\n      kind: integer\n      from: 0\n      to: 9\n      chunk_size: 5\n      bounds: inclusive\n    source:\n      config:\n        path: \"./in-${{partition.start}}.csv\"\n  - id: b\n    {edge}\n"
+            );
+            let err = expand(&cfg(&yaml)).expect_err("must be rejected");
+            assert!(
+                err.to_string()
+                    .contains("partitioned row cannot be referenced"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_top_level_block_applies_to_root_rows() {
+        let nodes = expand(&cfg(&doc(
+            "partition:\n  kind: offset\n  total: 25\n  chunk_size: 10\n",
+            "\n    type: rest\n    config:\n      base_url: \"https://x\"\n      path: \"/r?offset=${partition.offset}&limit=${partition.limit}\"",
+        )))
+        .unwrap();
+        assert_eq!(nodes.len(), 3);
+        let p = nodes[2].source.config["path"].as_str().unwrap();
+        assert!(p.contains("offset=20&limit=5"), "{p}");
+    }
+
+    #[test]
+    fn a_row_level_block_overrides_the_top_level_default() {
+        let yaml = format!(
+            "version: 1\nname: p\npipeline:\n  source:{SCOPED_SOURCE}\n  sink:\n    type: jsonl\n    config:\n      path: ./out.jsonl\npartition:\n  kind: integer\n  from: 0\n  to: 99\n  chunk_size: 10\n  bounds: inclusive\nmatrix:\n  - id: a\n    partition:\n      kind: integer\n      from: 0\n      to: 4\n      chunk_size: 5\n      bounds: inclusive\n"
+        );
+        let nodes = expand(&cfg(&yaml)).unwrap();
+        assert_eq!(
+            nodes.len(),
+            1,
+            "the row's own 5-wide range wins over 100/10"
+        );
     }
 }

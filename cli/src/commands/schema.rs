@@ -25,6 +25,10 @@ pub async fn run(args: SchemaArgs) -> CliResult<()> {
             let s = faucet_core::schema_for!(crate::backfill::BackfillSpec);
             serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
         }
+        SchemaTarget::Partition => {
+            let s = faucet_core::schema_for!(crate::partition::PartitionSpec);
+            serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
+        }
         SchemaTarget::Params => {
             let s = faucet_core::schema_for!(crate::params::ParamSpec);
             serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))

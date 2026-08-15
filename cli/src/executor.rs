@@ -2049,6 +2049,7 @@ mod tests {
             shard: None,
             replication: None,
             backfill: None,
+            partition: None,
             #[cfg(feature = "schedule")]
             schedule: None,
             #[cfg(feature = "lineage")]

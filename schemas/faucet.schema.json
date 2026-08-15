@@ -151,6 +151,17 @@
         }
       ]
     },
+    "partition": {
+      "description": "Default range partitioning applied to every root row that does not\ndeclare its own (#479). Unlike `backfill:` / `schedule:`, this IS\nconsumed by `faucet run` — a partitioned row fans out on every run.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PartitionSpec"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "schedule": {
       "description": "Optional cron schedule. Only consumed by `faucet schedule`; ignored by\n`faucet run`. Presence makes the config runnable on a schedule.",
       "anyOf": [
@@ -1969,6 +1980,17 @@
           "items": {
             "type": "string"
           }
+        },
+        "partition": {
+          "description": "Split this row into N independent invocations over a chunked range\n(#479), each scoped by `${partition.*}` tokens substituted into the\nconnector configs. Inherits the top-level `partition:` block when unset.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PartitionSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -2023,6 +2045,178 @@
           "description": "The sink durably records a per-page commit token atomically with the\ndata; on resume the pipeline skips already-committed pages. Requires a\nstate store, an idempotent sink, and a deterministic-replay source.",
           "type": "string",
           "const": "exactly_once"
+        }
+      ]
+    },
+    "PartitionSpec": {
+      "description": "A partitioned range. `kind` selects the variant.",
+      "oneOf": [
+        {
+          "description": "Split an integer range — the shape for an API or table filtered by an id\nrange (`?id_from=&id_to=`, `WHERE id BETWEEN`).",
+          "type": "object",
+          "properties": {
+            "from": {
+              "description": "Inclusive lower bound.",
+              "type": "integer",
+              "format": "int64"
+            },
+            "to": {
+              "description": "Upper bound, interpreted per `bounds`. Either a literal, or a probe\nthat discovers it (`{from_source: …, value_path: …}`).",
+              "$ref": "#/$defs/IntBound"
+            },
+            "chunk_size": {
+              "description": "Values per chunk. Must be > 0.",
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "bounds": {
+              "description": "Whether `to` (and each chunk's `end`) is inclusive or exclusive.\n\n**Required, with no default.** Getting it wrong is silent: half-open\nchunks against an inclusive-bound source fetch one record twice per\nboundary; inclusive chunks against an exclusive source skip one per\nboundary. Neither raises.",
+              "$ref": "#/$defs/Bounds"
+            },
+            "to_unbounded": {
+              "description": "Render the final chunk without an upper bound, so rows appended above\n`to` between planning and execution are still read.\n\nUnset defaults to **`true` when `to` is discovered** and `false` when\nit is a literal: a probed bound is stale the moment it is read, so the\nopen tail is what keeps late rows from being missed. An explicit value\nalways wins, for a range the user knows is closed.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "integer"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "from",
+            "to",
+            "chunk_size",
+            "bounds"
+          ]
+        },
+        {
+          "description": "Split a time range — the same windowing `faucet backfill` uses, including\nits DST-correct calendar steps.",
+          "type": "object",
+          "properties": {
+            "from": {
+              "description": "RFC3339, or a bare date interpreted as midnight in `timezone`.",
+              "type": "string"
+            },
+            "to": {
+              "description": "Exclusive upper bound; time windows are always half-open.",
+              "type": "string"
+            },
+            "chunk_size": {
+              "description": "Window size: `45s`, `30m`, `6h`, `1d`, `1w`, or a bare integer =\nseconds. `d`/`w` are calendar steps, so `1d` and `24h` differ across a\nDST transition — deliberately.",
+              "type": "string"
+            },
+            "timezone": {
+              "description": "IANA timezone for date boundaries and calendar steps. Defaults to UTC.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "timestamp"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "from",
+            "to",
+            "chunk_size"
+          ]
+        },
+        {
+          "description": "Split a countable result set into offset/limit slices — the parallel form\nof what a source's serial offset pagination already does.",
+          "type": "object",
+          "properties": {
+            "total": {
+              "description": "Total rows in the result set. Either a literal, or a probe that\ndiscovers it.",
+              "$ref": "#/$defs/CountBound"
+            },
+            "chunk_size": {
+              "description": "Rows per chunk. Must be > 0.",
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "offset"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "total",
+            "chunk_size"
+          ]
+        }
+      ]
+    },
+    "IntBound": {
+      "description": "A discoverable upper bound for an integer range.",
+      "anyOf": [
+        {
+          "description": "Known up front.",
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "description": "Discovered by running a probe source once — `SELECT MAX(id)`, or a\n`?sort=-id&limit=1` request.",
+          "$ref": "#/$defs/BoundProbe"
+        }
+      ]
+    },
+    "BoundProbe": {
+      "description": "Discover a bound by running a source once and reading one field out of its\nfirst record.\n\nAny source works — the probe is an ordinary connector config, so a SQL\n`SELECT MAX(id)`, a REST \"last record\" request, or anything else the registry\ncan build. That keeps discovery source-agnostic for the same reason the\nsubstitution is: no connector needs to know this feature exists.",
+      "type": "object",
+      "properties": {
+        "from_source": {
+          "description": "A full source config, `{type, config}`, run once before planning.",
+          "$ref": "#/$defs/ConnectorSpec"
+        },
+        "value_path": {
+          "description": "JSONPath into the probe's **first** record, e.g. `$.max_id`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from_source",
+        "value_path"
+      ]
+    },
+    "Bounds": {
+      "description": "Whether a chunk's upper edge is included. See the module docs — this has no\ndefault on purpose.",
+      "oneOf": [
+        {
+          "description": "`end` is the last value in the chunk: `[start, end]`. For a source whose\nupper-bound filter is inclusive (`id_to=9999` returns 9999).",
+          "type": "string",
+          "const": "inclusive"
+        },
+        {
+          "description": "`end` is the first value *after* the chunk: `[start, end)`. For a source\nwhose upper-bound filter is exclusive.",
+          "type": "string",
+          "const": "half_open"
+        }
+      ]
+    },
+    "CountBound": {
+      "description": "A discoverable row count for an offset range.",
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        {
+          "$ref": "#/$defs/BoundProbe"
         }
       ]
     },

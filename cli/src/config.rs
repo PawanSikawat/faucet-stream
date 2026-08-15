@@ -135,6 +135,12 @@ pub struct PipelineConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backfill: Option<crate::backfill::BackfillSpec>,
 
+    /// Default range partitioning applied to every root row that does not
+    /// declare its own (#479). Unlike `backfill:` / `schedule:`, this IS
+    /// consumed by `faucet run` — a partitioned row fans out on every run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition: Option<crate::partition::PartitionSpec>,
+
     /// Optional cron schedule. Only consumed by `faucet schedule`; ignored by
     /// `faucet run`. Presence makes the config runnable on a schedule.
     #[cfg(feature = "schedule")]
@@ -561,6 +567,12 @@ pub struct MatrixRow {
     /// `^[a-z0-9][a-z0-9_-]*$`, deduped).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+
+    /// Split this row into N independent invocations over a chunked range
+    /// (#479), each scoped by `${partition.*}` tokens substituted into the
+    /// connector configs. Inherits the top-level `partition:` block when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition: Option<crate::partition::PartitionSpec>,
 }
 
 /// Readiness ladder for a matrix row's source (#371). A single ordered axis

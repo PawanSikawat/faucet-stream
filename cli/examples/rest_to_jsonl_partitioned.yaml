@@ -1,0 +1,43 @@
+# Parallel range partitioning (#479).
+#
+# A source that accepts a range filter is trivially parallelizable, but serial
+# pagination leaves most of the available bandwidth unused. `partition:` splits
+# the range into chunks and runs them as independent invocations, bounded by
+# `execution.max_concurrent` — the same budget every other row shares.
+#
+# The tokens are substituted into ANY connector config, because substitution
+# walks config strings rather than asking the connector anything. The same block
+# works for a SQL `WHERE`, an object prefix, or a Mongo filter.
+version: 1
+name: rest_partitioned
+
+execution:
+  # Chunks share this budget with every other row; they do not get a private
+  # pool. Raise it to widen the fan-out.
+  max_concurrent: 8
+
+partition:
+  kind: integer
+  from: 0
+  to: 99
+  chunk_size: 25
+  # REQUIRED, and there is no default on purpose: `inclusive` means `to` is the
+  # last id in the chunk, `half_open` means it is the first id *after* it. Guess
+  # wrong and every boundary either duplicates or drops one record, silently.
+  bounds: inclusive
+  # Leave the final chunk's upper bound off so rows appended above `to` between
+  # planning and execution are still read. Defaults on when `to` is discovered.
+  to_unbounded: false
+
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: "https://api.example.com"
+      path: "/records?id_from=${partition.start}&id_to=${partition.end}"
+      records_path: "$.data"
+  sink:
+    type: jsonl
+    config:
+      # One file per chunk, so concurrent invocations never contend on a writer.
+      path: "./out/records-${partition.id}.jsonl"
