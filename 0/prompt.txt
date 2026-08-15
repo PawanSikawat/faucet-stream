@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bns7ko16m</task-id>
+<tool-use-id>toolu_018phRFvRpx2Vz2grUtQFnnk</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/57cd5ede-b766-47a0-8671-63ea28675cda/tasks/bns7ko16m.output</output-file>
+<status>killed</status>
+<summary>Background command "Background poll PR 426 until merged/failed" was stopped</summary>
+</task-notification>
