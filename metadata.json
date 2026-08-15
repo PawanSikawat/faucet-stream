@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M033DHS6BVC7DTHWZENY7NQD",
+  "strategy": "manual-commit",
+  "branch": "fix/source-config-validate",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "cli/src/registry.rs",
+    "crates/source/csv/README.md",
+    "crates/source/csv/src/config.rs",
+    "crates/source/duckdb/README.md",
+    "crates/source/duckdb/src/config.rs",
+    "crates/source/duckdb/src/stream.rs",
+    "crates/source/elasticsearch/README.md",
+    "crates/source/elasticsearch/src/config.rs",
+    "crates/source/elasticsearch/src/stream.rs",
+    "crates/source/gcs/README.md",
+    "crates/source/gcs/src/config.rs",
+    "crates/source/gcs/src/stream.rs",
+    "crates/source/graphql/README.md",
+    "crates/source/graphql/src/config.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 176,
+    "cache_creation_tokens": 256593,
+    "cache_read_tokens": 19409989,
+    "output_tokens": 65402,
+    "api_call_count": 88
+  }
+}

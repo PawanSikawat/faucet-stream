@@ -1,0 +1,65 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M033DHS6BVC7DTHWZENY7NQD",
+  "session_id": "dff9240c-9ee1-4a01-90dd-b61775dcc773",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-15T16:17:32.333555Z",
+  "branch": "fix/source-config-validate",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "crates/source/csv/src/config.rs",
+    "crates/source/duckdb/src/config.rs",
+    "crates/source/duckdb/src/stream.rs",
+    "crates/source/elasticsearch/src/config.rs",
+    "crates/source/elasticsearch/src/stream.rs",
+    "crates/source/gcs/src/config.rs",
+    "crates/source/gcs/src/stream.rs",
+    "crates/source/graphql/src/config.rs",
+    "cli/src/registry.rs",
+    "crates/source/csv/README.md",
+    "crates/source/elasticsearch/README.md",
+    "crates/source/duckdb/README.md",
+    "crates/source/gcs/README.md",
+    "crates/source/graphql/README.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8",
+  "turn_id": "386be9e43bce",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 176,
+    "cache_creation_tokens": 256593,
+    "cache_read_tokens": 19409989,
+    "output_tokens": 65402,
+    "api_call_count": 88
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-15T16:17:32.271452Z",
+    "agent_lines": 281,
+    "agent_removed": 16,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 281,
+    "total_lines_changed": 297,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 286,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1,
+        "sync_dtx_20260731T091516Z.log": 273,
+        "trigger_transforms_20260731T091010Z.log": 12
+      }
+    }
+  ]
+}
