@@ -1,0 +1,4 @@
+[Image #1]
+
+
+I like this rust, dark green, black kind of theme better. Let's go with this. Black and rest becomes the default thing, and for selective or highlighting or anything like that, we use dark green. Wherever there is dark green, the text becomes white.
