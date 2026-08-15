@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bz8t1113b</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/c52ee385-5ec5-464a-91ae-a39a0cbdf230/tasks/bz8t1113b.output</output-file>
+<status>completed</status>
+<summary>Background command "Background monitor for #469 CI until terminal" completed (exit code 0)</summary>
+</task-notification>
