@@ -1,0 +1,8 @@
+notify:
+    channels:
+      - type: webhook
+        url: https://your-app.example/hooks/faucet
+        method: POST
+        # optional HMAC signing secret
+
+what if it has some headers, or params that i wanna send?
