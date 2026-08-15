@@ -1,0 +1,3 @@
+https://github.com/faucet-hq/faucet-stream/pkgs/container/charts%2Ffaucet-stream
+
+This is a chart. There should be a `helm install` command for it, right?
