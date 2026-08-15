@@ -1,0 +1,116 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   Four sequential requests, each building on the last:
+
+   a) **Deep audit + issue** (msg 1): "Be an extremely senior software engineer who is an expert in detecting and debugging codebases... create a foolproof report of what all issues are there in this codebase right now, marking them as critical, high, medium, or low. You should not be able to miss any issue at all... you should not be filing incorrect issues as well. You need to be actually very correct... create a report for me, then create a GitHub issue for it. Be very thorough and very accurate, and don't miss anything. And double check everything as well." → Delivered issue **#456** (5 critical / 5 high / 5 medium / 5 low, later corrected to 4 low).
+
+   b) **Fix all in one PR** (msg 2: "Saw all of them in the single PR.") → PR **#457**, merged as `7c2e7a84`, closed #456.
+
+   c) **Report pending items** (msg 3) and **second-pass audit** (msg 4: "Are there any more issues that you might have missed? Please double-check.") → Filed **#460, #461**, then **#462**; fixed all three in PR **#463**, merged as `00065815`.
+
+   d) **Current task** (msg 5/6: "Let's solve all the existing issues that you filed new. All of them in one beer." + mid-turn "pr") → Solve the two still-open issues I filed, **#458** (topology exactly-once) and **#459** (topology notifications/lineage/catalog/SLA), in **one PR**.
+
+   For (d) I asked one blocking question (AskUserQuestion) because it changes two published crates' public APIs; the user chose **"Extend both to N inputs (Recommended)"** — i.e. extend `RunLifecycle.input` → `inputs: Vec` and `CatalogUpdate.source` → `sources: Vec` so merge/join graphs record correctly, accepting the breaking API change and the need for deliberate version bumps.
+
+2. **Key Technical Concepts:**
+   - Rust workspace, 91 crates; `faucet-core` (traits/pipeline/topology), `faucet-cli`, `faucet-lineage`, connector crates.
+   - Topology mode (`pipeline.nodes`/`edges`): typed node graph (source/transform/tee/merge/join/sink), bounded mpsc channels, one tokio task per node.
+   - Exactly-once/atomic watermark: `DeliveryMode`, `wrap_state`/`unwrap_state`, `format_token_with_bookmark`/`parse_token_parts`, `Sink::write_batch_idempotent`, `last_committed_token`, `ReplayGuarantee`.
+   - Governance passes: masking (destination-scoped) → quality → contract → schema-drift, wired via `RunStreamOptions`.
+   - cargo-semver-checks (`constructible_struct_adds_field`); `#[non_exhaustive]` to keep future additions minor; CI gates **only** `faucet-core`.
+   - Arrow/JSON shim: `arrow_json::infer_json_schema_from_iterator` types out-of-`i64` integers as Float64.
+   - chrono/chrono-tz: absolute vs calendar (wall-clock) stepping, DST gaps (`from_local_datetime(...).earliest()`).
+   - Local constraints: `--all-features` cannot link (arm64 `ld: B/BL out of range`); bundled DuckDB ≈8 GB; disk repeatedly hit ENOSPC; no Docker (colima broken pre-existing).
+   - Known local feature-set artifacts (not regressions): `commands/fmt` key-order needs `preserve_order` (via `bson`/`object_store`, e.g. `sink-mongodb`); `replication::compiled`/`commands::conformance` need `source-postgres`; `template.rs::BODY` dead without `serve-history-sqlite`; `preview.rs` imports look unused without source/sink features.
+
+3. **Files and Code Sections:**
+
+   - **`crates/core/src/topology.rs`** (central to #458/#459; committed `1b20c2c4`)
+     - `TopologyGovernance` (`#[non_exhaustive]`) gained `pub delivery: crate::idempotency::DeliveryMode` — placed here, not on `TopologyOptions`, because that struct is exhaustively constructible (a new field = major break).
+     - New `NodeReport { node_id, kind, records, bookmark, error }`, `TopologyRun { result, nodes }`, `Topology::run_reported(opts, governance)`; `run_with` delegates via `.map(|r| r.result)`.
+     - `eo_start_bookmark(ranked: &[(u64, Option<Value>)], source_count)` — resumes from lowest `seq` (a real total order under EO); at-least-once keeps the equality-only `start_bookmark`.
+     - `compute_start_bookmark(..., delivery)` unwraps the EO envelope via `unwrap_state`.
+     - `run_sink_node` EO wiring:
+       ```rust
+       if opts.delivery == crate::idempotency::DeliveryMode::ExactlyOnce {
+           let seq = match store.get(&key).await {
+               Ok(Some(prior)) => crate::idempotency::unwrap_state(&prior).1,
+               Ok(None) => 0,
+               Err(e) => return Err(e),
+           };
+           run_opts = run_opts.with_delivery(opts.delivery).with_start_seq(seq);
+           if let Some(replay) = opts.replay { run_opts = run_opts.with_replay_guarantee(replay); }
+       }
+       ```
+     - `source_replay` captured before sources move into futures (only when `source_count == 1`).
+     - **Uncommitted:** `NodeOutcome::Source { node_id, records }`, `TopologyResult.per_source`, `run_source_node(node_id, ...)` counting `page.records.len()`, `reports()` falling back to `per_source`.
+     - Test doubles made `pub(super)` (`VecSource`, `CollectSink`, `FailingSink`, `recs`, `boxed`, `new`) for the sibling `delivery_and_report_tests` module (4 tests, all pass).
+
+   - **`cli/src/topology.rs`** (committed `e8ab5c1b`, plus large uncommitted additions)
+     - `validate_exactly_once(cfg)` — 5 ordered checks: exactly one source node; source in `EXACTLY_ONCE_SOURCE_KINDS`; **every** sink in `IDEMPOTENT_SINK_KINDS`; durable non-`memory` `state:`; no `dlq:`. Messages name the limiting side + offer keyed-upsert.
+     - `resolved_node_kind(cfg, node)` mirrors `resolve_connector`'s kind precedence.
+     - `inert_blocks()` — removed the false `resilience` entry (bug I introduced in #457, since `build_governance` wires it). **Currently lists only `lineage`, which is now wired — must be emptied.**
+     - `g.delivery = cfg.delivery;` in `build_governance`.
+     - `post_run_observability(cfg, pipeline_name, reported, state_store, identities, reaching, clock, run_id, [lineage])` — per **sink node**: SLA via `crate::sla::evaluate_post_run` under `{pipeline}::{node}`, notify via `NotifyEvent::{run_success,run_failure,sla_breach}`, lineage terminal event, catalog record.
+     - **Uncommitted:** `NodeIdentity { kind, dataset_uri, config }`, `NodeIdentities`, `build_topology_meta`, `build_topology_inner(..., identities: Option<&mut NodeIdentities>)`; `reaching_sources(cfg)` (pure reverse reachability, sorted); `lineage_ctx(...)` returning `RunLifecycle` with N inputs, `job_name: format!("{pipeline_name}.{node_id}")`, `column_lineage: None` (not fabricated); START events emitted per sink node before the run; catalog `CatalogUpdate` with per-source record counts and `schema: None`.
+
+   - **`cli/src/serve/history/catalog.rs`** (committed `c91f798b`): `CatalogUpdate.source` → `sources: Vec<DatasetObservation>`; `apply_edge(existing, update, source: &DatasetObservation)`; per-edge volume:
+     ```rust
+     edge.last_records = if update.sources.len() == 1 { update.sink.records } else { source.records };
+     ```
+     New `multi_source_tests` (4+3 merge → edges 4 and 3, summing to sink's 7).
+   - **`cli/src/serve/history/memory.rs` / `sql.rs`**: loop `update.sources.iter().chain(std::iter::once(&update.sink))`; one edge upsert per source.
+   - **`cli/src/executor.rs`**: `sources: vec![DatasetObservation {...}]`; `inputs: vec![faucet_lineage::DatasetRef {...}]`; `input_schemas: Vec::new()`; `ctx.input_schemas = vec![Some(in_schema)];`.
+   - **`crates/lineage/src/lifecycle.rs` / `emitter.rs`** (uncommitted): `inputs: Vec<DatasetRef>`, `input_schemas: Vec<Option<InferredSchema>>`; emitter builds `inputs` with positional schema facets and emits `column_lineage` only `if let [only] = ctx.inputs.as_slice()`.
+   - **`cli/tests/topology_end_to_end.rs`**: 4 new tests (EO gate ×3, resilience-not-ignored); updated my own `rejects_exactly_once_in_topology_mode` to assert the refusal invariant (names `csv`) rather than the removed "topology mode" wording. 26 pass.
+   - Earlier PRs' key files: `crates/source/sqs/src/stream.rs` (pending-delete), `crates/core/src/redact.rs` (new hook), `crates/core/src/util.rs` (`u64_to_signed`), `crates/core/src/columnar.rs` (`refine_wide_integers`), `cli/src/backfill/plan.rs` (`WindowStep`, `advance_calendar`), `cli/src/templates/store.rs` (`Materialize`), `cli/src/mcp/{mod,tools}.rs`, `cli/src/serve/mcp_route.rs`, `cli/src/serve/history/sql.rs` (`CLAIM_ATTEMPTS 8` + staggered backoff).
+
+4. **Errors and fixes:**
+   - **L2 false positive (my own report):** claimed `split` empty delimiter yields `["","a","b",""]`; `split_field` already special-cases it. Pre-existing test caught my "fix"; I reverted and posted a correction on #456. Lesson: I inferred runtime behaviour from the compile arm.
+   - **PR #457 CI ×4 (all mine):** semver `constructible_struct_adds_field` → additive `run_with` + `STOP_FLUSH_GRACE` const + `#[non_exhaustive]`; `E0609 no field masking` → feature-gate; unresolved intra-doc `[json_gt]` → qualify; `unused_must_use` on `axum::Json` → bind `_registered`.
+   - **Inherited SQLite contention** (blocked required Coverage): `CLAIM_ATTEMPTS` 4→8, exponential+atomic-staggered `retry_backoff`; verified 20/20 runs.
+   - **PR #463 CI ×2 (mine):** `cli/tests/backfill_end_to_end.rs` Duration vs `WindowStep` (I'd only run `--lib`); unused `chrono::Duration` import (I substituted `cargo check` for `clippy -D warnings`). Memory checklist corrected — its own step 3 had encoded that shortcut.
+   - **Clippy false-pass:** must `touch` changed files before clippy or it reuses stale fingerprints.
+   - **Timedelta mis-verification:** first DST check used Python `timedelta` (wall-clock); redone mirroring chrono's UTC arithmetic to confirm #461.
+   - **Colima:** my `colima start --disk 20` overwrote stored `disk: 60`; I restored it. Instance was already unstartable before I touched it.
+   - **This segment:** moved `pipeline_name`/`run_id` → `.clone()`; `build_emitter` returns `Option<Arc<LineageEmitter>>` not a tuple → `(lineage.as_ref(), cfg.lineage.as_ref())`; `LineageConfig.parent_job` not `parent`; `lineage` out of scope in `post_run_observability` → threaded as `#[cfg(feature = "lineage")]` param; regex-generated `vec![` brackets left unclosed in test builders → closed with a follow-up regex.
+
+5. **Problem Solving:**
+   Solved: all 19 actionable #456 findings (merged); #460/#461/#462 (merged); #458 fully; #459 partially→now mostly (notify, SLA, catalog with N sources, lineage with N inputs). Disk pressure managed by `rm -rf target/debug/incremental`, deleting `libduckdb-sys` build dirs (8 GB), and `cargo clean -p faucet-cli` (64 GB). Verified-clean second-pass areas documented so they aren't re-audited.
+
+6. **All user messages:**
+   - "Be an extremely senior software engineer who is an expert in detecting and debugging codebases and finding out issues which might come up in the future. You need to create a foolproof report of what all issues are there in this codebase right now, marking them as critical, high, medium, or low. You should not be able to miss any issue at all. You need to do a very, very deep dive. Secondly, you should not be filing incorrect issues as well. You need to be actually very correct. That's what your specialty is. Now go ahead and do that, and create a report for me, then create a GitHub issue for it. Be very thorough and very accurate, and don't miss anything. And double check everything as well."
+   - "Saw all of them in the single PR."
+   - "Are there any more pending issues or pending things that you need to check which are yet"
+   - "Are there any more issues that you might have missed? Please double-check."
+   - "Let's solve all the existing issues that you filed new. All of them in one beer."
+   - "pr" (mid-turn)
+   - AskUserQuestion answer: "Extend both to N inputs (Recommended)"
+   - Earlier permission answer: "Grant me rm on target/"
+
+7. **Pending Tasks:**
+   - Empty/repair `inert_blocks()` now that lineage is wired (#459 acceptance criterion: each block removed in the same PR); update `faucet validate`'s WARNING path/test accordingly.
+   - Tests for the new wiring: `reaching_sources`, catalog emission for a merge sink, lineage START/terminal per sink node.
+   - Docs: `docs/book/src/cookbook/topology.md` + `docs/book/src/reference/config.md` (exactly-once now supported with its 5 requirements; notify/SLA/catalog/lineage now applied), `.claude/rules/architecture.md`.
+   - Full verification per the checklist: core tests, `cargo semver-checks -p faucet-core` (expect a flagged break? `TopologyResult` gained `per_source` — exhaustively constructible → likely major; must resolve), clippy `--all-targets -D warnings` **after touching changed files**, `cargo doc -D warnings`, the three slim CI builds, `cargo check -p faucet-cli --all-targets`.
+   - Open PR on `feat/topology-parity` with `Closes #458` and `Closes #459`; flag breaking API changes to `faucet-lineage` and the catalog store (CI semver gates only `faucet-core`).
+
+8. **Current Work:**
+   On branch `feat/topology-parity` (3 commits: `1b20c2c4`, `e8ab5c1b`, `c91f798b`) with substantial uncommitted work completing #459: lineage `RunLifecycle` N-input extension, core per-source record counts, `NodeIdentity`/`build_topology_meta`, `reaching_sources`, and the catalog + lineage emission inside `post_run_observability`. The last action verified compilation across five feature combinations:
+   ```
+   source-csv,sink-jsonl,transforms                                       0
+   source-csv,sink-jsonl,transforms,notify                                0
+   source-csv,sink-jsonl,transforms,serve,catalog,serve-history-sqlite    0
+   source-csv,sink-jsonl,transforms,lineage                               0
+   source-csv,sink-jsonl,transforms,serve,catalog,serve-history-sqlite,lineage,notify 0
+   ```
+   (all 0 errors; the shell's exit 1 was `grep -c` matching nothing). Immediately before that I had trimmed `inert_blocks` to list only `lineage` — which is now stale because I then wired lineage, so that function must be emptied next.
+
+9. **Optional Next Step:**
+   Empty `inert_blocks()` in `cli/src/topology.rs` (all five blocks — resilience, notifications, lineage, catalog, sla — are now applied), and update the corresponding validate test `validate_warns_about_blocks_topology_ignores`, which currently asserts `stdout` contains "WARNING" and "sla". This directly serves #459's stated acceptance criterion, quoted from the issue I filed: "Each block, when wired, is removed from `inert_blocks` in the same PR, so the warning list is never stale." Then add tests for `reaching_sources`/catalog/lineage emission, run the full pre-push gate set, and open the PR with `Closes #458` / `Closes #459`.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/c-sikawats/.claude/projects/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/c52ee385-5ec5-464a-91ae-a39a0cbdf230.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
