@@ -1,0 +1,1 @@
+Is the release PR updated automatically after my last merge?
