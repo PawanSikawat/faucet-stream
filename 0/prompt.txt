@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bsy1j2vuu</task-id>
+<summary>Monitor event: "PR 455 — CI workflow run for head 2574d23a"</summary>
+<event>CI RUN COMPLETED — conclusion=success pr_state=MERGED failing=[none]</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
