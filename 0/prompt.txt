@@ -1,0 +1,5 @@
+<task-notification>
+<task-id>bzfdka890</task-id>
+<summary>Monitor event: "PR 486 CI: failures as they land, plus final settle"</summary>
+<event>[Monitor timed out — re-arm if needed.]</event>
+</task-notification>
