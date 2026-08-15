@@ -1,0 +1,3 @@
+https://github.com/PawanSikawat/faucet-stream/blob/76b96ea442c7f5ad5a2dd9e0f1a904beebc140e7/docs/architecture/learn.md#chapter-5--making-it-production-grade-the-extras-you-add-when-ready
+
+In this, you didn't get transform and much other stuff.
