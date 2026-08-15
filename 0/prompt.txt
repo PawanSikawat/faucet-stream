@@ -1,0 +1,28 @@
+<task-notification>
+<task-id>a7d0a190fb22b06e6</task-id>
+<tool-use-id>toolu_0161tvxA4EPiHAmv6QqDu4mS</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/822fc7c7-6ae9-40ea-8a15-77d7db4ec709/tasks/a7d0a190fb22b06e6.output</output-file>
+<status>completed</status>
+<summary>Agent "Convert all Mermaid diagrams to V2 style" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All work is complete. Here's the report.
+
+## Summary
+
+**Files changed: 28** (exactly the in-scope set; nothing under `docs/book/` touched)
+- `README.md`, `rfcs/README.md`, `docs/README.md`
+- `docs/adr/{0001,0002,0005}*.md`
+- `docs/contributing/{architecture,debugging,performance,testing}.md`
+- 21 `docs/architecture/*.md` files
+
+**Total blocks converted: 36**
+- **32 flowchart/graph blocks** — got the full V2 treatment: new flowchart init line (with `curve:basis`, `nodeSpacing`, `rankSpacing`, `padding`), a trimmed classDef palette (only the classes each diagram actually uses, from the 7-class set), and `class … &lt;role&gt;` lines tagging nodes by semantic role (src / proc / dec / good / bad / store / sink).
+- **4 sequenceDiagram blocks** — init-line swap only (dropped the `flowchart` key as specified, kept fontFamily/fontSize/lineColor/cluster vars): `docs/adr/0002-checkpoint-ordering.md`, `docs/adr/0005-runtime-recovery.md`, `docs/architecture/state-management.md`, and the second block in `docs/architecture/recovery.md`.
+
+**Role-coding approach:** assigned per-diagram by meaning — sources/inputs→src, transforms/pipeline steps→proc, `{}`/`{{}}` branch nodes→dec, commit/complete/clean-pass outcomes→good, errors/DLQ/aborts→bad, state stores/bookmarks/`[(cylinders)]`→store, sink/write endpoints→sink. Ambiguous doc-navigation nodes left neutral where no role clearly fit.
+
+**Validation: all 36 blocks return HTTP 200 from mermaid.ink** (`checked=36 bad=0`). No parse errors — the existing unquoted labels with `::`, `-&gt;`, `≥`, and the node literally named `src` (classed as `src` in security.md) all render cleanly.
+
+Logic preserved exactly in every diagram — only the init line was swapped and classDef/class lines appended. Edits are left in the working tree uncommitted for review.</result>
+<usage><subagent_tokens>145289</subagent_tokens><tool_uses>11</tool_uses><duration_ms>323449</duration_ms></usage>
+</task-notification>
