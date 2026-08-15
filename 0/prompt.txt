@@ -1,0 +1,3 @@
+[Image #2]
+
+The gap between text in the parent section vs. the expanded section is different. The expanded section's gap looks much more clean. Can you implement that?
