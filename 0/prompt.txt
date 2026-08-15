@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bdcslnl64</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/c52ee385-5ec5-464a-91ae-a39a0cbdf230/tasks/bdcslnl64.output</output-file>
+<status>completed</status>
+<summary>Background command "Monitor #470 CI until terminal" completed (exit code 0)</summary>
+</task-notification>
