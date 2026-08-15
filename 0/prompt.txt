@@ -1,0 +1,1 @@
+<bash-input>bash /private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/57cd5ede-b766-47a0-8671-63ea28675cda/scratchpad/resume_sync_dtx_646_700.sh</bash-input>
