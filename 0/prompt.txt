@@ -1,0 +1,123 @@
+<task-notification>
+<task-id>af97a8afccc8904f7</task-id>
+<tool-use-id>toolu_01119hrCas1wQBKa3EYwH2wd</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/0769bdc5-ea65-4d70-8cfd-25b3984f6ccd/tasks/af97a8afccc8904f7.output</output-file>
+<status>completed</status>
+<summary>Agent "Scaffold mssql-cdc source (#350)" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>The `faucet-source-mssql-cdc` crate is complete. Here is the full report.
+
+## 1. Files created (all under the new `crates/source/mssql-cdc/`)
+
+| File | Purpose |
+|---|---|
+| `Cargo.toml` | Crate manifest, `version = "1.0.0"`, docs.rs config, keywords. |
+| `src/lib.rs` | `#![cfg_attr(docsrs, feature(doc_cfg))]` + re-exports. |
+| `src/config.rs` | `MssqlCdcSourceConfig` (flattened `faucet-common-mssql` connection + `capture_instances`, `start_position`, `poll_interval`, `idle_timeout`, `batch_size`, `max_staged_records`, `max_connections`, `statement_timeout_secs`, `state_key`), validation, capture-instance injection guard, derived state key. |
+| `src/lsn.rs` | Pure `Lsn` (`binary(10)`) — hex parse/format, big-endian `Ord`, `increment()`. |
+| `src/state.rs` | `Bookmarks` = per-capture-instance LSN map, `to_value`/`from_value`. |
+| `src/decode.rs` | `tiberius` row → JSON (mirrors the query source's decoder). |
+| `src/change.rs` | Pure CDC shaping: `op_action` (1→d, 2→i, 3→skip, 4→u), `plan_poll` (per-poll LSN range), `business_columns`, `build_change_envelope`. |
+| `src/stream.rs` | `MssqlCdcSource` — preflight in `new()`, poll loop, per-transaction page emission, `Source` impl (`check`, `capture_resume_position`, `supports_exactly_once() -&gt; true`, `state_key`, `apply_start_bookmark`, `dataset_uri`). |
+| `README.md` | Config table, prerequisites, envelope shape, `cdc_unwrap`→upsert mirror recipe. |
+| `tests/conformance.rs` | Offline schema check (always runs) + Docker bounded-memory &amp; bookmark-roundtrip. |
+| `tests/integration.rs` | Docker: CRUD-capture-then-resume, metadata/check probes, preflight rejections. |
+
+**Design notes for review:** bookmark is a JSON map `{capture_instance: lsn_hex}` stored under one state key (`mssql-cdc:&lt;db&gt;:&lt;capture_instance&gt;` for one instance, `mssql-cdc:&lt;db&gt;:&lt;fnv1a-digest&gt;` for many). Changes are queried with `N'all'` (op 1/2/4); commit rows are buffered by `__$start_lsn` and each committed transaction becomes its own `StreamPage` with `bookmark: Some(map)`. On resume, the next poll starts at `increment(bookmark)`. LSNs are bound via `CONVERT(BINARY(10), @P, 2)`; the capture-instance name (the only value interpolated into the `cdc.fn_cdc_get_all_changes_&lt;ci&gt;` identifier) is validated to `[A-Za-z0-9_]`. I dropped a proposed `include_before` field because in `'all'` mode it would be a no-op (deletes always carry `before`, inserts/updates carry `after`).
+
+## 2. Wiring snippets (apply these to the shared files)
+
+**Root `Cargo.toml`** — add to `members` (after `crates/source/mysql-cdc`):
+```toml
+    "crates/source/mssql-cdc",
+```
+and to `[workspace.dependencies]` (after the `faucet-source-mysql-cdc` line):
+```toml
+faucet-source-mssql-cdc = { path = "crates/source/mssql-cdc", version = "1.0.0" }
+```
+*(No new external crates — reuses `tiberius`, `faucet-common-mssql`, `base64`, `chrono`, `url`, `futures`, `async-stream`, `tokio` already in `[workspace.dependencies]`.)*
+
+**`faucet-stream/Cargo.toml`** — in the `source = [` aggregate (after `"source-mysql-cdc",`):
+```toml
+    "source-mssql-cdc",
+```
+feature (after the `source-mysql-cdc` feature line):
+```toml
+source-mssql-cdc = ["dep:faucet-source-mssql-cdc"]
+```
+dependency (after the `faucet-source-mysql-cdc` dep line):
+```toml
+faucet-source-mssql-cdc = { workspace = true, optional = true }
+```
+
+**`cli/Cargo.toml`** — same three edits (the `source = [` list, features, deps), after each `*mysql-cdc*` line:
+```toml
+    "source-mssql-cdc",
+```
+```toml
+source-mssql-cdc = ["dep:faucet-source-mssql-cdc"]
+```
+```toml
+faucet-source-mssql-cdc = { workspace = true, optional = true }
+```
+
+**`cli/src/registry.rs`** — `build_source` arm (insert after the `mysql-cdc` arm, ~line 392):
+```rust
+        #[cfg(feature = "source-mssql-cdc")]
+        "mssql-cdc" =&gt; {
+            let cfg = decode::&lt;faucet_source_mssql_cdc::MssqlCdcSourceConfig&gt;(
+                "source",
+                "mssql-cdc",
+                config,
+            )?;
+            Ok(Box::new(
+                faucet_source_mssql_cdc::MssqlCdcSource::new(cfg).await?,
+            ))
+        }
+```
+`source_schema` arm (after the `mysql-cdc` schema arm, ~line 818):
+```rust
+        #[cfg(feature = "source-mssql-cdc")]
+        "mssql-cdc" =&gt; Ok(schema::&lt;faucet_source_mssql_cdc::MssqlCdcSourceConfig&gt;()),
+```
+`source_descriptions` entry (after the `mysql-cdc` push, ~line 958):
+```rust
+    #[cfg(feature = "source-mssql-cdc")]
+    v.push(("mssql-cdc", "Microsoft SQL Server CDC source (change data capture)"));
+```
+`EXACTLY_ONCE_SOURCE_KINDS` — current list is:
+```rust
+pub const EXACTLY_ONCE_SOURCE_KINDS: &amp;[&amp;str] =
+    &amp;["postgres-cdc", "mysql-cdc", "mongodb-cdc", "kafka"];
+```
+change to:
+```rust
+pub const EXACTLY_ONCE_SOURCE_KINDS: &amp;[&amp;str] =
+    &amp;["postgres-cdc", "mysql-cdc", "mssql-cdc", "mongodb-cdc", "kafka"];
+```
+*(The test at ~line 1646 can optionally gain `assert!(source_supports_exactly_once("mssql-cdc"));`.)*
+
+**`cli/connectors/registry.json`** — add after the `mysql-cdc` entry (line 12):
+```json
+    { "name": "mssql-cdc", "kind": "source", "verified": true, "description": "Microsoft SQL Server CDC source (change data capture, exactly-once capable)" },
+```
+
+**`.github/workflows/ci.yml`** — in the `feature-check` matrix, after `- source-mysql-cdc` (or `- source-mssql`, line 164):
+```yaml
+          - source-mssql-cdc
+```
+
+## 3. Proposed `faucet-common-mssql` helper
+
+None required — all CDC logic lives inside the new crate. It reuses the common crate's public surface only: `MssqlConnectionConfig`, `MssqlTls`/`MssqlTlsMode`, `MssqlPool`, `MssqlPooledConnection`, `build_pool`, `with_statement_timeout`.
+
+## Spots needing a real compile (I did not run cargo — shared `target/`)
+
+1. **`tiberius` streaming-borrow pattern** in `stream.rs`: the change-query params are bound to a named `let params: [&amp;dyn ToSql; 2]` local (not a temporary) so they outlive the `.await`, mirroring the query source's `let refs` pattern — worth a compile to confirm the `QueryStream` borrows only `conn`.
+2. **`&amp;dyn ToSql` coercions** — capture instance is bound as an owned `String` (`String: ToSql` guaranteed); LSN hex bound as `&amp;String`.
+3. **`async_stream::try_stream!` borrow/yield interplay** — holding `conn` across yields and `drop(stream)` before the next capture-instance iteration.
+4. **Docker integration/conformance tests** require SQL Server with `MSSQL_AGENT_ENABLED=true` (so the CDC capture job populates change tables); they poll for capture and are CI-only on ARM Macs — they will not run in a plain `cargo test --lib`.
+
+**Docs-sync (per `.claude/rules/maintenance.md`, not applied — shared files):** the crate table in `architecture.md`, the connector capability matrix + Exactly-once column in `docs/book/src/reference/connectors.md`, source/connector counts, a `cli/examples/*.yaml`, and `examples/README.md` should be updated in the same PR.</result>
+<usage><subagent_tokens>337897</subagent_tokens><tool_uses>73</tool_uses><duration_ms>1582522</duration_ms></usage>
+</task-notification>
