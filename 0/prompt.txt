@@ -1,0 +1,1 @@
+Fix it. It is supposed to be green, and the change from purple to green was already done. Only the change for the resizing and all was pending, which I asked you to do.
