@@ -1,0 +1,21 @@
+curl 'https://583.drivetrain.ai/drive/api/v1/system/data/sync-dtx' \
+  -X 'POST' \
+  -H 'Accept: application/json, text/plain, */*' \
+  -H 'Accept-Language: en-US,en;q=0.9' \
+  -H 'Authorization: Bearer REDACTED' \
+  -H 'Connection: keep-alive' \
+  -H 'Content-Length: 0' \
+  -b 'REDACTED; _BEAMER_FIRST_VISIT_PMhMLZSe71630=2025-01-21T06:09:15.320Z; REDACTED; ajs_anonymous_id=%22ab13ae60-a87b-41dc-96e5-f01510b7b405%22; REDACTED; _BEAMER_BOOSTED_ANNOUNCEMENT_DATE_PMhMLZSe71630=2026-07-30T09:13:22.376Z; okta-token-storage_idToken={%22idToken%22:%REDACTED.REDACTED.REDACTED%22%2C%22claims%22:{%22sub%22:%2200umrqhlqeoBWIqko5d7%22%2C%22name%22:%22Pawan%20Sikawat%22%2C%22email%22:%22pawan@drivetrain.ai%22%2C%22ver%22:1%2C%22iss%22:%22https://auth.drivetrain.ai/oauth2/default%22%2C%22aud%22:%220oa5uh834DbXET6IB5d6%22%2C%22iat%22:1785489102%2C%22exp%22:1785492702%2C%22jti%22:%22ID.REDACTED%22%2C%22amr%22:[%22pwd%22]%2C%22idp%22:%220oawq8dldpvG9EejO5d6%22%2C%22nonce%22:%REDACTED%22%2C%22preferred_username%22:%22pawan@drivetrain.ai%22%2C%22auth_time%22:1785475608%2C%22at_hash%22:%22jM5xNbZGSV_z8ZPSwy2hAA%22}%2C%22expiresAt%22:1785492702%2C%22scopes%22:[%22profile%22%2C%22email%22%2C%22openid%22]%2C%22authorizeUrl%22:%22https://auth.drivetrain.ai/oauth2/default/v1/authorize%22%2C%22issuer%22:%22https://auth.drivetrain.ai/oauth2/default%22%2C%22clientId%22:%220oa5uh834DbXET6IB5d6%22}; okta-token-storage_accessToken={%22accessToken%22:%REDACTED%22%2C%22claims%22:{%22ver%22:1%2C%22jti%22:%22AT.REDACTED%22%2C%22iss%22:%22https://auth.drivetrain.ai/oauth2/default%22%2C%22aud%22:%22api://default%22%2C%22iat%22:1785489102%2C%22exp%22:1785575502%2C%22cid%22:%220oa5uh834DbXET6IB5d6%22%2C%22uid%22:%2200umrqhlqeoBWIqko5d7%22%2C%22scp%22:[%22profile%22%2C%22email%22%2C%22openid%22]%2C%22auth_time%22:1785475608%2C%22sub%22:%22pawan@drivetrain.ai%22%2C%22tenant%22:[%22Everyone%22%2C%22200%22%2C%22400%22%2C%22720%22%2C%22Drivetrainers%22%2C%22704%22%2C%22705%22%2C%221429%22%2C%22706%22]}%2C%22expiresAt%22:1785575502%2C%22tokenType%22:%22Bearer%22%2C%22scopes%22:[%22profile%22%2C%22email%22%2C%22openid%22]%2C%22authorizeUrl%22:%22https://auth.drivetrain.ai/oauth2/default/v1/authorize%22%2C%22userinfoUrl%22:%22https://auth.drivetrain.ai/oauth2/default/v1/userinfo%22}; REDACTED%7B%22%24device_id%22%3A%22019e0697-381e-7ad3-acd1-565bdc89af14%22%2C%22distinct_id%22%3A%22pawan%40drivetrain.ai_583%22%2C%22%24sesid%22%3A%5B1785489104888%2C%22019fb771-9bce-7057-a21c-5bae86c41d93%22%2C1785489103816%5D%2C%22%24epp%22%3Atrue%2C%22%24initial_person_info%22%3A%7B%22r%22%3A%22%24direct%22%2C%22u%22%3A%22https%3A%2F%2F400.drivetrain.ai%2F%22%7D%2C%22%24user_state%22%3A%22identified%22%7D; mp_d6d5a0bbc42eec652098e12de93fbf08_mixpanel=%7B%22distinct_id%22%3A%20%22pawan%40drivetrain.ai_583%22%2C%22%24device_id%22%3A%20%221948779779d8a3-0ae82ab8fca115-18525637-176044-1948779779d8a3%22%2C%22%24initial_referrer%22%3A%20%22https%3A%2F%2Fauth.drivetrain.ai%2F%22%2C%22%24initial_referring_domain%22%3A%20%22auth.drivetrain.ai%22%2C%22__mps%22%3A%20%7B%7D%2C%22__mpso%22%3A%20%7B%7D%2C%22__mpus%22%3A%20%7B%7D%2C%22__mpa%22%3A%20%7B%7D%2C%22__mpu%22%3A%20%7B%7D%2C%22__mpr%22%3A%20%5B%5D%2C%22__mpap%22%3A%20%5B%5D%2C%22%24user_id%22%3A%20%22pawan%40drivetrain.ai_583%22%2C%22%24search_engine%22%3A%20%22google%22%7D; _BEAMER_FILTER_BY_URL_PMhMLZSe71630=true; _BEAMER_FILTER_BY_URL_PMhMLZSe71630=true; _dd_s=aid=209f5b99-429c-4bcf-89b9-6d2febd9bdec&rum=2&id=23aca2f0-29c3-4e9a-9f04-aa719137b4ca&created=1785489099054&expire=1785490011184' \
+  -H 'Origin: https://583.drivetrain.ai' \
+  -H 'Page-Context: OTHER' \
+  -H 'Referer: https://583.drivetrain.ai/system/data/sync-dtx?method=POST' \
+  -H 'Sec-Fetch-Dest: empty' \
+  -H 'Sec-Fetch-Mode: cors' \
+  -H 'Sec-Fetch-Site: same-origin' \
+  -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36' \
+  -H 'sec-ch-ua: "Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "macOS"' \
+  -H 'x-request-id: 764d533a-58ee-4931-a6d6-d5983ba38ff4'
+
+Create a bash script which calls this curl. This should do it for 401 to 700 continuously. Do all of them one by one.
