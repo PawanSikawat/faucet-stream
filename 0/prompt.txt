@@ -1,0 +1,33 @@
+<task-notification>
+<task-id>af90b6f50d153b22d</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/25d0f5a6-8938-4915-ab73-d349bfe5721f/tasks/af90b6f50d153b22d.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement cleanup on mssql" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All four verification commands pass clean. Changes are confined to `crates/sink/mssql/` and left uncommitted in the working tree.
+
+## What changed
+
+**`crates/sink/mssql/src/encode.rs`** — four new pure SQL builders (+ `CLEANUP_TEMP_TABLE` const), all unit-tested:
+- `build_cleanup_temp_drop_sql()` — `IF OBJECT_ID(N'tempdb..#faucet_cleanup_keys') IS NOT NULL DROP TABLE …`
+- `build_cleanup_temp_create_sql(table_quoted, key)` — materializes the temp table
+- `build_cleanup_key_insert_sql(key, n_rows)` — row-major `@PN` multi-row INSERT (delegates to `build_insert_sql`)
+- `build_cleanup_delete_sql(table_quoted, scope_cols, key)` — `DELETE t FROM … AS t WHERE &lt;scope&gt; AND NOT EXISTS (SELECT 1 FROM #tmp c WHERE c.k = t.k)`; returns a typed error on an empty scope or empty key rather than emitting a table-wide predicate.
+
+11 new tests (statement shape, composite scope+key, row-major numbering, bracket-quote escaping of `]`, empty-scope/empty-key refusals, and a chunk-size assertion that a full key-load chunk fits both the 2100-param and 1000-row-values ceilings).
+
+**`crates/sink/mssql/src/sink.rs`**
+- `exec_merge` generalized into `exec_params(conn, sql, refs, what)` returning `u64` rows-affected (`ExecuteResult::total()`); `exec_merge` is now a one-line delegate passing `"merge"`, so existing error strings are byte-identical.
+- `cleanup_scope_impl` + `cleanup_in_txn` (the transactional body).
+- `supports_cleanup()` gated on `MssqlColumnMapping::AutoColumns`; `cleanup_scope()` delegates.
+
+## T-SQL decisions worth flagging
+
+1. **`SELECT … INTO` with a `UNION ALL` derived table** to create the temp table, instead of reconstructing `CREATE TABLE` from `sys.columns`. `discover_column_types` only returns the bare system type name (`nvarchar`), and `CREATE TABLE (#k nvarchar)` defaults to **length 1** — silently truncating keys and deleting the wrong rows. `SELECT … INTO` copies the full declared type/length/precision/collation by construction. The `UNION ALL` (two `WHERE 1 = 0` legs, zero rows read) is load-bearing, not decoration: a plain `SELECT … INTO` **inherits a source column's IDENTITY property**, and the subsequent key INSERTs would then fail without `IDENTITY_INSERT`. A UNION'd column never inherits it. A test asserts the `UNION ALL` survives refactors.
+2. **`#temp` (session-scoped), not `##`**, so concurrent cleanups on different pooled connections cannot collide on the name — the analogue of PostgreSQL's `ON COMMIT DROP`. Because a pooled connection outlives one cleanup, the name is dropped defensively *before* creating (outside the txn) and best-effort after COMMIT. The `OBJECT_ID(N'tempdb..#…')` guard is used over `DROP TABLE IF EXISTS` (2016+) for wider server support.
+3. **Timeout/desync caveat respected**: `cleanup_in_txn` returns `Err((error, timed_out))`; on `timed_out` the ROLLBACK is deliberately skipped and the connection dropped (mirrors `insert_chunk`/`apply_plan`). On a normal error ROLLBACK undoes the loaded keys *and* drops the temp table, since T-SQL DDL is transactional.
+4. **Column validation runs before the cleanup connection is checked out** — `discover_column_types` takes its own pool connection, and nesting the two would deadlock a `max_connections: 1` pool. Missing table and missing column produce distinct messages naming column + table.
+5. Empty `seen` loads zero keys and falls straight through to the scope-wide `DELETE` — the motivating case, not a no-op. Overflow is not re-checked here; `run_stream` already refuses before calling (`seen_keys.overflowed()`).</result>
+<usage><subagent_tokens>204274</subagent_tokens><tool_uses>27</tool_uses><duration_ms>489974</duration_ms></usage>
+</task-notification>
