@@ -1,0 +1,1 @@
+We had a CI to publish the binaries as well as brew install, right? Can you confirm whether those are working fine?
