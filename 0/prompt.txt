@@ -1,0 +1,5 @@
+I originally thought Faucet Stream was a connector framework.
+
+After inspecting faucet-core, I think it's more accurate to describe it as a data movement platform with integrated governance primitives.
+
+This is the review that I got from one of my friends.
