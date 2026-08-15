@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>byu5zv5sh</task-id>
+<tool-use-id>toolu_01TcnsxSxyT67wqKi9JyDBKy</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/822fc7c7-6ae9-40ea-8a15-77d7db4ec709/tasks/byu5zv5sh.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch the deploy to completion" completed (exit code 0)</summary>
+</task-notification>
