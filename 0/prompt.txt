@@ -1,0 +1,17 @@
+<task-notification>
+<task-id>btuwa71o9</task-id>
+<summary>Monitor event: "PR #489 required checks pass/fail + final merge state"</summary>
+<event>API stability (cargo-semver-checks): SUCCESS</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>btuwa71o9</task-id>
+<summary>Monitor event: "PR #489 required checks pass/fail + final merge state"</summary>
+<event>Clippy: SUCCESS
+Coverage: FAILURE
+Docs: SUCCESS</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
