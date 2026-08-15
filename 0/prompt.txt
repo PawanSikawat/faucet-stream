@@ -1,0 +1,36 @@
+<task-notification>
+<task-id>a2eae8efb2f4121cf</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/822fc7c7-6ae9-40ea-8a15-77d7db4ec709/tasks/a2eae8efb2f4121cf.output</output-file>
+<status>completed</status>
+<summary>Agent "Cluster B ADRs" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All tasks complete. Here's what was delivered.
+
+## Summary
+
+I built a complete internal engineering-documentation set — **56 new Markdown files** — grounded in a verified reading of the actual implementation (`crates/core/src/pipeline.rs`, `traits.rs`, `idempotency.rs`, `state.rs`, `retry.rs`, and the four `.claude/rules/*.md` references). **No runtime code was changed.**
+
+**What was created**
+
+| Area | Files | Notes |
+|---|---|---|
+| `docs/architecture/` | 20 + README | Every subsystem: overview, execution, pipeline, stream-pages, batching, connector-sdk, state-management, recovery, retries, resilience, schema, quality, contracts, masking, observability, performance, extensibility, **invariants**, roadmap |
+| `docs/adr/` | 10 + index | Stream-pages, checkpoint-ordering, builder pattern, JSON record model, runtime recovery, state, retries, observability, schema validation, pipeline runtime |
+| `docs/contributing/` | 6 | architecture, connector-authoring, testing, performance, debugging, common-mistakes |
+| `docs/standards/` | 6 | api-design, error-handling, logging, testing, performance, state |
+| `rfcs/` | 5 + template + index | capability traits, Arrow support, plugin system, streaming improvements, async connector runtime |
+| Top-level | 5 | `docs/README.md` hub, engineering-principles, roadmap, stability, architecture-review |
+
+**Quality bar met**
+- **Grounded, not cosmetic** — every claim cites code/rules (the write→flush→checkpoint ordering, the `with_retry_write!` duplication-safety rule, sink-anchored resume, the dependency pins, the 5,471-line `pipeline.rs`).
+- **Central invariant** — *a bookmark is persisted only after a durable, flushed write* — documented in `invariants.md` and ADR-0002, and threaded consistently through every related page.
+- **26 Mermaid diagrams**; one invalid inline-comment diagram found and fixed.
+- **Coherent book** — link check passed: **727 relative links across 55 files, zero broken**, including links into the existing mdBook, `CLAUDE.md`, and the connector spec. Consistent terminology (page/bookmark/checkpoint/watermark; at-least-once vs. effectively-once). Every page ends with `## Related` cross-links.
+- **Objective review** — `architecture-review.md` reports real debt (monolithic `run_stream`, `serde_json::Value` allocation ceiling, exactly-once↔DLQ exclusivity, solo-owner bus factor) each backed by evidence, with mitigations linked to ADRs/RFCs.
+
+**Note on delivery:** these files are currently uncommitted on the `fix/audit-321-medium-low` branch, which is dedicated to unrelated #321 audit fixes. Rather than mix this large, independent documentation deliverable into that branch, I've left it staged in the working tree. Say the word and I'll move it onto a dedicated `docs/architecture` branch off `main` and open a PR.
+
+A couple of implementation observations surfaced while writing (documented, not acted on): the layered per-page passes in `run_stream` would benefit from extraction into a typed stage chain, and the stringly-typed commit-token format could be made a typed value — both are captured in `architecture-review.md` and RFC-0001.</result>
+<usage><subagent_tokens>248909</subagent_tokens><tool_uses>39</tool_uses><duration_ms>822137</duration_ms></usage>
+</task-notification>
