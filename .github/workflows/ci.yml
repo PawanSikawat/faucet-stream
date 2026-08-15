@@ -597,9 +597,15 @@ jobs:
             --min 90
       - name: Upload to Codecov
         if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
+        # `continue-on-error` keeps a Codecov outage from failing the build — the
+        # merge gate is the patch-coverage step above, which needs no third party.
+        # But `fail_ci_if_error: true` makes the step itself go red and log the
+        # reason, so a broken upload is visible instead of silently doing nothing.
+        # That combination was the actual defect: with both set to "ignore", the
+        # one upload that failed (PR #482) looked identical to a healthy run.
         continue-on-error: true
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
-          fail_ci_if_error: false
+          fail_ci_if_error: true
