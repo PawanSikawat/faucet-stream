@@ -1,0 +1,51 @@
+<task-notification>
+<task-id>ab30934bd41beb977</task-id>
+<tool-use-id>toolu_01HN1GJqiBPZ4vP2rLNntndN</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/9b06b94c-7e86-46b1-a92f-5dd7a714b733/tasks/ab30934bd41beb977.output</output-file>
+<status>completed</status>
+<summary>Agent "Verify notify coalesce finding" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I've read the full file. The claim is verified.
+
+## Verdict
+
+**IS_REAL: true**
+**CONFIDENCE: high**
+**SEVERITY: low** (agree)
+**CATEGORY: error-handling**
+
+## Reasoning
+
+The ordering and dedupe-map semantics in `cli/src/notify/dispatch.rs` confirm the claim exactly.
+
+1. **Coalesce decision precedes delivery** — in `emit` (lines 86–91):
+```rust
+if self.coalesce(rule, &amp;event) {      // line 86
+    metrics::record_dropped(channel, "coalesced");
+    ...
+    continue;
+}
+self.deliver(rule, &amp;event).await;     // line 91 — only reached if NOT coalesced
+```
+
+2. **The dedupe instant is recorded unconditionally at decision time**, not after a successful send — `coalesce` (lines 198–212):
+```rust
+if let Some(last) = map.get(&amp;key)
+    &amp;&amp; now.duration_since(*last) &lt; Duration::from_secs(window)
+{
+    return true;                       // line 208 — drop
+}
+map.insert(key, now);                  // line 210 — record instant, then...
+false                                  // line 211 — ...proceed to deliver
+```
+The `map.insert(key, now)` (line 210) happens before `deliver` is ever called, and its return value carries no delivery outcome.
+
+3. **A failed leading-edge delivery is never rolled back** — `deliver` (lines 96–119) on the `Err` arm (lines 113–117) only records metrics and a `tracing::warn!`; it does **not** remove the key from `self.dedupe`. Contrast this with `resolve_incidents` (lines 139–151), where the code *deliberately* keeps incident state on delivery failure ("delivery failure must not silently drop the incident") — the same care was not applied to the dedupe map.
+
+So the scenario holds: with `dedupe_window_secs: 3600`, a `run_failure` at t=0 records the instant even though the Slack webhook send fails (`channel_error`), and every identical `run_failure` within the next hour is coalesced/dropped. If the channel recovers at t=120s, no notification gets through until the window expires at t=3600s. The suppression window is started by a *failed* send.
+
+The suggested fix (record the dedupe instant only after a successful delivery, or roll it back on `Err`) is the correct remediation.
+
+Severity low is appropriate: it degrades alerting on a persistently-failing channel (an already-degraded path) rather than corrupting data or dropping alerts on a healthy channel.</result>
+<usage><subagent_tokens>118991</subagent_tokens><tool_uses>1</tool_uses><duration_ms>24354</duration_ms></usage>
+</task-notification>
