@@ -1,0 +1,144 @@
+<task-notification>
+<task-id>aea55883fe13f57c1</task-id>
+<tool-use-id>toolu_01AK4J9Xu5Z4KgJ78fEhJp4Z</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/0769bdc5-ea65-4d70-8cfd-25b3984f6ccd/tasks/aea55883fe13f57c1.output</output-file>
+<status>completed</status>
+<summary>Agent "Scaffold Redshift connector (#346)" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All files are in place. Here is the complete report.
+
+---
+
+## Amazon Redshift connector pair (#346) — implementation report
+
+### 1. Files created (all new; no shared files edited)
+
+**`faucet-common-redshift`** (`crates/common/redshift/`)
+- `Cargo.toml`, `README.md`
+- `src/lib.rs`, `src/config.rs` (`RedshiftCredentials`, `RedshiftConnection`), `src/pool.rs` (`build_connect_options`, `build_pool`, `build_pool_lazy`, `resolve_password`)
+
+**`faucet-source-redshift`** (`crates/source/redshift/`)
+- `Cargo.toml`, `README.md`
+- `src/lib.rs`, `src/config.rs` (`RedshiftSourceConfig`, `RedshiftReplication`), `src/convert.rs` (row→JSON + param binding), `src/stream.rs` (`RedshiftSource`)
+- `tests/conformance.rs`, `tests/integration.rs`
+
+**`faucet-sink-redshift`** (`crates/sink/redshift/`)
+- `Cargo.toml`, `README.md`
+- `src/lib.rs`, `src/config.rs` (`RedshiftSinkConfig`, `RedshiftWriteStrategy`, `RedshiftCopyFormat`), `src/copy.rs` (pure SQL/serialization builders), `src/sink.rs` (`RedshiftSink`)
+- `tests/conformance.rs`, `tests/integration.rs`
+
+### Design highlights
+- **Common crate**: Redshift = Postgres wire, so pools are `sqlx::PgPool` built from `PgConnectOptions` (`tls: true`→`sslmode=require`, `false`→`prefer`). `password` credential fully implemented; `iam` / `redshift_data_api` parse but return a typed `FaucetError::Config` "not yet supported" at `build_connect_options`. Both connectors build **lazy** pools in `new()` (offline-safe, no I/O; `check()` is the real `SELECT 1` probe) — this makes the connector `new()` unit-testable without a live cluster.
+- **Source**: mirrors the postgres `sqlx` streaming cursor (`row_to_json`, precision-safe numeric binds) plus the databricks incremental pattern (`RedshiftReplication`, `state_key`, `apply_start_bookmark`, `filter_incremental`/`max_value`, `${bookmark}` server-side pushdown + client-side backstop, running-max bookmark on the final page). Overrides `check`.
+- **Sink**: `write_strategy: copy` (default) stages each page to S3 (`aws-sdk-s3`/`aws-config`, same pattern as `crates/sink/s3`) as JSONL (`FORMAT AS JSON 'auto'`, default) or CSV (`FORMAT AS CSV` with discovered column order), runs `COPY … IAM_ROLE …`, then best-effort deletes the staged object; `insert` does multi-row `INSERT` (sub-chunked at the 32 767 param cap). `supported_write_modes = [Append]`. All `COPY`/`INSERT` SQL and CSV/JSONL serialization are pure, unit-tested functions with exact-SQL assertions; identifiers use `faucet_core::quote_ident` and string literals are single-quote-escaped.
+- **Tests**: extensive `#[cfg(test)]` for config validation, credential resolution, COPY/INSERT SQL builders, CSV/JSONL serialization, bookmark/incremental logic, `resolve_query` bind ordering, dataset URIs. `tests/conformance.rs` = Check 1 (config-schema validity). `tests/integration.rs` = `#[ignore]`d, env-gated (`REDSHIFT_*`) — Redshift has no local container, documented CI-only.
+
+### 2. Workspace wiring snippets (paste as-is)
+
+**Root `Cargo.toml` — `[workspace] members`:**
+```toml
+    "crates/common/redshift",
+    "crates/source/redshift",
+    "crates/sink/redshift",
+```
+
+**Root `Cargo.toml` — `[workspace.dependencies]`:**
+```toml
+faucet-common-redshift = { path = "crates/common/redshift", version = "1.0.0" }
+faucet-source-redshift = { path = "crates/source/redshift", version = "1.0.0" }
+faucet-sink-redshift = { path = "crates/sink/redshift", version = "1.0.0" }
+```
+No new external crates were introduced — the connectors reuse workspace deps already present at these versions: `sqlx` 0.8 (postgres/json/chrono/uuid/bigdecimal features), `aws-sdk-s3` 1, `aws-config` 1, `uuid` 1, `base64` 0.22, `async-stream` 0.3, `futures` 0.3, `tokio` 1.
+
+**`faucet-stream/Cargo.toml`** — add to the `source` aggregate array, the `sink` aggregate array, the feature list, and the optional-dep list:
+```toml
+# in `source = [ … ]`
+    "source-redshift",
+# in `sink = [ … ]`
+    "sink-redshift",
+
+# feature definitions (near the other source-*/sink-* lines)
+source-redshift = ["dep:faucet-source-redshift"]
+sink-redshift = ["dep:faucet-sink-redshift"]
+
+# optional deps (near the other faucet-source-*/faucet-sink-* entries)
+faucet-source-redshift = { workspace = true, optional = true }
+faucet-sink-redshift = { workspace = true, optional = true }
+```
+(`full` already contains `source` + `sink`, so it picks these up. `faucet-common-redshift` is pulled transitively via the connector crates — no direct umbrella entry needed; the connector `lib.rs` files re-export `RedshiftConnection`/`RedshiftCredentials`.)
+
+**`cli/Cargo.toml`** — identical shape:
+```toml
+# in `source = [ … ]`
+    "source-redshift",
+# in `sink = [ … ]`
+    "sink-redshift",
+
+source-redshift = ["dep:faucet-source-redshift"]
+sink-redshift = ["dep:faucet-sink-redshift"]
+
+faucet-source-redshift = { workspace = true, optional = true }
+faucet-sink-redshift = { workspace = true, optional = true }
+```
+
+**`cli/src/registry.rs`** — `build_source` arm (add before the final `other =&gt;`, near the snowflake source arm; no shared-auth injection — Redshift uses its own password credentials, not the `auth:` catalog):
+```rust
+        #[cfg(feature = "source-redshift")]
+        "redshift" =&gt; {
+            let cfg = decode::&lt;faucet_source_redshift::RedshiftSourceConfig&gt;(
+                "source", "redshift", config,
+            )?;
+            Ok(Box::new(faucet_source_redshift::RedshiftSource::new(cfg)?))
+        }
+```
+`build_sink` arm (near the snowflake sink arm):
+```rust
+        #[cfg(feature = "sink-redshift")]
+        "redshift" =&gt; {
+            let cfg = decode::&lt;faucet_sink_redshift::RedshiftSinkConfig&gt;("sink", "redshift", config)?;
+            Ok(Box::new(faucet_sink_redshift::RedshiftSink::new(cfg).await?))
+        }
+```
+`source_schema` / `sink_schema` arms:
+```rust
+        #[cfg(feature = "source-redshift")]
+        "redshift" =&gt; Ok(schema::&lt;faucet_source_redshift::RedshiftSourceConfig&gt;()),
+```
+```rust
+        #[cfg(feature = "sink-redshift")]
+        "redshift" =&gt; Ok(schema::&lt;faucet_sink_redshift::RedshiftSinkConfig&gt;()),
+```
+`builtin_source_descriptions` / `builtin_sink_descriptions`:
+```rust
+    #[cfg(feature = "source-redshift")]
+    v.push(("redshift", "Amazon Redshift query source (PostgreSQL wire; streaming rows, incremental replication)."));
+```
+```rust
+    #[cfg(feature = "sink-redshift")]
+    v.push(("redshift", "Amazon Redshift sink (COPY-from-S3 or multi-row INSERT)"));
+```
+
+**`cli/connectors/registry.json`** — add one source and one sink entry (required, or the `registry_index` test panics):
+```json
+    { "name": "redshift", "kind": "source", "verified": true, "description": "Amazon Redshift query source (PostgreSQL wire; streaming rows, incremental replication)" },
+    { "name": "redshift", "kind": "sink", "verified": true, "description": "Amazon Redshift sink (COPY-from-S3 or multi-row INSERT)" },
+```
+
+**`.github/workflows/ci.yml`** — `feature-check` matrix `feature:` list:
+```yaml
+          - source-redshift
+          - sink-redshift
+```
+
+### 3. Assumptions / deviations / needs-a-real-compile
+
+- **Lazy pools in `new()`**: chosen over postgres's eager `connect()` so `new()` does no I/O (offline-testable, and `check()` is the true probe). Requires `PgPoolOptions::connect_lazy_with(options) -&gt; PgPool` (sqlx 0.8, infallible) — verify on first compile.
+- **`copy_format` default = `jsonl`** (not CSV): `FORMAT AS JSON 'auto'` maps by column name, handles NULLs/types cleanly, and needs no column discovery — materially more robust than CSV. CSV is fully implemented (column-ordered, RFC-4180 quoted) for users who need it.
+- **`INSERT` binds native JSON-typed scalars** (string/i64/f64/bool/null) without per-column `::type` casts. This is best-effort — string→`DATE`/`TIMESTAMP` coercion into typed columns is the one edge that needs live-cluster validation; `COPY` (the default) is the recommended and robust bulk path. Documented in the sink README.
+- **`iam` / `redshift_data_api` credentials** deserialize but error at client-build with a clear "not yet supported (v1 = password only)" message, per the v1 scope.
+- **Column discovery** uses `information_schema.columns` (Redshift folds unquoted identifiers to lowercase — a known Redshift quirk; mixed-case tables should be created/queried consistently).
+- **Conformance** covers Check 1 (config-schema validity) only. Check 2 (bounded-memory) needs a live cluster since Redshift speaks the PG wire (no wiremock path like the HTTP warehouse sources), so it's exercised by the `#[ignore]`d `tests/integration.rs` instead — noted in each conformance file.
+- I did **not** add a `cli/examples/*.yaml` (would touch a shared dir and isn't in the file-scope constraint). If desired later, a `redshift`-targeted example plus its `examples/README.md`/CI-validate-list entry would be the follow-up.
+- Verify on first `cargo build`: `PgConnectOptions::application_name`/`ssl_mode`, `connect_lazy_with` return type, and `aws_sdk_s3::primitives::ByteStream: From&lt;Vec&lt;u8&gt;&gt;` via `.body(body.into())` (mirrors `crates/sink/s3`, so expected to hold).</result>
+<usage><subagent_tokens>340076</subagent_tokens><tool_uses>70</tool_uses><duration_ms>1241398</duration_ms></usage>
+</task-notification>
