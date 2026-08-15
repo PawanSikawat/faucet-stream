@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b19a9ygd1</task-id>
+<tool-use-id>toolu_01SfkJm4o4UnRThf1adT817z</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/49d99f48-971c-4cdc-934c-eb898ae4494d/tasks/b19a9ygd1.output</output-file>
+<status>completed</status>
+<summary>Monitor "PR 455 final CI verdict (after wasm-fixture fix)" stream ended</summary>
+</task-notification>
