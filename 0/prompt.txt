@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>be8q2z5aj</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/57cd5ede-b766-47a0-8671-63ea28675cda/tasks/be8q2z5aj.output</output-file>
+<status>killed</status>
+<summary>Background command "Background recovery: spaced release-plz re-runs until all 4 crates publish" was stopped</summary>
+</task-notification>
