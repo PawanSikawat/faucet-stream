@@ -1,0 +1,1 @@
+This field cleanup field is optional. Since it is optional, I'd rather have an incrementing version rather than a major bump. You figure out a way. I don't want to do something hacky, but at the same time I don't want to bump the faucet code to 2.0. You figure out a way how it can be done.
