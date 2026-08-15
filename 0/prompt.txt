@@ -1,0 +1,35 @@
+<task-notification>
+<task-id>a1b05868a77a7075a</task-id>
+<tool-use-id>toolu_01GUd8CoxumNRaFtmRGzTXEk</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/25d0f5a6-8938-4915-ab73-d349bfe5721f/tasks/a1b05868a77a7075a.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement cleanup on bigquery+spanner" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All four verification commands pass clean. Here's what I did.
+
+## BigQuery (`crates/sink/bigquery/`)
+
+**`src/merge.rs`** — new pure, unit-tested SQL generation (`// Scoped cleanup (issue #478)` section):
+- `build_cleanup_delete(...)` emits a **single** `DELETE FROM t T WHERE &lt;scope&gt; AND NOT EXISTS (SELECT 1 FROM UNNEST(JSON_QUERY_ARRAY(@keys)) AS k WHERE &lt;key&gt;)`. Exactly **two** bound params — `@scope` (one JSON object) and `@keys` (a JSON array) — both extracted with the same typed `column_expr` the write path uses, so an INT64 key compares as INT64. A single DML statement is atomic in BigQuery, which is what gives all-or-nothing.
+- `validate_cleanup_columns` — presence check for both scope and key columns (naming the role and the "destination column terms" hint, like the postgres reference), plus rejection of `REPEATED`/`STRUCT` columns which have no meaningful `=`.
+- `check_cleanup_payload_size` — refuses before issuing anything if the key payload exceeds a 9 MiB budget under BigQuery's 10 MB `jobs.query` limit, because a *truncated* key list would delete rows the run actually wrote.
+
+**`src/sink.rs`**:
+- Split `await_query_complete` into `await_query_job` (returns the terminal `Job`) + the old `()`-returning wrapper, so the cleanup can read `statistics.query.numDmlAffectedRows`. Success is still verified authoritatively via `get_job().status.error_result`.
+- `dml_affected_rows` / `scope_to_payload` helpers, `cleanup_scope_impl`, and the `supports_cleanup` / `cleanup_scope` trait overrides.
+
+**Tests**: 12 new unit tests (SQL text assertions in `merge.rs`'s style, param-count, typing, bracket-quoted awkward names, validation, size guard, DML-stat parsing) plus a new `tests/cleanup.rs` wiremock suite (7 tests) covering the real request, the empty-`seen` case, missing DML stats, invalid scope column, empty key, and a failed job.
+
+## Spanner (`crates/sink/spanner/`)
+
+Read-then-delete inside **one** `read_write_transaction`. Refactored `build_delete_mutation` into `encode_key_in_pk_order` + `delete_mutation_from_kinds` so the cleanup shares the encoding. New pure helpers: `scope_cast_expr`, `scope_param_text`, `build_scope_select_sql`, `kind_fingerprint`/`tuple_fingerprint`, `stale_key_rows`, `check_cleanup_cell_budget`. 14 new unit tests + 5 emulator tests.
+
+Two things worth flagging:
+
+1. **Scope params are bound as STRING and cast in SQL** (`CAST(@scope_0 AS INT64)`, `FROM_BASE64(@scope_0)` for BYTES, bare `@scope_0` for STRING). The client derives a param's Spanner type from the *Rust* type it's handed, but a cleanup scope carries `serde_json::Value`s whose destination type is only known at runtime from `INFORMATION_SCHEMA`. Casting keeps one binding path for all column types — the same trick as BigQuery's `JSON_VALUE(@scope, …)`. `JSON`/`ARRAY`/`STRUCT` scope columns are refused (no equality semantics). Values still route through `encode_to_kind` so type mismatches fail locally, and both sides of the comparison are encoded through the destination type, so a written key of `"7"` and a live INT64 of `7` match.
+
+2. **Documented limitation — the cell budget cannot be chunked.** `chunk_by_cells` is unusable here: the read and the delete must commit together, and a transaction commits exactly once, so chunking would mean several commits — a partial cleanup where every chunk after the first decides from an already-stale snapshot. Instead `check_cleanup_cell_budget` refuses up front (deleting nothing) when the stale set would exceed `CELL_BUDGET`, with a message naming the count and suggesting a narrower `complete_for`. That threshold (60k cells) sits well above the per-parent scopes the feature targets and above core's own `max_keys` reachability. The rationale is spelled out in a comment on that function.
+
+I did not touch the crate READMEs — the postgres reference commit (`4f65d784`) didn't either, so docs look like a later slice of #478. Nothing outside the two crate directories changed; nothing is committed.</result>
+<usage><subagent_tokens>308160</subagent_tokens><tool_uses>66</tool_uses><duration_ms>1213890</duration_ms></usage>
+</task-notification>
