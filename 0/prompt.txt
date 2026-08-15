@@ -1,0 +1,1 @@
+Now, since the new conformance expansion is done, can we adapt all the connectors on that?
