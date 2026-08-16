@@ -6,6 +6,7 @@
 
 use std::io::Write;
 
+use faucet_core::Source;
 use faucet_source_csv::{CsvSource, CsvSourceConfig};
 
 /// Write a small CSV with `total` `(id, name)` rows and return the temp file.
@@ -30,6 +31,7 @@ fn conformance_config_schema_valid() {
 fn conformance_connector_name_nonempty() {
     let source = CsvSource::new(CsvSourceConfig::new("/tmp/does-not-matter.csv"));
     faucet_conformance::assert_connector_name_nonempty(&source);
+    assert_eq!(source.connector_name(), "csv");
 }
 
 // ── Check 9: batch_size=0 yields a single page ────────────────────────────────

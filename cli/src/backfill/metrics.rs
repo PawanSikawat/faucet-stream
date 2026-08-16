@@ -39,17 +39,65 @@ pub(crate) fn record_unit(pipeline: &str, outcome: &'static str) {
     .increment(1);
 }
 
+/// Completed fraction of the planned units, clamped to `[0.0, 1.0]`.
+///
+/// Pure so the divide-by-zero guard and clamping are unit-testable without the
+/// metrics recorder: an empty plan (`planned == 0`) is treated as fully done
+/// (`1.0`), and `done > planned` (a resume double-count) never exceeds `1.0`.
+fn progress_ratio(done: usize, planned: usize) -> f64 {
+    if planned == 0 {
+        1.0
+    } else {
+        (done as f64 / planned as f64).min(1.0)
+    }
+}
+
 /// Publish the completed fraction of the planned units.
 pub(crate) fn set_progress(pipeline: &str, done: usize, planned: usize) {
     describe();
-    let ratio = if planned == 0 {
-        1.0
-    } else {
-        done as f64 / planned as f64
-    };
     gauge!(
         "faucet_backfill_progress_ratio",
         "pipeline" => pipeline.to_owned(),
     )
-    .set(ratio);
+    .set(progress_ratio(done, planned));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::progress_ratio;
+
+    #[test]
+    fn empty_plan_is_fully_done() {
+        // 0/0 must not be NaN — an empty plan is complete.
+        assert_eq!(progress_ratio(0, 0), 1.0);
+        assert_eq!(progress_ratio(5, 0), 1.0);
+    }
+
+    #[test]
+    fn none_done_is_zero() {
+        assert_eq!(progress_ratio(0, 4), 0.0);
+    }
+
+    #[test]
+    fn all_done_is_one() {
+        assert_eq!(progress_ratio(4, 4), 1.0);
+    }
+
+    #[test]
+    fn partial_is_the_fraction() {
+        assert_eq!(progress_ratio(1, 4), 0.25);
+        assert_eq!(progress_ratio(3, 4), 0.75);
+    }
+
+    #[test]
+    fn over_count_is_clamped_to_one() {
+        assert_eq!(progress_ratio(9, 4), 1.0);
+    }
+
+    #[test]
+    fn never_produces_nan() {
+        for (d, p) in [(0, 0), (0, 1), (1, 1), (3, 7), (100, 1)] {
+            assert!(!progress_ratio(d, p).is_nan(), "nan for {d}/{p}");
+        }
+    }
 }

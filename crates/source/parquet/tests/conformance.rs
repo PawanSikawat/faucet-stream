@@ -22,6 +22,7 @@ use faucet_conformance::{
     assert_batch_size_zero_single_page, assert_bounded_memory, assert_config_schema_valid_value,
     assert_connector_name_nonempty, assert_errors_not_panics, assert_preflight_check_wellformed,
 };
+use faucet_core::Source;
 use faucet_source_parquet::{ParquetSource, ParquetSourceConfig};
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
@@ -100,6 +101,7 @@ async fn conformance_connector_name_nonempty() {
         .await
         .unwrap();
     assert_connector_name_nonempty(&source);
+    assert_eq!(source.connector_name(), "parquet");
 }
 
 // ── Check 9: batch_size=0 yields a single page ────────────────────────────────

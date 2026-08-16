@@ -198,6 +198,8 @@ sink.flush().await?;
 
 `stdout://` or `stderr://`, depending on the configured destination.
 
+This connector reports metrics under the label `connector="stdout"`.
+
 ## Feature flags
 
 This crate has no optional features of its own; enable it in the CLI/umbrella via the `sink-stdout` feature.

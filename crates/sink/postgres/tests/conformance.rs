@@ -88,6 +88,7 @@ async fn conformance_idempotent_replay() {
         sink.connector_name(),
         sink.connector_name(),
     );
+    assert_eq!(sink.connector_name(), "postgres");
     faucet_conformance::assert_idempotent_replay(&sink, || {
         let url = url.clone();
         async move { count_rows(&url).await }

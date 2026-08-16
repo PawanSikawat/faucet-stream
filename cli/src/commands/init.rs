@@ -373,3 +373,59 @@ fn render_pipeline(
     ));
     body
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_SINK, DEFAULT_SOURCE, resolve_kinds};
+    use crate::cli::InitArgs;
+    use crate::error::CliError;
+    use std::path::PathBuf;
+
+    fn args(source: Option<&str>, sink: Option<&str>) -> InitArgs {
+        InitArgs {
+            name: None,
+            source: source.map(String::from),
+            sink: sink.map(String::from),
+            output: PathBuf::from("pipeline.yaml"),
+            force: false,
+            interactive: false,
+            template: "default".into(),
+            discover: false,
+            executable: None,
+            stream: None,
+        }
+    }
+
+    #[test]
+    fn resolve_kinds_passes_valid_kinds_through() {
+        let (src, sink) = resolve_kinds(&args(Some("rest"), Some("jsonl"))).unwrap();
+        assert_eq!((src.as_str(), sink.as_str()), ("rest", "jsonl"));
+    }
+
+    #[test]
+    fn resolve_kinds_falls_back_to_defaults() {
+        let (src, sink) = resolve_kinds(&args(None, None)).unwrap();
+        assert_eq!(
+            (src.as_str(), sink.as_str()),
+            (DEFAULT_SOURCE, DEFAULT_SINK)
+        );
+    }
+
+    #[test]
+    fn resolve_kinds_rejects_unknown_source() {
+        let err = resolve_kinds(&args(Some("does-not-exist"), Some("jsonl"))).unwrap_err();
+        assert!(
+            matches!(err, CliError::UnknownConnector { kind: "source", ref name, .. } if name == "does-not-exist"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_kinds_rejects_unknown_sink() {
+        let err = resolve_kinds(&args(Some("rest"), Some("does-not-exist"))).unwrap_err();
+        assert!(
+            matches!(err, CliError::UnknownConnector { kind: "sink", ref name, .. } if name == "does-not-exist"),
+            "got: {err:?}"
+        );
+    }
+}

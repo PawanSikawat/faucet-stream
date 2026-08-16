@@ -147,6 +147,7 @@ mod idempotent {
             sink.connector_name(),
             sink.connector_name(),
         );
+        assert_eq!(sink.connector_name(), "kafka");
         // Check 11: preflight check() is well-formed against the live broker
         // (`fetch_metadata` → a Pass probe inside Ok(report); nothing produced).
         faucet_conformance::assert_sink_preflight_check_wellformed(

@@ -644,6 +644,10 @@ impl faucet_core::Source for S3Source {
         })
     }
 
+    fn connector_name(&self) -> &'static str {
+        "s3"
+    }
+
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(S3SourceConfig))
             .expect("schema serialization")

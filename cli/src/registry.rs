@@ -1631,9 +1631,9 @@ mod tests {
         )
         .await
         .expect("csv source should build without I/O");
-        // The CSV source uses the default `connector_name()` (stripped type
-        // name) rather than overriding it with a friendly label.
-        assert_eq!(src.connector_name(), "CsvSource");
+        // The CSV source overrides `connector_name()` with its friendly,
+        // YAML-`type`-matching label (#61).
+        assert_eq!(src.connector_name(), "csv");
     }
 
     // The JSONL sink's `new()` is also pure (it opens the file lazily on first
@@ -1658,9 +1658,9 @@ mod tests {
         let sink = build_sink("stdout", serde_json::json!({}), &AuthCatalog::new())
             .await
             .expect("stdout sink should build without I/O");
-        // The stdout sink uses the default `connector_name()` (stripped type
-        // name) rather than overriding it with a friendly label.
-        assert_eq!(sink.connector_name(), "StdoutSink");
+        // The stdout sink overrides `connector_name()` with its friendly,
+        // YAML-`type`-matching label (#61).
+        assert_eq!(sink.connector_name(), "stdout");
     }
 
     // Exercise the Delta source+sink registry arms end to end: build both via

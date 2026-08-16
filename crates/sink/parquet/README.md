@@ -295,6 +295,8 @@ Files produced by this sink are standard Apache Parquet and read back with any P
 
 `file://<path>` (local) or `s3://<bucket>/<prefix>` (S3) — e.g. `file:///tmp/output/` or `s3://my-bucket/data/`.
 
+This connector reports observability metrics under the label `connector="parquet"`.
+
 ## Feature flags
 
 This crate has no optional features of its own; enable it in the CLI/umbrella via the `sink-parquet` feature.

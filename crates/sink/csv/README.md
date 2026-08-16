@@ -7,7 +7,7 @@
 
 CSV / TSV file sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Writes JSON records to a delimited text file — comma, tab, semicolon, pipe, or any other single-byte delimiter — with an optional header row and RFC 4180 quoting handled automatically.
 
-Reach for it whenever the destination is a spreadsheet, a BI import, a data-exchange handoff, or anything that consumes plain delimited text. All file I/O runs inside `tokio::task::spawn_blocking` and flows through a buffered `csv::Writer`, so it stays off the async runtime and doesn't bottleneck on per-record syscalls.
+Reach for it whenever the destination is a spreadsheet, a BI import, a data-exchange handoff, or anything that consumes plain delimited text. All file I/O runs inside `tokio::task::spawn_blocking` and flows through a buffered `csv::Writer`, so it stays off the async runtime and doesn't bottleneck on per-record syscalls. This connector reports metrics under the observability label `connector="csv"`.
 
 ## Feature highlights
 

@@ -136,6 +136,10 @@ fn csv_cell(value: &Value) -> Result<String, FaucetError> {
 
 #[async_trait]
 impl faucet_core::Sink for StdoutSink {
+    fn connector_name(&self) -> &'static str {
+        "stdout"
+    }
+
     fn config_schema(&self) -> Value {
         serde_json::to_value(faucet_core::schema_for!(StdoutSinkConfig))
             .expect("schema serialization")

@@ -96,6 +96,7 @@ mod idempotent {
             sink.connector_name(),
             sink.connector_name(),
         );
+        assert_eq!(sink.connector_name(), "redis");
         // Check 11: preflight check() is well-formed against the live server
         // (Redis `PING` → a Pass probe inside Ok(report); nothing written).
         faucet_conformance::assert_sink_preflight_check_wellformed(

@@ -9,6 +9,7 @@
 //! SQLite query is full-table (no bookmark), so check 3 does not apply; checks
 //! 4/5 are sink-only.
 
+use faucet_core::Source;
 use faucet_source_sqlite::{SqliteSource, SqliteSourceConfig};
 use sqlx::sqlite::SqlitePoolOptions;
 use tempfile::TempDir;
@@ -46,6 +47,7 @@ async fn conformance_config_schema_valid() {
     faucet_conformance::assert_config_schema_valid(&source);
     // Check 10: connector_name is non-empty.
     faucet_conformance::assert_connector_name_nonempty(&source);
+    assert_eq!(source.connector_name(), "sqlite");
 }
 
 #[tokio::test]

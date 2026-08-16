@@ -1404,3 +1404,71 @@ fn schema_contract_prints_contract_spec_schema() {
     assert!(schema["properties"].get("fields").is_some());
     assert!(schema["properties"].get("on_breach").is_some());
 }
+
+#[test]
+fn list_json_emits_structured_listing() {
+    let assert = Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["list", "--json"])
+        .assert()
+        .success();
+    let out: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid JSON output");
+    let source_names: Vec<&str> = out["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    let sink_names: Vec<&str> = out["sinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert!(source_names.contains(&"rest"), "sources: {source_names:?}");
+    assert!(sink_names.contains(&"jsonl"), "sinks: {sink_names:?}");
+    assert!(out["transforms"].is_array());
+    assert!(out["state_stores"].is_array());
+}
+
+#[test]
+fn schema_list_enumerates_targets() {
+    let assert = Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["schema", "--list"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(stdout.contains("source"), "{stdout}");
+    assert!(stdout.contains("sink"), "{stdout}");
+    assert!(stdout.contains("dlq"), "{stdout}");
+}
+
+#[test]
+fn validate_json_emits_summary() {
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    let out = dir.path().join("out.jsonl");
+    // `validate` is offline, so the CSV need not exist; still write it so the
+    // config is fully realistic.
+    fs::write(&csv, "id\n1\n").unwrap();
+    let cfg = dir.path().join("faucet.yaml");
+    fs::write(&cfg, csv_to_jsonl_yaml(&csv, &out)).unwrap();
+
+    let assert = Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["validate", cfg.to_str().unwrap(), "--json"])
+        .assert()
+        .success();
+    let summary: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid JSON output");
+    assert_eq!(summary["valid"], true);
+    assert_eq!(summary["name"], "csv_to_jsonl_smoke");
+    assert_eq!(summary["row_count"], 1);
+    let rows = summary["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["source"], "csv");
+    assert_eq!(rows[0]["sink"], "jsonl");
+    assert_eq!(rows[0]["role"], "root");
+}

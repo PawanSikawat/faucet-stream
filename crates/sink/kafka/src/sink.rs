@@ -434,6 +434,10 @@ impl Sink for KafkaSink {
         Ok(produced)
     }
 
+    fn connector_name(&self) -> &'static str {
+        "kafka"
+    }
+
     fn config_schema(&self) -> Value {
         let schema = schemars::schema_for!(KafkaSinkConfig);
         serde_json::to_value(&schema).unwrap_or(Value::Null)

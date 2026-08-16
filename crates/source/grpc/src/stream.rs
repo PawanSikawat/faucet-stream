@@ -487,6 +487,10 @@ impl faucet_core::Source for GrpcStream {
         }
     }
 
+    fn connector_name(&self) -> &'static str {
+        "grpc"
+    }
+
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(GrpcStreamConfig))
             .expect("schema serialization")

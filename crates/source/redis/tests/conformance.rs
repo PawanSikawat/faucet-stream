@@ -7,6 +7,7 @@
 //! integration test's container boot + seeding path verbatim.
 
 use faucet_conformance::assert_config_schema_valid_value;
+use faucet_core::Source;
 use faucet_source_redis::{RedisSource, RedisSourceConfig, RedisSourceType};
 use testcontainers::{ContainerAsync, runners::AsyncRunner};
 use testcontainers_modules::redis::{REDIS_PORT, Redis};
@@ -136,6 +137,7 @@ async fn conformance_errors_not_panics() {
 
     // Check 10: connector_name is non-empty (metric-cardinality contract).
     faucet_conformance::assert_connector_name_nonempty(&source);
+    assert_eq!(source.connector_name(), "redis");
     faucet_conformance::assert_errors_not_panics(&source).await;
     // Check 11: the default page-pull check() surfaces the connect failure as a
     // Fail probe inside Ok(report) — never an Err from check() itself.

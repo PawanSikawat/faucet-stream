@@ -86,6 +86,10 @@ impl CsvSink {
 
 #[async_trait]
 impl faucet_core::Sink for CsvSink {
+    fn connector_name(&self) -> &'static str {
+        "csv"
+    }
+
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(CsvSinkConfig)).expect("schema serialization")
     }

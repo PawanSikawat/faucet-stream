@@ -1,0 +1,60 @@
+# MongoDB collection → local Parquet files.
+#
+# Streams documents out of a MongoDB collection (with a filter, projection, and
+# sort) and writes them as columnar Parquet — the Arrow schema is inferred from
+# the first batch of records, so no schema declaration is needed. Ideal for
+# snapshotting an operational collection into an analytics-friendly file format.
+#
+# Infra: MongoDB from `examples/docker-compose.yml` (the `mongodb` service).
+# The Parquet sink writes to the local filesystem — no cloud credentials needed.
+#
+# Run:
+#   docker compose -f examples/docker-compose.yml up -d mongodb
+#   faucet validate cli/examples/mongodb_to_parquet.yaml
+#   faucet run      cli/examples/mongodb_to_parquet.yaml
+version: 1
+name: mongodb_to_parquet
+
+pipeline:
+  source:
+    type: mongodb
+    config:
+      # Standard MongoDB connection string. Point at your replica set / cluster.
+      connection_uri: mongodb://localhost:27017
+      database: shop
+      collection: orders
+      # Server-side filter — only completed orders are exported.
+      filter:
+        status: completed
+      # Return just the fields we care about (1 = include). Drop `_id` so the
+      # ObjectId doesn't need type handling downstream.
+      projection:
+        _id: 0
+        customer_id: 1
+        total: 1
+        currency: 1
+        created_at: 1
+      # Deterministic ordering makes re-runs reproducible.
+      sort:
+        created_at: 1
+      # Cap the export; remove for a full-collection dump.
+      limit: 500000
+      # Driver-side cursor batch size (network round-trip granularity).
+      cursor_batch_size: 1000
+
+  sink:
+    type: parquet
+    config:
+      # Local filesystem destination. A path ending in `.parquet` writes a single
+      # file; a directory path rolls over to `<uuid>.parquet` files instead.
+      destination:
+        type: local_path
+        path: ./out/orders/
+      # Codec applied to each column chunk: uncompressed | snappy | gzip | zstd | lz4.
+      compression: zstd
+      # Roll over to a new file every N rows (directory mode) to cap file size.
+      max_rows_per_file: 200000
+      # Rows per Arrow record batch handed to the writer. `0` = write whatever
+      # the source hands over as one batch (recommended for Parquet, which
+      # prefers fewer, larger row groups).
+      batch_size: 0

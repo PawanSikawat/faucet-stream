@@ -5,6 +5,7 @@
 //! PostgreSQL query is full-table (no bookmark), so check 3 does not apply;
 //! checks 4/5 are sink-only.
 
+use faucet_core::Source;
 use faucet_source_postgres::{PostgresSource, PostgresSourceConfig};
 use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
@@ -61,6 +62,7 @@ async fn conformance_bounded_memory() {
 
     // Check 10: connector_name is non-empty.
     faucet_conformance::assert_connector_name_nonempty(&source);
+    assert_eq!(source.connector_name(), "postgres");
 
     // Check 11: preflight check() returns Ok(report) with well-formed probes.
     faucet_conformance::assert_preflight_check_wellformed(

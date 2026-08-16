@@ -297,6 +297,8 @@ println!("Transferred {} records", result.records_written);
 
 `mongodb://<host>:<port>/<database>/<collection>` (credentials stripped) — e.g. `mongodb://host:27017/analytics/events`.
 
+This connector reports observability metrics under the label `connector="mongodb"`.
+
 ## Feature flags
 
 This crate has no optional features of its own; enable it in the CLI / umbrella via the `sink-mongodb` feature.

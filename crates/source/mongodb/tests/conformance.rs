@@ -7,6 +7,7 @@
 //! path verbatim.
 
 use faucet_conformance::{assert_config_schema_valid_value, assert_connector_name_nonempty};
+use faucet_core::Source;
 use faucet_source_mongodb::{MongoSource, MongoSourceConfig};
 use mongodb::Client;
 use mongodb::bson::{Document, doc};
@@ -128,6 +129,7 @@ async fn conformance_errors_not_panics() {
 
     // Check 10: connector_name is non-empty (pure — runs offline, no Docker).
     assert_connector_name_nonempty(&source);
+    assert_eq!(source.connector_name(), "mongodb");
 
     faucet_conformance::assert_errors_not_panics(&source).await;
 }

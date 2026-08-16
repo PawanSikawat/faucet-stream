@@ -173,6 +173,8 @@ The pipeline calls `Sink::write_batch` once per upstream page. Inside a call, `b
 
 **Recommended: `batch_size: 0`.** S3 is the canonical case where one large object beats many small ones — per-request overhead, slower downstream scans, and LIST/PUT cost all compound with tiny objects. Most sources already size each page via their own `batch_size` (REST page, sqlx cursor chunk, Kafka poll, …), so let that drive object sizing.
 
+This connector reports observability metrics under the label `connector="s3"`.
+
 > **Memory ceiling.** Each object's body is buffered fully in memory before a single-shot `PutObject` (and, with compression on, briefly held as both raw and compressed). Up to `concurrency` objects upload at once, so peak memory is roughly **`concurrency` × object-size × ~2**. Pair `batch_size: 0` with a *streaming* source that sizes its own pages, or cap memory via `max_records_per_file` / lower `concurrency`. Streaming multipart upload for very large objects is a future enhancement.
 
 ## Arrow columnar (Parquet) mode

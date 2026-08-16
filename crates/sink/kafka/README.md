@@ -7,7 +7,7 @@
 
 Apache **Kafka** producer sink for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Publishes each record to one or more Kafka topics over [`rdkafka`](https://crates.io/crates/rdkafka)'s `FutureProducer`, with an idempotent producer, configurable compression, per-record topic/key/partition/header routing, and `QueueFull` retry.
 
-Reach for it when you want to land any faucet-stream source — a REST API, a database, a CDC stream, a file — onto Kafka with one declarative config and no glue code. Sends inside each batch fly concurrently through a `FuturesUnordered` window, so a single pipeline saturates the producer instead of round-tripping one message at a time.
+Reach for it when you want to land any faucet-stream source — a REST API, a database, a CDC stream, a file — onto Kafka with one declarative config and no glue code. Sends inside each batch fly concurrently through a `FuturesUnordered` window, so a single pipeline saturates the producer instead of round-tripping one message at a time. This connector reports metrics under the observability label `connector="kafka"`.
 
 ## Feature highlights
 

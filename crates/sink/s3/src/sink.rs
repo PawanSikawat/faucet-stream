@@ -21,7 +21,7 @@ impl S3Sink {
     ///
     /// Builds the S3 client eagerly so it is reused across calls.
     pub async fn new(config: S3SinkConfig) -> Result<Self, FaucetError> {
-        faucet_core::validate_batch_size(config.batch_size)?;
+        config.validate()?;
         let client = Self::build_client(&config).await?;
         Ok(Self { config, client })
     }
@@ -132,6 +132,10 @@ impl S3Sink {
 
 #[async_trait]
 impl faucet_core::Sink for S3Sink {
+    fn connector_name(&self) -> &'static str {
+        "s3"
+    }
+
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(S3SinkConfig)).expect("schema serialization")
     }

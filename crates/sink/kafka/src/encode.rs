@@ -44,7 +44,11 @@ pub async fn encode(
         #[cfg(feature = "schema-registry")]
         KafkaValueFormat::ConfluentAvro { .. } => {
             let client = sr_client.ok_or_else(|| {
-                FaucetError::Config("ConfluentAvro selected but no SchemaRegistryClient".into())
+                FaucetError::Config(
+                    "value format 'confluent_avro' requires a Schema Registry client — set \
+                     `schema_registry.url` (and any auth) in the Kafka sink config"
+                        .into(),
+                )
             })?;
             let schema_text = schema_ctx
                 .schema_text
@@ -55,7 +59,11 @@ pub async fn encode(
         #[cfg(feature = "schema-registry")]
         KafkaValueFormat::ConfluentProtobuf { .. } => {
             let client = sr_client.ok_or_else(|| {
-                FaucetError::Config("ConfluentProtobuf selected but no SchemaRegistryClient".into())
+                FaucetError::Config(
+                    "value format 'confluent_protobuf' requires a Schema Registry client — set \
+                     `schema_registry.url` (and any auth) in the Kafka sink config"
+                        .into(),
+                )
             })?;
             let schema_text = schema_ctx.schema_text.as_deref().ok_or_else(|| {
                 FaucetError::Config("ConfluentProtobuf requires schema_text".into())
@@ -66,7 +74,9 @@ pub async fn encode(
         KafkaValueFormat::ConfluentJsonSchema { .. } => {
             let client = sr_client.ok_or_else(|| {
                 FaucetError::Config(
-                    "ConfluentJsonSchema selected but no SchemaRegistryClient".into(),
+                    "value format 'confluent_json_schema' requires a Schema Registry client — set \
+                     `schema_registry.url` (and any auth) in the Kafka sink config"
+                        .into(),
                 )
             })?;
             let schema_text = schema_ctx.schema_text.as_deref().ok_or_else(|| {
@@ -201,8 +211,9 @@ mod tests {
             .await
             .unwrap_err();
             match err {
+                // The message now names the wire format and the fix (#431).
                 FaucetError::Config(msg) => assert!(
-                    msg.contains("ConfluentAvro") && msg.contains("no SchemaRegistryClient"),
+                    msg.contains("confluent_avro") && msg.contains("schema_registry.url"),
                     "unexpected message: {msg}"
                 ),
                 other => panic!("expected Config error, got {other:?}"),
@@ -221,7 +232,7 @@ mod tests {
             .unwrap_err();
             match err {
                 FaucetError::Config(msg) => assert!(
-                    msg.contains("ConfluentProtobuf") && msg.contains("no SchemaRegistryClient"),
+                    msg.contains("confluent_protobuf") && msg.contains("schema_registry.url"),
                     "unexpected message: {msg}"
                 ),
                 other => panic!("expected Config error, got {other:?}"),
@@ -240,7 +251,7 @@ mod tests {
             .unwrap_err();
             match err {
                 FaucetError::Config(msg) => assert!(
-                    msg.contains("ConfluentJsonSchema") && msg.contains("no SchemaRegistryClient"),
+                    msg.contains("confluent_json_schema") && msg.contains("schema_registry.url"),
                     "unexpected message: {msg}"
                 ),
                 other => panic!("expected Config error, got {other:?}"),

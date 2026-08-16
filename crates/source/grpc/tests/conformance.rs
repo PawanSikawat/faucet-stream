@@ -17,6 +17,7 @@ use faucet_conformance::{
     assert_bounded_memory, assert_config_schema_valid_value, assert_connector_name_nonempty,
     assert_errors_not_panics, assert_preflight_check_wellformed,
 };
+use faucet_core::Source;
 use faucet_source_grpc::{GrpcStream, GrpcStreamConfig, RpcKind};
 use serde_json::json;
 
@@ -84,6 +85,7 @@ async fn conformance_errors_not_panics() {
 #[test]
 fn conformance_connector_name_nonempty() {
     assert_connector_name_nonempty(&unreachable_source());
+    assert_eq!(unreachable_source().connector_name(), "grpc");
 }
 
 // ── Check 11: preflight check() is well-formed ────────────────────────────────

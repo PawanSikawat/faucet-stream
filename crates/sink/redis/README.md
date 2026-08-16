@@ -188,6 +188,8 @@ The sink follows the workspace streaming contract: `Pipeline::run` drives the so
 
 This sink writes **append/insert-only** (`RPUSH` / `XADD` / `SET`) and does not implement upsert/delete write modes — see [Limitations](#limitations). It **does** support effectively-once delivery — see the next section.
 
+This connector reports observability metrics under the label `connector="redis"`.
+
 ## Effectively-once delivery
 
 `RedisSink` implements `Sink::supports_idempotent_writes` (returns `true`) and the two companion hooks:

@@ -471,6 +471,10 @@ impl faucet_core::Source for GraphqlStream {
         self.stream_pages_inner(context)
     }
 
+    fn connector_name(&self) -> &'static str {
+        "graphql"
+    }
+
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(GraphqlStreamConfig))
             .expect("schema serialization")

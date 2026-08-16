@@ -164,6 +164,10 @@ impl HttpSink {
 
 #[async_trait]
 impl faucet_core::Sink for HttpSink {
+    fn connector_name(&self) -> &'static str {
+        "http"
+    }
+
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(HttpSinkConfig))
             .expect("schema serialization")

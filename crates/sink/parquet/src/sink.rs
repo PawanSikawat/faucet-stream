@@ -458,6 +458,10 @@ where
 
 #[async_trait]
 impl faucet_core::Sink for ParquetSink {
+    fn connector_name(&self) -> &'static str {
+        "parquet"
+    }
+
     fn config_schema(&self) -> Value {
         serde_json::to_value(faucet_core::schema_for!(ParquetSinkConfig))
             .expect("schema serialization")

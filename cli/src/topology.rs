@@ -1117,6 +1117,28 @@ pipeline:
         assert!(inert_blocks(&c).is_empty());
     }
 
+    /// `is_topology` is the load-bearing predicate that branches run/validate/
+    /// preview between matrix mode and topology mode: a non-empty `pipeline.nodes`
+    /// selects topology mode, its absence keeps matrix mode.
+    #[test]
+    fn is_topology_true_only_with_nodes() {
+        assert!(
+            is_topology(&cfg(LINEAR)),
+            "a config with nodes is topology mode"
+        );
+
+        let matrix = cfg(r#"version: 1
+name: p
+pipeline:
+  source: { type: csv, config: { path: /tmp/a.csv } }
+  sink:   { type: jsonl, config: { path: /tmp/o.jsonl } }
+"#);
+        assert!(
+            !is_topology(&matrix),
+            "a plain source/sink config is matrix mode, not topology"
+        );
+    }
+
     /// Kind precedence: an inline `type` on the node wins over its template, so
     /// the exactly-once gate classifies the connector the run will actually build.
     #[test]

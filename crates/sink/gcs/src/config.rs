@@ -133,6 +133,20 @@ impl GcsSinkConfig {
         self.compression = c;
         self
     }
+
+    /// Validate the config at construction time. Rejects an empty `bucket`
+    /// (a typo or an unset `${env:…}`) with a typed `FaucetError::Config`
+    /// rather than letting it surface as an opaque cloud-API failure on the
+    /// first upload, and validates `batch_size`.
+    pub fn validate(&self) -> Result<(), faucet_core::FaucetError> {
+        if self.bucket.trim().is_empty() {
+            return Err(faucet_core::FaucetError::Config(
+                "GCS sink `bucket` must not be empty".to_owned(),
+            ));
+        }
+        faucet_core::validate_batch_size(self.batch_size)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -150,6 +164,22 @@ mod tests {
         assert_eq!(c.concurrency, 10);
         assert_eq!(c.batch_size, faucet_core::DEFAULT_BATCH_SIZE);
         assert!(c.storage_host.is_none());
+    }
+
+    #[test]
+    fn validate_accepts_a_normal_config() {
+        assert!(GcsSinkConfig::new("b").validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_empty_bucket() {
+        for bucket in ["", "   "] {
+            let err = GcsSinkConfig::new(bucket).validate().unwrap_err();
+            assert!(
+                matches!(err, faucet_core::FaucetError::Config(msg) if msg.contains("bucket")),
+                "expected a Config error naming `bucket` for {bucket:?}"
+            );
+        }
     }
 
     #[test]

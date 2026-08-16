@@ -59,12 +59,14 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         let refs = crate::secrets::scan_path_refs_with(&path, args.profile.as_deref(), &inputs)?;
         let cfg =
             PipelineConfig::from_path_async_with(&path, args.profile.as_deref(), &inputs).await?;
-        for (scheme, reference) in &refs {
-            println!("secret: {scheme}:{reference} → resolved");
+        if !args.json {
+            for (scheme, reference) in &refs {
+                println!("secret: {scheme}:{reference} → resolved");
+            }
         }
         cfg
     };
-    if !cfg.params.is_empty() {
+    if !cfg.params.is_empty() && !args.json {
         let required: Vec<&str> = cfg
             .params
             .iter()
@@ -92,6 +94,29 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
     if crate::topology::is_topology(&cfg) {
         let auth = crate::auth_catalog::build_auth_catalog(cfg.auth.as_ref())?;
         let topo = crate::topology::build_topology(&cfg, &auth).await?;
+        let inert: Vec<(&str, &str)> = crate::topology::inert_blocks(&cfg);
+        if args.json {
+            let out = serde_json::json!({
+                "valid": true,
+                "mode": "topology",
+                "name": cfg.name.as_deref().unwrap_or("unnamed"),
+                "node_count": topo.nodes().len(),
+                "edge_count": topo.edges().len(),
+                "nodes": topo.nodes().iter()
+                    .map(|n| serde_json::json!({ "id": n.id, "kind": n.kind.kind_str() }))
+                    .collect::<Vec<_>>(),
+                "warnings": inert.iter()
+                    .map(|(block, consequence)| serde_json::json!({
+                        "block": block, "consequence": consequence,
+                    }))
+                    .collect::<Vec<_>>(),
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&out).unwrap_or_else(|_| out.to_string())
+            );
+            return Ok(());
+        }
         println!(
             "topology '{}': {} node(s), {} edge(s) — valid",
             cfg.name.as_deref().unwrap_or("unnamed"),
@@ -104,7 +129,7 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         // Say what topology mode will *not* do. Printing "valid" while silently
         // ignoring a declared block is how an operator ends up believing a policy
         // is enforced when it is not (#456 M2).
-        for (block, consequence) in crate::topology::inert_blocks(&cfg) {
+        for (block, consequence) in &inert {
             println!("  WARNING: `{block}:` is ignored in topology mode — {consequence}");
         }
         return Ok(());
@@ -126,7 +151,7 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
 
     let nodes = expand(&cfg)?;
 
-    if !unprobed.is_empty() {
+    if !unprobed.is_empty() && !args.json {
         println!(
             "partition: {} row(s) discover their bound at run time ({}) — the chunk count \
              cannot be planned offline, so it is not validated here",
@@ -139,7 +164,9 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
     // `faucet validate` catches misconfiguration without running.
     if let Some(spec) = &cfg.replication {
         crate::replication::compiled::CompiledReplication::compile(spec, &cfg)?;
-        println!("replication: mode={:?} — valid", spec.mode);
+        if !args.json {
+            println!("replication: mode={:?} — valid", spec.mode);
+        }
     }
 
     // Validate the backfill defaults block (window / concurrency / timezone)
@@ -153,7 +180,9 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
             .map(|n| n.source.config.to_string())
             .collect();
         spec.validate(&source_configs)?;
-        println!("backfill: defaults valid");
+        if !args.json {
+            println!("backfill: defaults valid");
+        }
     }
 
     // Validate the schedule block (cron / timezone / bounds) so `faucet validate`
@@ -161,10 +190,12 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
     #[cfg(feature = "schedule")]
     if let Some(spec) = &cfg.schedule {
         crate::schedule::compiled::CompiledSchedule::compile(spec)?;
-        println!(
-            "schedule: cron '{}' tz '{}' — valid",
-            spec.cron, spec.timezone
-        );
+        if !args.json {
+            println!(
+                "schedule: cron '{}' tz '{}' — valid",
+                spec.cron, spec.timezone
+            );
+        }
     }
 
     // Validate the notifications block (unique names, non-empty channel fields)
@@ -172,13 +203,17 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
     #[cfg(feature = "notify")]
     if !cfg.notifications.is_empty() {
         crate::notify::validate_all(&cfg.notifications)?;
-        println!("notifications: {} rule(s) — valid", cfg.notifications.len());
+        if !args.json {
+            println!("notifications: {} rule(s) — valid", cfg.notifications.len());
+        }
     }
 
     // Lineage transport reachability — best-effort. A failure here is only a
     // warning: lineage emission never blocks a pipeline run.
     #[cfg(feature = "lineage")]
-    if let Some(lc) = cfg.lineage.as_ref() {
+    if let Some(lc) = cfg.lineage.as_ref()
+        && !args.json
+    {
         match crate::lineage_glue::check_transport(lc).await {
             Ok(msg) => println!("lineage: {msg}"),
             Err(msg) => println!("lineage: WARNING — {msg} (lineage never blocks a run)"),
@@ -216,6 +251,89 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         .filter(|n| matches!(n.role, NodeRole::Root))
         .count();
     let children = nodes.len() - roots;
+
+    // Runtime row-selection (#370/#371/#376/#377). The selection is computed the
+    // same way `faucet run` computes it, so the run/skip decision here matches
+    // what a run would do; a selection error (empty run set, missing ancestor,
+    // unknown token) is surfaced after the report so `validate` catches it in CI
+    // without a run.
+    let selection = RunSelection::from_args(&args.selection, cfg.selection.as_ref())?;
+    let uses_selection_model = nodes
+        .iter()
+        .any(|n| n.status != SourceStatus::Active || !n.tags.is_empty());
+    let selection_active = selection.narrows() || uses_selection_model;
+    let has_matrix = !cfg.matrix.is_empty();
+    let selected = if selection_active {
+        Some(crate::select::select_nodes(
+            nodes.clone(),
+            &selection,
+            has_matrix,
+        ))
+    } else {
+        None
+    };
+    let run_ids: HashSet<String> = match &selected {
+        Some(Ok(sel)) => sel.iter().map(|n| n.id.clone()).collect(),
+        _ => HashSet::new(),
+    };
+    let decision_for = |node: &crate::expand::ExpandedNode| -> Option<&'static str> {
+        selection_active.then(|| {
+            if run_ids.contains(&node.id) {
+                "run"
+            } else {
+                "skip"
+            }
+        })
+    };
+
+    if args.json {
+        let rows: Vec<serde_json::Value> = nodes
+            .iter()
+            .map(|node| {
+                let (role, parent_id, parent_key) = match &node.role {
+                    NodeRole::Root => ("root", None, None),
+                    NodeRole::Child {
+                        parent_id,
+                        parent_key,
+                    } => ("child", Some(parent_id.clone()), Some(parent_key.clone())),
+                };
+                serde_json::json!({
+                    "id": node.id,
+                    "source": node.source.kind,
+                    "sink": node.sink.kind,
+                    "role": role,
+                    "parent_id": parent_id,
+                    "parent_key": parent_key,
+                    "depends_on": &node.depends_on,
+                    "delivery": node.delivery_guarantee.to_string(),
+                    "status": node.status.as_str(),
+                    "tags": &node.tags,
+                    "decision": decision_for(node),
+                })
+            })
+            .collect();
+        let out = serde_json::json!({
+            "valid": true,
+            "mode": "matrix",
+            "name": cfg.name.as_deref().unwrap_or("(unnamed)"),
+            "row_count": nodes.len(),
+            "roots": roots,
+            "children": children,
+            "selection_active": selection_active,
+            "rows": rows,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).unwrap_or_else(|_| out.to_string())
+        );
+        // Propagate any selection error after emitting the summary so the exit
+        // code still reflects an invalid selection.
+        if let Some(sel) = selected {
+            sel?;
+        }
+        return Ok(());
+    }
+
     println!(
         "ok: '{}' rows={} (roots={}, children={}) execution={}",
         cfg.name.as_deref().unwrap_or("(unnamed)"),
@@ -235,24 +353,10 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         println!("{}", row_line(node));
     }
 
-    // Runtime row-selection report (#370/#371/#376/#377). Only printed when the
-    // config actually uses the readiness ladder / tags, or a selector was
-    // passed — so a plain config's `validate` output is unchanged. The
-    // selection is computed the same way `faucet run` computes it, so the
-    // run/skip decision here matches what a run would do; a selection error
-    // (empty run set, missing ancestor, unknown token) is surfaced after the
-    // report so `validate` catches it in CI without a run.
-    let selection = RunSelection::from_args(&args.selection, cfg.selection.as_ref())?;
-    let uses_selection_model = nodes
-        .iter()
-        .any(|n| n.status != SourceStatus::Active || !n.tags.is_empty());
-    if selection.narrows() || uses_selection_model {
-        let has_matrix = !cfg.matrix.is_empty();
-        let selected = crate::select::select_nodes(nodes.clone(), &selection, has_matrix);
-        let run_ids: HashSet<String> = match &selected {
-            Ok(sel) => sel.iter().map(|n| n.id.clone()).collect(),
-            Err(_) => HashSet::new(),
-        };
+    // The selection report is only printed when the config actually uses the
+    // readiness ladder / tags, or a selector was passed — so a plain config's
+    // `validate` output is unchanged.
+    if selection_active {
         println!(
             "run selection (include_parents={}):",
             selection.include_parents.as_str()
@@ -278,7 +382,9 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
         }
         // Propagate any selection error (empty run set / missing ancestor /
         // unknown token) now that the report has been printed.
-        selected?;
+        if let Some(sel) = selected {
+            sel?;
+        }
     }
     Ok(())
 }

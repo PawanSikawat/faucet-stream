@@ -638,6 +638,10 @@ impl MongoSink {
 
 #[async_trait]
 impl faucet_core::Sink for MongoSink {
+    fn connector_name(&self) -> &'static str {
+        "mongodb"
+    }
+
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(MongoSinkConfig))
             .expect("schema serialization")
