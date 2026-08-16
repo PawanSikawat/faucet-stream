@@ -1,0 +1,53 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M04FA6X09FX20EQV1SBRBAS4",
+  "session_id": "4d8e1559-79b4-447a-bbb5-1b4509178697",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-16T05:04:37.83073Z",
+  "branch": "chore/good-first-issues-batch",
+  "checkpoints_count": 2,
+  "save_step_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8",
+  "turn_id": "24ca961ac714",
+  "checkpoint_transcript_start": 1099,
+  "transcript_lines_at_start": 1099,
+  "compact_transcript_start": 193,
+  "token_usage": {
+    "input_tokens": 64,
+    "cache_creation_tokens": 45060,
+    "cache_read_tokens": 13104781,
+    "output_tokens": 28691,
+    "api_call_count": 32,
+    "subagent_tokens": {
+      "input_tokens": 60,
+      "cache_creation_tokens": 309179,
+      "cache_read_tokens": 3909089,
+      "output_tokens": 23854,
+      "api_call_count": 30
+    }
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    }
+  ]
+}
