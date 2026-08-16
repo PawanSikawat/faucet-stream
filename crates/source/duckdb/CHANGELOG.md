@@ -7,6 +7,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
 
+## [1.1.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-source-duckdb-v1.0.3...faucet-source-duckdb-v1.1.0) - 2026-08-16
+
+### Features
+
+- *(sources)* Fail-fast config validation for csv/duckdb/elasticsearch/gcs/graphql ([#489](https://github.com/faucet-hq/faucet-stream/pull/489))
+
 ## [1.0.3](https://github.com/faucet-hq/faucet-stream/compare/faucet-source-duckdb-v1.0.2...faucet-source-duckdb-v1.0.3) - 2026-08-15
 
 ### Miscellaneous

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.4.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-source-csv-v1.3.4...faucet-source-csv-v1.4.0) - 2026-08-16
+
+### Features
+
+- *(cli)* --json for list/validate, schema --list, connector labels, and validation & test hardening ([#491](https://github.com/faucet-hq/faucet-stream/pull/491))
+- *(sources)* Fail-fast config validation for csv/duckdb/elasticsearch/gcs/graphql ([#489](https://github.com/faucet-hq/faucet-stream/pull/489))
+
 ## [1.3.4](https://github.com/faucet-hq/faucet-stream/compare/faucet-source-csv-v1.3.3...faucet-source-csv-v1.3.4) - 2026-08-15
 
 ### Miscellaneous

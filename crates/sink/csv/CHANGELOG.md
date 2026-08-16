@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.2.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-sink-csv-v1.1.8...faucet-sink-csv-v1.2.0) - 2026-08-16
+
+### Features
+
+- *(cli)* --json for list/validate, schema --list, connector labels, and validation & test hardening ([#491](https://github.com/faucet-hq/faucet-stream/pull/491))
+
 ## [1.1.8](https://github.com/faucet-hq/faucet-stream/compare/faucet-sink-csv-v1.1.7...faucet-sink-csv-v1.1.8) - 2026-08-15
 
 ### Miscellaneous
