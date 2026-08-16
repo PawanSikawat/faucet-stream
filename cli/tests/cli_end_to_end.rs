@@ -1433,6 +1433,93 @@ fn list_json_emits_structured_listing() {
 }
 
 #[test]
+fn list_available_human_and_json() {
+    // Human path: the registry index renders with the header + the compiled
+    // marker legend.
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["list", "--available"])
+        .assert()
+        .success()
+        .stdout(contains("Registry connectors"));
+
+    // JSON path: a `connectors` array whose entries carry kind/name/compiled.
+    let assert = Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["list", "--available", "--json"])
+        .assert()
+        .success();
+    let out: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid JSON output");
+    let rows = out["connectors"].as_array().expect("connectors array");
+    assert!(!rows.is_empty(), "registry index should list connectors");
+    let first = &rows[0];
+    for key in ["kind", "name", "description", "compiled"] {
+        assert!(
+            first.get(key).is_some(),
+            "connector entry missing `{key}`: {first}"
+        );
+    }
+    assert!(
+        first["compiled"].is_boolean(),
+        "`compiled` should be a bool"
+    );
+    // `rest` is a built-in source and is compiled into this binary.
+    let rest = rows
+        .iter()
+        .find(|c| c["kind"] == "source" && c["name"] == "rest")
+        .expect("rest source in the registry index");
+    assert_eq!(rest["compiled"], true, "rest should be marked compiled");
+}
+
+#[test]
+fn validate_json_topology_mode() {
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("topo.yaml");
+    // A minimal linear topology (source node → sink node) exercises the
+    // topology-mode `--json` branch of `faucet validate`.
+    fs::write(
+        &cfg,
+        r#"version: 1
+name: topo_smoke
+pipeline:
+  sources:
+    a: { type: csv, config: { path: ./in.csv } }
+  sinks:
+    o: { type: jsonl, config: { path: ./out.jsonl } }
+  nodes:
+    s: { kind: source, ref: a }
+    w: { kind: sink, ref: o }
+  edges:
+    - { from: s, to: w }
+"#,
+    )
+    .unwrap();
+    let assert = Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["validate", cfg.to_str().unwrap(), "--json"])
+        .assert()
+        .success();
+    let out: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid JSON output");
+    assert_eq!(out["valid"], true);
+    assert_eq!(out["mode"], "topology");
+    assert_eq!(out["name"], "topo_smoke");
+    assert_eq!(out["node_count"], 2);
+    assert_eq!(out["edge_count"], 1);
+    let node_ids: Vec<&str> = out["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        node_ids.contains(&"s") && node_ids.contains(&"w"),
+        "nodes: {node_ids:?}"
+    );
+}
+
+#[test]
 fn schema_list_enumerates_targets() {
     let assert = Command::cargo_bin("faucet")
         .unwrap()
