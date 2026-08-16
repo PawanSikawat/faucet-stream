@@ -1,0 +1,52 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M04B865D5Z1G7Q42EENP5RX8",
+  "session_id": "4d8e1559-79b4-447a-bbb5-1b4509178697",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-16T03:53:38.524536Z",
+  "branch": "chore/good-first-issues-batch",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/sink/csv/src/sink.rs",
+    "crates/sink/http/src/sink.rs",
+    "crates/sink/kafka/src/sink.rs",
+    "crates/sink/mongodb/src/sink.rs",
+    "crates/sink/mysql/src/sink.rs",
+    "crates/sink/parquet/src/sink.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8",
+  "turn_id": "fbf8cd865534",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 378,
+    "cache_creation_tokens": 367000,
+    "cache_read_tokens": 50332096,
+    "output_tokens": 114724,
+    "api_call_count": 189
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-16T03:53:38.431227Z",
+    "agent_lines": 24,
+    "agent_removed": 0,
+    "human_added": 1059,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 1083,
+    "total_lines_changed": 1152,
+    "agent_percentage": 2.083333333333333,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    }
+  ]
+}
