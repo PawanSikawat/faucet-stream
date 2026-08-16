@@ -5,6 +5,7 @@
 //! requires Docker — it runs in CI alongside the other integration tests.
 
 use faucet_conformance::assert_config_schema_valid_value;
+use faucet_core::Source;
 use faucet_source_mysql::{MysqlSource, MysqlSourceConfig};
 use std::sync::OnceLock;
 use testcontainers::{ContainerAsync, runners::AsyncRunner};
@@ -95,6 +96,7 @@ async fn conformance_bounded_memory() {
 
     // Check 10: connector_name is non-empty.
     faucet_conformance::assert_connector_name_nonempty(&source);
+    assert_eq!(source.connector_name(), "mysql");
 
     // Check 11: preflight check() returns Ok(report) with well-formed probes.
     faucet_conformance::assert_preflight_check_wellformed(

@@ -70,6 +70,7 @@ fn conformance_connector_name_nonempty() {
         sink.connector_name(),
         sink.connector_name(),
     );
+    assert_eq!(sink.connector_name(), "stdout");
 }
 
 // ── Check 11: preflight check() is well-formed ────────────────────────────────

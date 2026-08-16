@@ -196,4 +196,32 @@ mod tests {
         assert!(glob_match("a*b*c", "axxbyyc"));
         assert!(!glob_match("a*b*c", "axxbyy"));
     }
+
+    /// Off-by-one boundary cases a backtracking matcher classically gets wrong
+    /// (empty inputs, exhausted input against a trailing `?`, pattern longer
+    /// than the name). Pure test hardening — the current matcher already passes.
+    #[test]
+    fn glob_boundary_cases() {
+        assert!(glob_match("", ""), "empty pattern matches empty name");
+        assert!(
+            !glob_match("", "x"),
+            "empty pattern must not match a non-empty name"
+        );
+        assert!(!glob_match("a?", "a"), "trailing `?` needs one more char");
+        assert!(
+            !glob_match("abc", "ab"),
+            "pattern longer than name, no star"
+        );
+        assert!(glob_match("*", ""), "a lone star matches the empty name");
+        assert!(glob_match("a*", "a"), "trailing star may match nothing");
+        assert!(
+            glob_match("**", ""),
+            "consecutive stars collapse and match empty"
+        );
+        assert!(
+            glob_match("?", "x"),
+            "a single `?` matches exactly one char"
+        );
+        assert!(!glob_match("?", ""), "a single `?` needs a char");
+    }
 }

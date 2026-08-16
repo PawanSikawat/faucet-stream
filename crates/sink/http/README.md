@@ -7,7 +7,7 @@
 
 HTTP POST sink connector for the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem. Sends JSON records to any HTTP(S) endpoint — a webhook, an ingest API, a serverless function, another faucet pipeline's webhook source.
 
-Reach for it when the destination speaks HTTP but isn't one of the first-class warehouse/database/queue sinks: a SaaS ingest endpoint, an internal microservice, a Lambda/Cloud Function URL, or a fan-out webhook. It reuses a single `reqwest::Client`, sends records concurrently, and retries transient failures so it stays fast and resilient under load.
+Reach for it when the destination speaks HTTP but isn't one of the first-class warehouse/database/queue sinks: a SaaS ingest endpoint, an internal microservice, a Lambda/Cloud Function URL, or a fan-out webhook. It reuses a single `reqwest::Client`, sends records concurrently, and retries transient failures so it stays fast and resilient under load. This connector reports metrics under the observability label `connector="http"`.
 
 ## Feature highlights
 

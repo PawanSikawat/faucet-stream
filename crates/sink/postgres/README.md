@@ -193,6 +193,8 @@ The sink re-chunks each incoming `StreamPage` so individual multi-row `INSERT` s
 
 `batch_size` is purely a chunk-size knob — connection pooling, identifier quoting, and JSONB vs AutoMap behaviour are unchanged.
 
+This connector reports observability metrics under the label `connector="postgres"`.
+
 ## Bulk load (`write_method: copy`)
 
 For **append-mode bulk loads**, set `write_method: copy` to ship rows via

@@ -23,4 +23,5 @@ fn conformance_connector_name_nonempty() {
     ))
     .expect("sink builds lazily");
     assert_connector_name_nonempty_value(sink.connector_name(), sink.connector_name());
+    assert_eq!(sink.connector_name(), "snowflake");
 }

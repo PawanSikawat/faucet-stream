@@ -363,6 +363,10 @@ impl faucet_core::Source for PostgresSource {
         })
     }
 
+    fn connector_name(&self) -> &'static str {
+        "postgres"
+    }
+
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(PostgresSourceConfig))
             .expect("schema serialization")

@@ -161,3 +161,78 @@ impl RunStreamOptions {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::RunStreamOptions;
+    use crate::idempotency::{DeliveryMode, ReplayGuarantee};
+    use crate::state::MemoryStateStore;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    #[test]
+    fn default_is_empty_at_least_once() {
+        let o = RunStreamOptions::new();
+        assert!(o.pipeline_name.is_none());
+        assert!(o.row.is_none());
+        assert!(o.run_id.is_none());
+        assert!(o.state_store.is_none());
+        assert!(o.state_key.is_none());
+        assert!(o.cancel.is_none());
+        assert_eq!(o.delivery, DeliveryMode::AtLeastOnce);
+        assert_eq!(o.start_seq, 0);
+        assert!(o.replay.is_none());
+        assert!(o.resilience.is_none());
+    }
+
+    #[test]
+    fn each_builder_sets_only_its_own_field() {
+        let o = RunStreamOptions::new().with_name("p");
+        assert_eq!(o.pipeline_name.as_deref(), Some("p"));
+        assert!(o.row.is_none(), "with_name must not touch row");
+
+        let o = RunStreamOptions::new().with_row("r1");
+        assert_eq!(o.row.as_deref(), Some("r1"));
+        assert!(o.pipeline_name.is_none());
+
+        let o = RunStreamOptions::new().with_run_id("run-42");
+        assert_eq!(o.run_id.as_deref(), Some("run-42"));
+
+        let o = RunStreamOptions::new().with_state(Arc::new(MemoryStateStore::new()), "k");
+        assert!(o.state_store.is_some());
+        assert_eq!(o.state_key.as_deref(), Some("k"));
+
+        let o = RunStreamOptions::new().with_cancel(CancellationToken::new());
+        assert!(o.cancel.is_some());
+
+        let o = RunStreamOptions::new().with_delivery(DeliveryMode::ExactlyOnce);
+        assert_eq!(o.delivery, DeliveryMode::ExactlyOnce);
+
+        let o = RunStreamOptions::new().with_start_seq(7);
+        assert_eq!(o.start_seq, 7);
+
+        let o = RunStreamOptions::new().with_replay_guarantee(ReplayGuarantee::Deterministic);
+        assert_eq!(o.replay, Some(ReplayGuarantee::Deterministic));
+
+        let o = RunStreamOptions::new().with_resilience(Default::default());
+        assert!(o.resilience.is_some());
+    }
+
+    #[test]
+    fn chaining_composes_all_set_fields() {
+        let o = RunStreamOptions::new()
+            .with_name("pipe")
+            .with_row("row0")
+            .with_run_id("rid")
+            .with_state(Arc::new(MemoryStateStore::new()), "state-key")
+            .with_delivery(DeliveryMode::ExactlyOnce)
+            .with_start_seq(3);
+        assert_eq!(o.pipeline_name.as_deref(), Some("pipe"));
+        assert_eq!(o.row.as_deref(), Some("row0"));
+        assert_eq!(o.run_id.as_deref(), Some("rid"));
+        assert!(o.state_store.is_some());
+        assert_eq!(o.state_key.as_deref(), Some("state-key"));
+        assert_eq!(o.delivery, DeliveryMode::ExactlyOnce);
+        assert_eq!(o.start_seq, 3);
+    }
+}

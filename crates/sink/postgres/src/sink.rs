@@ -740,6 +740,10 @@ impl PostgresSink {
 
 #[async_trait]
 impl faucet_core::Sink for PostgresSink {
+    fn connector_name(&self) -> &'static str {
+        "postgres"
+    }
+
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(PostgresSinkConfig))
             .expect("schema serialization")

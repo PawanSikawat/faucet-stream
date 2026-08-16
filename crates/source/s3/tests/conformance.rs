@@ -10,6 +10,7 @@ use aws_sdk_s3::config::Credentials;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::{Client, Config as S3Config};
 use faucet_conformance::{assert_config_schema_valid_value, assert_errors_not_panics};
+use faucet_core::Source;
 use faucet_source_s3::{S3Source, S3SourceConfig};
 use testcontainers::{ContainerAsync, runners::AsyncRunner};
 use testcontainers_modules::minio::MinIO;
@@ -35,6 +36,7 @@ async fn conformance_connector_name_nonempty() {
         .region(REGION.to_string());
     let source = S3Source::new(config).await.expect("source builds lazily");
     faucet_conformance::assert_connector_name_nonempty(&source);
+    assert_eq!(source.connector_name(), "s3");
 }
 
 // ── Check 2: bounded-memory streaming (Docker) ──────────────────────────────

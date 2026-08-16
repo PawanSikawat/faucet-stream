@@ -380,3 +380,7 @@ This crate has no optional features of its own. Enable it in the CLI/umbrella vi
 ## License
 
 Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.
+
+## Observability
+
+Metrics emitted by this source are labelled `connector="grpc"`.

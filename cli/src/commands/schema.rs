@@ -1,13 +1,70 @@
 //! `faucet schema` — print the JSON Schema for a connector's config.
 
 use crate::cli::{SchemaArgs, SchemaTarget};
-use crate::error::CliResult;
+use crate::error::{CliError, CliResult};
 use crate::registry::{sink_schema, source_schema};
 use crate::transforms::transform_schema;
 
+/// Every valid `faucet schema <target>` keyword compiled into this binary, in a
+/// stable order. Feature-gated targets appear only when their feature is on, so
+/// the listing matches what this build can actually emit. `source`, `sink`, and
+/// `transform` additionally take a connector/transform NAME argument.
+pub fn schema_targets() -> Vec<&'static str> {
+    let mut targets = vec![
+        "config",
+        "source",
+        "sink",
+        "transform",
+        "dlq",
+        "replication",
+        "backfill",
+        "partition",
+        "execution",
+        "resilience",
+        "sla",
+    ];
+    #[cfg(feature = "quality")]
+    targets.push("quality");
+    #[cfg(feature = "contract")]
+    targets.push("contract");
+    #[cfg(feature = "masking")]
+    targets.push("masking");
+    targets.push("test");
+    targets.push("secrets");
+    #[cfg(feature = "schedule")]
+    targets.push("schedule");
+    #[cfg(feature = "lineage")]
+    targets.push("lineage");
+    #[cfg(feature = "triggers")]
+    targets.push("triggers");
+    #[cfg(feature = "notify")]
+    targets.push("notifications");
+    #[cfg(feature = "catalog")]
+    targets.push("catalog");
+    targets.push("params");
+    targets
+}
+
 /// Execute the `schema` subcommand.
 pub async fn run(args: SchemaArgs) -> CliResult<()> {
-    let schema = match args.target {
+    if args.list {
+        println!("Valid `faucet schema <target>` targets:");
+        for t in schema_targets() {
+            match t {
+                "source" | "sink" | "transform" => println!("  {t} <name>"),
+                _ => println!("  {t}"),
+            }
+        }
+        return Ok(());
+    }
+    let target = args.target.ok_or_else(|| {
+        CliError::Config(
+            "no schema target given — pass one (e.g. `faucet schema source rest`) or \
+             `faucet schema --list` to see them all"
+                .to_owned(),
+        )
+    })?;
+    let schema = match target {
         SchemaTarget::Config => crate::schema_compose::config_schema(),
         SchemaTarget::Source { name } => source_schema(&name)?,
         SchemaTarget::Sink { name } => sink_schema(&name)?,
@@ -130,12 +187,56 @@ mod tests {
         assert!(v["properties"].get("namespace").is_some());
     }
 
+    #[test]
+    fn schema_targets_includes_known_targets() {
+        let targets = super::schema_targets();
+        for known in ["config", "source", "sink", "dlq", "params"] {
+            assert!(
+                targets.contains(&known),
+                "missing target {known}: {targets:?}"
+            );
+        }
+        // No duplicates.
+        let mut sorted = targets.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            targets.len(),
+            "duplicate targets: {targets:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn schema_list_flag_returns_ok() {
+        let r = super::run(SchemaArgs {
+            target: None,
+            list: true,
+        })
+        .await;
+        assert!(r.is_ok(), "{r:?}");
+    }
+
+    #[tokio::test]
+    async fn schema_no_target_without_list_errors() {
+        let r = super::run(SchemaArgs {
+            target: None,
+            list: false,
+        })
+        .await;
+        assert!(
+            r.is_err(),
+            "expected an error when neither target nor --list given"
+        );
+    }
+
     #[tokio::test]
     async fn schema_replication_target_ok() {
         // Covers the `SchemaTarget::Replication` arm — it serializes the
         // ReplicationSpec JSON Schema to stdout and returns Ok.
         let r = super::run(SchemaArgs {
-            target: SchemaTarget::Replication,
+            target: Some(SchemaTarget::Replication),
+            list: false,
         })
         .await;
         assert!(r.is_ok(), "{r:?}");
@@ -144,7 +245,8 @@ mod tests {
     #[tokio::test]
     async fn schema_execution_target_ok() {
         let r = super::run(SchemaArgs {
-            target: SchemaTarget::Execution,
+            target: Some(SchemaTarget::Execution),
+            list: false,
         })
         .await;
         assert!(r.is_ok(), "{r:?}");
@@ -160,7 +262,8 @@ mod tests {
     #[tokio::test]
     async fn schema_sla_target_ok() {
         let r = super::run(SchemaArgs {
-            target: SchemaTarget::Sla,
+            target: Some(SchemaTarget::Sla),
+            list: false,
         })
         .await;
         assert!(r.is_ok(), "{r:?}");
@@ -178,7 +281,8 @@ mod tests {
     #[tokio::test]
     async fn schema_resilience_target_ok() {
         let r = super::run(SchemaArgs {
-            target: SchemaTarget::Resilience,
+            target: Some(SchemaTarget::Resilience),
+            list: false,
         })
         .await;
         assert!(r.is_ok(), "{r:?}");

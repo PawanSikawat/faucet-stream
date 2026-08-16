@@ -1404,3 +1404,158 @@ fn schema_contract_prints_contract_spec_schema() {
     assert!(schema["properties"].get("fields").is_some());
     assert!(schema["properties"].get("on_breach").is_some());
 }
+
+#[test]
+fn list_json_emits_structured_listing() {
+    let assert = Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["list", "--json"])
+        .assert()
+        .success();
+    let out: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid JSON output");
+    let source_names: Vec<&str> = out["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    let sink_names: Vec<&str> = out["sinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert!(source_names.contains(&"rest"), "sources: {source_names:?}");
+    assert!(sink_names.contains(&"jsonl"), "sinks: {sink_names:?}");
+    assert!(out["transforms"].is_array());
+    assert!(out["state_stores"].is_array());
+}
+
+#[test]
+fn list_available_human_and_json() {
+    // Human path: the registry index renders with the header + the compiled
+    // marker legend.
+    Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["list", "--available"])
+        .assert()
+        .success()
+        .stdout(contains("Registry connectors"));
+
+    // JSON path: a `connectors` array whose entries carry kind/name/compiled.
+    let assert = Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["list", "--available", "--json"])
+        .assert()
+        .success();
+    let out: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid JSON output");
+    let rows = out["connectors"].as_array().expect("connectors array");
+    assert!(!rows.is_empty(), "registry index should list connectors");
+    let first = &rows[0];
+    for key in ["kind", "name", "description", "compiled"] {
+        assert!(
+            first.get(key).is_some(),
+            "connector entry missing `{key}`: {first}"
+        );
+    }
+    assert!(
+        first["compiled"].is_boolean(),
+        "`compiled` should be a bool"
+    );
+    // `rest` is a built-in source and is compiled into this binary.
+    let rest = rows
+        .iter()
+        .find(|c| c["kind"] == "source" && c["name"] == "rest")
+        .expect("rest source in the registry index");
+    assert_eq!(rest["compiled"], true, "rest should be marked compiled");
+}
+
+#[test]
+fn validate_json_topology_mode() {
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("topo.yaml");
+    // A minimal linear topology (source node → sink node) exercises the
+    // topology-mode `--json` branch of `faucet validate`.
+    fs::write(
+        &cfg,
+        r#"version: 1
+name: topo_smoke
+pipeline:
+  sources:
+    a: { type: csv, config: { path: ./in.csv } }
+  sinks:
+    o: { type: jsonl, config: { path: ./out.jsonl } }
+  nodes:
+    s: { kind: source, ref: a }
+    w: { kind: sink, ref: o }
+  edges:
+    - { from: s, to: w }
+"#,
+    )
+    .unwrap();
+    let assert = Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["validate", cfg.to_str().unwrap(), "--json"])
+        .assert()
+        .success();
+    let out: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid JSON output");
+    assert_eq!(out["valid"], true);
+    assert_eq!(out["mode"], "topology");
+    assert_eq!(out["name"], "topo_smoke");
+    assert_eq!(out["node_count"], 2);
+    assert_eq!(out["edge_count"], 1);
+    let node_ids: Vec<&str> = out["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        node_ids.contains(&"s") && node_ids.contains(&"w"),
+        "nodes: {node_ids:?}"
+    );
+}
+
+#[test]
+fn schema_list_enumerates_targets() {
+    let assert = Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["schema", "--list"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(stdout.contains("source"), "{stdout}");
+    assert!(stdout.contains("sink"), "{stdout}");
+    assert!(stdout.contains("dlq"), "{stdout}");
+}
+
+#[test]
+fn validate_json_emits_summary() {
+    let dir = TempDir::new().unwrap();
+    let csv = dir.path().join("in.csv");
+    let out = dir.path().join("out.jsonl");
+    // `validate` is offline, so the CSV need not exist; still write it so the
+    // config is fully realistic.
+    fs::write(&csv, "id\n1\n").unwrap();
+    let cfg = dir.path().join("faucet.yaml");
+    fs::write(&cfg, csv_to_jsonl_yaml(&csv, &out)).unwrap();
+
+    let assert = Command::cargo_bin("faucet")
+        .unwrap()
+        .args(["validate", cfg.to_str().unwrap(), "--json"])
+        .assert()
+        .success();
+    let summary: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid JSON output");
+    assert_eq!(summary["valid"], true);
+    assert_eq!(summary["name"], "csv_to_jsonl_smoke");
+    assert_eq!(summary["row_count"], 1);
+    let rows = summary["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["source"], "csv");
+    assert_eq!(rows[0]["sink"], "jsonl");
+    assert_eq!(rows[0]["role"], "root");
+}

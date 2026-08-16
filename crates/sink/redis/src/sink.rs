@@ -34,6 +34,10 @@ impl RedisSink {
 
 #[async_trait]
 impl faucet_core::Sink for RedisSink {
+    fn connector_name(&self) -> &'static str {
+        "redis"
+    }
+
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(RedisSinkConfig))
             .expect("schema serialization")

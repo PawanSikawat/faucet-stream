@@ -1270,13 +1270,21 @@ pub struct ValidateArgs {
     /// status/tags and whether the selection would run or skip it.
     #[command(flatten)]
     pub selection: SelectionArgs,
+
+    /// Emit a structured JSON validation summary instead of the prose report,
+    /// so CI can assert on it programmatically. Suppresses the human lines.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// `faucet schema` arguments.
 #[derive(Debug, Parser)]
 pub struct SchemaArgs {
     #[command(subcommand)]
-    pub target: SchemaTarget,
+    pub target: Option<SchemaTarget>,
+    /// List every valid schema target and exit, instead of printing a schema.
+    #[arg(long)]
+    pub list: bool,
 }
 
 /// Schema subcommand target — which connector or system component to describe.
@@ -1504,6 +1512,9 @@ pub struct ListArgs {
     /// Read a custom registry index instead of the built-in one.
     #[arg(long)]
     pub index: Option<PathBuf>,
+    /// Emit the listing as JSON instead of the human-readable columns.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// `faucet conformance` arguments.

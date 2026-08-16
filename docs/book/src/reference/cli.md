@@ -120,6 +120,48 @@ Pass `--param NAME=VALUE` (repeatable) to switch to strict binding and check one
 concrete invocation; `--param-env NAME[=VALUE]` overrides an environment variable
 for the validation only.
 
+### JSON output
+
+Pass `--json` to emit a structured summary instead of the prose report, so CI can
+assert on it programmatically. The prose lines (secret confirmations, per-block
+`valid` notes, the `ok:`/row lines) are suppressed and a single JSON object is
+printed:
+
+```bash
+faucet validate pipeline.yaml --json
+```
+
+```json
+{
+  "valid": true,
+  "mode": "matrix",
+  "name": "my-pipeline",
+  "row_count": 1,
+  "roots": 1,
+  "children": 0,
+  "selection_active": false,
+  "rows": [
+    {
+      "id": "default",
+      "source": "rest",
+      "sink": "jsonl",
+      "role": "root",
+      "parent_id": null,
+      "parent_key": null,
+      "depends_on": [],
+      "delivery": "at-least-once",
+      "status": "active",
+      "tags": [],
+      "decision": null
+    }
+  ]
+}
+```
+
+Each row's `decision` is `"run"`/`"skip"` when a selector or the readiness ladder
+is active, otherwise `null`. A topology-mode config emits `"mode": "topology"`
+with `nodes`/`edges` counts and any inert-block `warnings`.
+
 ### Composition flags
 
 When a config uses [composition](config.md#config-composition) (`extends:` /
@@ -260,6 +302,7 @@ watcher with `--debounce-ms`.
 ## `schema`
 
 ```bash
+faucet schema --list          # enumerate every valid target in this binary
 faucet schema config          # the WHOLE config document (top-level grammar)
 faucet schema source rest
 faucet schema sink bigquery
@@ -276,6 +319,11 @@ faucet schema catalog
 faucet schema params
 faucet schema partition
 ```
+
+`faucet schema --list` prints every valid `<target>` compiled into this binary
+(feature-gated targets appear only when their feature is on), so you can discover
+the set without reading the docs — `source`, `sink`, and `transform` are shown
+with a `<name>` placeholder because they take a connector/transform name.
 
 `faucet schema config` prints a composed JSON Schema for the **entire**
 `faucet.yaml` / `faucet.json` document — the top-level grammar (`version`,
@@ -382,6 +430,12 @@ faucet install my-connector --index ./my-registry.json
 `--index <path>` points any of these at a custom/mirror index instead of the
 built-in one. Ambiguous names (a connector that is both a source and a sink,
 e.g. `postgres`) need `--kind source|sink`.
+
+Both `faucet list` and `faucet list --available` accept `--json` for a
+machine-readable listing — `list --json` emits `{ sources, sinks, transforms,
+state_stores }` (each connector entry carries `name`, `description`, and a
+maturity `tier`), and `list --available --json` emits the registry rows with a
+`compiled` flag per connector.
 
 ## `conformance`
 

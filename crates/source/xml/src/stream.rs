@@ -559,6 +559,10 @@ impl faucet_core::Source for XmlStream {
         })
     }
 
+    fn connector_name(&self) -> &'static str {
+        "xml"
+    }
+
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(XmlStreamConfig))
             .expect("schema serialization")

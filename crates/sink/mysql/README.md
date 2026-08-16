@@ -374,6 +374,8 @@ Drive it end-to-end via `Pipeline::new(source, sink).run()`.
 
 `mysql://<host>:<port>/<db>?table=<table>` (credentials stripped) — e.g. `mysql://host:3306/app?table=orders`.
 
+This connector reports observability metrics under the label `connector="mysql"`.
+
 ## Feature flags
 
 This crate has no optional features of its own; enable it in the CLI/umbrella via the `sink-mysql` feature.

@@ -313,6 +313,8 @@ To drive it end-to-end, pair it with any source via `Pipeline::new(source, sink)
 
 `snowflake://<account>/<database>/<schema>?table=<table>` — e.g. `snowflake://xy12345.us-east-1/ANALYTICS_DB/PUBLIC?table=events`.
 
+This connector reports metrics under the label `connector="snowflake"`.
+
 ## Feature flags
 
 This crate has no optional features of its own; enable it in the CLI/umbrella via the `sink-snowflake` feature.

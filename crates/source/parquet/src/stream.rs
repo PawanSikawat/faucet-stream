@@ -516,6 +516,10 @@ impl faucet_core::Source for ParquetSource {
         })
     }
 
+    fn connector_name(&self) -> &'static str {
+        "parquet"
+    }
+
     fn config_schema(&self) -> Value {
         serde_json::to_value(faucet_core::schema_for!(ParquetSourceConfig))
             .expect("schema serialization")

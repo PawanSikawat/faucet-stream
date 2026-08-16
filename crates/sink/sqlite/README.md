@@ -370,6 +370,8 @@ let sink = SqliteSink::new(config).await?;
 
 `sqlite://<path>?table=<table>` — e.g. `sqlite:///tmp/test.db?table=events`.
 
+This connector reports metrics under the label `connector="sqlite"`.
+
 ## Feature flags
 
 This crate has no optional features of its own; enable it in the CLI/umbrella via the `sink-sqlite` feature.

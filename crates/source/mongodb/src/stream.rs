@@ -258,6 +258,10 @@ impl faucet_core::Source for MongoSource {
         })
     }
 
+    fn connector_name(&self) -> &'static str {
+        "mongodb"
+    }
+
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(MongoSourceConfig))
             .expect("schema serialization")
