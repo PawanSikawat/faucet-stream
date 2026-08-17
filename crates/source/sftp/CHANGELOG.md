@@ -7,6 +7,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
 
+## [1.1.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-source-sftp-v1.0.3...faucet-source-sftp-v1.1.0) - 2026-08-16
+
+### Features
+
+- *(cli)* --json for list/validate, schema --list, connector labels, and validation & test hardening ([#491](https://github.com/faucet-hq/faucet-stream/pull/491))
+
 ## [1.0.3](https://github.com/faucet-hq/faucet-stream/compare/faucet-source-sftp-v1.0.2...faucet-source-sftp-v1.0.3) - 2026-08-15
 
 ### Miscellaneous
