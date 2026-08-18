@@ -128,15 +128,9 @@ impl IcebergSink {
     /// Validates the config, builds the catalog client, and — when
     /// `create_if_missing: false` — loads and validates the target table.
     pub async fn new(config: IcebergSinkConfig) -> Result<Self, FaucetError> {
+        // `validate()` enforces append-only (rejects upsert/delete/overwrite)
+        // among the other config checks, before any catalog I/O.
         config.validate()?;
-
-        if config.write_mode != faucet_core::WriteMode::Append {
-            return Err(FaucetError::Config(format!(
-                "iceberg sink: write_mode '{}' is not supported (append only; \
-                 upsert is a version-gated follow-up tracked in #179 / #190)",
-                config.write_mode.as_str()
-            )));
-        }
 
         let catalog = build_catalog(&config.catalog).await?;
 
