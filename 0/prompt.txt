@@ -740,3 +740,7 @@ fn build_credential(&amp;self, token: &amp;str) -&gt; Credential {
 **Tests added:** `apply_as_returns_custom_header_credential` (SAP cookie → `Credential::Header{name:"Cookie", value:"B1SESSION=sess123; CompanyDB=db"}`), `form_encoding_posts_urlencoded_body` (wiremock matches `content-type: application/x-www-form-urlencoded` + `grant_type=client_credentials` + `client_id=x`), and `invalid_encoding_and_apply_as_are_rejected` (config-validation cases). Debug redaction preserved (`finish_non_exhaustive` still omits `body`/`state`/`apply_as`).</result>
 <usage><subagent_tokens>853946</subagent_tokens><tool_uses>8</tool_uses><duration_ms>197739</duration_ms></usage>
 </task-notification>
+
+---
+
+ci failing
