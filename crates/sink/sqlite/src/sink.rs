@@ -270,8 +270,10 @@ impl SqliteSink {
     /// open. WAL on a `sqlite::memory:` database is a harmless no-op.
     pub async fn new(config: SqliteSinkConfig) -> Result<Self, FaucetError> {
         config.write.validate()?;
-        if !matches!(config.write.write_mode, faucet_core::WriteMode::Append)
-            && !matches!(config.column_mapping, SqliteColumnMapping::AutoMap)
+        if matches!(
+            config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) && !matches!(config.column_mapping, SqliteColumnMapping::AutoMap)
         {
             return Err(FaucetError::Config(
                 "sqlite sink: write_mode upsert/delete requires column_mapping: auto_map \
@@ -295,6 +297,23 @@ impl SqliteSink {
         Ok(Self { config, pool })
     }
 
+    /// The staging table name used while an overwrite run is in flight.
+    fn staging_table(&self) -> String {
+        format!("{}__faucet_ovw", self.config.table_name)
+    }
+
+    /// The table the data-write path targets. For `write_mode: overwrite` every
+    /// write in this sink's lifetime lands in the staging table (created by
+    /// [`begin_overwrite`], swapped into the real table by
+    /// [`commit_overwrite`]); otherwise it is the configured table.
+    fn effective_table(&self) -> String {
+        if self.config.write.is_overwrite() {
+            self.staging_table()
+        } else {
+            self.config.table_name.clone()
+        }
+    }
+
     /// Insert JSON-column records within an existing transaction, sub-chunking
     /// at SQLite's bind-variable cap. JSON mode binds one variable per row.
     async fn insert_json_tx(
@@ -313,7 +332,7 @@ impl SqliteSink {
             let placeholders: Vec<&str> = chunk.iter().map(|_| "(?)").collect();
             let insert_sql = format!(
                 "INSERT INTO {} ({}) VALUES {}",
-                quote_ident(&self.config.table_name),
+                quote_ident(&self.effective_table()),
                 quote_ident(column),
                 placeholders.join(", ")
             );
@@ -400,9 +419,10 @@ impl SqliteSink {
 
         // Get column names from the table using pragma_table_info. Use the
         // transaction's connection so a single-connection pool doesn't deadlock.
+        let effective_table = self.effective_table();
         let columns: Vec<String> = sqlx::query(&format!(
             "PRAGMA table_info({})",
-            quote_ident(&self.config.table_name)
+            quote_ident(&effective_table)
         ))
         .fetch_all(&mut **tx)
         .await
@@ -413,8 +433,7 @@ impl SqliteSink {
 
         if columns.is_empty() {
             return Err(FaucetError::Sink(format!(
-                "table '{}' has no columns or does not exist",
-                self.config.table_name
+                "table '{effective_table}' has no columns or does not exist"
             )));
         }
 
@@ -482,7 +501,7 @@ impl SqliteSink {
                 (0..sub.len()).map(|_| row_placeholder.as_str()).collect();
             let base_query = format!(
                 "INSERT INTO {} ({}) VALUES {}",
-                quote_ident(&self.config.table_name),
+                quote_ident(&effective_table),
                 col_names.join(", "),
                 value_tuples.join(", ")
             );
@@ -818,11 +837,83 @@ impl faucet_core::Sink for SqliteSink {
             faucet_core::WriteMode::Append,
             faucet_core::WriteMode::Upsert,
             faucet_core::WriteMode::Delete,
+            faucet_core::WriteMode::Overwrite,
         ]
     }
 
     fn dedups_by_key(&self) -> bool {
         self.config.write.dedups_by_key()
+    }
+
+    fn is_overwrite(&self) -> bool {
+        self.config.write.is_overwrite()
+    }
+
+    /// Create the staging table as an empty clone of the target's shape
+    /// (`CREATE TABLE staging AS SELECT * FROM target WHERE 0`), dropping any
+    /// leftover staging table from a previously-crashed run first. The target
+    /// table must already exist (the sink never auto-creates it) — an overwrite
+    /// replaces its rows, not its definition.
+    async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+        let staging = quote_ident(&self.staging_table());
+        let target = quote_ident(&self.config.table_name);
+        sqlx::query(&format!("DROP TABLE IF EXISTS {staging}"))
+            .execute(&self.pool)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("sqlite overwrite: drop stale staging: {e}")))?;
+        sqlx::query(&format!(
+            "CREATE TABLE {staging} AS SELECT * FROM {target} WHERE 0"
+        ))
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            FaucetError::Sink(format!(
+                "sqlite overwrite: create staging from '{}' (does the table exist?): {e}",
+                self.config.table_name
+            ))
+        })?;
+        Ok(())
+    }
+
+    /// Atomically replace the destination with the staged rows in one
+    /// transaction: `DELETE FROM target; INSERT INTO target SELECT * FROM
+    /// staging; DROP TABLE staging`. SQLite DDL is transactional, so a failure
+    /// anywhere rolls the whole swap back and the prior rows survive.
+    async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+        let staging = quote_ident(&self.staging_table());
+        let target = quote_ident(&self.config.table_name);
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("sqlite overwrite: begin swap: {e}")))?;
+        for stmt in [
+            format!("DELETE FROM {target}"),
+            format!("INSERT INTO {target} SELECT * FROM {staging}"),
+            format!("DROP TABLE {staging}"),
+        ] {
+            sqlx::query(&stmt)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("sqlite overwrite swap failed: {e}")))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("sqlite overwrite: commit swap: {e}")))?;
+        Ok(())
+    }
+
+    /// Drop the staging table so a failed/cancelled overwrite leaves nothing
+    /// behind. Best-effort — the destination was never touched.
+    async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+        sqlx::query(&format!(
+            "DROP TABLE IF EXISTS {}",
+            quote_ident(&self.staging_table())
+        ))
+        .execute(&self.pool)
+        .await
+        .map_err(|e| FaucetError::Sink(format!("sqlite overwrite: drop staging: {e}")))?;
+        Ok(())
     }
 
     fn supports_schema_evolution(&self) -> bool {
@@ -920,8 +1011,13 @@ impl faucet_core::Sink for SqliteSink {
             return Ok(0);
         }
 
-        // Non-append modes: plan the writes and apply atomically.
-        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+        // Upsert/delete modes: plan the writes and apply atomically. Append and
+        // overwrite are insert-shaped and fall through (overwrite lands in the
+        // staging table via `effective_table`).
+        if matches!(
+            self.config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) {
             let plan = faucet_core::plan_writes(records, &self.config.write);
             if let Some((idx, msg)) = plan.failed.first() {
                 return Err(FaucetError::Sink(format!(
@@ -971,7 +1067,11 @@ impl faucet_core::Sink for SqliteSink {
         &self,
         records: &[Value],
     ) -> Result<Vec<faucet_core::RowOutcome>, FaucetError> {
-        if matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+        if !matches!(
+            self.config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) {
+            // Append and overwrite: insert-shaped, no per-row key failures.
             self.write_batch(records).await?;
             return Ok(records.iter().map(|_| Ok(())).collect());
         }

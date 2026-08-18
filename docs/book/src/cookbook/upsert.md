@@ -279,3 +279,57 @@ transaction, so it cannot be replayed idempotently).
 |---|---|
 | `faucet_cleanup_deleted_total{pipeline,row,connector}` | Rows deleted. Emitted even at zero — zero is the steady state a healthy mirror shows. |
 | `faucet_cleanup_runs_total{pipeline,row,outcome}` | `applied` / `skipped_cancelled` / `refused_overflow`. A non-zero `refused_overflow` means stale rows were left behind — worth alerting on. |
+
+## Overwrite (full refresh)
+
+`write_mode: overwrite` replaces the **entire** destination with the current
+run's records — a truncate-and-load / full refresh. Use it for reference and
+dimension tables, or any source you re-fetch in full each run and where a plain
+`upsert` would leave behind rows that were deleted at the source.
+
+```yaml
+pipeline:
+  source:
+    type: csv
+    config: { path: ./data/contacts.csv }
+  sink:
+    type: sqlite
+    config:
+      database_url: "sqlite://./out/warehouse.db"
+      table_name: contacts
+      column_mapping: auto_map   # overwrite replaces real columns, not a JSON blob
+      write_mode: overwrite      # no `key` needed — it is a whole-table replace
+```
+
+**Safety — the old data survives a failed run.** Overwrite never truncates the
+destination up front. The run's writes are staged into a temporary target and
+only swapped into place **after the run finishes successfully and
+uncancelled**. If the run fails or is cancelled part-way, the staging target is
+discarded and the previous destination is left exactly as it was. There is no
+window where the table is empty because a load died halfway.
+
+**The target must already exist.** Overwrite replaces the destination's *rows*,
+not its definition — the sink never creates the table/collection. Create it once
+up front (with whatever schema, indexes, partitioning you want); each run
+refreshes its contents.
+
+### Supported sinks & mechanism
+
+| Sink | Atomic swap |
+|---|---|
+| `postgres` | one transaction: `TRUNCATE` + `INSERT … SELECT` from a `LIKE` staging clone + `DROP` |
+| `sqlite` | one transaction: `DELETE` + `INSERT … SELECT` from a `SELECT … WHERE 0` clone + `DROP` |
+| `mysql` | `CREATE TABLE staging LIKE target`, then an atomic `RENAME TABLE` swap (MySQL auto-commits DDL, so a transaction can't span it) |
+| `mssql` | one transaction: `DELETE` + `INSERT` (explicit non-IDENTITY column list) from a `SELECT … INTO … WHERE 1=0` clone + `DROP` |
+| `mongodb` | load a `{collection}__faucet_ovw` staging collection, then atomic `renameCollection(dropTarget: true)` (needs the rename privilege; unsupported on sharded collections) |
+| `bigquery` | **bucket-free** — load a `LIKE` temp table via the query API, then `BEGIN TRANSACTION; TRUNCATE; INSERT … SELECT; COMMIT` (preserves the target's partitioning/clustering); no GCS staging bucket required |
+
+**Elasticsearch is not supported** for overwrite: it has no atomic way to replace
+a concrete index (a delete-then-reindex would risk data loss on a commit-time
+failure). Safe ES overwrite needs an alias-based design, tracked as a follow-up.
+
+### Incompatibilities (rejected at `faucet validate`)
+
+- `delivery: exactly_once` — a full replace has no per-page watermark to resume from.
+- `schema.on_drift: evolve` — the staging target is a pre-run clone, so evolving the live target mid-run would leave the staged data a column short at swap time.
+- Scoped cleanup (`complete_for`) — cleanup requires `write_mode: upsert`; a full overwrite already removes source-deleted rows wholesale.

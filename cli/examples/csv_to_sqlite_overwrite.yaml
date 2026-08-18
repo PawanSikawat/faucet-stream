@@ -1,0 +1,27 @@
+# Full-refresh load: each run REPLACES the entire destination table with the
+# current CSV contents (`write_mode: overwrite`, #492). The old rows are only
+# swapped out after the run succeeds, so a mid-run failure leaves them intact.
+#
+#   faucet validate cli/examples/csv_to_sqlite_overwrite.yaml
+#   # the target table must already exist (overwrite replaces rows, not schema):
+#   #   sqlite3 ./out/warehouse.db 'CREATE TABLE contacts (id INTEGER PRIMARY KEY, name TEXT, email TEXT)'
+#   faucet run      cli/examples/csv_to_sqlite_overwrite.yaml
+version: 1
+name: csv_to_sqlite_overwrite
+
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./data/contacts.csv
+
+  sink:
+    type: sqlite
+    config:
+      database_url: "sqlite://./out/warehouse.db"
+      table_name: contacts
+      # Overwrite needs real columns to replace, so use auto-mapped columns
+      # (not a single JSON blob). No `key` is required — it is a whole-table
+      # replace, not a keyed merge.
+      column_mapping: auto_map
+      write_mode: overwrite

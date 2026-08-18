@@ -7176,6 +7176,11 @@
           "description": "Delete by `key` for every record.",
           "type": "string",
           "const": "delete"
+        },
+        {
+          "description": "Replace the entire destination with this run's records (truncate-load /\nfull refresh). The old contents are swapped out atomically only after the\nrun completes successfully, so a mid-run failure leaves them intact. No\n`key` is required — it is a whole-dataset operation, not a keyed one.",
+          "type": "string",
+          "const": "overwrite"
         }
       ]
     },
@@ -7409,6 +7414,11 @@
           "description": "Delete by `key` for every record.",
           "type": "string",
           "const": "delete"
+        },
+        {
+          "description": "Replace the entire destination with this run's records (truncate-load /\nfull refresh). The old contents are swapped out atomically only after the\nrun completes successfully, so a mid-run failure leaves them intact. No\n`key` is required — it is a whole-dataset operation, not a keyed one.",
+          "type": "string",
+          "const": "overwrite"
         }
       ]
     },
@@ -7465,6 +7475,11 @@
           "description": "Delete by `key` for every record.",
           "type": "string",
           "const": "delete"
+        },
+        {
+          "description": "Replace the entire destination with this run's records (truncate-load /\nfull refresh). The old contents are swapped out atomically only after the\nrun completes successfully, so a mid-run failure leaves them intact. No\n`key` is required — it is a whole-dataset operation, not a keyed one.",
+          "type": "string",
+          "const": "overwrite"
         }
       ]
     },
@@ -7697,6 +7712,11 @@
           "description": "Delete by `key` for every record.",
           "type": "string",
           "const": "delete"
+        },
+        {
+          "description": "Replace the entire destination with this run's records (truncate-load /\nfull refresh). The old contents are swapped out atomically only after the\nrun completes successfully, so a mid-run failure leaves them intact. No\n`key` is required — it is a whole-dataset operation, not a keyed one.",
+          "type": "string",
+          "const": "overwrite"
         }
       ]
     },
@@ -7829,6 +7849,11 @@
           "description": "Delete by `key` for every record.",
           "type": "string",
           "const": "delete"
+        },
+        {
+          "description": "Replace the entire destination with this run's records (truncate-load /\nfull refresh). The old contents are swapped out atomically only after the\nrun completes successfully, so a mid-run failure leaves them intact. No\n`key` is required — it is a whole-dataset operation, not a keyed one.",
+          "type": "string",
+          "const": "overwrite"
         }
       ]
     },
@@ -7891,6 +7916,11 @@
           "description": "Delete by `key` for every record.",
           "type": "string",
           "const": "delete"
+        },
+        {
+          "description": "Replace the entire destination with this run's records (truncate-load /\nfull refresh). The old contents are swapped out atomically only after the\nrun completes successfully, so a mid-run failure leaves them intact. No\n`key` is required — it is a whole-dataset operation, not a keyed one.",
+          "type": "string",
+          "const": "overwrite"
         }
       ]
     },
@@ -8231,6 +8261,11 @@
           "description": "Delete by `key` for every record.",
           "type": "string",
           "const": "delete"
+        },
+        {
+          "description": "Replace the entire destination with this run's records (truncate-load /\nfull refresh). The old contents are swapped out atomically only after the\nrun completes successfully, so a mid-run failure leaves them intact. No\n`key` is required — it is a whole-dataset operation, not a keyed one.",
+          "type": "string",
+          "const": "overwrite"
         }
       ]
     },
@@ -8444,6 +8479,11 @@
           "description": "Delete by `key` for every record.",
           "type": "string",
           "const": "delete"
+        },
+        {
+          "description": "Replace the entire destination with this run's records (truncate-load /\nfull refresh). The old contents are swapped out atomically only after the\nrun completes successfully, so a mid-run failure leaves them intact. No\n`key` is required — it is a whole-dataset operation, not a keyed one.",
+          "type": "string",
+          "const": "overwrite"
         }
       ]
     },
@@ -9105,6 +9145,11 @@
           "description": "Delete by `key` for every record.",
           "type": "string",
           "const": "delete"
+        },
+        {
+          "description": "Replace the entire destination with this run's records (truncate-load /\nfull refresh). The old contents are swapped out atomically only after the\nrun completes successfully, so a mid-run failure leaves them intact. No\n`key` is required — it is a whole-dataset operation, not a keyed one.",
+          "type": "string",
+          "const": "overwrite"
         }
       ]
     },

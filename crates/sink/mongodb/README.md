@@ -327,3 +327,11 @@ This crate has no optional features of its own; enable it in the CLI / umbrella 
 ## License
 
 Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.
+
+## Overwrite (`write_mode: overwrite`)
+
+Full-refresh: each run atomically **replaces** the whole collection. Documents
+are staged into `{collection}__faucet_ovw` and published with an atomic
+`renameCollection(dropTarget: true)` only after the run succeeds, so a mid-run
+failure leaves the previous documents intact. No `key` is needed. Requires the
+`renameCollection` privilege and is unsupported on sharded collections.

@@ -175,6 +175,18 @@ impl Sink for SamplingSink {
     ) -> Result<(), FaucetError> {
         self.inner.evolve_schema(evolution).await
     }
+    fn is_overwrite(&self) -> bool {
+        self.inner.is_overwrite()
+    }
+    async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+        self.inner.begin_overwrite().await
+    }
+    async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+        self.inner.commit_overwrite().await
+    }
+    async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+        self.inner.abort_overwrite().await
+    }
 }
 
 /// Wraps a source, sampling the records it yields (pre-transform input schema).

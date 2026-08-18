@@ -625,21 +625,29 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             "append" => faucet_core::WriteMode::Append,
             "upsert" => faucet_core::WriteMode::Upsert,
             "delete" => faucet_core::WriteMode::Delete,
+            "overwrite" => faucet_core::WriteMode::Overwrite,
             other => {
                 return Err(CliError::Config(format!(
-                    "row '{}': unknown write_mode '{}' (expected append, upsert, or delete)",
+                    "row '{}': unknown write_mode '{}' (expected append, upsert, delete, or overwrite)",
                     ids[i], other
                 )));
             }
         };
         if !crate::registry::sink_supported_write_modes(&merged_sink.kind).contains(&mode) {
+            let sinks = if matches!(mode, faucet_core::WriteMode::Overwrite) {
+                format!(
+                    "overwrite sinks: {}",
+                    crate::registry::OVERWRITE_SINK_KINDS.join(", ")
+                )
+            } else {
+                format!(
+                    "upsert/delete sinks: {}",
+                    crate::registry::UPSERT_SINK_KINDS.join(", ")
+                )
+            };
             return Err(CliError::Config(format!(
-                "row '{}': write_mode '{}' is not supported by sink '{}' \
-                 (upsert/delete sinks: {})",
-                ids[i],
-                requested_mode,
-                merged_sink.kind,
-                crate::registry::UPSERT_SINK_KINDS.join(", ")
+                "row '{}': write_mode '{}' is not supported by sink '{}' ({})",
+                ids[i], requested_mode, merged_sink.kind, sinks
             )));
         }
         if matches!(
@@ -656,6 +664,36 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
                 return Err(CliError::Config(format!(
                     "row '{}': write_mode '{}' requires a non-empty `key`",
                     ids[i], requested_mode
+                )));
+            }
+        }
+
+        // ── Overwrite gates (load-time, #492) ───────────────────────────
+        // Overwrite replaces the whole destination via an atomic begin/commit
+        // staging swap. It has no per-page watermark, and its staging table is
+        // a pre-run clone of the target — so it cannot compose with
+        // exactly-once delivery or with an in-place schema evolution that
+        // mutates the target mid-run. (Scoped cleanup is already rejected: it
+        // requires `write_mode: upsert`.) Checked before the delivery-guarantee
+        // derivation so an EO source + idempotent sink cannot slip overwrite
+        // onto the atomic-watermark path.
+        if matches!(mode, faucet_core::WriteMode::Overwrite) {
+            if delivery == faucet_core::DeliveryMode::ExactlyOnce {
+                return Err(CliError::Config(format!(
+                    "row '{}': write_mode: overwrite is incompatible with delivery: exactly_once \
+                     — a full-destination replace has no per-page watermark to resume from",
+                    ids[i]
+                )));
+            }
+            if let Some(ref sd) = cfg.pipeline.schema
+                && faucet_core::SchemaDriftPolicy::compile(sd).on_drift
+                    == faucet_core::OnDrift::Evolve
+            {
+                return Err(CliError::Config(format!(
+                    "row '{}': write_mode: overwrite is incompatible with schema.on_drift: evolve \
+                     — overwrite stages into a pre-run clone of the target, so evolving the \
+                     target mid-run would leave the staged data a column short at swap time",
+                    ids[i]
                 )));
             }
         }
@@ -2680,6 +2718,74 @@ pipeline:
             msg.contains("unknown write_mode") && msg.contains("replace"),
             "{msg}"
         );
+    }
+
+    #[test]
+    fn overwrite_passes_on_capable_sink() {
+        let c = cfg(r#"
+version: 1
+name: t
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:   { type: postgres, config: { connection_url: "postgres://x", table_name: t, column_mapping: auto_map, write_mode: overwrite } }
+"#);
+        assert!(
+            expand(&c).is_ok(),
+            "overwrite needs no key and postgres supports it"
+        );
+    }
+
+    #[test]
+    fn rejects_overwrite_on_unsupported_sink() {
+        let c = cfg(r#"
+version: 1
+name: t
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:   { type: jsonl, config: { path: "out.jsonl", write_mode: overwrite } }
+"#);
+        let err = expand(&c).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("overwrite")
+                && msg.contains("not supported")
+                && msg.contains("overwrite sinks"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_overwrite_with_exactly_once() {
+        let c = cfg(r#"
+version: 1
+name: t
+delivery: exactly_once
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:   { type: postgres, config: { connection_url: "postgres://x", table_name: t, column_mapping: auto_map, write_mode: overwrite } }
+  state:  { type: file, config: { path: "./s.json" } }
+"#);
+        let err = expand(&c).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("overwrite") && msg.contains("exactly_once"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_overwrite_with_schema_evolve() {
+        let c = cfg(r#"
+version: 1
+name: t
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:   { type: postgres, config: { connection_url: "postgres://x", table_name: t, column_mapping: auto_map, write_mode: overwrite } }
+  schema: { on_drift: evolve }
+"#);
+        let err = expand(&c).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("overwrite") && msg.contains("evolve"), "{msg}");
     }
 
     #[test]

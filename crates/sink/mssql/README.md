@@ -350,3 +350,12 @@ This crate has no optional Cargo features of its own; enable it in the CLI / umb
 ## License
 
 Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.
+
+## Overwrite (`write_mode: overwrite`)
+
+Full-refresh: each run atomically **replaces** the whole table. Writes are
+staged into a `SELECT … INTO … WHERE 1=0` clone (`{table}__faucet_ovw`) and
+swapped in one transaction (`DELETE` + `INSERT` over the explicit non-IDENTITY
+column list + `DROP`) only after the run succeeds, so a mid-run failure leaves
+the previous rows intact. No `key` is needed; the target table must already
+exist.

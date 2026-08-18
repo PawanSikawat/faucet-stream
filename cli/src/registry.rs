@@ -865,6 +865,21 @@ pub const CLEANUP_SINK_KINDS: &[&str] = &[
     "spanner",
 ];
 
+/// Sink kinds that support `write_mode: overwrite` (#492) — full-destination
+/// replacement via the atomic begin/commit staging lifecycle. Mirrors each
+/// sink's `Sink::supported_write_modes()` override (which must list
+/// `WriteMode::Overwrite`); `cli/tests/registry_capability_parity.rs` asserts
+/// they agree. A subset of [`UPSERT_SINK_KINDS`] — overwrite lands on the
+/// keyed-write sinks as their lifecycle is added.
+pub const OVERWRITE_SINK_KINDS: &[&str] = &[
+    "sqlite", "postgres", "mysql", "mssql", "mongodb", "bigquery",
+];
+
+/// Whether a sink kind supports `write_mode: overwrite`.
+pub fn sink_supports_overwrite(kind: &str) -> bool {
+    OVERWRITE_SINK_KINDS.contains(&kind)
+}
+
 /// Source kinds that implement live dataset discovery (`Source::discover`,
 /// issue #211) — mirrors the discoverable-source list in the connector docs.
 /// Single source of truth for the conformance scorecard (#330).
@@ -936,10 +951,19 @@ pub fn sink_supports_cleanup(kind: &str) -> bool {
 /// `Sink::supported_write_modes()` override via [`UPSERT_SINK_KINDS`].
 pub fn sink_supported_write_modes(kind: &str) -> &'static [faucet_core::WriteMode] {
     use faucet_core::WriteMode;
-    if UPSERT_SINK_KINDS.contains(&kind) {
-        &[WriteMode::Append, WriteMode::Upsert, WriteMode::Delete]
-    } else {
-        &[WriteMode::Append]
+    match (
+        UPSERT_SINK_KINDS.contains(&kind),
+        OVERWRITE_SINK_KINDS.contains(&kind),
+    ) {
+        (true, true) => &[
+            WriteMode::Append,
+            WriteMode::Upsert,
+            WriteMode::Delete,
+            WriteMode::Overwrite,
+        ],
+        (true, false) => &[WriteMode::Append, WriteMode::Upsert, WriteMode::Delete],
+        (false, true) => &[WriteMode::Append, WriteMode::Overwrite],
+        (false, false) => &[WriteMode::Append],
     }
 }
 
@@ -2007,6 +2031,22 @@ mod tests {
         // a sink without upsert support is append-only
         assert_eq!(sink_supported_write_modes("jsonl"), &[WriteMode::Append]);
         assert_eq!(sink_supported_write_modes("kafka"), &[WriteMode::Append]);
+
+        // Overwrite (#492) lands on 6 of the upsert sinks; the rest reject it.
+        for k in [
+            "postgres", "sqlite", "mysql", "mssql", "mongodb", "bigquery",
+        ] {
+            assert!(
+                sink_supported_write_modes(k).contains(&WriteMode::Overwrite),
+                "{k} should support overwrite"
+            );
+            assert!(sink_supports_overwrite(k), "{k} sink_supports_overwrite");
+        }
+        // Elasticsearch supports upsert but NOT overwrite (no atomic concrete-index
+        // replace); jsonl supports neither.
+        assert!(!sink_supported_write_modes("elasticsearch").contains(&WriteMode::Overwrite));
+        assert!(!sink_supports_overwrite("elasticsearch"));
+        assert!(!sink_supports_overwrite("jsonl"));
     }
 
     #[test]

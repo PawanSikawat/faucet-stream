@@ -368,6 +368,18 @@ impl<S: Sink + ?Sized> Sink for CleanupTracker<'_, S> {
     fn dataset_uri(&self) -> String {
         self.inner.dataset_uri()
     }
+    fn is_overwrite(&self) -> bool {
+        self.inner.is_overwrite()
+    }
+    async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+        self.inner.begin_overwrite().await
+    }
+    async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+        self.inner.commit_overwrite().await
+    }
+    async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+        self.inner.abort_overwrite().await
+    }
 }
 
 #[cfg(test)]

@@ -620,7 +620,10 @@ fn plan_origins(page: &[Value], spec: &faucet_core::WriteSpec) -> PlanWithOrigin
         let is_delete = match spec.write_mode {
             WriteMode::Delete => true,
             WriteMode::Upsert => is_delete_marked(rec, marker),
-            WriteMode::Append => false,
+            // Append, and any mode ES does not implement (e.g. Overwrite, which
+            // it rejects at config-load): treated as a plain index. `WriteMode`
+            // is `#[non_exhaustive]`, so the wildcard is required.
+            _ => false,
         };
 
         let new_slot = if is_delete {
