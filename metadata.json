@@ -1,0 +1,62 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0A5BB10EC38YFRH8PSPQWC0",
+  "strategy": "manual-commit",
+  "branch": "feat/overwrite-write-mode",
+  "checkpoints_count": 8,
+  "files_touched": [
+    "cli/examples/csv_to_sqlite_overwrite.yaml",
+    "cli/src/expand.rs",
+    "cli/src/registry.rs",
+    "crates/core/src/cleanup.rs",
+    "crates/core/src/observability/decorator.rs",
+    "crates/core/src/pipeline.rs",
+    "crates/core/src/traits.rs",
+    "crates/core/src/write_mode.rs",
+    "crates/lineage/src/sampling.rs",
+    "crates/sink/bigquery/README.md",
+    "crates/sink/bigquery/src/idempotent.rs",
+    "crates/sink/bigquery/src/sink.rs",
+    "crates/sink/elasticsearch/src/sink.rs",
+    "crates/sink/mongodb/README.md",
+    "crates/sink/mongodb/src/sink.rs",
+    "crates/sink/mongodb/tests/overwrite.rs",
+    "crates/sink/mssql/README.md",
+    "crates/sink/mssql/src/sink.rs",
+    "crates/sink/mssql/tests/overwrite.rs",
+    "crates/sink/mysql/README.md",
+    "crates/sink/mysql/src/sink.rs",
+    "crates/sink/mysql/tests/overwrite.rs",
+    "crates/sink/postgres/README.md",
+    "crates/sink/postgres/src/sink.rs",
+    "crates/sink/postgres/tests/overwrite.rs",
+    "crates/sink/sqlite/README.md",
+    "crates/sink/sqlite/src/sink.rs",
+    "crates/sink/sqlite/tests/overwrite.rs",
+    "docs/book/src/cookbook/upsert.md",
+    "docs/book/src/reference/connectors.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 420,
+    "cache_creation_tokens": 545912,
+    "cache_read_tokens": 76964071,
+    "output_tokens": 271417,
+    "api_call_count": 210,
+    "subagent_tokens": {
+      "input_tokens": 166,
+      "cache_creation_tokens": 256006,
+      "cache_read_tokens": 28663253,
+      "output_tokens": 88332,
+      "api_call_count": 83
+    }
+  }
+}

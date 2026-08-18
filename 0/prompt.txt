@@ -1,0 +1,273 @@
+https://github.com/DrivetrainAi/tap-sharepointsites
+
+Look at this from Pawan- DT GitHub issue and see what template we can register. If this could be registered as a template, what template we could register.
+
+---
+
+https://github.com/DrivetrainAi/meltano_taps/blob/main/sharepointsites/meltano.yml
+
+Look at this one, which will be storing from SharePoint to BigQuery.
+
+---
+
+no, use rest to bigquery. i dont want to use singer
+
+---
+
+Is it using the same mechanism which is defined in the melatonin tab that I gave it to you? I want to actually commit in that form itself.
+
+---
+
+bucket is not needed
+
+---
+
+Yes, I want to have an overwrite mechanism. Basically, the new data that I fetch should replace the existing data.
+
+---
+
+Why is this not a feature in this one? It should always be present as an option in all the syncs, at least the data storage syncs.
+
+---
+
+https://github.com/faucet-hq/faucet-stream/issues/492
+Solve it
+
+---
+
+<task-notification>
+<task-id>af8b3ec6088e3efc9</task-id>
+<tool-use-id>toolu_0112gjCzqarCMay5Wu6WyaJJ</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/580d932b-e4c6-48fe-ba82-4e51c5fb0660/tasks/af8b3ec6088e3efc9.output</output-file>
+<status>completed</status>
+<summary>Agent "Map Sink trait + decorators + gates" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have everything. Here is the complete map.
+
+---
+
+# Overwrite write-mode: exact touch map
+
+## Section 1 — The `Sink` trait (`crates/core/src/traits.rs`)
+
+Trait declared at **line 359**: `#[async_trait] pub trait Sink: Send + Sync`. Full method inventory with defaulted-vs-required status:
+
+| Method | Line | Signature (current) | Status |
+|---|---|---|---|
+| `write_batch` | 363 | `async fn write_batch(&amp;self, records: &amp;[Value]) -&gt; Result&lt;usize, FaucetError&gt;;` | **REQUIRED** (only required method) |
+| `flush` | 369 | `async fn flush(&amp;self) -&gt; Result&lt;(), FaucetError&gt;` | defaulted (`Ok(())`) |
+| `write_batch_partial` | 381 | `async fn write_batch_partial(&amp;self, records: &amp;[Value]) -&gt; Result&lt;Vec&lt;RowOutcome&gt;, FaucetError&gt;` | defaulted (delegates to `write_batch`) |
+| `supports_columnar` | 393 | `fn supports_columnar(&amp;self) -&gt; bool` | defaulted `false`, `#[cfg(feature = "arrow")]` |
+| `write_batch_columnar` | 407 | `async fn write_batch_columnar(&amp;self, batch: &amp;arrow::array::RecordBatch) -&gt; Result&lt;usize, FaucetError&gt;` | defaulted, `#[cfg(feature = "arrow")]` |
+| `supports_idempotent_writes` | 421 | `fn supports_idempotent_writes(&amp;self) -&gt; bool` | defaulted `false` |
+| `sink_guarantee` | 434 | `fn sink_guarantee(&amp;self) -&gt; crate::idempotency::SinkGuarantee` | defaulted (derived) |
+| `dedups_by_key` | 457 | `fn dedups_by_key(&amp;self) -&gt; bool` | defaulted `false` |
+| `supported_write_modes` | 466 | `fn supported_write_modes(&amp;self) -&gt; &amp;'static [crate::write_mode::WriteMode]` | defaulted `&amp;[WriteMode::Append]` |
+| `current_schema` | 476 | `async fn current_schema(&amp;self) -&gt; Result&lt;Option&lt;Value&gt;, FaucetError&gt;` | defaulted `Ok(None)` |
+| `supports_schema_evolution` | 483 | `fn supports_schema_evolution(&amp;self) -&gt; bool` | defaulted `false` |
+| `evolve_schema` | 494 | `async fn evolve_schema(&amp;self, evolution: &amp;crate::drift::SchemaEvolution) -&gt; Result&lt;(), FaucetError&gt;` | defaulted (typed "unsupported" error) |
+| `supports_cleanup` | 507 | `fn supports_cleanup(&amp;self) -&gt; bool` | defaulted `false` |
+| `cleanup_scope` | 524 | `async fn cleanup_scope(&amp;self, scope: &amp;std::collections::BTreeMap&lt;String, Value&gt;, seen: &amp;crate::cleanup::SeenKeys) -&gt; Result&lt;u64, FaucetError&gt;` | defaulted (typed "unsupported" error) |
+| `write_batch_idempotent` | 545 | `async fn write_batch_idempotent(&amp;self, records: &amp;[Value], scope: &amp;str, token: &amp;str) -&gt; Result&lt;usize, FaucetError&gt;` | defaulted (delegates to `write_batch`) |
+| `last_committed_token` | 557 | `async fn last_committed_token(&amp;self, scope: &amp;str) -&gt; Result&lt;Option&lt;String&gt;, FaucetError&gt;` | defaulted `Ok(None)` |
+| `config_schema` | 569 | `fn config_schema(&amp;self) -&gt; Value` | defaulted (empty object schema) |
+| `connector_name` | 575 | `fn connector_name(&amp;self) -&gt; &amp;'static str` | defaulted (`strip_type_name`) |
+| `dataset_uri` | 586 | `fn dataset_uri(&amp;self) -&gt; String` | defaulted (`"&lt;name&gt;://unknown"`) |
+| `check` | 600 | `async fn check(&amp;self, _ctx: &amp;crate::check::CheckContext) -&gt; Result&lt;crate::check::CheckReport, FaucetError&gt;` | defaulted (`not_implemented`) |
+
+`RowOutcome` type alias is at line 355: `pub type RowOutcome = Result&lt;(), FaucetError&gt;;`
+
+Note: **only `write_batch` is required**. Every other method is defaulted, so new begin/commit lifecycle methods added with defaults will not break existing impls — but each production decorator (Section 2) must still forward them.
+
+Supporting types (for your new methods' signatures): `WriteMode` enum at `crates/core/src/write_mode.rs:13`; `WriteSpec` struct at `:48`; `WriteSpec::validate` at `:64`; `WriteSpec::dedups_by_key` at `:78`; `plan_writes` at `:109`.
+
+## Section 2 — Decorator/wrapper sinks that forward to an inner sink
+
+There are exactly **three production wrappers** (all other `impl Sink for` hits in `pipeline.rs`, `topology.rs`, `decorator.rs` tests, `benches/`, `conformance/src/doubles.rs`, `cli/src/executor.rs` tests, and `cli/src/scaffold.rs` template are test-only or generated). Note: `StateKeyOverride` (cli/src/executor.rs:1208) wraps a **Source**, not a Sink — out of scope.
+
+### 2a. `CleanupTracker` — `crates/core/src/cleanup.rs:288`
+`impl&lt;S: Sink + ?Sized&gt; Sink for CleanupTracker&lt;'_, S&gt;`. Overrides `write_batch`/`write_batch_partial`/`write_batch_idempotent` (records seen keys then forwards), plus a "pure forwarding" block (lines 324-370). Representative forward patterns to copy:
+```rust
+fn supports_cleanup(&amp;self) -&gt; bool { self.inner.supports_cleanup() }                 // 325
+fn supported_write_modes(&amp;self) -&gt; &amp;'static [crate::write_mode::WriteMode] {          // 341
+    self.inner.supported_write_modes()
+}
+```
+Forwards: `supports_cleanup`, `cleanup_scope`, `supports_idempotent_writes`, `last_committed_token`, `supported_write_modes`, `dedups_by_key`, `sink_guarantee`, `current_schema`, `supports_schema_evolution`, `evolve_schema`, `config_schema`, `connector_name`, `dataset_uri`. (Does NOT forward `supports_columnar`/`write_batch_columnar` or `check`.)
+
+### 2b. `InstrumentedSink` — `crates/core/src/observability/decorator.rs:301`
+(User referenced `observability/sink.rs`; the actual file is `observability/decorator.rs`.) `impl&lt;'a, S: Sink + ?Sized&gt; Sink for InstrumentedSink&lt;'a, S&gt;`. Instruments `write_batch` (324), `write_batch_partial` (380), `flush` (441); forwards `connector_name` (302), `supports_columnar`/`write_batch_columnar` (312/317). The **"Non-instrumented passthroughs"** block (lines 480-543) is the copy target:
+```rust
+async fn current_schema(&amp;self) -&gt; Result&lt;Option&lt;Value&gt;, FaucetError&gt; {   // 487
+    self.inner.current_schema().await
+}
+fn supported_write_modes(&amp;self) -&gt; &amp;'static [crate::write_mode::WriteMode] {  // 502
+    self.inner.supported_write_modes()
+}
+fn supports_cleanup(&amp;self) -&gt; bool { self.inner.supports_cleanup() }      // 506
+```
+Passthroughs: `current_schema`, `supports_schema_evolution`, `evolve_schema`, `supported_write_modes`, `supports_cleanup`, `cleanup_scope`, `supports_idempotent_writes`, `sink_guarantee`, `dedups_by_key`, `write_batch_idempotent`, `last_committed_token`. (Does NOT forward `dataset_uri`, `config_schema`, `check`.)
+
+### 2c. `SamplingSink` — `crates/lineage/src/sampling.rs:114`
+`impl Sink for SamplingSink` (holds `inner: Box&lt;dyn Sink&gt;`). Overrides `write_batch`/`write_batch_partial`/`write_batch_idempotent` (observe then forward), forwards `flush`, `connector_name`, `dataset_uri`, then a capability block (lines 138-177):
+```rust
+fn supported_write_modes(&amp;self) -&gt; &amp;'static [faucet_core::WriteMode] {   // 147
+    self.inner.supported_write_modes()
+}
+```
+Forwards: `supports_idempotent_writes`, `sink_guarantee`, `dedups_by_key`, `supported_write_modes`, `last_committed_token`, `current_schema`, `supports_schema_evolution`, `evolve_schema`. (Does NOT forward `supports_cleanup`/`cleanup_scope`.)
+
+Wiring point: `SamplingSink` is constructed in `cli/src/executor.rs:1220`.
+
+## Section 3 — CLI write-mode gating
+
+### `cli/src/registry.rs`
+- **`UPSERT_SINK_KINDS`** (line 836): `&amp;["postgres", "sqlite", "mysql", "mssql", "mongodb", "elasticsearch", "bigquery", "spanner"]` — single source of truth for the write-mode gate.
+- **`CLEANUP_SINK_KINDS`** (line 857): identical 8-kind set; used by `sink_supports_cleanup`.
+- **`sink_supports_cleanup`** (line 931): `CLEANUP_SINK_KINDS.contains(&amp;kind)`.
+- **`sink_supported_write_modes`** (line 937):
+```rust
+pub fn sink_supported_write_modes(kind: &amp;str) -&gt; &amp;'static [faucet_core::WriteMode] {
+    use faucet_core::WriteMode;
+    if UPSERT_SINK_KINDS.contains(&amp;kind) {
+        &amp;[WriteMode::Append, WriteMode::Upsert, WriteMode::Delete]
+    } else {
+        &amp;[WriteMode::Append]
+    }
+}
+```
+Related: `sink_guarantee` (905), `sink_supports_idempotent_writes` (921), `sink_supports_schema_evolution` (926), plus `IDEMPOTENT_SINK_KINDS` / `SCHEMA_EVOLUTION_SINK_KINDS` constants nearby. **To add `overwrite` you'll extend `sink_supported_write_modes`'s returned slice (and likely a new allowlist constant).**
+
+### `cli/src/expand.rs`
+The **write_mode × sink validation block** is at **lines 616-661**:
+```rust
+let requested_mode = merged_sink.config.get("write_mode").and_then(|v| v.as_str()).unwrap_or("append");
+let mode = match requested_mode {
+    "append" =&gt; faucet_core::WriteMode::Append,
+    "upsert" =&gt; faucet_core::WriteMode::Upsert,
+    "delete" =&gt; faucet_core::WriteMode::Delete,
+    other =&gt; { return Err(CliError::Config(format!(
+        "row '{}': unknown write_mode '{}' (expected append, upsert, or delete)", ids[i], other))); }
+};
+if !crate::registry::sink_supported_write_modes(&amp;merged_sink.kind).contains(&amp;mode) {
+    return Err(CliError::Config(format!(
+        "row '{}': write_mode '{}' is not supported by sink '{}' (upsert/delete sinks: {})",
+        ids[i], requested_mode, merged_sink.kind, crate::registry::UPSERT_SINK_KINDS.join(", "))));
+}
+if matches!(mode, WriteMode::Upsert | WriteMode::Delete) { /* require non-empty `key` */ }  // 645-661
+```
+**This `match` on line 624 is the parse gate — `overwrite` must be added here or it fails "unknown write_mode".**
+
+Surrounding gates you must be aware of (overwrite likely interacts with several):
+- Derived delivery-guarantee + **exactly-once gate**: lines 663-766 (`keyed_upsert_configured` at 669; cascade rejecting exactly_once vs source/sink/state/DLQ). Note the `unreachable!` at 765.
+- **Scoped-cleanup gates** (#478): lines 768-859 — includes `if !matches!(mode, WriteMode::Upsert)` at 802 (cleanup requires upsert), exactly-once incompatibility at 813, quarantine incompatibility at 847.
+- **Schema-drift gates**: lines 861-889 (`evolve` needs evolution-capable sink; quarantine needs DLQ / forbids exactly-once).
+
+## Section 4 — The 7 upsert-capable sinks (config + write path)
+
+For all seven the `WriteSpec` is embedded via `#[serde(flatten)] pub write: faucet_core::WriteSpec` (exposing `write_mode`/`key`/`delete_marker`), and all default `write` to `WriteSpec::default()`. `write_batch` follows the same shape: `if !matches!(write.write_mode, Append) { plan_writes(...); apply merge/plan } else { batched append }`. None of the SQL sinks auto-create the *destination* table (only commit-token/cleanup helper tables) — confirmed: no `CREATE TABLE` for the target in postgres/sqlite/mysql; sqlite's `create_if_missing(true)` (line 285) creates only the DB **file**.
+
+### SQLite — `crates/sink/sqlite/`
+- config.rs: `table_name: String` (33), `column_mapping` (SqliteColumnMapping Json/AutoMap), `#[serde(flatten)] write` (65-66).
+- sink.rs: `impl faucet_core::Sink` at **750**. Struct **256**: `SqliteSink { config, pool: SqlitePool }` — **no interior-mutable state field** (would need to add one for staging).
+- `write_batch` at **918**: branches at 924 (non-append → `plan_writes` + `apply_plan`), else chunked insert (`insert_json` / `insert_auto_map`).
+- Caps: `supports_cleanup` 802, `cleanup_scope` 808, `supported_write_modes` 816 (Append/Upsert/Delete), `dedups_by_key` 824, `supports_schema_evolution` 828.
+- Quoting: `quote_ident` (from `faucet_core::util`) + local `quote_ident_sqlite` (24). Merge SQL builds `ON CONFLICT … DO UPDATE … excluded.*` (243). Upsert requires `column_mapping: auto_map` (273-281).
+
+### PostgreSQL — `crates/sink/postgres/`
+- config.rs: `table_name` (56), `#[serde(flatten)] write` (103-104), plus `write_method: copy` interaction.
+- sink.rs: `impl` at **742**. Struct **153**: `PostgresSink { config, pool: PgPool }` — **no interior-mutable field**.
+- `write_batch` at **932** (branch 937); `write_batch_partial` at 1002. Merge via `insert_auto_map_with_conflict` (341) → `ON CONFLICT … DO UPDATE SET … EXCLUDED.*` (78).
+- Caps: `supports_cleanup` 752, `cleanup_scope` 758, `supported_write_modes` 766, `dedups_by_key` 774, `supports_schema_evolution` 778.
+- Quoting: `quote_ident` (`faucet_core::util`, line 7). `copy` + non-append rejected (172-177).
+
+### MySQL — `crates/sink/mysql/`
+- config.rs: `table_name` (33), `#[serde(flatten)] write` (66-67).
+- sink.rs: `impl` at **929**. Struct **22**: `MysqlSink { config, pool: MySqlPool }` — **no interior-mutable field**.
+- `write_batch` at **1120** (branch 1126). Merge via `insert_auto_map_with_conflict` (482) → `ON DUPLICATE KEY UPDATE`. Validates `key` matches PRIMARY/UNIQUE index (418).
+- Caps: `supports_cleanup` 980, `cleanup_scope` 986, `supported_write_modes` 994, `dedups_by_key` 1002, `supports_schema_evolution` 1006.
+- Quoting: local `quote_ident_mysql` (backticks, line 31). Upsert requires `column_mapping: auto_map` (322).
+
+### MSSQL — `crates/sink/mssql/`
+- config.rs: `#[serde(flatten)] auth`-ish + `table: String` (67), `#[serde(flatten)] write` (98-99), `OnUnknownColumn` enum for `auto_columns`.
+- sink.rs: `impl Sink` at **776**. Struct **35**: `MssqlSink { config, pool, columns_cache: Mutex&lt;Option&lt;Vec&lt;String&gt;&gt;&gt; }` — **HAS interior-mutable state**: `columns_cache: Mutex&lt;...&gt;` (line 40), reusable pattern for overwrite staging. Also imports `std::sync::Mutex` (line 5).
+- `write_batch` at **777** (branch 785); `write_batch_partial` 837; `write_batch_idempotent` 1048 (branch 1056). `supports_idempotent_writes` returns **true** (912).
+- Caps: `supports_cleanup` 916, `cleanup_scope` 925, `supported_write_modes` 933, `dedups_by_key` 941, `supports_schema_evolution` 945.
+- Quoting: `quote_ident_mssql` (from `faucet_common_mssql`, line 14). Upsert requires `column_mapping: auto_columns` (49-56).
+
+### MongoDB — `crates/sink/mongodb/`
+- config.rs: `collection: String` (29), `#[serde(flatten)] write` (63-64). Key columns → match filter.
+- sink.rs: `impl` at **640**. Struct **289**: `MongoSink { config, client: Client, eo_collections_ready: tokio::sync::OnceCell&lt;()&gt; }` — **HAS interior-mutable state**: `OnceCell` (297), reusable pattern.
+- `write_batch` at **718** (branch 726); `write_batch_partial` 790; `write_batch_idempotent` 848 (branch 859). `supports_idempotent_writes` true (812).
+- Caps: `supports_cleanup` 650, `cleanup_scope` 660, `supported_write_modes` 668, `dedups_by_key` 676.
+
+### Elasticsearch — `crates/sink/elasticsearch/`
+- config.rs: `index: String` (19), `#[serde(flatten)] write` (61-62). `_id` derived from `key` columns.
+- sink.rs: `impl` at **758**. Struct **26**: `ElasticsearchSink { config, client, auth_provider: Option&lt;SharedAuthProvider&gt;, resume_dup_warned: AtomicBool, evolve_noop_warned: AtomicBool }` — **HAS interior-mutable state**: two `AtomicBool` (35, 39); imports `AtomicBool, Ordering` (line 11).
+- `write_batch` at **1015** (branch 1027); `write_batch_partial` 1111 (branch 1134). Delete/upsert `_bulk` action decided at 620.
+- Caps: `supports_cleanup` 772, `cleanup_scope` 782, `supported_write_modes` 794, `dedups_by_key` 802, `supports_schema_evolution` 810.
+
+### BigQuery — see Section 5.
+
+## Section 5 — BigQuery sink details (`crates/sink/bigquery/`)
+
+- config.rs: `project_id` (15), `dataset_id` (17), `table_id` (19), `#[serde(flatten)] write` (54-55), optional `bulk_load: Option&lt;BigQueryLoadConfig&gt;` (65). `BigQueryLoadConfig` (71): `staging_bucket` (74), `staging_prefix` default `"faucet-bq-load/"` (77-78), `write_disposition` default `"WRITE_APPEND"` (86-87, `default_write_disposition` at 100).
+- sink.rs: `impl faucet_core::Sink` at **611**. Struct **83**: `BigQuerySink { config, client: Client, schema_cache: RwLock&lt;Option&lt;Vec&lt;idempotent::FieldSpec&gt;&gt;&gt;, #[cfg(feature="arrow")] gcs_store: tokio::sync::OnceCell&lt;Storage&gt; }` — **HAS interior-mutable state**: `RwLock` (schema_cache) and `OnceCell` (gcs_store), reusable for a temp-table swap.
+- **`supported_write_modes`** (822): `&amp;[Append, Upsert, Delete]`. `dedups_by_key` 830. `supports_cleanup` returns **true** unconditionally (837). `supports_idempotent_writes` true (849). `supports_schema_evolution` 978.
+- **`write_batch`** (694): branch 699 → non-append calls `run_upsert_script(&amp;plan, None)` (707, in-place `MERGE`, no staging table); append path uses `insert_batch` (`tabledata.insertAll` streaming) 719-720.
+- `write_batch_partial` 751; `write_batch_idempotent` 911 (MERGE + watermark MERGE); `last_committed_token` 855.
+- **Table reference**: `BigQuerySink::table_ref` (307) → `idempotent::table_ref(project, dataset, table)`; helper at `crates/sink/bigquery/src/idempotent.rs:219`:
+```rust
+pub(crate) fn table_ref(project: &amp;str, dataset: &amp;str, table: &amp;str) -&gt; String {
+    format!("`{project}.{dataset}.{table}`")
+}
+```
+- **Load-job path** (`crates/sink/bigquery/src/load.rs`): `write_columnar` (35) stages Parquet to GCS then calls `build_load_job` (173):
+```rust
+pub fn build_load_job(project_id, dataset_id, table_id, source_uri, write_disposition: &amp;str) -&gt; Job {
+    let load = JobConfigurationLoad {
+        source_uris: Some(vec![source_uri.to_string()]),
+        source_format: Some("PARQUET".to_string()),
+        write_disposition: Some(write_disposition.to_string()),   // &lt;- WRITE_APPEND / WRITE_TRUNCATE / WRITE_EMPTY
+        create_disposition: Some("CREATE_IF_NEEDED".to_string()),
+        destination_table: Some(TableReference::new(project_id, dataset_id, table_id)),
+        ..Default::default()
+    };
+    ...
+}
+```
+`write_disposition` is passed straight through from `cfg.write_disposition` (load.rs:85). **For overwrite you can either set `write_disposition: "WRITE_TRUNCATE"` on the load path, or issue a `CREATE OR REPLACE TABLE target AS SELECT * FROM temp` via the query API used by `run_upsert_script`.**
+- **`merge.rs`**: SQL builders — `build_source_select` (24), `build_merge_upsert` (41, `MERGE INTO {t} T USING (SELECT … FROM UNNEST(JSON_QUERY_ARRAY(@payload))) S ON …`), `build_delete_by_keys` (83), `wrap_transaction` (110), `build_upsert_transaction_sql` (118), `build_upsert_idempotent_sql` (139), `validate_keys_present` (161), `check_cleanup_payload_size` (192), `validate_cleanup_columns` (213), `build_cleanup_delete` (255). These use `table_ref`-style backtick-quoted `` `p.d.t` `` identifiers.
+
+## Section 6 — Docs / tests / registry that assert the capability matrix
+
+### Docs — `docs/book/src/reference/connectors.md`
+Sink capability matrix header at **line 158**: `| Connector | Tier | Feature | batch_size | Compression | Upsert⁸ | Effectively-once⁷ | Write unit |`. The **Upsert** column marks BigQuery(160), PostgreSQL(161), MySQL(166), MSSQL(167), SQLite(168), MongoDB(176), Elasticsearch(179), Spanner(185) with **✓**. Footnote ⁸ (line 206) defines Upsert = `write_mode: upsert`/`delete`. **A new `overwrite` mode would need a new column or footnote here.** Also `../cookbook/upsert.md` referenced at lines 212/219.
+
+### Tests — `cli/tests/registry_capability_parity.rs`
+This is the key conformance test tying the registry allowlists to trait methods:
+- `probe_sink` (asserts parity) at line ~226-243: asserts `registry::sink_supported_write_modes(kind) == sink.supported_write_modes()` (238-242), plus `sink_supports_idempotent_writes` (226) and `sink_supports_schema_evolution` (233).
+- `derived_capability_helpers_agree_with_allowlists` (328): iterates `UPSERT_SINK_KINDS` asserting each advertises `WriteMode::Upsert` (338-343).
+- `MUST_CHECK_SINKS` (line 55): `&amp;["jsonl", "csv", "stdout", "sqlite"]` — sqlite "alone exercises all three sink capability dimensions".
+- `sink_allowlists_match_trait_methods` (277), `source_allowlists_match_trait_methods` (301).
+
+**Any new `overwrite` mode added to `sink_supported_write_modes` MUST also be returned by each sink's `supported_write_modes()` or this test fails.**
+
+Per-sink unit tests referencing the matrix: `crates/sink/bigquery/tests/upsert.rs`, `crates/sink/mysql/tests/upsert.rs`, `crates/sink/mssql/tests/upsert.rs` (and `mssql/tests/exactly_once_upsert.rs`, `elasticsearch/tests/upsert.rs`).
+
+Registry-side unit tests in `cli/src/registry.rs`: `sink_supported_write_modes_allowlist` (line 2002, asserts postgres/elasticsearch/bigquery contain Upsert/Delete and jsonl/kafka are Append-only), `exactly_once_capability_allowlists` (1967), `sink_supports_schema_evolution_allowlist` (2013).
+
+### `cli/connectors/registry.json`
+Does **NOT** encode write modes structurally. Each connector entry has only `name`, `kind`, `verified`, `tier`, `description`. Write-mode capability is expressed solely in `registry.rs` allowlists + free-text descriptions (e.g. the Spanner description at line 353 mentions "upsert/delete"). No JSON change required for capability gating, though you may want to update descriptions.
+
+---
+
+### Summary of everything that must be touched for `overwrite`
+1. Trait: add new defaulted begin/commit methods in `traits.rs` (after line 560, before `config_schema`), plus an `WriteMode::Overwrite` variant in `write_mode.rs:13` and its `as_str`/validation.
+2. Forward the new methods in all 3 wrappers: `CleanupTracker` (cleanup.rs:324+ block), `InstrumentedSink` (decorator.rs:480+ block), `SamplingSink` (sampling.rs:138+ block).
+3. CLI gate: extend `sink_supported_write_modes` (registry.rs:937) + likely a new allowlist constant; add `"overwrite"` arm to the `match` in expand.rs:624 and reconcile the exactly-once/cleanup/quarantine gates (expand.rs:663-889).
+4. Implement lifecycle + `supported_write_modes` in each of the 7 sinks (impl-line and struct-line listed above; MSSQL/Mongo/ES/BigQuery already have reusable interior-mutable fields, SQLite/Postgres/MySQL would need one added).
+5. BigQuery temp-table swap via load.rs `write_disposition`/`build_load_job` or a `CREATE OR REPLACE TABLE … AS SELECT` query using `idempotent::table_ref`.
+6. Update `docs/book/src/reference/connectors.md:158` matrix + `cli/tests/registry_capability_parity.rs` parity assertions + registry.rs allowlist unit tests.</result>
+<usage><subagent_tokens>107607</subagent_tokens><tool_uses>36</tool_uses><duration_ms>256753</duration_ms></usage>
+</task-notification>
