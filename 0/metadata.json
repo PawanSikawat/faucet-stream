@@ -1,0 +1,87 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0A9J38098GYVX4386J4FXDG",
+  "session_id": "580d932b-e4c6-48fe-ba82-4e51c5fb0660",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-18T11:19:33.196946Z",
+  "branch": "feat/overwrite-write-mode",
+  "checkpoints_count": 11,
+  "files_touched": [
+    "crates/sink/iceberg/src/config.rs",
+    "crates/sink/iceberg/src/sink.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8",
+  "turn_id": "e6f9d19d996d",
+  "checkpoint_transcript_start": 1505,
+  "transcript_lines_at_start": 1505,
+  "compact_transcript_start": 230,
+  "token_usage": {
+    "input_tokens": 110,
+    "cache_creation_tokens": 185121,
+    "cache_read_tokens": 39313942,
+    "output_tokens": 123784,
+    "api_call_count": 55
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01E84hJuuTtHRieWPntcCLBL",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "artifact-design"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "e6f9d19d996d",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 1641,
+        "end": 1642,
+        "entry_ids": [
+          "553f92ba-eaff-4aab-8363-84033091d91a"
+        ],
+        "tool_use_id": "toolu_01E84hJuuTtHRieWPntcCLBL"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01E84hJuuTtHRieWPntcCLBL"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: artifact-design",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 19
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-18T11:19:32.937058Z",
+    "agent_lines": 38,
+    "agent_removed": 18,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 38,
+    "total_lines_changed": 56,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    }
+  ]
+}

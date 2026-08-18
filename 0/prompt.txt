@@ -1,0 +1,700 @@
+https://github.com/DrivetrainAi/meltano_taps/tree/main/onedrive
+https://github.com/DrivetrainAi/meltano_taps/tree/main/netsuite
+https://github.com/DrivetrainAi/meltano_taps/tree/main/ms365bc
+https://github.com/DrivetrainAi/meltano_taps/tree/main/ms365fno
+https://github.com/DrivetrainAi/meltano_taps/tree/main/hubspot
+https://github.com/DrivetrainAi/meltano_taps/tree/main/bamboohr
+https://github.com/DrivetrainAi/meltano_taps/tree/main/rippling
+https://github.com/DrivetrainAi/meltano_taps/tree/main/rillet
+https://github.com/DrivetrainAi/meltano_taps/tree/main/redshift
+https://github.com/DrivetrainAi/meltano_taps/tree/main/personio
+https://github.com/DrivetrainAi/meltano_taps/tree/main/sap
+
+---
+
+https://github.com/DrivetrainAi/meltano_taps/tree/main/adp
+https://github.com/DrivetrainAi/meltano_taps/tree/main/deel
+
+---
+
+The underlying mechanism should be exactly the same. You first try to replicate that exact same mechanism and find any gaps that might be there in the system right now. Secondly, if you feel there is some optimised way, a better way for any of this tab, you mention those as well.
+
+---
+
+<task-notification>
+<task-id>a8024bfc9985b4a9d</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/580d932b-e4c6-48fe-ba82-4e51c5fb0660/tasks/a8024bfc9985b4a9d.output</output-file>
+<status>completed</status>
+<summary>Agent "Extract meltano tap configs" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have all 13 meltano.yml files. Here is the structured report.
+
+---
+
+# DrivetrainAi/meltano_taps — Tap Analysis (branch `main`)
+
+All 13 taps share the same skeleton: a `target-bigquery` (variant `z3z1ma`, DrivetrainAi fork) primary loader + a `target-jsonl` (andyh1203) debug loader, and a Postgres state backend (`postgres://meltano/state`). Base URLs/hosts are mostly **not** in `meltano.yml` — custom taps hardcode them in tap code or derive from a `subdomain`/`host`/`tenant` env var. Details per tap below.
+
+---
+
+## 1. onedrive
+- **Extractor**: `tap-sharepointsites`, variant `storebrand`, `pip_url: git+https://github.com/DrivetrainAi/tap-sharepointsites.git`
+- **Source type**: `file/object store` (reads files from OneDrive/SharePoint via the Microsoft Graph API; `mode: onedrive`)
+- **Auth**: OAuth2 refresh-token flow — `refresh_token: ${TAP_SHAREPOINTSITES_REFRESH_TOKEN}`, `client_secret: ${TAP_SHAREPOINTSITES_CLIENT_SECRET}` (client_id/tenant likely in tap code/env)
+- **Base URL**: not in config (Graph endpoints internal to tap)
+- **Streams**: implicit; driven by `mode: onedrive` (files discovered from the drive)
+- **Loader**: target-bigquery — `batch_size: 5000`, `overwrite: true`, `cluster_on_key_properties: true`, `denormalized`, `method: batch_job`
+- **State**: postgres://meltano/state
+
+## 2. netsuite
+- **Extractor**: two defined — active `feat-tap-netsuite` (variant `custom`, `pip_url: …/tap-netsuite.git@feature-tap`) and legacy `tap-netsuite` (variant `sehnem`, `…/tap-netsuite.git`). Both DrivetrainAi forks of the sehnem SuiteTalk tap.
+- **Source type**: `SOAP/XML` (NetSuite SuiteTalk web services via netsuitesdk)
+- **Auth**: NetSuite Token-Based Auth (OAuth1) — `account: ${TAP_NETSUITE_ACCOUNT}`, `consumer_key: ${TAP_NETSUITE_CONSUMER_KEY}`, `consumer_secret: ${TAP_NETSUITE_CONSUMER_SECRET}`, `token_key: ${TAP_NETSUITE_TOKEN_KEY}`, `token_secret: ${TAP_NETSUITE_TOKEN_SECRET}`
+- **Base URL**: derived from `account` (NetSuite account-specific SuiteTalk endpoint)
+- **Streams**: `streams_to_discover: ${TAP_NETSUITE_STREAMS_TO_DISCOVER}` + record-type/transaction config (`additional_transaction_ids_to_refresh`, `sync_transactions_in_account_range`, `ignore_recordtypes_in_transaction`, etc.). Tap writes directly to BigQuery internally (has `bigquery_*` config).
+- **Loader**: target-bigquery — `batch_size: 25000`, `upsert: true` + `dedupe_before_upsert: true`, denormalized, batch_job
+- **State**: postgres://meltano/state
+
+## 3. ms365bc (Dynamics 365 Business Central)
+- **Extractor**: `tap-dynamics-business-central`, variant `custom`, `pip_url: git+https://github.com/DrivetrainAi/tap-dynamics-business-central.git`
+- **Source type**: `OData` (BC REST API v2.0 by default; legacy OData v4 published-web-services mode via `use_legacy_odata_v4`)
+- **Auth**: Azure AD OAuth2 client-credentials — `client_id: ${TAP_DYNAMICS_BUSINESS_CENTRAL_CLIENT_ID}`, `client_secret: ${…_CLIENT_SECRET}`, `tenant: ${…_TENANT}`
+- **Base URL**: default BC API base (internal); overridable via `override_base_url: ${…_OVERRIDE_BASE_URL}`; `environment` (production/sandbox), `company`
+- **Streams**: `entities_to_sync: ${…_ENTITIES_TO_SYNC}` — comma-separated OData EntitySet names (e.g. Customers, Items, SalesInvoice), each → snake_case stream. Special handling for `general_ledger_entries` (account/posting-date bounds, sharding).
+- **Loader**: target-bigquery — `batch_size: 5000`, `upsert: true`, `dedupe_before_upsert: true`
+- **State**: postgres://meltano/state
+
+## 4. ms365fno (Dynamics 365 Finance &amp; Operations)
+- **Extractor**: `tap-dynamics-finance`, variant `custom`, `pip_url: git+https://github.com/DrivetrainAi/tap-dynamics-finance.git`
+- **Source type**: `OData` (D365 F&amp;O Data Management OData `$count`/`$` endpoints; incremental on `SysModifiedDateTime`)
+- **Auth**: Azure AD OAuth2 client-credentials — `client_id`, `client_secret`, `tenant` (all `sensitive`, set via env)
+- **Base URL / host**: `subdomain` setting (e.g. `yourcompany-prod`) → builds the F&amp;O host
+- **Streams**: `entities_to_sync` — comma-separated entity names (e.g. WorkerContactsV3, CostCenters). Rich recon (`source_count_recon*`) and partitioned-stream concurrency (`partitioned_streams`, `partition_workers`, `partition_count`).
+- **Loader**: target-bigquery — `batch_size: 5000`, `upsert: true`, `dedupe_before_upsert: true`
+- **State**: postgres://meltano/state
+
+## 5. hubspot
+- **Extractor**: two — active `feat-tap-hubspot` (variant `custom`, `…/tap-hubspot.git`) + legacy `tap-hubspot` (variant `singer-io`, `…@master`). DrivetrainAi fork.
+- **Source type**: `REST/HTTP API` (HubSpot CRM JSON API)
+- **Auth**: OAuth2 refresh-token — `client_id: ${TAP_HUBSPOT_CLIENT_ID}`, `client_secret: ${TAP_HUBSPOT_CLIENT_SECRET}`, `refresh_token: ${TAP_HUBSPOT_REFRESH_TOKEN}`, `redirect_uri: https://api.hubspot.com/`
+- **Base URL**: HubSpot API (internal; `redirect_uri` shown)
+- **Streams**: `streams_to_discover: ${CONFIG_TAP_STREAMS_TO_DISCOVER}`, `properties_to_ignore: ${CONFIG_TAP_PROPERTIES_TO_IGNORE}`. `feat` variant writes to BigQuery internally (`bigquery_*` config present).
+- **Loader**: target-bigquery — `batch_size: 5000`, `dedupe_before_upsert: true`, `upsert: ["*", "!list_[0-9]*"]`, `overwrite: ["list_[0-9]*"]` (lists overwritten, everything else upserted)
+- **State**: postgres://meltano/state
+
+## 6. bamboohr
+- **Extractor**: `tap-bamboohr`, variant `autoidm`, `pip_url: git+https://github.com/DrivetrainAi/tap-bamboohr.git`
+- **Source type**: `REST/HTTP API` (BambooHR JSON API)
+- **Auth**: API key (autoidm tap uses `auth_token` + `subdomain` — **not shown** in this config block, injected via env at runtime). Config block only holds field/stream selection: `exclude_fields`, `include_fields`, `additional_streams`, `custom_reports` (all `${TAP_BAMBOOHR_*}`)
+- **Base URL / host**: from `subdomain` (not in this file)
+- **Streams**: `additional_streams: ${TAP_BAMBOOHR_ADDITIONAL_STREAMS}`, `custom_reports: ${TAP_BAMBOOHR_CUSTOM_REPORTS}`
+- **Loader**: target-bigquery — `batch_size: 5000`, `overwrite: true`, `cluster_on_key_properties: true`
+- **State**: postgres://meltano/state
+
+## 7. rippling
+- **Extractor**: `tap-rippling`, variant `custom`, `pip_url: git+https://github.com/DrivetrainAi/tap-rippling.git`
+- **Source type**: `REST/HTTP API` (Rippling JSON API)
+- **Auth**: OAuth2 refresh-token — settings `client_id`, `client_secret`, `refresh_token` (all `kind: password`, sensitive; values via env). Plus `page_size` (int, default 0).
+- **Base URL**: not in config (in tap code)
+- **Streams**: discover/catalog-driven (`capabilities: discover, catalog, state`); no explicit select list
+- **Loader**: target-bigquery — `batch_size: 5000`, `overwrite: true`, `cluster_on_key_properties: true`
+- **State**: postgres://meltano/state
+
+## 8. rillet
+- **Extractor**: `tap-rillet`, variant `custom`, `pip_url: git+https://github.com/DrivetrainAi/tap-rillet.git`
+- **Source type**: `REST/HTTP API` (Rillet accounting JSON API; report-style streams)
+- **Auth**: bearer token — `auth_token` (`kind: password`, sensitive)
+- **Base URL**: not in config (in tap code)
+- **Streams**: `streams_to_sync` — comma-separated (e.g. `account,bank_account,…`); report streams (balance sheet, income statement, cash flow, trial balance) iterate month windows from `start_date` (default 2023-01-01)
+- **Loader**: target-bigquery — `batch_size: 5000`, `overwrite: true`, `cluster_on_key_properties: true`
+- **State**: postgres://meltano/state
+
+## 9. redshift
+- **Extractor**: `tap-redshift`, variant `monad-inc`, `pip_url: git+https://github.com/DrivetrainAi/tap-redshift.git`
+- **Source type**: `SQL database` (Amazon Redshift)
+- **Auth**: DB connection — `database: ${TAP_REDSHIFT_DATABASE}` (host/port/user/password not shown; injected via env, standard tap-redshift connection settings)
+- **Host**: from connection env (not in this file)
+- **Streams**: `tables: ${TAP_REDSHIFT_TABLES}` — table selection
+- **Loader**: target-bigquery — `batch_size: 5000`, `overwrite: true`, `cluster_on_key_properties: true`
+- **State**: postgres://meltano/state
+
+## 10. personio
+- **Extractor**: `tap-personio`, variant `custom`, `pip_url: git+https://github.com/DrivetrainAi/tap-personio.git`
+- **Source type**: `REST/HTTP API` (Personio HR JSON API)
+- **Auth**: client-credentials — `client_id: ${TAP_PERSONIO_CLIENT_ID}`, `client_secret: ${TAP_PERSONIO_CLIENT_SECRET}` (Personio issues a bearer token from these)
+- **Base URL**: not in config (Personio API, internal)
+- **Streams**: `reports: ${TAP_PERSONIO_REPORTS}`, `v1_reports: ${TAP_PERSONIO_V1_REPORTS}`
+- **Loader**: target-bigquery — `batch_size: 5000`, `overwrite: true`, `cluster_on_key_properties: true` (note: no upsert)
+- **State**: postgres://meltano/state
+
+## 11. sap (SAP Business One)
+- **Extractor**: `tap-sap`, variant `custom`, `pip_url: git+https://github.com/DrivetrainAi/tap-sap.git`
+- **Source type**: `OData` (SAP Business One **Service Layer**, OData-based — `odata.maxpagesize`, entity sets)
+- **Auth**: basic/session — `username` + `password` (`kind: password`, sensitive) + `company_db` (CompanyDB login), `verify_ssl`
+- **Base URL / host**: `host` (e.g. `sl-eqnx.datacore.com.br`) + `port` — Service Layer endpoint
+- **Streams**: `entities_to_sync` — comma-separated SAP entity-set names (e.g. `BusinessPartners,Invoices,JournalEntries`), optional `EntitySet:streamalias` override; `page_size` default 500
+- **Loader**: target-bigquery — `batch_size: 5000`, `overwrite: true`, `cluster_on_key_properties: true`
+- **State**: postgres://meltano/state
+
+## 12. adp
+- **Extractor**: `tap-adp`, variant `custom`, `pip_url: git+https://github.com/DrivetrainAi/tap-adp.git`
+- **Source type**: `REST/HTTP API` (ADP Workforce Now JSON API, requires **mutual-TLS client certificate**)
+- **Auth**: OAuth2 client-credentials **+ client certificate (mTLS)** — `client_id`, `client_secret`, `cert_public` (client certificate), `cert_private` (private key) — all sensitive; only `start_date: ${TAP_ADP_START_DATE}` bound in the config block
+- **Base URL**: ADP API (internal to tap)
+- **Streams**: `streams_to_sync` — comma-separated (e.g. `workers,payroll_output`)
+- **Loader**: target-bigquery — `batch_size: 5000`, `dedupe_before_upsert: true`, `upsert: true`
+- **State**: **no `state_backend` block present** in this file (the only tap missing it — likely relies on Meltano default / project-level state)
+
+## 13. deel
+- **Extractor**: `tap-deel`, variant `custom`, `pip_url: git+https://github.com/DrivetrainAi/tap-deel.git`
+- **Source type**: `REST/HTTP API` (Deel JSON API)
+- **Auth**: bearer token — `auth_token` (`kind: password`, sensitive)
+- **Base URL**: not in config (in tap code)
+- **Streams**: `people` always synced; `additional_streams_to_sync` — comma-separated (`legal_entities`, `gp_legal_entity_reports`, `gp_gross_to_net`); parent streams auto-pulled
+- **Loader**: target-bigquery — `batch_size: 5000`, `overwrite: true`, `cluster_on_key_properties: true`
+- **State**: postgres://meltano/state
+
+---
+
+## Classification summary
+
+| Tap | Source type | Auth | REST-mappable? |
+|---|---|---|---|
+| onedrive | file/object store (MS Graph, OneDrive files) | OAuth2 refresh-token | no (file store) |
+| netsuite | SOAP/XML (SuiteTalk) | NetSuite TBA / OAuth1 (consumer+token key/secret) | no (SOAP; also self-loads to BQ) |
+| ms365bc | OData (BC REST v2.0 / legacy OData v4) | Azure AD OAuth2 client-credentials | partial (OData/JSON) |
+| ms365fno | OData (D365 F&amp;O) | Azure AD OAuth2 client-credentials | partial (OData/JSON) |
+| hubspot | REST/HTTP API | OAuth2 refresh-token | yes |
+| bamboohr | REST/HTTP API | API key (`auth_token`+`subdomain`) | yes |
+| rippling | REST/HTTP API | OAuth2 refresh-token | yes |
+| rillet | REST/HTTP API | Bearer token | yes |
+| redshift | SQL database | DB connection (Redshift) | db |
+| personio | REST/HTTP API | OAuth2 client-credentials | yes |
+| sap | OData (SAP B1 Service Layer) | Basic/session (user+pass+CompanyDB) | partial (OData/JSON) |
+| adp | REST/HTTP API (+ mTLS) | OAuth2 client-credentials + client cert (mTLS) | yes, but needs mutual-TLS cert |
+| deel | REST/HTTP API | Bearer token | yes |
+
+**Notes for faucet-stream mapping:**
+- Cleanly REST-mappable (plain JSON, standard bearer/OAuth): **hubspot, bamboohr, rippling, rillet, personio, deel** — these fit `source-rest` well.
+- **adp** is REST/JSON but requires **mutual-TLS client certificates** (`cert_public`/`cert_private`) — needs client-cert support on the HTTP source.
+- **OData** taps (**ms365bc, ms365fno, sap**) emit JSON over HTTP but use OData conventions (`$count`, `odata.maxpagesize` server-driven paging, EntitySet names) — mappable to `source-rest` only with OData-style cursor/next-link pagination and per-entity stream config.
+- **netsuite** is SOAP/XML (SuiteTalk) → maps to `source-xml`/SOAP, not plain REST; both variants also embed a BigQuery writer inside the tap.
+- **redshift** → `source-redshift` (SQL DB), not REST.
+- **onedrive** → object/file store via MS Graph; closest to a Graph-backed file source, not a plain REST record API.
+- **adp** is the only tap with **no `state_backend`** block in its `meltano.yml`.</result>
+<usage><subagent_tokens>145359</subagent_tokens><tool_uses>3</tool_uses><duration_ms>115057</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a7635d58f914f946f</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/580d932b-e4c6-48fe-ba82-4e51c5fb0660/tasks/a7635d58f914f946f.output</output-file>
+<status>completed</status>
+<summary>Agent "Deep-read REST taps group 2" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have everything needed. Here is the complete analysis of all three taps.
+
+---
+
+## tap-bamboohr
+
+**1. Base URL** — Constructed from config `subdomain`:
+`https://api.bamboohr.com/api/gateway.php/{subdomain}/v1`
+(One stream, `CustomReport`, uses a different host: `https://{subdomain}.bamboohr.com/api/v1/custom-reports/{report_id}`.)
+
+**2. Auth** — HTTP **Basic auth**, confirmed. `BasicAuthenticator(username=config["auth_token"], password="foobar")` — the API key/token goes in as the username, password is any throwaway string. (BambooHR ignores the password.) Applied as the standard `Authorization: Basic base64(auth_token:foobar)` header. Headers also set `Content-Type`/`Accept: application/json`. There's a side helper (`utils.get_employee_fields_from_config`) that hits `/meta/fields` with the same Basic header to fetch field metadata at schema-build time.
+
+**3. Pagination** — Mostly **single-page / none**. Most streams return the whole payload in one response. Two exceptions:
+- `CustomReport` (the active custom-report stream) uses `CustomReportPaginator(BasePageNumberPaginator)` starting at page 1; `has_more` = `response.json()["pagination"]["next_page"] is not None`; the next page is sent as `?page=&lt;n&gt;`. Pages are 500 rows.
+- Legacy POST streams (`CustomReportOld`, `PhotosUsers`) use `SinglePagePaginator`.
+
+**4. Per-stream endpoints** (path appended to url_base, method, params, records JSONPath):
+
+| Stream (name) | Path | Method | Params | Record extraction |
+|---|---|---|---|---|
+| `employment` (EmploymentHistoryStatus) | `/employees/changed/tables/employmentStatus` | GET | `since=2012-01-01T00:00:00Z` | **custom**: iterate `response.json()["employees"]` dict `{empId: {lastChanged, rows:[...]}}`, emit each row |
+| `payroll` (CompensationHistory) | `/employees/changed/tables/compensation` | GET | `since=2012-01-01T00:00:00Z` | same custom employees-dict walk |
+| `work` (JobInfo) | `/employees/changed/tables/jobInfo` | GET | `since=2012-01-01T00:00:00Z` | same custom employees-dict walk |
+| `employee` (Employees) | `/employees/{_employee_id}` | GET | `fields=&lt;comma list&gt;&amp;onlyCurrent=false` | default (single object) + heavy field-id→name remapping |
+| `&lt;custom&gt;` (CustomReport) | `/custom-reports/{report_id}` (on `{subdomain}.bamboohr.com` host — but SDK request uses `url_base` path) | GET | `page=&lt;n&gt;` | `$.data[*]` |
+| `whos_out` | `/time_off/whos_out` | GET | `start=1900-01-01&amp;end=2100-12-12` | default |
+| `time_off_requests` | `/time_off/requests` | GET | `start=1900-01-01&amp;end=2100-12-12` | default, then flattens dict ignoring `dates` |
+| `employee_assets` | `/employees/all/tables/employeeAssets` | GET | — | default |
+| `locations_detail` | `/applicant_tracking/locations` | GET | — | `$[*]` |
+| `photos_users` | `/reports/custom` | **POST** | `format=JSON`, body `{"name":"photos_users","fields":["id","isPhotoUploaded"]}` | `$.employees[*]` |
+| `photos` | `/employees/{_sdc_id}/photo/{photo_size}` | GET | — | base64-encodes raw image bytes |
+| list streams (`job_titles`,`locations`,`divisions`,`departments`,`employment_statuses`) | `/meta/lists` | GET | — | `$[?(@.alias=='&lt;X&gt;')].options[*]` (JSONPath filter expressions) |
+
+**5. Incremental/replication key** — **None.** Every stream sets `replication_key = None`. "Incremental-style" tables use a hardcoded `since=2012-01-01` full pull, not state-driven. Full-refresh throughout.
+
+**6. Non-trivial mechanics a generic HTTP+JSONPath+cursor source could NOT reproduce:**
+- **`custom_reports` config** (`"31:employee_report,42:foo"`): parsed at discovery into dynamically-created `CustomReport` streams, one per `id:name`. Each **fetches one sample record at discovery time to infer its schema** (all fields typed `["null","string"]`) — dynamic per-report schema inference via a live API call.
+- **`additional_streams` config**: comma-list that toggles optional streams on via a name→class `STREAM_MAPPING`.
+- **Parent-child dependency**: `employee` stream is a **child of `employment`** — it iterates employee IDs discovered from the employmentStatus table and does **one GET per employee** (`/employees/{id}`), deduped via `_seen_employee_ids`. N+1 per-record child API calls.
+- **`photos`/`photos_users`**: child stream doing per-employee photo GETs, returning **binary image data base64-encoded**, with 404-skip logic (`NoPhotoFound`).
+- **Custom employees-dict response shape** (`{employeeId: {lastChanged, rows:[]}}`) — not a flat array; requires custom parsing per stream.
+- **`/meta/fields` metadata call + field aliasing**: the `employee` stream dynamically extends its schema and query `fields` param from BambooHR field metadata, honoring `include_fields`/`exclude_fields` config with `id:alias` remapping, then remaps numeric field-ids in responses back to names, snake_cases, and sanitizes to BigQuery-legal column names (`%`→`percent`, etc.).
+- **POST search endpoints** (`/reports/custom` with a JSON body of field lists).
+- Data standardization: camelCase→snake_case key rewriting, nullifying `"0000-00-00"`/`""` temporal values, and `"true"`/`"false"` string→bool coercion.
+
+---
+
+## tap-rippling
+
+**1. Base URL** — Literal constant: `https://api.rippling.com/platform/api`. (Token endpoint is on a different host — see below.)
+
+**2. Auth** — **OAuth2 refresh_token grant** (`RipplingOAuthAuthenticator`):
+- Token endpoint: **`https://api.rippling.com/api/o/token/`** (POST).
+- Client credentials go in an `Authorization: Basic base64(client_id:client_secret)` header (via `meltano_utils.auth.build_basic_auth_header`), `Content-Type: application/x-www-form-urlencoded`.
+- Body: `grant_type=refresh_token`, `refresh_token=&lt;config.refresh_token&gt;`.
+- The returned `access_token` is applied as the bearer on API calls; `expires_in` drives refresh timing.
+- **Refresh-token rotation**: Rippling rotates the refresh_token on *every* refresh, so `update_access_token` writes the new `refresh_token` to `/tmp/refresh_token.txt` (`REFRESH_TOKEN_FILE`) for the next ECS run to pick up. Config keys: `client_id`, `client_secret`, `refresh_token`.
+
+**3. Pagination** — **Offset/limit**, opt-in and conditional (only one stream). In `Employees.get_next_page_token`: if `page_size &lt;= 0` (the default `0`) → single unpaginated request (returns `None`). If `page_size &gt; 0`: params get `limit=page_size` and `offset=next_page_token`; the next token = `previous + page_size`, and it stops when a returned page has `&lt; page_size` records (or isn't a list). No cursor field — pure offset arithmetic.
+
+**4. Per-stream endpoints** — **Only one stream**, `employee`:
+- Path: `/employees/include_terminated` (→ `https://api.rippling.com/platform/api/employees/include_terminated`), GET.
+- Params: always `send_all_roles=true`; plus `limit`/`offset` when paginating.
+- Records JSONPath: **`$.[*]`** (top-level array). (Base class default is `$.results[*]`, but Employees overrides to a bare array.)
+
+**5. Incremental/replication key** — **None.** `primary_keys=["id"]`, no replication key. Full refresh.
+
+**6. Non-trivial mechanics:**
+- **Refresh-token rotation persisted to a file** across runs — a generic OAuth2-refresh source that doesn't write the rotated token back would break on the second run (Rippling invalidates the old refresh_token).
+- Response standardization: recursive **camelCase→snake_case** key rename, dict flattening (with `ignore_keys=["work_schedule"]` preserved as nested), and timestamp cleanup (`fix_timestamp_keys` strips the `+00:00` offset by splitting on `+` for `created_at`/`updated_at`).
+- **Not** catalog/discover-driven — despite being a Singer tap, streams are a static list of exactly one (`Employees`); no dynamic endpoint discovery. `page_size` is a workaround for Rippling's ~60s gateway timeout on large unpaginated pulls.
+
+---
+
+## tap-rillet
+
+**1. Base URL** — Literal: `https://api.rillet.com`. Paths append directly (e.g. `/accounts`, `/reports/balance-sheet`).
+
+**2. Auth** — **Static bearer token** (`BearerTokenAuthenticator(token=config["auth_token"])`) → `Authorization: Bearer &lt;auth_token&gt;`. No token exchange. Report streams also send header **`X-Rillet-API-Version: 3`** (required or dimension fields come back null). The on-the-fly partition-discovery helpers build the same `Authorization: Bearer` header manually with `requests`.
+
+**3. Pagination** — **Cursor**. `next_page_token_jsonpath = "$.pagination.next_cursor"`; params `limit=100&amp;cursor=&lt;next_cursor&gt;`; stops when `pagination.next_cursor` is absent. **Report streams disable pagination** (`next_page_token_jsonpath = None`) — they're point-in-time/period single responses, partitioned by date instead.
+Rate limiting: 60 req/rolling-minute, 429 with **no** Retry-After header → custom `backoff.constant(interval=65s)`, max 8 tries (both on SDK streams and in the raw-`requests` helper `_get_with_rate_limit_retry`).
+
+**4. Per-stream endpoints** (collection streams — GET, cursor-paginated):
+
+| name | path | records JSONPath | notes |
+|---|---|---|---|
+| `account` | `/accounts` | `$.accounts[*]` | |
+| `bank_account` | `/bank-accounts` | `$.accounts[*]` | |
+| `bill` | `/bills` | `$.bills[*]` | unnest `items`→`item_*` |
+| `book_period` | `/books/periods/last-closed` | `$` | |
+| `credit_memo` | `/credit-memos` | `$.credit_memos[*]` | unnest items |
+| `customer` | `/customers` | `$.customers[*]` | |
+| `field` | `/fields` | `$.fields[*]` | unnest `values`→`value_*` |
+| `invoice` | `/invoices` | `$.invoices[*]` | API v3 header; unnest items; `item_fields`→JSON string |
+| `journal_entry` | `/journal-entries` | `$.journal_entries[*]` | unnest items |
+| `journal_entry_report` | `/reports/journal-entries` | `$.journal_entries[*]` | API v3; unnest items |
+| `organization` | `/organizations/self` | `$` | |
+| `product` | `/products` | `$.products[*]` | |
+| `subsidiary` | `/subsidiaries` | `$.subsidiaries[*]` | |
+| `vendor` | `/vendors` | `$.vendors[*]` | |
+
+Report streams (custom `parse_response`, no JSONPath extraction — they walk the tree):
+- `balance_sheet_report` → `/reports/balance-sheet`, params `as_of_date=&lt;month-end&gt;&amp;breakdown_by=SUBSIDIARY`
+- `income_statement_report` → `/reports/income-statement`, params `from_date&amp;to_date&amp;breakdown_by[&amp;custom_field_id]`
+- `cash_flow_statement_report` → `/reports/cash-flow-statement`, same params
+- `trial_balance_report` → `/reports/trial-balance`, params `from_date&amp;to_date[&amp;subsidiary_id]`
+
+**5. Incremental/replication key** — **None** (no `replication_key` anywhere; full refresh). "Incremental" behavior is faked via `start_date` config + date-window **partitions**, not Singer state. Composite `primary_keys` include the date/partition fields.
+
+**6. Non-trivial mechanics — this is the heavy one:**
+
+- **Month-window partition iteration from `start_date`** (default `2023-01-01`) to today. This is the core thing a generic source cannot do:
+  - **Balance sheet**: `_iter_month_ends(start, today)` yields the **last day of each month**; each becomes a partition `{as_of_date}` → one API call per month-end with `as_of_date=&lt;that date&gt;&amp;breakdown_by=SUBSIDIARY`. Point-in-time snapshots.
+  - **Income statement &amp; cash flow** (`_PeriodReportStream`): `_iter_month_ranges` yields `(first_day, last_day)` **per month** (last range capped at today); each month becomes a `from_date`/`to_date` window. **Cross-producted** with breakdown specs: one `{breakdown_by: SUBSIDIARY}` **plus one `{breakdown_by: CUSTOM_FIELD, custom_field_id: &lt;uuid&gt;}` per field id** — so it first calls `/fields` (paginated, cursor) to enumerate field UUIDs, then fans out `months × (1 + N_fields)` calls.
+  - **Trial balance**: month ranges (first range extended back to exact `start_date`), cross-producted with **one call per subsidiary_id**. The subsidiary id list is a **union of two sources**: `/subsidiaries` (paginated) **and** the SUBSIDIARY breakdown ids scraped from a live `/reports/balance-sheet?breakdown_by=SUBSIDIARY` call (`_fetch_subsidiary_breakdown_ids`) — because `/subsidiaries` omits intercompany elimination entities that the consolidated reports include (ENG-81840). Falls back to `[None]` (single consolidated call) if no subsidiaries.
+
+- **On-the-fly fan-out without parent-child streams**: `_fetch_collection_ids` and `_fetch_subsidiary_breakdown_ids` make **raw `requests` calls during `partitions` computation** (outside the SDK request path, so they carry their own 429 retry) to build the partition matrix dynamically. Cached per stream instance.
+
+- **Deep report-tree flattening**: report `parse_response` recursively walks a `sections → groups → subgroups → accounts → balances` hierarchy of arbitrary depth (`_walk_sections`, `_walk_balance_sheet_tree`), emitting one row per (account × subsidiary-breakdown), **denormalizing section/group/subgroup totals** onto each row, joining `breakdown_id`→breakdown metadata, and emitting separate `record_type="SUMMARY"` rows. Row-total entries (null `breakdown_id`, the "Consolidated" column) are dropped.
+
+- **Reconciliation-driven special-casing**: `_is_rolled_up_leaf` detects hollow leaf groups (e.g. "Cash" — Rillet returns zero-balance placeholder accounts and puts the real value only in the subgroup `totals[]`) by checking *all account balances == 0 while a subsidiary total != 0*, and emits the node total as a synthetic `is_rolled_up=True` line instead of the hollow accounts.
+
+- **Per-record transforms**: generic dict flattening (`flatten_dict`); `unnest_list_config` explodes a nested list (`items`/`values`) into one row per element with a prefixed flatten (the `bill`/`invoice`/`journal_entry`/`credit_memo`/`field` streams — 1→N explode); `invoice.item_fields` and similar are re-serialized to a JSON string; `trial_balance` stamps the partition's `subsidiary_id` onto each row in `post_process` (the response itself carries no subsidiary id).
+
+---
+
+### Cross-tap summary of faucet-stream replication gaps
+A generic "authenticated GET + JSONPath + cursor" source covers **rippling's** single stream (offset pagination) and rillet's **collection** streams, and bamboohr's simple streams — but the following need real code beyond that:
+- **OAuth2 refresh-token rotation with persisted state** (rippling) — the rotated refresh_token must be written back or the next run 401s.
+- **BambooHR Basic auth with api_key-as-username** (non-standard but expressible as basic auth).
+- **Dynamic schema inference from a live sample fetch** (bamboohr custom_reports; also employee field-metadata-driven schema).
+- **Parent-child N+1 per-record API calls** (bamboohr employee-per-id, photos-per-employee, binary base64 payloads).
+- **POST search/report endpoints with JSON bodies** (bamboohr `/reports/custom`).
+- **Non-array response shapes requiring custom walking** (bamboohr employees-dict; all rillet report trees).
+- **Month-window date-partition iteration from start_date** (rillet report streams) — month-end snapshots (balance sheet) and month-range windows (income/cash-flow/trial-balance), **cross-producted with dynamically-discovered breakdown dimensions** (per-custom-field, per-subsidiary) whose id lists are fetched at plan time from *other* endpoints. This is the single biggest gap — it's a computed request matrix, not simple pagination.
+- **Custom API-version headers** (`X-Rillet-API-Version: 3`) and **custom constant-backoff rate-limit handling** for 429s with no Retry-After header.</result>
+<usage><subagent_tokens>169316</subagent_tokens><tool_uses>8</tool_uses><duration_ms>119339</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a45438520e54e352a</task-id>
+<tool-use-id>toolu_018aaXYGRomop41kT8ALdBUb</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/580d932b-e4c6-48fe-ba82-4e51c5fb0660/tasks/a45438520e54e352a.output</output-file>
+<status>completed</status>
+<summary>Agent "Deep-read REST taps group 1" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have everything needed. Here is the analysis.
+
+---
+
+# tap-hubspot (DrivetrainAi/tap-hubspot, `main`)
+
+Custom Meltano SDK tap (`RESTStream` subclasses) but with almost every I/O method overridden — it bypasses the SDK request flow and calls its own `get_request`/`post_request` (in `utils/req.py`, `requests` + `backoff`). Config is OAuth (`client_id`/`client_secret`/`refresh_token`), `start_date`, and crucially `streams_to_discover` (comma-separated) plus BigQuery config (`bigquery_project/dataset/credentials_path/location`) — the tap talks to BigQuery directly (see §6).
+
+**1. Base URL** — varies by stream (note two hosts, `api.hubspot.com` vs `api.hubapi.com`):
+- Object streams: `https://api.hubspot.com/crm/v3/objects/{object_type}/search` (`streams/object.py` `url_base`).
+- Property discovery: `https://api.hubspot.com/crm/v3/properties/{object_type}`.
+- Associations: `https://api.hubapi.com/crm/v4/associations/{from}/{to}/batch/read`; association types: `https://api.hubapi.com/crm/v3/associations/{from}/{to}/types`.
+- Property history: `https://api.hubapi.com/crm/v3/objects/{object_type}/batch/read`.
+- List membership: `https://api.hubapi.com/crm/v3/lists/{id}/memberships` (and `/crm/v3/lists/{id}` to resolve object type).
+
+**2. Auth** — OAuth2 **refresh-token grant**. Token endpoint `POST https://api.hubspot.com/oauth/v1/token`, form-encoded body `grant_type=refresh_token`, `client_id`, `client_secret`, `refresh_token`, `redirect_uri=https://api.hubspot.com/` (`auth.py`). Response `access_token`/`expires_in`; token cached, refreshed 600 s before expiry. Applied as header `Authorization: Bearer &lt;access_token&gt;`.
+
+**3. Pagination** — cursor via `paging.next.after`. Paginator (`TapHubspotPaginator`): `get_next` = `response.json()["paging"]["next"]["after"]`; `has_more` true while that is non-null. For object search, `after` is injected into the POST body (`payload["after"] = next_page_token`), not a query param. Archived listing paginates the same field via query param. **Non-trivial 10k cap workaround:** HubSpot search caps at ~10k results per filter; when `total_records_processed &gt;= 9800` the stream adds a secondary `hs_object_id GT &lt;last_id&gt;` filter and resets the cursor to keep walking (see `prepare_request_payload`).
+
+**4. Per-stream endpoints** — Main object streams (`call`, `company`, `contact`, `email`, `engagement`, `lead`, `line_item`, `meeting`, `note`, `product`, `task`, `ticket`, `subscription`): **POST** to `/crm/v3/objects/{object}/search`. Records JSONPath: `$.results[*]` (via `parse_response` returning `response_json["results"]`). Request body: `{"filterGroups":[{"filters":[{propertyName, operator:"GTE", value:&lt;start&gt;}]}], "limit":200, "sorts":[{propertyName:"id", direction:"ASCENDING"}], "properties":[...all discovered names...], "after":&lt;cursor&gt;}`. Associations: POST `/crm/v4/.../batch/read` body `{"inputs":[{"id":..,"after":..}]}`, records under `$.results[*]` with per-input `paging.next.after`. List membership: GET `/crm/v3/lists/{id}/memberships?limit=250`, records `$.results[*]`. Property history: POST `/crm/v3/objects/{object}/batch/read`.
+
+**5. Incremental** — Replication key `property_hs_lastmodifieddate` (contacts use `property_lastmodifieddate`). Sent as a search **filter** in the POST body: `{propertyName:"hs_lastmodifieddate", operator:"GTE", value:&lt;state or start_date&gt;}` (start_date parsed and formatted `YYYY-MM-DDT00:00:00Z`). List-membership and association/history children are **full-refresh** (no replication key).
+
+**6. Cannot be reproduced by generic authenticated-GET+JSONPath+cursor:**
+- **POST search with filter body**, not GET query params — the incremental filter and cursor live in the JSON body.
+- **Dynamic property discovery + schema flattening:** before syncing, GETs `/crm/v3/properties/{object}` to build the property list, requests all of them, then `post_process` **pops the `properties` bag and flattens each into `property_&lt;name&gt;` columns**, coerces `""`→null, string `"true"/"false"`→bool, and epoch-millis→ISO for date-typed calculated fields. Custom objects are resolved by name against `/crm/v3/schemas`.
+- **Parent→child stream fan-out:** object streams accumulate IDs across N pages (`association_parent_batch_pages`, default 5) and dispatch child association / property-history streams **concurrently** (ThreadPoolExecutor). Associations do their own per-input paginated `/batch/read`, look up human-readable type names from `/associations/.../types`, and **unpivot** into `{from_id, to_id, association_type, type_id, category, label}`.
+- **The tap writes to BigQuery itself:** association streams run a **DELETE-before-emit** against the destination BigQuery table (`utils/bigquery.BigQueryCleaner`) so target-bigquery's MERGE doesn't duplicate rows — this is coupling to the loader that a source connector fundamentally can't model.
+- **Archived-record handling:** separate `/crm/v3/objects/{object}?archived=true` enumeration + `/batch/read` chunks of 100 when &gt;250 properties (URI-length avoidance). List-membership record column is dynamically named (`deal_id`, etc.) from the list's `objectTypeId`. Custom retry/backoff with special-casing (400 on `/search` and `/batch/read` is retried, not given up), 414 URI-too-long, 401/403 auth exceptions, and explicit connect/read timeouts.
+
+---
+
+# tap-personio (DrivetrainAi/tap-personio, `main`)
+
+Meltano SDK tap (`RESTStream`), uses shared `meltano_utils.http` helpers. Config: `client_id`, `client_secret`, optional `reports` and `v1_reports` (each `&lt;uuid&gt;:&lt;stream_name&gt;` comma lists).
+
+**1. Base URL** — `https://api.personio.de` (`API_BASE_URL`, set as `url_base` in `base.py`). Note streams mix `/v1` and `/v2` paths off the same host.
+
+**2. Auth** — Personio's **token-issue** call (a bespoke variant of client-credentials): `POST https://api.personio.de/v1/auth` with **JSON** body `{"client_id":..., "client_secret":...}`. Response envelope `{"success":true, "data":{"token":..., "expires_in":...}}` — token read from `data.token`. Cached, refreshed when within 1 h of expiry (default `expires_in` 86400). Applied as `Authorization: Bearer &lt;token&gt;` (`auth.py`). Not a standard OAuth `/token` grant-type flow — it's a custom endpoint returning a success envelope.
+
+**3. Pagination** — two styles:
+- **v2 cursor** (`PersonioCursorPaginator`, default): next cursor extracted from response `_meta.links.next.href`, URL-parsed to pull the `cursor` query param; stops when `next.href` absent. Sent as `?cursor=&lt;token&gt;&amp;limit=50`.
+- **v1 offset** (`PersonioOffsetPaginator`): advances `offset += page_size` until a page returns fewer than `limit` records. Employees uses `limit=200&amp;offset=N`.
+- V1 custom reports use `SinglePagePaginator` (one request).
+
+**4. Per-stream endpoints:**
+- `employees` — **GET** `/v1/company/employees`, records `$.data[*]`, offset pagination (limit 200).
+- `employments` — GET `/v2/persons/{employee_id}/employments`, records `$._data[*]` (base default), **child of `employees`** (employee_id from parent context).
+- Dynamic `reports` — GET `/v2/reports/{report_uuid}`, records `$._data[*]`, cursor pagination.
+- Dynamic `v1_reports` — GET `/v1/company/custom-reports/reports/{uuid}`, custom `parse_response` reads `data[0].attributes.items`.
+
+**5. Incremental** — **None.** Every stream sets `replication_key = None` (full-refresh). No `updated_since`/date query param.
+
+**6. Cannot be reproduced by generic source:**
+- **Custom auth envelope** (`/v1/auth`, `{success, data.token}`) — not a standard grant.
+- **`{value: X}` attribute unwrapping:** v1 employees and v2 reports wrap each field as `{"value": ...}`; `post_process`/`_flatten_row` unwrap these into flat columns. Employees additionally flatten `attributes` and rename `dynamic_*` fields to `customfield_&lt;label&gt;` via a second call to `/v1/company/employees/custom-attributes`.
+- **Dynamic schema discovery:** Employees infer schema from a 100-row sample (with integer→number widening); reports pull typed schema from `/v2/reports/attributes` merged with a `limit=1` sample record.
+- **Report pivot/explode (v1 custom reports):** `parse_response` digs into `data[0].attributes.items`, groups each employee's history cells by `effective_date`/`period`, and **pivots one column per `attribute_id`** (reading value from `value`/`amount`/`cost_centers` by `data_type`, adding `_entity_id`/`_currency` companions) — one output row per `(employee_id, date)`. This is report-envelope transformation a JSONPath extractor can't do.
+- Date normalization: pure `YYYY-MM-DD` promoted to `...T00:00:00Z` for `date-time` fields (BQ TIMESTAMP).
+
+---
+
+# tap-deel (DrivetrainAi/tap-deel, `main`)
+
+Cleanest of the three — a fairly standard Meltano SDK tap with JSON schema files under `tap_deel/schemas/`. Config: `auth_token`, optional `additional_streams_to_sync` (comma list; parents auto-included).
+
+**1. Base URL** — `https://api.letsdeel.com/rest/v2` (`TapDeelStream.url_base`).
+
+**2. Auth** — **static bearer token**. `BearerTokenAuthenticator(token=config["auth_token"])` → header `Authorization: Bearer &lt;auth_token&gt;`. No token exchange.
+
+**3. Pagination** — differs per stream:
+- `people` — **no paginator override** → SDK default (header-link / effectively single request at `limit=200`). Worth flagging: unlike the others it has no explicit cursor handling.
+- `legal_entities` — cursor: `JSONPathPaginator("$.page.cursor")` (null when exhausted); sent as `?cursor=&lt;token&gt;&amp;limit=100`.
+- `gp_legal_entity_reports` — `SinglePagePaginator` (endpoint returns all events in one payload; no params).
+- `gp_gross_to_net` — **offset** (`GrossToNetPaginator` extends `BaseOffsetPaginator`): stops when `offset + limit &gt;= page.total_rows` (falls back to short-page detection); sent as `?limit=200&amp;offset=N`.
+
+**4. Per-stream endpoints** (all **GET**):
+- `people` — `/people`, records `$.data[*]`.
+- `legal_entities` — `/legal-entities` (`limit` capped at 100), records `$.data[*]`.
+- `gp_legal_entity_reports` — `/gp/legal-entities/{legal_entity_id}/reports`, records `$.data[*]`, **child of `legal_entities`**.
+- `gp_gross_to_net` — `/gp/reports/{report_id}/gross_to_net`, **child of `gp_legal_entity_reports`**, custom `parse_response` (see §6).
+
+**5. Incremental** — **None.** All streams `replication_key = None` (full-refresh). No date param.
+
+**6. Cannot be reproduced by generic source:**
+- **Two-level parent→child chaining:** `legal_entities` → (`get_child_context` emits `legal_entity_id`) → `gp_legal_entity_reports` → (emits `report_id` + `legal_entity_id`) → `gp_gross_to_net`. Path templates `{legal_entity_id}`/`{report_id}` are filled from parent records — requires per-record extra API calls, the core thing a flat JSONPath source can't do.
+- **Gross-to-net unpivot:** the report returns each row as a map of dynamic column keys → cell objects `{label, currentValue, compareValue, percentageDiff, formattedCurrentValue,...}`. `parse_response` **unpivots to a tall record per `(report_id, row_index, column_key)`**, computes `row_index` from `page.offset + local_index`, copies identity fields (`contract_id←contractId`, `worker_id←workerId`, `employee_name`, `employee_pay_date`, `entity_name`) onto every emitted cell, stringifies mixed-typed values, tolerates bare-scalar cells, and **drops the `employeeInfo` roster blob** (PII/redundant). Pure response-envelope transformation.
+- Minor: `legal_entities` renames `registrationNumber`→`registration_number`; per-endpoint `limit` caps (100 vs 200) to avoid `QUERY_CONTRACT_MISMATCH`.
+
+---
+
+## Cross-cutting notes for faucet-stream replication gaps
+- **Parent/child (per-record follow-up requests)** is central to all three (HubSpot associations/history, Personio employees→employments, Deel legal_entities→reports→gross_to_net). faucet-stream's matrix `parent:`/`${parent.path}` fan-out covers the request chaining, but not the response transforms below.
+- **Response unpivot/pivot/flatten** (HubSpot `properties`→`property_*`; Personio `{value}` unwrap + report pivot; Deel gross-to-net tall-table unpivot) — needs a transform stage (`sql`/`wasm`), not plain JSONPath extraction.
+- **Dynamic schema/property discovery** (HubSpot `/properties`, Personio custom-attributes + sample inference) — no equivalent in a config-driven source.
+- **HubSpot POST-search with body-embedded filter+cursor and the 10k `hs_object_id` re-filter** — beyond the REST source's GET+cursor pagination styles.
+- **Custom auth** — HubSpot refresh-token grant maps to faucet's `oauth2_refresh`; Personio's `/v1/auth` `{success,data.token}` envelope is non-standard and would need a custom provider; Deel is a trivial static bearer.
+- **HubSpot writes to BigQuery directly (DELETE-before-emit)** — a loader-side concern with no source-connector analogue.
+- **No incremental** in Personio/Deel (full-refresh); HubSpot incremental is a body filter, not a query param.</result>
+<usage><subagent_tokens>180161</subagent_tokens><tool_uses>11</tool_uses><duration_ms>158702</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a678095597f2f0b84</task-id>
+<tool-use-id>toolu_016YhMM1UWWNZ2MDLujciNEh</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/580d932b-e4c6-48fe-ba82-4e51c5fb0660/tasks/a678095597f2f0b84.output</output-file>
+<status>completed</status>
+<summary>Agent "Deep-read OData taps" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I now have complete understanding of all three taps. Here is the report.
+
+---
+
+## Tap 1 — `tap-dynamics-business-central` (MS Dynamics 365 Business Central)
+
+Two modes. **Default = "standard API" multi-company** (`standard_api.py`); legacy OData-v4 mode is opt-in via `use_legacy_odata_v4: true` (`client.py` + `streams.py`).
+
+**1. Base URL construction**
+- **Standard mode** (`_url_base_for` / `_company_url`, standard_api.py:131, 183): literal template
+  `https://api.businesscentral.dynamics.com/v2.0/{tenant}/{environment}/{namespace}/companies({company_id})/{entity}`
+  where `namespace` = `api/v2.0` (core) or `api/microsoft/reportsFinance/beta` (opt-in budgets). `{environment}` may be a comma-separated list (`Production,Sandbox`) — it fans out. `{company_id}` is a GUID enumerated at runtime from `GET .../api/v2.0/companies` (`_fetch_companies`, :676).
+- **Legacy mode** (`url_base`, client.py:24): `override_base_url` wins if set; else
+  `https://api.businesscentral.dynamics.com/v2.0/{tenant}/{environment}/ODataV4`, with an optional `/Company('{company}')` suffix (single-quotes doubled for OData escaping).
+
+**2. Auth flow** — Azure AD OAuth2 **client-credentials (v2.0)**.
+- Token endpoint (auth.py:41, and duplicated in `_get_token` standard_api.py:471): `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token`
+- Body: `grant_type=client_credentials`, `client_id`, `client_secret`, **`scope=https://api.businesscentral.dynamics.com/.default`** (v2.0 `.default` scope — not a `resource` param).
+- Bearer applied as `Authorization: Bearer &lt;access_token&gt;`. Token cached on the tap (`_cached_bc_token`); metadata fetches build the header manually because the SDK auth lifecycle isn't invoked during schema discovery (client.py:176).
+
+**3. Pagination** — body `@odata.nextLink` (`get_next_page_token`, client.py:62 / standard_api.py:835). The nextLink is a full URL used **verbatim** (`prepare_request` bypasses url_base rebuild, :850). Page size is controlled by the **`Prefer: odata.maxpagesize=N`** request header (`http_headers`, :820), default `page_size=100`, overridable per-stream (GL entries pinned to `BC_MAX_PAGE_SIZE=20000`). No `$skip`/`$top`.
+
+**4. Per-entity requests**
+- Records JSONPath: **`$.value[*]`**.
+- Entity catalog is hardcoded (`TOP_LEVEL_ENTITIES`, standard_api.py:346): tuples `(bc_entity_name, pk_field, expand_lines, namespace)`. Path = `/companies({company_id})/{bc_entity_name}`.
+- **`$expand`** is heavily used: header/line entities (salesInvoices→`salesInvoiceLines`, journals→`journalLines`, GL→`dimensionSetLines`, etc.) pull nested lines inline via `?$expand=&lt;lines&gt;`; expands are trimmed to `$select=id` where metadata confirms the field, else untrimmed (`_expand_clause`, :153).
+- `$orderby` used in legacy mode (replication_key asc + PKs). Each record annotated with `company_id`/`company_name`/`environment`; keys camelCase→snake_case.
+- In standard mode `entities_to_sync` filters the fixed catalog by **snake_case** names; in legacy mode it selects raw OData EntitySet names.
+
+**5. Incremental key** — only `generalLedgerEntries` is incremental (`STREAM_REPLICATION_KEYS = {"generalLedgerEntries": "lastModifiedDateTime"}`, :293). Filter built in `get_url_params` (:967): `{field} ge {YYYY-MM-DDTHH:MM:SSZ}` from state bookmark/`start_date`, but only if start &gt; the `DEFAULT_START_DATE = 2010-01-01` floor. Legacy mode (client.py:126) uses `{replication_key} gt {start}` where replication_key is auto-detected (`lastModifiedDateTime`/`systemModifiedAt`). Plus optional **inclusive range filters** for GL: `accountNumber ge/le '...'` (quoted) and `postingDate ge/le ...` (bare Edm.Date), ANDed together (`_filter_clauses`, :947).
+
+**6. Not reproducible by a generic REST source**
+- **Runtime company enumeration + fan-out**: one `GET /companies` then every stream is partitioned across every (environment, company); `company` config is a case-insensitive filter over name/displayName/GUID that hard-fails on no match.
+- **EDMX `$metadata` schema discovery** at `/{namespace}/$metadata` (XML→schema), unioned across environments; opt-in beta namespace tolerated-absent.
+- **Per-(company,entity) fault tolerance**: 403/404 and specific BC 400 envelopes (`Application_DialogException`, `Internal_DataNotFoundFilter`, etc.) downgraded to empty result so one company can't fail the run.
+- **Parent-child enumeration for `journal_lines`**: BC refuses top-level journalLines, so it paginates `/journals` per company first, then requests `/journals({jid})/journalLines` per journal.
+- **Composite PK injection** `(entity_pk, company_id[, environment])`, `dimensionSetLines` stringified to JSON, 429 Retry-After handling, memory reclaim of ~23MB pages. A plain authenticated-GET + `$.value[*]` + nextLink source handles a *single* company/entity but none of the multi-company orchestration, metadata discovery, or selective fault tolerance.
+
+---
+
+## Tap 2 — `tap-dynamics-finance` (MS Dynamics 365 Finance &amp; Operations)
+
+**1. Base URL construction** (`url_base`, client.py:107): `base_url` wins → `{base_url}/data`; else `subdomain` → `https://{subdomain}.operations.dynamics.com/data`; else raises. All entities live under the single `/data` OData root.
+
+**2. Auth flow** — Azure AD OAuth2, but **v1 endpoint + `resource` param** (older ADAL-style), *not* v2.0 `.default`.
+- Token endpoint (auth.py:72): `https://login.microsoftonline.com/{tenant}/oauth2/token` (or `.../common/oauth2/token` if no tenant). **Note: v1 `/oauth2/token`, not `/oauth2/v2.0/token`.**
+- Body (auth.py:29): `client_credentials` grant with **`resource=https://{subdomain}.operations.dynamics.com`** (subdomain derived from config or stripped from `base_url`). Alternatively supports a **`refresh_token` grant** (client_id/secret/redirect_uri/refresh_token) if `refresh_token` is configured.
+- Bearer via the SDK `OAuthAuthenticator`; `SingletonMeta` shares one authenticator per run, guarded by a `threading.Lock` (`authenticate_request`, :24) because of concurrent partitioned fetching.
+
+**3. Pagination** — server-driven body `@odata.nextLink` via a proper SDK `BaseHATEOASPaginator` (`ODataNextLinkPaginator`, client.py:54). The nextLink is **offset-based `$skip`/`$top` under the hood** but server-generated and preserves the original `$filter`; on each page the tap replays the nextLink's own query string (`get_url_params` → `parse_qsl(next_page_token.query)`, :168). Page size via **`Prefer: odata.maxpagesize=10000`** header (:135). Explicitly warns *not* to use `$top` for page size (it caps the total set and would truncate).
+
+**4. Per-entity requests**
+- Records JSONPath **`$.value[*]`**; `$format=json` always appended; **`cross-company=true`** always set (queries across all legal entities/`dataAreaId`).
+- `entities_to_sync` is a comma-separated list, each item optionally `EntitySet:stream_name` (colon override; tap.py:105). Path = `/{object_name}`.
+- Optional company scoping: if `company` set and `dataAreaId` is a PK → `$filter=dataAreaId eq '{company}'`.
+- **`$count`** is used for reconciliation (`get_source_count`: adds `$count=true&amp;$top=0`, reads `@odata.count`, :278). `$select`/`$orderby`/`$top=1` used in key-bound discovery for partitioning.
+
+**5. Incremental key** — auto-detected `SysModifiedDateTime` (client.py:880). Filter (`get_url_params`, :185): lower bound `SysModifiedDateTime gt {start}` (from bookmark/`start_date`) **AND** an upper bound `SysModifiedDateTime lt {fetch_start_time}` — `_fetch_start_time` is captured at sync start (:288) so the window is closed and stable, preventing rows written mid-run from moving the bookmark past unread data. Timestamps rendered `%Y-%m-%dT%H:%M:%SZ`.
+
+**6. Not reproducible by a generic REST source** — this tap is the most complex:
+- **Source `$count` reconciliation**: after each stream it fetches OData `$count` over the exact sync filter and compares against distinct-PK count extracted; a shortfall beyond tolerance (`source_count_recon_tolerance_pct`, floored at 100 rows) raises `SilentTruncationError` and fails the tap (recon.py) — guards against offset-paging silently truncating a full-table overwrite. Configurable enforce/exclude/tolerance knobs.
+- **Concurrent partitioned key-range extraction** (`partitioned_streams`): for FULL_TABLE single-integer-PK streams, discovers `(min,max)` PK via `$orderby+$top=1`, asserts no rows fall outside the window, tiles `[low,high)` into N half-open ranges, fetches them across a `ThreadPoolExecutor` (per-thread `requests.Session`) with a bounded queue for backpressure, and reconciles each key-window against `$count`. Emission stays serial; any range that fails/never-reports aborts so a partial snapshot can't overwrite a good table.
+- **EDMX `$metadata` discovery** at `/data/$metadata` with a dedicated 429/Retry-After retry budget (honours HTTP-date or delay-seconds).
+- **Closed upper-bound incremental window**, v1 `resource`-based OAuth, `cross-company` semantics, thread-safe singleton auth. faucet's oauth2 provider would need the **v1 `resource` grant shape**, and none of the recon/partitioning/count-window logic exists in a generic source.
+
+---
+
+## Tap 3 — `tap-sap` (SAP Business One Service Layer)
+
+Simplest of the three (`streams.py` + `tap.py` only; no separate auth/client module).
+
+**1. Base URL construction** (`url_base`, streams.py:90): `https://{host}:{port}/b1s/v1` — built from `host` + `port` config (e.g. `https://sl-eqnx.datacore.com.br:50000/b1s/v1`). Entity path = `{url_base}/{object_name}`.
+
+**2. Auth flow** — **Service Layer `/Login` session-cookie**, not a bearer token (`SapB1Authenticator(AuthBase)`, :25).
+- Login: `POST https://{host}:{port}/b1s/v1/Login` with JSON body `{"CompanyDB": company_db, "UserName": username, "Password": password}` (`_login`, :40).
+- Response JSON carries `SessionId` (and `SessionTimeout`). The session id is cached at **module level** in `_SESSION_CACHE`, keyed by `(host, port, company_db, username)`, so all streams share one login.
+- Every request carries the cookie header (`__call__`, :64): **`Cookie: B1SESSION={session_id}; CompanyDB={company_db}`**. (`verify_ssl` toggles TLS verification for self-signed certs.)
+- **Session expiry / re-login**: minimal — `__call__` only logs in when the cache key is absent; there is **no 401/session-timeout detection or automatic re-login** once a session is cached. (SAP B1 sessions expire ~30 min idle; a long sync relies on the session staying alive.) `$metadata` fetch has its own `_get_session_cookie` that logs in the same way.
+
+**3. Pagination** — body `@odata.nextLink` (`get_next_page_token`, :108), checking **both `odata.nextLink` and `@odata.nextLink`** keys (SAP B1 emits the un-prefixed form in some versions), and resolving relative links against `url_base` via `urljoin`. Page size via **`Prefer: odata.maxpagesize={page_size}`** header, default 500 (:98). SAP B1 Service Layer uses server-driven paging (`$skip`-based nextLink) — the tap follows the link verbatim and does **not** compute `$skip`/`$top` itself. (Note: SAP B1 also supports a `B1S-PageSize` header / `$skip` paging; this tap relies purely on the returned nextLink.)
+
+**4. Per-entity requests**
+- Records JSONPath **`$.value[*]`**.
+- `entities_to_sync` comma-separated EntitySet names, optional `EntitySet:stream_name` colon override (tap.py:78). Path = `/{object_name}`.
+- Optional **`$select`** only (`get_url_params`, :123) — from a class-level `select_columns` list (not exposed in config by default, so normally no params). **No `$filter`, no `$count`, no `$orderby`.**
+- Records are flattened (`flatten_dict`) and keys snake_cased (`convert_keys_to_snake_case`) — nested ComplexType objects flattened with `_` join; arrays kept as arrays.
+
+**5. Incremental key** — **none.** `replication_key = None` always (streams.py:503). Every stream is FULL_TABLE; no date filter is built. (SAP B1 objects do carry `UpdateDate`/`UpdateTime` but this tap does not use them.)
+
+**6. Not reproducible by a generic REST source**
+- **The `/Login` session-cookie handshake itself**: a POST-with-credentials that returns `SessionId`, then a `Cookie: B1SESSION=...; CompanyDB=...` on every subsequent GET. This is the biggest gap — faucet's static-bearer / oauth2 / token-endpoint providers all model `Authorization` headers from a token grant; none does a **JSON login → Set-Cookie/JSON-session-id → cookie header** flow, nor carries the paired `CompanyDB` cookie. A faucet `token_endpoint` provider could POST the login, but it would need to (a) read `SessionId` from the JSON body and (b) inject it as a **`Cookie` header** (two cookies), not `Authorization`.
+- **Dual nextLink key handling** (`odata.nextLink` *and* `@odata.nextLink`) + relative-URL resolution.
+- **Self-signed TLS opt-out** (`verify_ssl=false`) applied to every request incl. pagination and metadata.
+- **EDMX `$metadata` discovery** with ComplexType/Collection expansion and schema flattening to match the flattened record shape.
+- Session **expiry is unhandled**, so any faucet reimplementation should add re-login on 401 (an improvement over the tap).
+
+---
+
+### Cross-tap summary for faucet-stream gaps
+- **BC &amp; F&amp;O** are Azure-AD OAuth2 client-credentials — faucet's `oauth2` provider covers **BC** directly (v2.0 `/oauth2/v2.0/token` + `scope=.../.default`). **F&amp;O needs the v1 `/oauth2/token` + `resource=` grant shape** — verify faucet's oauth2 provider can emit a `resource` param (v1/ADAL style), otherwise that's a provider gap.
+- **All three** use `$.value[*]` extraction + `@odata.nextLink` body pagination + `Prefer: odata.maxpagesize` — faucet's REST source `NextLinkInBody` pagination + a `Prefer` header covers the happy path.
+- **SAP B1** is the real outlier: **session-cookie `/Login` auth** (JSON login → `B1SESSION`+`CompanyDB` cookies) — no faucet auth provider models this; it's the primary replication blocker.
+- **Genuinely non-REST-reproducible logic** (would be lost in a naive port): BC's runtime multi-company fan-out + `$metadata` schema discovery + per-partition 4xx tolerance + parent/child journal enumeration + `$expand` line inlining; F&amp;O's `$count` completeness reconciliation, closed-window incremental filter, and concurrent PK-range partitioning. These are stateful/orchestration features beyond "authenticated GET + extract + paginate."</result>
+<usage><subagent_tokens>201711</subagent_tokens><tool_uses>15</tool_uses><duration_ms>182842</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a49b5720d669ce129</task-id>
+<tool-use-id>toolu_01GMEzyvnyKfy5QUWCVK5Lyc</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/580d932b-e4c6-48fe-ba82-4e51c5fb0660/tasks/a49b5720d669ce129.output</output-file>
+<status>completed</status>
+<summary>Agent "Deep-read special taps" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have everything needed. Here is the report.
+
+---
+
+## tap-netsuite
+
+**Transport: REST (SuiteQL), NOT SOAP.** There is no `zeep`/`netsuitesdk` anywhere — the base class is `singer_sdk.streams.RESTStream` and the base URL is the SuiteTalk **REST** host:
+```python
+account = self.config["account"].replace("_", "-").replace("SB", "sb")
+return f"https://{account}.suitetalk.api.netsuite.com/services/rest"
+```
+All data is pulled by POSTing SuiteQL to `/query/v1/suiteql` with `{"q": "SELECT * FROM &lt;object&gt; ..."}` (offset/limit pagination, `hasMore`/`rel=last` links, `MAX_OFFSET_LIMIT` ceiling handling). Schema is discovered dynamically via the REST metadata-catalog (`/record/v1/metadata-catalog/?select=&lt;obj&gt;`) or a SuiteQL probe query.
+
+**Auth: NetSuite Token-Based Auth = OAuth1 with HMAC-SHA256.** It does *not* hand-roll the signature — it delegates to `requests_oauthlib.OAuth1Session` with `oauthlib`'s `SIGNATURE_HMAC_SHA256`, feeding all four TBA secrets plus the NetSuite `realm` (the account, uppercased, `-`→`_`). oauthlib internally builds the signature base string over consumer_key/secret + token_key/secret + auto-generated nonce/timestamp:
+```python
+from oauthlib.oauth1 import SIGNATURE_HMAC_SHA256
+from requests_oauthlib import OAuth1Session
+...
+client = OAuth1Session(
+    client_key=self.config["consumer_key"],
+    client_secret=self.config["consumer_secret"],
+    resource_owner_key=self.config["token_key"],
+    resource_owner_secret=self.config["token_secret"],
+    realm=self.config["account"].upper().replace("-", "_"),
+    REDACTED,
+)
+response = client.request(method=..., url=..., headers=..., data=prepared_request.body, timeout=self.timeout)
+```
+Each request is built as a plain `requests.Request(...).prepare()` and then re-signed/sent through the `OAuth1Session` in `_request()`. So the realm case-sensitivity and HMAC-SHA256 (NetSuite rejects the oauthlib default HMAC-SHA1) are the load-bearing details.
+
+**Yes — it writes/reads BigQuery directly inside the tap.** `tap_netsuite/utils.py` imports `from google.cloud import bigquery` and, driven by config keys `bigquery_project` / `bigquery_dataset` / `bigquery_location` / `bigquery_credentials_path`, opens a client and runs queries against the *already-loaded* NetSuite tables:
+- `get_matching_transaction_ids_from_bq()` — `bigquery.Client.from_service_account_json(...)`, `client.query(SELECT ... , ArrayQueryParameter(...))` to find which deleted transaction IDs actually exist in BQ.
+- `cleanup_transactions_in_bq()` — issues a parameterized **DELETE** against `{project}.{dataset}.{table}` for changed/deleted transaction IDs.
+These are invoked from the `transaction_ids` / `transaction_line` / `transaction_accounting_line` streams to reconcile CDC deletes. So it is genuinely not a plain source→target Singer tap: it self-connects to the destination warehouse to run its own delete-reconciliation side-channel.
+
+**Verdict:** faucet `source-rest` + `faucet-auth` can reproduce the SuiteQL REST transport and pagination, **but CANNOT reproduce (a) NetSuite OAuth1/TBA per-request HMAC-SHA256 signing with realm** — `faucet-auth`'s providers are `static`/`oauth2`/`oauth2_refresh`/`token_endpoint` (OAuth2 bearer only; no OAuth1 request signer) — **nor (b) the in-tap BigQuery delete-reconciliation**, which is destination-side logic with no equivalent in a source connector.
+
+---
+
+## tap-adp
+
+**Mutual TLS: client cert + key attached at the `requests` layer via `cert=(...)`.** The cert material arrives base64-encoded in config (`cert_public`, `cert_private`), and `TapADP.__init__` materializes them to disk on startup:
+```python
+CERT_DIR = Path("/var/tmp/adp_certs")
+PUBLIC_CERT_FILE_PATH  = CERT_DIR / "client_cert.crt"
+PRIVATE_CERT_FILE_PATH = CERT_DIR / "client_key.pem"
+...
+Path.mkdir(CERT_DIR, parents=True, exist_ok=True)
+with PRIVATE_CERT_FILE_PATH.open("wb+") as f:
+    f.write(base64.b64decode(cert_private_content))
+with PUBLIC_CERT_FILE_PATH.open("wb+") as f:
+    f.write(base64.b64decode(cert_public_content))
+```
+mTLS is then applied in two places:
+- **Token endpoint** (`authenticator.py`): `requests.post(self.auth_endpoint, data=..., cert=(PUBLIC_CERT_FILE_PATH, PRIVATE_CERT_FILE_PATH))`.
+- **Every data request** (`client.py`): the stream's `requests_session` sets `session.cert = (str(PUBLIC_CERT_FILE_PATH), str(PRIVATE_CERT_FILE_PATH)); session.verify = True`.
+
+**OAuth2:** `client_credentials` grant (`grant_type=client_credentials`, `client_id`+`client_secret`, scope `read`) at token endpoint `https://api.eu.adp.com/auth/oauth/v2/token`; token TTL is `expires_in - 600s`.
+
+**Base URL / endpoints:** `url_base = "https://api.eu.adp.com"`. Key streams: `workers` → `/hr/v2/workers` (`records_jsonpath=$.workers[*]`, pk `associate_oid`); `pay_statement` → `/payroll/v1/workers/{_sdc_worker_aoid}/pay-statements` (`$.payStatements[*]`, child of workers); `payroll_output` → `/payroll/v2/payroll-output` (`$.payrollOutputs[*]`); plus benefit-coverages, benefit-offerings, pay-distributions, us-tax-profiles, staffing job-requisitions/applications, etc. Many are parent-child (`parent_stream_type = WorkersStream`, substituting the worker AOID into the path).
+
+**Pagination:** OData `$top`/`$skip` (`ADPPaginator`, page size 100), continues until a **`204 No Content`** stops it. Records extracted via per-stream jsonpath.
+
+**Verdict:** faucet `source-rest` + `faucet-auth` `oauth2` (client-credentials) can reproduce the OAuth2 token flow, OData top/skip pagination, and jsonpath record extraction — **but CANNOT reproduce the mutual-TLS client certificate** (attaching a client cert/key to both the token request and every data request). `faucet-auth` has no client-certificate/mTLS mechanism, and `source-rest`'s reqwest client has no `cert=(...)`/identity config, so ADP's mTLS is the blocker.
+
+---
+
+## tap-redshift
+
+**Straight SQL tap over the Postgres wire protocol (`psycopg2`).** Redshift speaks Postgres, so it connects with `psycopg2.connect(host, port, dbname, user, password, connect_timeout=30, keepalives..., options='-c statement_timeout=600000')`, `READ COMMITTED`. Required config: `["host", "port", "user", "password", "start_date", "database", "tables"]`.
+
+- **`tables` selection:** a comma-separated string of `schema.table_name` specs (`parse_tables_config`), keyed by full `(schema, table)` identity. Columns/types are discovered by running `SELECT * FROM "db"."schema"."table" LIMIT 0` and reading the cursor description; catalog entries get a default `replication-method: FULL_TABLE`.
+- **Replication:** per-stream metadata `replication-method` of `FULL_TABLE` or `INCREMENTAL` (with a `replication_key`); incremental filters/orders by the replication key.
+- **Beyond bare `SELECT *`:** it is still `SELECT &lt;cols&gt; FROM &lt;qualified_table&gt; [WHERE key &gt; :last] ORDER BY ... LIMIT n`, but with real engineering around Redshift's lack of indexes/cursors: **keyset pagination** on a unique key when one exists, else **LIMIT/OFFSET** ordered by all columns, plus an optional **CTAS staging table** with a `ROW_NUMBER()` window (`_dt_rn`) for stable paging, and page-level reconnect/retry. This is pagination/reliability plumbing, not exotic protocol — semantically it's `SELECT ... FROM table` with a replication key.
+
+**Verdict:** faucet `source-redshift` reproduces this cleanly — it is standard SQL-over-Postgres-wire with table selection and incremental replication keys. The only thing not 1:1 is the tap's bespoke ROW_NUMBER/CTAS-staging keyset pagination strategy, but that is an internal performance detail, not a capability a source connector needs to expose.
+
+---
+
+## tap-sharepointsites (onedrive mode)
+
+**Token refresh — exactly as described.** In `client.py`'s `authenticator`, the `mode == "onedrive"` branch does an OAuth2 **refresh_token** grant against the common Azure AD endpoint:
+```python
+elif mode == "onedrive":
+    refresh_token = self.config.get("refresh_token")
+    client_id = self.config.get("client_id")
+    client_secret = self.config.get("client_secret")
+    ...
+    token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+    response = requests.post(token_url, data={
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token",
+        "scope": "https://graph.microsoft.com/.default offline_access",
+    })
+    ...
+    access_token = token_data["access_token"]
+    # Microsoft rotates the refresh token on each use (logs redact the new value)
+return BearerTokenAuthenticator.create_for_stream(self, token=access_token)
+```
+(The `sharepoint` mode instead uses `azure.identity.ClientSecretCredential`.) Note Microsoft **rotates the refresh token on every use** — the tap logs that a new one was issued but relies on the caller to persist it.
+
+**File reads via Microsoft Graph, then blob parsing.** `file_stream.py` uses Graph base `https://graph.microsoft.com/v1.0` and resolves items via `/me/drive/items/{file_id}` (personal OneDrive: hostnames `onedrive.live.com` / `-my.sharepoint.com`) or `/drives/{drive_id}/items/{file_id}` (SharePoint), with a name-search fallback (`/me/drive/root/search(q=...)`). Content is downloaded from `/me/drive/items/{id}/content` (or the SharePoint `@microsoft.graph.downloadUrl`), streamed with `Range`/prefix support for big files. The downloaded **blob** is then parsed by a format handler:
+- `CSVHandler` → `csv.DictReader` over the text content.
+- `ExcelHandler` → `openpyxl.load_workbook` over the bytes (with header detection, timeseries unpivot, date coercion).
+
+So it is unambiguously a **file-download-and-parse** tap (CSV/Excel blobs), not a JSON record API.
+
+**Verdict:** faucet `source-rest` + `faucet-auth` `oauth2_refresh` can reproduce the Azure AD refresh_token grant (including refresh-token rotation) and the Graph metadata calls, **but CANNOT reproduce the file-blob download + CSV/Excel parsing** (`csv.DictReader` / `openpyxl` workbook parsing, header/timeseries handling). That belongs to faucet's file/format sources (e.g. `source-csv`/`source-parquet` family), not `source-rest`; there is no Graph-driven "download an .xlsx from OneDrive and unpivot it" path in the REST/auth stack.</result>
+<usage><subagent_tokens>169962</subagent_tokens><tool_uses>17</tool_uses><duration_ms>237998</duration_ms></usage>
+</task-notification>
+
+---
+
+Can some of this be fixed by transforms and built transforms? Secondly, for the SAP auth flow, there was an auth flow which used to give us the token, right? In the auth flow, we could define an external endpoint which will give us the token. Can't we use that?
+
+---
+
+I don't want to use wasm, and I also want to avoid SQL for now. Tell me: is there another way from the inbuilt transforms itself which I can use? In case there is no inbuilt way but SQL will be able to solve, you let me know, but don't wash up. I don't want wasm
+
+---
+
+Update the artefact for now. First, let me understand it, then I let you know.
+
+---
+
+For whatever is missing, create a GitHub issue for them.

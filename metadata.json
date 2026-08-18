@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0A9J38098GYVX4386J4FXDG",
+  "strategy": "manual-commit",
+  "branch": "feat/overwrite-write-mode",
+  "checkpoints_count": 11,
+  "files_touched": [
+    "crates/sink/iceberg/src/config.rs",
+    "crates/sink/iceberg/src/sink.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 110,
+    "cache_creation_tokens": 185121,
+    "cache_read_tokens": 39313942,
+    "output_tokens": 123784,
+    "api_call_count": 55
+  }
+}
