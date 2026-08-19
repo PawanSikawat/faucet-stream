@@ -966,7 +966,7 @@ impl faucet_core::Sink for ElasticsearchSink {
     /// Prepare an alias-backed overwrite (#494). The configured `index` **must be
     /// an alias** (or not yet exist): a fresh physical index `<index>-faucet-ovw-…`
     /// is created (copying the current target's mappings when there is one), this
-    /// run's writes are indexed into it, and [`commit_overwrite`] atomically moves
+    /// run's writes are indexed into it, and `commit_overwrite` atomically moves
     /// the alias. Refusing a *concrete* index named `index` is what keeps the swap
     /// safe — there is no atomic replace of a concrete index in Elasticsearch.
     async fn begin_overwrite(&self) -> Result<(), FaucetError> {
