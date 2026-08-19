@@ -2343,6 +2343,43 @@ mod tests {
         assert!(log.contains(&"write:1".to_string()));
     }
 
+    #[tokio::test]
+    async fn overwrite_abort_failure_is_logged_not_propagated() {
+        // When a run fails and `abort_overwrite` itself then fails, the pipeline
+        // logs a warning and still surfaces the *original* run error — the abort
+        // failure must not mask it (and never panics). Covers the abort-failure
+        // warn branch in `Pipeline::run`.
+        struct AbortFailSink;
+        #[async_trait]
+        impl Sink for AbortFailSink {
+            async fn write_batch(&self, _records: &[Value]) -> Result<usize, FaucetError> {
+                Err(FaucetError::Sink("write failed".into()))
+            }
+            fn is_overwrite(&self) -> bool {
+                true
+            }
+            async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+            async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+            async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+                Err(FaucetError::Sink("abort failed".into()))
+            }
+        }
+        let source = MockSource(vec![json!({"id": 1})]);
+        let sink = AbortFailSink;
+        let err = Pipeline::new(&source, &sink)
+            .run()
+            .await
+            .expect_err("a failed write must fail the run");
+        assert!(
+            err.to_string().contains("write failed"),
+            "the run error must be the write failure, not the abort failure: {err}"
+        );
+    }
+
     /// Records writes and how many times `flush` was called. Used to assert the
     /// pipeline flushes the sink on the error/early-return path so partial
     /// output (e.g. a Parquet footer) is made durable before the error

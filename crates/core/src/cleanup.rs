@@ -454,6 +454,8 @@ mod tests {
         let policy = CleanupPolicy::new(scope(), vec!["id".into()], 10).unwrap();
         let tracker = CleanupTracker::new(&inner, &policy);
         assert!(tracker.is_overwrite());
+        // A write through the tracker must forward to the inner sink too.
+        assert_eq!(tracker.write_batch(&[json!({"id": 1})]).await.unwrap(), 1);
         tracker.begin_overwrite().await.unwrap();
         tracker.commit_overwrite().await.unwrap();
         tracker.abort_overwrite().await.unwrap();

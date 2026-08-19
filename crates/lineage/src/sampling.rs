@@ -331,6 +331,8 @@ mod tests {
         let inner: Box<dyn Sink> = Box::new(OvwSink(Arc::clone(&log)));
         let s = SamplingSink::new(inner, Arc::new(SampleState::new(2)));
         assert!(s.is_overwrite());
+        // A write through the wrapper must forward to the inner sink too.
+        assert_eq!(s.write_batch(&[json!({"id": 1})]).await.unwrap(), 1);
         s.begin_overwrite().await.unwrap();
         s.commit_overwrite().await.unwrap();
         s.abort_overwrite().await.unwrap();

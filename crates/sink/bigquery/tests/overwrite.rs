@@ -176,8 +176,8 @@ async fn overwrite_lifecycle_posts_bucket_free_swap() {
 
     let qs = queries(&server).await;
     assert!(
-        qs.iter().any(|q| q
-            .contains("CREATE OR REPLACE TABLE `p.d.t__faucet_ovw` LIKE `p.d.t`")),
+        qs.iter()
+            .any(|q| q.contains("CREATE OR REPLACE TABLE `p.d.t__faucet_ovw` LIKE `p.d.t`")),
         "begin DDL missing: {qs:?}"
     );
     assert!(
@@ -217,5 +217,32 @@ async fn overwrite_abort_drops_staging_without_swap() {
     assert!(
         !qs.iter().any(|q| q.contains("TRUNCATE TABLE")),
         "abort must not swap into the target: {qs:?}"
+    );
+}
+
+#[tokio::test]
+async fn overwrite_staging_insert_failure_surfaces_error() {
+    // A rejected staging-page load must surface as an error, not silently drop
+    // the page — otherwise the commit swap would replace the destination with an
+    // incomplete dataset. Covers the `insert_overwrite_page` query-failure path.
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    mount_table_schema(&server).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/projects/{PROJECT_ID}/queries")))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+            "error": {"code": 500, "message": "backend error"}
+        })))
+        .mount(&server)
+        .await;
+
+    let (sink, _sa) = build_sink(&server, config_overwrite()).await;
+    let err = sink
+        .write_batch(&[json!({"id": 1, "name": "a"})])
+        .await
+        .expect_err("a failed staging load must surface as an error");
+    assert!(
+        err.to_string().contains("overwrite page insert"),
+        "error should name the overwrite page insert: {err}"
     );
 }
