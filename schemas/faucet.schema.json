@@ -3851,6 +3851,22 @@
           }
         },
         {
+          "description": "POST-search pagination: the next-page cursor is read from the response\nbody via `next_token_path` and written **into the request JSON body** at\n`body_cursor_field` for the next request (rather than a query param).\n\nThe first request uses `config.body` unchanged; each subsequent request\nsets `body[body_cursor_field] = <extracted cursor>`. Pagination stops when\n`next_token_path` is null/absent, and a repeated cursor trips the same\nloop guard as [`PaginationStyle::Cursor`]. Used by e.g. HubSpot CRM\n`POST /crm/v3/objects/{obj}/search` (`$.paging.next.after` → `after`).",
+          "type": "object",
+          "properties": {
+            "next_token_path": {
+              "type": "string"
+            },
+            "body_cursor_field": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "CursorInBody"
+            }
+          }
+        },
+        {
           "type": "object",
           "properties": {
             "type": {
