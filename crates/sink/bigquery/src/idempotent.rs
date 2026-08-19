@@ -261,8 +261,27 @@ WHEN NOT MATCHED THEN INSERT ({scope}, {token}, updated_at) VALUES (S.{scope}, S
     )
 }
 
+/// The atomic overwrite swap (#492): replace `target_ref`'s contents with
+/// `temp_ref`'s in one multi-statement transaction. `TRUNCATE`+`INSERT … SELECT`
+/// (rather than `CREATE OR REPLACE … AS SELECT`) preserves the target table's
+/// own partitioning, clustering, and description. Both refs must be
+/// backtick-quoted `` `p.d.t` `` already.
+pub fn build_overwrite_commit_sql(target_ref: &str, temp_ref: &str) -> String {
+    format!(
+        "BEGIN TRANSACTION;\n\
+         TRUNCATE TABLE {target_ref};\n\
+         INSERT INTO {target_ref} SELECT * FROM {temp_ref};\n\
+         COMMIT TRANSACTION;"
+    )
+}
+
 /// The typed `INSERT … SELECT FROM UNNEST(JSON_QUERY_ARRAY(@payload))` statement.
-fn build_insert_select(columns: &[FieldSpec], project: &str, dataset: &str, table: &str) -> String {
+pub(crate) fn build_insert_select(
+    columns: &[FieldSpec],
+    project: &str,
+    dataset: &str,
+    table: &str,
+) -> String {
     let col_list = columns
         .iter()
         .map(|f| quote_ident(&f.name))
@@ -583,6 +602,17 @@ mod tests {
             build_create_commit_table("p", "d"),
             "CREATE TABLE IF NOT EXISTS `p.d._faucet_commit_token` (scope STRING NOT NULL, token STRING NOT NULL, updated_at TIMESTAMP)"
         );
+    }
+
+    #[test]
+    fn overwrite_commit_sql_swaps_in_a_transaction() {
+        let target = table_ref("p", "d", "t");
+        let temp = table_ref("p", "d", "t__faucet_ovw");
+        let sql = build_overwrite_commit_sql(&target, &temp);
+        assert!(sql.starts_with("BEGIN TRANSACTION;"));
+        assert!(sql.contains("TRUNCATE TABLE `p.d.t`;"));
+        assert!(sql.contains("INSERT INTO `p.d.t` SELECT * FROM `p.d.t__faucet_ovw`;"));
+        assert!(sql.trim_end().ends_with("COMMIT TRANSACTION;"));
     }
 
     #[test]

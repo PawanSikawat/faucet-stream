@@ -541,6 +541,22 @@ impl<'a, S: Sink + ?Sized> Sink for InstrumentedSink<'a, S> {
     async fn last_committed_token(&self, scope: &str) -> Result<Option<String>, FaucetError> {
         self.inner.last_committed_token(scope).await
     }
+
+    fn is_overwrite(&self) -> bool {
+        self.inner.is_overwrite()
+    }
+
+    async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+        self.inner.begin_overwrite().await
+    }
+
+    async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+        self.inner.commit_overwrite().await
+    }
+
+    async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+        self.inner.abort_overwrite().await
+    }
 }
 
 #[cfg(test)]

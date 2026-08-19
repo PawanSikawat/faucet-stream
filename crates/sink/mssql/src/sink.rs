@@ -36,6 +36,9 @@ pub struct MssqlSink {
     config: MssqlSinkConfig,
     pool: MssqlPool,
     table_quoted: String,
+    /// Pre-quoted staging table (`[schema].[table__faucet_ovw]`) used while a
+    /// `write_mode: overwrite` run is in flight (#492).
+    staging_table_quoted: String,
     /// Cached writable (non-IDENTITY) columns for `auto_columns` mode.
     columns_cache: Mutex<Option<Vec<String>>>,
 }
@@ -46,12 +49,13 @@ impl MssqlSink {
     pub async fn new(config: MssqlSinkConfig) -> Result<Self, FaucetError> {
         config.validate()?;
         config.write.validate()?;
-        if !matches!(config.write.write_mode, faucet_core::WriteMode::Append)
-            && !matches!(
-                config.column_mapping,
-                MssqlColumnMapping::AutoColumns { .. }
-            )
-        {
+        if matches!(
+            config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) && !matches!(
+            config.column_mapping,
+            MssqlColumnMapping::AutoColumns { .. }
+        ) {
             return Err(FaucetError::Config(
                 "mssql sink: write_mode upsert/delete requires column_mapping: auto_columns \
                  (key columns must be real columns, not inside a JSON column)"
@@ -59,12 +63,14 @@ impl MssqlSink {
             ));
         }
         let table_quoted = quote_table(&config.table)?;
+        let staging_table_quoted = quote_table(&format!("{}__faucet_ovw", config.table))?;
         let pool = build_pool(&config.connection, config.max_connections).await?;
 
         let sink = Self {
             config,
             pool,
             table_quoted,
+            staging_table_quoted,
             columns_cache: Mutex::new(None),
         };
         sink.maybe_create_table().await?;
@@ -108,6 +114,23 @@ impl MssqlSink {
             .get()
             .await
             .map_err(|e| FaucetError::Sink(format!("MSSQL pool checkout failed: {e}")))
+    }
+
+    /// Bare (un-quoted) staging table literal, for `OBJECT_ID(N'…')` lookups.
+    fn staging_literal(&self) -> String {
+        format!("{}__faucet_ovw", self.config.table)
+    }
+
+    /// The bracket-quoted relation the append/insert path targets. For
+    /// `write_mode: overwrite` every write in this sink's lifetime lands in the
+    /// staging table (created by [`begin_overwrite`], swapped by
+    /// [`commit_overwrite`]); otherwise the configured table.
+    fn effective_table_quoted(&self) -> &str {
+        if self.config.write.is_overwrite() {
+            &self.staging_table_quoted
+        } else {
+            &self.table_quoted
+        }
     }
 
     /// Writable (non-IDENTITY) table columns, discovered once and cached.
@@ -248,7 +271,7 @@ impl MssqlSink {
             .map_err(|e| (e, false))?;
         let per_insert = max_rows_per_insert(cols_quoted.len());
         for sub in rows.chunks(per_insert) {
-            let sql = build_insert_sql(&self.table_quoted, &cols_quoted, sub.len());
+            let sql = build_insert_sql(self.effective_table_quoted(), &cols_quoted, sub.len());
             let owned: Vec<&BoundParam> = sub.iter().flatten().collect();
             let refs: Vec<&dyn ToSql> = owned.iter().map(|p| p.as_tosql()).collect();
             let exec = async {
@@ -332,7 +355,7 @@ impl MssqlSink {
         }
 
         for sub in rows.chunks(per_insert) {
-            let sql = build_insert_sql(&self.table_quoted, &cols_quoted, sub.len());
+            let sql = build_insert_sql(self.effective_table_quoted(), &cols_quoted, sub.len());
             let owned: Vec<&BoundParam> = sub.iter().flatten().collect();
             let refs: Vec<&dyn ToSql> = owned.iter().map(|p| p.as_tosql()).collect();
 
@@ -779,10 +802,15 @@ impl Sink for MssqlSink {
             return Ok(0);
         }
 
-        // Non-append modes: plan the writes and apply upserts + deletes
-        // atomically. (NOTE: write_batch_partial upsert routing is handled in
-        // the DLQ task; write_batch_idempotent in the exactly-once task.)
-        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+        // Upsert/delete modes: plan the writes and apply upserts + deletes
+        // atomically. Append and overwrite are insert-shaped (overwrite lands in
+        // the staging table via `effective_table_quoted`). (NOTE:
+        // write_batch_partial upsert routing is handled in the DLQ task;
+        // write_batch_idempotent in the exactly-once task.)
+        if matches!(
+            self.config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) {
             let plan = faucet_core::plan_writes(records, &self.config.write);
             if let Some((idx, msg)) = plan.failed.first() {
                 return Err(FaucetError::Sink(format!(
@@ -841,8 +869,12 @@ impl Sink for MssqlSink {
 
         // Upsert/delete: apply the good rows (upserts + deletes) and route only
         // the rows whose key could not be extracted (missing / null key) to the
-        // DLQ per-row. The append path below keeps its row-isolation behaviour.
-        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+        // DLQ per-row. The append/overwrite path below keeps its row-isolation
+        // behaviour.
+        if matches!(
+            self.config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) {
             let plan = faucet_core::plan_writes(records, &self.config.write);
             self.apply_plan(&plan).await?;
 
@@ -935,7 +967,89 @@ impl Sink for MssqlSink {
             faucet_core::WriteMode::Append,
             faucet_core::WriteMode::Upsert,
             faucet_core::WriteMode::Delete,
+            faucet_core::WriteMode::Overwrite,
         ]
+    }
+
+    fn is_overwrite(&self) -> bool {
+        self.config.write.is_overwrite()
+    }
+
+    /// Create the staging table as an empty structural clone of the target
+    /// (`SELECT * INTO staging FROM target WHERE 1=0`), dropping any leftover
+    /// staging from a crashed run first. The target must already exist — the
+    /// `SELECT INTO` errors clearly if it does not.
+    async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+        let staging = &self.staging_table_quoted;
+        let target = &self.table_quoted;
+        let staging_lit = self.staging_literal().replace('\'', "''");
+        let mut conn = self.checkout().await?;
+        control(
+            &mut conn,
+            &format!("IF OBJECT_ID(N'{staging_lit}', N'U') IS NOT NULL DROP TABLE {staging}"),
+        )
+        .await?;
+        control(
+            &mut conn,
+            &format!("SELECT * INTO {staging} FROM {target} WHERE 1 = 0"),
+        )
+        .await
+        .map_err(|e| {
+            FaucetError::Sink(format!(
+                "mssql overwrite: create staging from '{}' (does the table exist?): {e}",
+                self.config.table
+            ))
+        })?;
+        Ok(())
+    }
+
+    /// Atomically replace the destination in one transaction: `DELETE FROM
+    /// target`, then `INSERT INTO target (<cols>) SELECT <cols> FROM staging`
+    /// over the explicit non-IDENTITY column list (so an IDENTITY column does
+    /// not break the copy), then `DROP TABLE staging`. T-SQL DDL/DML is
+    /// transactional, so a failure rolls the whole swap back and the prior rows
+    /// survive.
+    async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+        // Explicit non-IDENTITY column list, discovered from the real target.
+        let cols = self.insertable_columns().await?;
+        let col_list = cols
+            .iter()
+            .map(|c| quote_ident_mssql(c))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(", ");
+        let staging = &self.staging_table_quoted;
+        let target = &self.table_quoted;
+
+        let mut conn = self.checkout().await?;
+        control(&mut conn, "BEGIN TRAN").await?;
+        for stmt in [
+            format!("DELETE FROM {target}"),
+            format!("INSERT INTO {target} ({col_list}) SELECT {col_list} FROM {staging}"),
+            format!("DROP TABLE {staging}"),
+        ] {
+            if let Err(e) = control(&mut conn, &stmt).await {
+                let _ = control(&mut conn, "ROLLBACK TRAN").await;
+                return Err(FaucetError::Sink(format!(
+                    "mssql overwrite swap failed: {e}"
+                )));
+            }
+        }
+        control(&mut conn, "COMMIT TRAN").await?;
+        Ok(())
+    }
+
+    /// Drop the staging table so a failed/cancelled overwrite leaves nothing
+    /// behind. Best-effort — the destination was never touched.
+    async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+        let staging = &self.staging_table_quoted;
+        let staging_lit = self.staging_literal().replace('\'', "''");
+        let mut conn = self.checkout().await?;
+        control(
+            &mut conn,
+            &format!("IF OBJECT_ID(N'{staging_lit}', N'U') IS NOT NULL DROP TABLE {staging}"),
+        )
+        .await?;
+        Ok(())
     }
 
     fn dedups_by_key(&self) -> bool {
@@ -1053,9 +1167,10 @@ impl Sink for MssqlSink {
     ) -> Result<usize, FaucetError> {
         // For upsert/delete modes, plan the page before opening the transaction
         // so a key-extraction failure aborts without leaving an open tx.
-        let plan = if matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
-            None
-        } else {
+        let plan = if matches!(
+            self.config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) {
             let plan = faucet_core::plan_writes(records, &self.config.write);
             if let Some((idx, msg)) = plan.failed.first() {
                 return Err(FaucetError::Sink(format!(
@@ -1064,6 +1179,8 @@ impl Sink for MssqlSink {
                 )));
             }
             Some(plan)
+        } else {
+            None
         };
 
         let mut conn = self.checkout().await?;

@@ -175,6 +175,18 @@ impl Sink for SamplingSink {
     ) -> Result<(), FaucetError> {
         self.inner.evolve_schema(evolution).await
     }
+    fn is_overwrite(&self) -> bool {
+        self.inner.is_overwrite()
+    }
+    async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+        self.inner.begin_overwrite().await
+    }
+    async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+        self.inner.commit_overwrite().await
+    }
+    async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+        self.inner.abort_overwrite().await
+    }
 }
 
 /// Wraps a source, sampling the records it yields (pre-transform input schema).
@@ -287,6 +299,44 @@ mod tests {
         let names: Vec<&str> = schema.fields.iter().map(|(n, _)| n.as_str()).collect();
         assert!(names.contains(&"id"));
         assert!(names.contains(&"name"));
+    }
+
+    #[tokio::test]
+    async fn sampling_sink_forwards_overwrite_lifecycle() {
+        // The sampling wrapper must forward the overwrite lifecycle so an
+        // overwrite run still stages/swaps when lineage/catalog sampling is on.
+        struct OvwSink(Arc<std::sync::Mutex<Vec<&'static str>>>);
+        #[async_trait]
+        impl Sink for OvwSink {
+            async fn write_batch(&self, r: &[Value]) -> Result<usize, FaucetError> {
+                Ok(r.len())
+            }
+            fn is_overwrite(&self) -> bool {
+                true
+            }
+            async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+                self.0.lock().unwrap().push("begin");
+                Ok(())
+            }
+            async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+                self.0.lock().unwrap().push("commit");
+                Ok(())
+            }
+            async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+                self.0.lock().unwrap().push("abort");
+                Ok(())
+            }
+        }
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let inner: Box<dyn Sink> = Box::new(OvwSink(Arc::clone(&log)));
+        let s = SamplingSink::new(inner, Arc::new(SampleState::new(2)));
+        assert!(s.is_overwrite());
+        // A write through the wrapper must forward to the inner sink too.
+        assert_eq!(s.write_batch(&[json!({"id": 1})]).await.unwrap(), 1);
+        s.begin_overwrite().await.unwrap();
+        s.commit_overwrite().await.unwrap();
+        s.abort_overwrite().await.unwrap();
+        assert_eq!(*log.lock().unwrap(), vec!["begin", "commit", "abort"]);
     }
 
     struct TwoRowSource;

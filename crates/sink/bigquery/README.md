@@ -437,3 +437,14 @@ sink:
 
 `bulk_load` is only present in `arrow` builds. The Storage **Write** API
 (gRPC `AppendRows`) is a separate future enhancement.
+
+## Overwrite (`write_mode: overwrite`)
+
+Full-refresh: each run atomically **replaces** the whole table — and it is
+**bucket-free** (no GCS staging bucket required, unlike the `bulk_load`
+`WRITE_TRUNCATE` path). The page is loaded into a `LIKE` temp table via the
+query API (not streaming `insertAll`), then swapped with a
+`BEGIN TRANSACTION; TRUNCATE; INSERT … SELECT; COMMIT` that preserves the
+target's partitioning and clustering — only after the run succeeds, so a mid-run
+failure leaves the previous rows intact. No `key` is needed; the target table
+must already exist.

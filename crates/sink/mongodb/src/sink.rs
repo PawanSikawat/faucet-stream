@@ -316,6 +316,23 @@ impl MongoSink {
         })
     }
 
+    /// Staging collection used while an overwrite run is in flight.
+    fn staging_collection(&self) -> String {
+        format!("{}__faucet_ovw", self.config.collection)
+    }
+
+    /// The collection the append/insert path targets. For `write_mode:
+    /// overwrite` every insert in this sink's lifetime lands in the staging
+    /// collection (cleared by [`begin_overwrite`], atomically swapped over the
+    /// real collection by [`commit_overwrite`]); otherwise the configured one.
+    fn effective_collection(&self) -> String {
+        if self.config.write.is_overwrite() {
+            self.staging_collection()
+        } else {
+            self.config.collection.clone()
+        }
+    }
+
     /// Build the match-filter [`Document`] for an upsert row by pulling the
     /// configured `key` columns out of the row. The planner
     /// ([`faucet_core::plan_writes`]) has already validated that every key
@@ -670,7 +687,70 @@ impl faucet_core::Sink for MongoSink {
             faucet_core::WriteMode::Append,
             faucet_core::WriteMode::Upsert,
             faucet_core::WriteMode::Delete,
+            faucet_core::WriteMode::Overwrite,
         ]
+    }
+
+    fn is_overwrite(&self) -> bool {
+        self.config.write.is_overwrite()
+    }
+
+    /// Drop any leftover staging collection so the overwrite run starts with an
+    /// empty one (a plain `insert_many` auto-creates it on first write).
+    async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+        let db = self.client.database(&self.config.database);
+        // Best-effort drop; a missing namespace is not an error for our purpose.
+        if let Err(e) = db
+            .collection::<Document>(&self.staging_collection())
+            .drop()
+            .await
+        {
+            tracing::debug!(error = %e, "mongodb overwrite: staging drop before begin (ignored)");
+        }
+        Ok(())
+    }
+
+    /// Atomically replace the destination via MongoDB's `renameCollection` with
+    /// `dropTarget: true`: the freshly-loaded staging collection is renamed over
+    /// the real one in a single server-side operation, so a reader never sees a
+    /// half-replaced collection and a mid-run failure (before this point) leaves
+    /// the old collection untouched.
+    ///
+    /// Requires the `renameCollection` privilege and that both collections live
+    /// in the same database. `renameCollection` is not supported on sharded
+    /// collections — a documented limitation of overwrite on MongoDB.
+    async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+        let from = format!("{}.{}", self.config.database, self.staging_collection());
+        let to = format!("{}.{}", self.config.database, self.config.collection);
+        self.client
+            .database("admin")
+            .run_command(bson::doc! {
+                "renameCollection": from,
+                "to": to,
+                "dropTarget": true,
+            })
+            .await
+            .map_err(|e| {
+                FaucetError::Sink(format!(
+                    "mongodb overwrite swap (renameCollection) failed: {e}"
+                ))
+            })?;
+        Ok(())
+    }
+
+    /// Drop the staging collection so a failed/cancelled overwrite leaves
+    /// nothing behind. Best-effort — the destination was never touched.
+    async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+        if let Err(e) = self
+            .client
+            .database(&self.config.database)
+            .collection::<Document>(&self.staging_collection())
+            .drop()
+            .await
+        {
+            tracing::debug!(error = %e, "mongodb overwrite: staging drop on abort (ignored)");
+        }
+        Ok(())
     }
 
     fn dedups_by_key(&self) -> bool {
@@ -723,7 +803,10 @@ impl faucet_core::Sink for MongoSink {
         // Upsert / delete routing: plan the page (dedup last-write-wins, strip
         // the delete marker) and apply per-document `replace_one(upsert)` /
         // `delete_one` ops. Append falls through to the `insert_many` fast path.
-        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+        if matches!(
+            self.config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) {
             let plan = faucet_core::plan_writes(records, &self.config.write);
             if let Some((idx, msg)) = plan.failed.first() {
                 return Err(FaucetError::Sink(format!(
@@ -734,10 +817,12 @@ impl faucet_core::Sink for MongoSink {
             return self.apply_plan(&plan).await;
         }
 
+        // Append and overwrite are insert-shaped; overwrite inserts land in the
+        // staging collection via `effective_collection`.
         let collection = self
             .client
             .database(&self.config.database)
-            .collection::<Document>(&self.config.collection);
+            .collection::<Document>(&self.effective_collection());
 
         // `batch_size = 0` is the "no batching" sentinel: forward whatever
         // upstream handed us as a single `insert_many`, preserving
@@ -791,7 +876,11 @@ impl faucet_core::Sink for MongoSink {
         &self,
         records: &[Value],
     ) -> Result<Vec<faucet_core::RowOutcome>, FaucetError> {
-        if matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+        if !matches!(
+            self.config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) {
+            // Append and overwrite: insert-shaped, no per-row key failures.
             self.write_batch(records).await?;
             return Ok(records.iter().map(|_| Ok(())).collect());
         }

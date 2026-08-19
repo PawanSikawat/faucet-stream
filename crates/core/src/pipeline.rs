@@ -447,7 +447,11 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
                     // delete. Taking it with a policy attached would silently
                     // skip the cleanup and leave the stale rows behind — the
                     // exact failure this feature exists to prevent (#478).
-                    && self.cleanup.is_none();
+                    && self.cleanup.is_none()
+                    // Overwrite (#492) needs the begin/commit staging lifecycle
+                    // wired below; the columnar path would append straight to
+                    // the destination and skip the atomic swap.
+                    && !wrapped_sink.is_overwrite();
                 #[cfg(feature = "quality")]
                 let columnar_ok = columnar_ok && self.quality.is_none();
                 #[cfg(feature = "contract")]
@@ -524,7 +528,16 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             // when the run was not cancelled: a cancelled run read a partial set
             // of the scope, so "delete what I didn't see" would remove rows that
             // simply had not arrived yet.
-            match self.cleanup.clone() {
+            // ── Overwrite lifecycle (#492) ───────────────────────────────
+            // Stage before the first write, swap only after a fully successful
+            // uncancelled run, and abort (best-effort) otherwise — so a mid-run
+            // failure or cancel never destroys the existing destination.
+            let overwriting = wrapped_sink.is_overwrite();
+            if overwriting {
+                wrapped_sink.begin_overwrite().await?;
+            }
+
+            let run_result = match self.cleanup.clone() {
                 None => run_stream(pages, &wrapped_sink, opts).await,
                 Some(policy) => {
                     if !wrapped_sink.supports_cleanup() {
@@ -578,7 +591,27 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
                         Err(e) => Err(e),
                     }
                 }
+            };
+
+            // Finalize the overwrite: swap staging → destination only on a
+            // fully successful uncancelled run; otherwise discard staging and
+            // leave the prior destination exactly as it was.
+            if overwriting {
+                let cancelled = self.cancel.as_ref().is_some_and(|c| c.is_cancelled());
+                match &run_result {
+                    Ok(_) if !cancelled => wrapped_sink.commit_overwrite().await?,
+                    _ => {
+                        if let Err(e) = wrapped_sink.abort_overwrite().await {
+                            tracing::warn!(
+                                error = %e,
+                                "failed to discard overwrite staging after an unsuccessful \
+                                 or cancelled run; the destination is unchanged"
+                            );
+                        }
+                    }
+                }
             }
+            run_result
         }
         .instrument(span)
         .await;
@@ -2193,6 +2226,158 @@ mod tests {
         async fn write_batch(&self, _records: &[Value]) -> Result<usize, FaucetError> {
             Err(FaucetError::Sink("write failed".into()))
         }
+    }
+
+    /// Records the overwrite lifecycle call order (#492) so tests can assert the
+    /// pipeline stages begin → writes → commit on success, and begin → abort on
+    /// failure/cancel (never destroying the destination before commit).
+    struct OverwriteRecordingSink {
+        events: Arc<std::sync::Mutex<Vec<String>>>,
+        is_overwrite: bool,
+        fail_write: bool,
+    }
+
+    impl OverwriteRecordingSink {
+        fn new(is_overwrite: bool, fail_write: bool) -> (Self, Arc<std::sync::Mutex<Vec<String>>>) {
+            let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+            (
+                Self {
+                    events: events.clone(),
+                    is_overwrite,
+                    fail_write,
+                },
+                events,
+            )
+        }
+        fn log(&self, s: &str) {
+            self.events.lock().unwrap().push(s.to_string());
+        }
+    }
+
+    #[async_trait]
+    impl Sink for OverwriteRecordingSink {
+        async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+            self.log(&format!("write:{}", records.len()));
+            if self.fail_write {
+                return Err(FaucetError::Sink("write failed".into()));
+            }
+            Ok(records.len())
+        }
+        fn is_overwrite(&self) -> bool {
+            self.is_overwrite
+        }
+        async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+            self.log("begin");
+            Ok(())
+        }
+        async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+            self.log("commit");
+            Ok(())
+        }
+        async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+            self.log("abort");
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn overwrite_lifecycle_begins_then_commits_on_success() {
+        let source = MockSource(vec![json!({"id": 1}), json!({"id": 2})]);
+        let (sink, events) = OverwriteRecordingSink::new(true, false);
+        let result = Pipeline::new(&source, &sink).run().await;
+        assert!(result.is_ok());
+        let log = events.lock().unwrap().clone();
+        assert_eq!(log.first().map(String::as_str), Some("begin"));
+        assert_eq!(log.last().map(String::as_str), Some("commit"));
+        assert!(log.contains(&"write:2".to_string()));
+        assert!(!log.contains(&"abort".to_string()));
+    }
+
+    #[tokio::test]
+    async fn overwrite_lifecycle_aborts_on_write_failure() {
+        let source = MockSource(vec![json!({"id": 1})]);
+        let (sink, events) = OverwriteRecordingSink::new(true, true);
+        let result = Pipeline::new(&source, &sink).run().await;
+        assert!(result.is_err(), "a failed write must fail the run");
+        let log = events.lock().unwrap().clone();
+        assert_eq!(log.first().map(String::as_str), Some("begin"));
+        assert!(
+            log.contains(&"abort".to_string()),
+            "failure must trigger abort_overwrite: {log:?}"
+        );
+        assert!(
+            !log.contains(&"commit".to_string()),
+            "a failed run must never commit the swap: {log:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn overwrite_lifecycle_aborts_on_cancel() {
+        let source = MockSource(vec![json!({"id": 1})]);
+        let (sink, events) = OverwriteRecordingSink::new(true, false);
+        let token = crate::CancellationToken::new();
+        token.cancel(); // pre-cancelled: the run stops at the first page boundary
+        let result = Pipeline::new(&source, &sink).with_cancel(token).run().await;
+        assert!(result.is_ok(), "a cooperative cancel returns Ok(partial)");
+        let log = events.lock().unwrap().clone();
+        assert_eq!(log.first().map(String::as_str), Some("begin"));
+        assert!(
+            log.contains(&"abort".to_string()),
+            "a cancelled overwrite run must abort, not commit: {log:?}"
+        );
+        assert!(!log.contains(&"commit".to_string()));
+    }
+
+    #[tokio::test]
+    async fn non_overwrite_sink_skips_the_lifecycle() {
+        let source = MockSource(vec![json!({"id": 1})]);
+        let (sink, events) = OverwriteRecordingSink::new(false, false);
+        let result = Pipeline::new(&source, &sink).run().await;
+        assert!(result.is_ok());
+        let log = events.lock().unwrap().clone();
+        assert!(
+            !log.iter()
+                .any(|e| e == "begin" || e == "commit" || e == "abort"),
+            "a non-overwrite sink must never see the overwrite lifecycle: {log:?}"
+        );
+        assert!(log.contains(&"write:1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn overwrite_abort_failure_is_logged_not_propagated() {
+        // When a run fails and `abort_overwrite` itself then fails, the pipeline
+        // logs a warning and still surfaces the *original* run error — the abort
+        // failure must not mask it (and never panics). Covers the abort-failure
+        // warn branch in `Pipeline::run`.
+        struct AbortFailSink;
+        #[async_trait]
+        impl Sink for AbortFailSink {
+            async fn write_batch(&self, _records: &[Value]) -> Result<usize, FaucetError> {
+                Err(FaucetError::Sink("write failed".into()))
+            }
+            fn is_overwrite(&self) -> bool {
+                true
+            }
+            async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+            async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+                Ok(())
+            }
+            async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+                Err(FaucetError::Sink("abort failed".into()))
+            }
+        }
+        let source = MockSource(vec![json!({"id": 1})]);
+        let sink = AbortFailSink;
+        let err = Pipeline::new(&source, &sink)
+            .run()
+            .await
+            .expect_err("a failed write must fail the run");
+        assert!(
+            err.to_string().contains("write failed"),
+            "the run error must be the write failure, not the abort failure: {err}"
+        );
     }
 
     /// Records writes and how many times `flush` was called. Used to assert the

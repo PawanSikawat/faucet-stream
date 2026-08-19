@@ -312,6 +312,52 @@ impl BigQuerySink {
         )
     }
 
+    /// Temp table id used while an overwrite run is in flight.
+    fn overwrite_temp_id(&self) -> String {
+        format!("{}__faucet_ovw", self.config.table_id)
+    }
+
+    /// Backtick-quoted reference to the overwrite staging table.
+    fn overwrite_temp_ref(&self) -> String {
+        idempotent::table_ref(
+            &self.config.project_id,
+            &self.config.dataset_id,
+            &self.overwrite_temp_id(),
+        )
+    }
+
+    /// Load one page into the overwrite staging table via the typed, buffer-free
+    /// `INSERT … SELECT FROM UNNEST(JSON_QUERY_ARRAY(@payload))` query path (the
+    /// same generator the exactly-once write uses). Streaming `insertAll` is
+    /// avoided deliberately: its rows sit in a streaming buffer that the commit
+    /// swap's `SELECT` might not see yet.
+    async fn insert_overwrite_page(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        let columns = self.target_schema().await?;
+        let payload = serde_json::to_string(records).map_err(|e| {
+            FaucetError::Sink(format!("BigQuery overwrite: serialize page payload: {e}"))
+        })?;
+        let sql = idempotent::build_insert_select(
+            &columns,
+            &self.config.project_id,
+            &self.config.dataset_id,
+            &self.overwrite_temp_id(),
+        );
+        let mut req = QueryRequest::new(sql);
+        req.use_legacy_sql = false;
+        req.parameter_mode = Some("NAMED".to_string());
+        req.query_parameters = Some(vec![Self::string_param("payload", &payload)]);
+        let resp = self
+            .client
+            .job()
+            .query(&self.config.project_id, req)
+            .await
+            .map_err(|e| {
+                FaucetError::Sink(format!("BigQuery overwrite page insert failed: {e}"))
+            })?;
+        self.await_query_complete(resp).await?;
+        Ok(records.len())
+    }
+
     /// Run one schema-evolution DDL statement through the same `jobs.query` +
     /// authoritative job-status-verify path the data writes use, mapping any
     /// failure to [`FaucetError::Sink`].
@@ -696,7 +742,10 @@ impl faucet_core::Sink for BigQuerySink {
             return Ok(0);
         }
 
-        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+        if matches!(
+            self.config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) {
             let plan = faucet_core::plan_writes(records, &self.config.write);
             if let Some((idx, msg)) = plan.failed.first() {
                 return Err(FaucetError::Sink(format!(
@@ -705,6 +754,13 @@ impl faucet_core::Sink for BigQuerySink {
                 )));
             }
             return self.run_upsert_script(&plan, None).await;
+        }
+
+        // Overwrite: load the page into the staging table via the buffer-free
+        // query path (not streaming `insertAll`); the atomic swap runs in
+        // `commit_overwrite`.
+        if self.config.write.is_overwrite() {
+            return self.insert_overwrite_page(records).await;
         }
 
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
@@ -756,6 +812,12 @@ impl faucet_core::Sink for BigQuerySink {
 
         if records.is_empty() {
             return Ok(Vec::new());
+        }
+
+        if self.config.write.is_overwrite() {
+            // Overwrite is insert-shaped with no per-row key failures.
+            self.insert_overwrite_page(records).await?;
+            return Ok(records.iter().map(|_| Ok(())).collect());
         }
 
         if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
@@ -824,7 +886,53 @@ impl faucet_core::Sink for BigQuerySink {
             faucet_core::WriteMode::Append,
             faucet_core::WriteMode::Upsert,
             faucet_core::WriteMode::Delete,
+            faucet_core::WriteMode::Overwrite,
         ]
+    }
+
+    fn is_overwrite(&self) -> bool {
+        self.config.write.is_overwrite()
+    }
+
+    /// Create the staging table as an empty structural clone of the target
+    /// (`CREATE OR REPLACE TABLE temp LIKE target`, which also copies
+    /// partitioning/clustering), dropping any leftover staging from a crashed
+    /// run. Bucket-free: no GCS staging is involved. The target must already
+    /// exist (LIKE requires it) — overwrite replaces its rows, not its schema.
+    async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+        self.run_ddl(format!(
+            "CREATE OR REPLACE TABLE {} LIKE {}",
+            self.overwrite_temp_ref(),
+            self.table_ref()
+        ))
+        .await
+    }
+
+    /// Atomically replace the destination in one BigQuery multi-statement
+    /// transaction — `TRUNCATE TABLE target; INSERT INTO target SELECT * FROM
+    /// temp;` — so a failure rolls back and the prior rows survive.
+    /// `TRUNCATE`+`INSERT` (rather than `CREATE OR REPLACE … AS SELECT`)
+    /// preserves the target's own partitioning, clustering, and description. The
+    /// staging table is dropped afterwards. Staging was loaded via the query
+    /// path, so there is no streaming buffer to miss.
+    async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+        let temp = self.overwrite_temp_ref();
+        self.run_ddl(idempotent::build_overwrite_commit_sql(
+            &self.table_ref(),
+            &temp,
+        ))
+        .await?;
+        self.run_ddl(format!("DROP TABLE IF EXISTS {temp}")).await
+    }
+
+    /// Drop the staging table so a failed/cancelled overwrite leaves nothing
+    /// behind. Best-effort — the destination was never touched.
+    async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+        self.run_ddl(format!(
+            "DROP TABLE IF EXISTS {}",
+            self.overwrite_temp_ref()
+        ))
+        .await
     }
 
     fn dedups_by_key(&self) -> bool {

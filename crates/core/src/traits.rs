@@ -559,6 +559,65 @@ pub trait Sink: Send + Sync {
         Ok(None)
     }
 
+    /// Whether this sink instance is configured for full-destination
+    /// replacement ([`WriteMode::Overwrite`](crate::write_mode::WriteMode)).
+    ///
+    /// The pipeline consults this to drive the overwrite lifecycle:
+    /// [`begin_overwrite`](Self::begin_overwrite) before the first page, then
+    /// [`commit_overwrite`](Self::commit_overwrite) once the run finishes
+    /// successfully, or [`abort_overwrite`](Self::abort_overwrite) on
+    /// failure/cancel. Sinks that flatten a [`WriteSpec`](crate::write_mode::WriteSpec)
+    /// into their config return `self.config.write.is_overwrite()`. Default `false`.
+    fn is_overwrite(&self) -> bool {
+        false
+    }
+
+    /// Prepare a staging target for an overwrite run.
+    ///
+    /// Called once, before the first [`write_batch`](Self::write_batch), only
+    /// when [`is_overwrite`](Self::is_overwrite) is true. The sink stages this
+    /// run's writes (a temp table / new index / temp prefix) so the existing
+    /// destination is untouched until the run succeeds. Subsequent
+    /// `write_batch` calls for this sink must land in the staging target.
+    ///
+    /// Default: a typed "unsupported" error, so a sink that advertises
+    /// `WriteMode::Overwrite` but forgets to implement the lifecycle fails
+    /// loudly rather than silently appending. Never called for sinks whose
+    /// `is_overwrite()` is false.
+    async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+        Err(FaucetError::Sink(format!(
+            "sink '{}' does not support write_mode: overwrite",
+            self.connector_name()
+        )))
+    }
+
+    /// Atomically replace the destination with the staged data.
+    ///
+    /// Called **once, only after the run completed successfully and
+    /// uncancelled**. Implementations MUST swap staging → destination
+    /// atomically (or as close as the backend allows) so a reader never sees a
+    /// half-replaced dataset, and MUST NOT have destroyed the prior contents
+    /// before this point — a failed run leaves the old data in place.
+    ///
+    /// Default: a typed "unsupported" error (unreachable for a correct sink
+    /// whose `is_overwrite()` is false).
+    async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+        Err(FaucetError::Sink(format!(
+            "sink '{}' does not support write_mode: overwrite",
+            self.connector_name()
+        )))
+    }
+
+    /// Discard the staging target after a failed or cancelled overwrite run.
+    ///
+    /// Called (best-effort) when an overwrite run does not reach
+    /// [`commit_overwrite`](Self::commit_overwrite). The destination must be
+    /// left exactly as it was before the run. Default: no-op — a leftover
+    /// staging object is untidy but never data loss, so a sink may skip it.
+    async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+        Ok(())
+    }
+
     /// Return a JSON Schema describing the configuration this sink accepts.
     ///
     /// The schema is auto-generated from the config struct using `schemars`.
@@ -690,6 +749,18 @@ mod tests {
         async fn write_batch(&self, _records: &[Value]) -> Result<usize, FaucetError> {
             Err(FaucetError::Sink("write failed".into()))
         }
+    }
+
+    #[tokio::test]
+    async fn default_overwrite_methods_reject_or_noop() {
+        // A sink that does not opt into overwrite (MockSink uses the defaults):
+        // `is_overwrite` is false, begin/commit return the typed "unsupported"
+        // error, and abort is a no-op success.
+        let sink = MockSink::new();
+        assert!(!sink.is_overwrite());
+        assert!(sink.begin_overwrite().await.is_err());
+        assert!(sink.commit_overwrite().await.is_err());
+        assert!(sink.abort_overwrite().await.is_ok());
     }
 
     // ── Source tests ────────────────────────────────────────────────────────

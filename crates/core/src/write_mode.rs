@@ -6,10 +6,16 @@ use serde_json::{Map, Value};
 use std::collections::HashMap;
 
 /// Write semantics for a sink. Serialized snake_case. Default `Append`.
+// `#[non_exhaustive]`: this is a deliberate extension point — adding a write
+// mode (as `Overwrite` was, #492) is an additive change that ships as a minor
+// release. Downstream connectors that `match` on it must carry a wildcard arm;
+// the built-in sinks already gate on the specific modes they implement. Kept a
+// plain comment (not rustdoc) so the schema/rustdoc description is unchanged.
 #[derive(
     Debug, Clone, Copy, Default, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq,
 )]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum WriteMode {
     /// Insert every record (today's behaviour).
     #[default]
@@ -18,6 +24,11 @@ pub enum WriteMode {
     Upsert,
     /// Delete by `key` for every record.
     Delete,
+    /// Replace the entire destination with this run's records (truncate-load /
+    /// full refresh). The old contents are swapped out atomically only after the
+    /// run completes successfully, so a mid-run failure leaves them intact. No
+    /// `key` is required — it is a whole-dataset operation, not a keyed one.
+    Overwrite,
 }
 
 impl WriteMode {
@@ -27,6 +38,7 @@ impl WriteMode {
             WriteMode::Append => "append",
             WriteMode::Upsert => "upsert",
             WriteMode::Delete => "delete",
+            WriteMode::Overwrite => "overwrite",
         }
     }
 }
@@ -78,6 +90,14 @@ impl WriteSpec {
     pub fn dedups_by_key(&self) -> bool {
         matches!(self.write_mode, WriteMode::Upsert | WriteMode::Delete) && !self.key.is_empty()
     }
+
+    /// Whether this spec requests full-destination replacement
+    /// ([`WriteMode::Overwrite`]). The canonical implementation of
+    /// [`Sink::is_overwrite`](crate::Sink::is_overwrite) for sinks that flatten
+    /// a `WriteSpec` into their config.
+    pub fn is_overwrite(&self) -> bool {
+        matches!(self.write_mode, WriteMode::Overwrite)
+    }
 }
 
 /// Ordered key column → value pairs, in `key` declaration order.
@@ -108,8 +128,8 @@ enum Action {
 /// append separately); if it does, every row is treated as an upsert.
 pub fn plan_writes(page: &[Value], spec: &WriteSpec) -> WritePlan {
     debug_assert!(
-        spec.write_mode != WriteMode::Append,
-        "plan_writes called with WriteMode::Append — callers must route append separately"
+        matches!(spec.write_mode, WriteMode::Upsert | WriteMode::Delete),
+        "plan_writes is only for Upsert/Delete — Append and Overwrite are routed separately"
     );
     let mut plan = WritePlan::default();
     let mut index: HashMap<String, usize> = HashMap::new();
@@ -128,7 +148,7 @@ pub fn plan_writes(page: &[Value], spec: &WriteSpec) -> WritePlan {
         let is_delete = match spec.write_mode {
             WriteMode::Delete => true,
             WriteMode::Upsert => is_delete_marked(rec, spec.delete_marker.as_ref()),
-            WriteMode::Append => false,
+            WriteMode::Append | WriteMode::Overwrite => false,
         };
 
         let action = if is_delete {
@@ -422,6 +442,30 @@ mod tests {
         );
         assert!(plan.deletes.is_empty());
         assert_eq!(plan.upserts, vec![json!({"id": 1, "v": 9})]);
+    }
+
+    #[test]
+    fn overwrite_mode_flags_and_needs_no_key() {
+        let spec = WriteSpec {
+            write_mode: WriteMode::Overwrite,
+            key: vec![],
+            delete_marker: None,
+        };
+        assert!(spec.is_overwrite());
+        assert!(!spec.dedups_by_key());
+        // Overwrite is a whole-dataset op — no key required, so validate passes.
+        assert!(spec.validate().is_ok());
+        assert_eq!(WriteMode::Overwrite.as_str(), "overwrite");
+        // Non-overwrite specs report false.
+        assert!(!WriteSpec::default().is_overwrite());
+        assert!(!upsert_spec(&["id"]).is_overwrite());
+    }
+
+    #[test]
+    fn overwrite_deserializes_from_wire() {
+        let spec: WriteSpec = serde_json::from_value(json!({"write_mode": "overwrite"})).unwrap();
+        assert_eq!(spec.write_mode, WriteMode::Overwrite);
+        assert!(spec.is_overwrite());
     }
 
     #[test]

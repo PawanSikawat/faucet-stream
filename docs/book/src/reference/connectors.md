@@ -208,7 +208,10 @@ delete by `key`) in addition to plain `append`. The SQL sinks require
 column-mapping mode (`auto_map`, or `auto_columns` for mssql) and a
 UNIQUE/PRIMARY KEY on `key`; the
 schemaless sinks (MongoDB, Elasticsearch) map `key` to a match filter / `_id`.
-Iceberg upsert is not yet supported (a follow-up, blocked on `iceberg-rust`). See
+Iceberg upsert is not yet supported (a follow-up, blocked on `iceberg-rust`).
+`write_mode: overwrite` (full-refresh: atomically replace the whole
+destination each run) is additionally supported by **PostgreSQL, SQLite, MySQL,
+MSSQL, MongoDB, and BigQuery** — not Elasticsearch/Spanner. See
 [Upsert / mirror tables](../cookbook/upsert.md).
 
 Every sink in this column also supports **scoped cleanup**

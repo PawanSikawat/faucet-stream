@@ -435,6 +435,19 @@ impl IcebergSinkConfig {
         // Batch size
         faucet_core::validate_batch_size(self.batch_size)?;
 
+        // Append-only (v1). `upsert` / `delete` / `overwrite` all deserialize
+        // (they are variants of the shared `WriteMode` enum) but iceberg only
+        // supports `append` at runtime, so they are rejected here at config-load
+        // rather than only inside `IcebergSink::new`. Equality-delete upsert is
+        // tracked in #179; overwrite in #492/#179.
+        if self.write_mode != WriteMode::Append {
+            return Err(FaucetError::Config(format!(
+                "iceberg: write_mode '{}' is not supported (append only; \
+                 upsert is a version-gated follow-up tracked in #179 / #190)",
+                self.write_mode.as_str()
+            )));
+        }
+
         Ok(())
     }
 }
@@ -541,15 +554,27 @@ mod tests {
 
     #[test]
     fn write_mode_overwrite_is_rejected() {
+        // `overwrite` is now a valid `WriteMode` variant (#492), so it
+        // deserializes — but iceberg is append-only, so `validate()` rejects it
+        // at config-load (same as upsert/delete).
         let mut v = minimal_config_json();
         v["write_mode"] = serde_json::json!("overwrite");
-        let err = serde_json::from_value::<IcebergSinkConfig>(v);
-        assert!(err.is_err(), "expected error for write_mode=overwrite");
-        let msg = err.unwrap_err().to_string();
+        let cfg = parse(v);
+        assert_eq!(cfg.write_mode, WriteMode::Overwrite);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
         assert!(
-            msg.contains("unknown variant") || msg.contains("overwrite"),
-            "error message should mention unknown variant or overwrite: {msg}"
+            msg.contains("append only") && msg.contains("not supported"),
+            "expected append-only rejection: {msg}"
         );
+    }
+
+    #[test]
+    fn write_mode_upsert_is_rejected() {
+        let mut v = minimal_config_json();
+        v["write_mode"] = serde_json::json!("upsert");
+        let err = parse(v).validate().unwrap_err();
+        assert!(err.to_string().contains("append only"), "{err}");
     }
 
     // ── partition transform validation ────────────────────────────────────────

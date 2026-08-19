@@ -319,8 +319,10 @@ impl MysqlSink {
     /// Create a new MySQL sink. Establishes a connection pool.
     pub async fn new(config: MysqlSinkConfig) -> Result<Self, FaucetError> {
         config.write.validate()?;
-        if !matches!(config.write.write_mode, faucet_core::WriteMode::Append)
-            && !matches!(config.column_mapping, MysqlColumnMapping::AutoMap)
+        if matches!(
+            config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) && !matches!(config.column_mapping, MysqlColumnMapping::AutoMap)
         {
             return Err(FaucetError::Config(
                 "mysql sink: write_mode upsert/delete requires column_mapping: auto_map \
@@ -341,11 +343,35 @@ impl MysqlSink {
         // `DELETE … WHERE (key) IN (…)` only resolves correctly when the
         // configured `key` matches a real PRIMARY/UNIQUE index. Assert that here
         // so a silent mismatch (finding F33) fails fast at construction.
-        if !matches!(sink.config.write.write_mode, faucet_core::WriteMode::Append) {
+        if matches!(
+            sink.config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) {
             sink.assert_key_is_unique_index().await?;
         }
 
         Ok(sink)
+    }
+
+    /// Staging table name used while an overwrite run is in flight.
+    fn staging_table_name(&self) -> String {
+        format!("{}__faucet_ovw", self.config.table_name)
+    }
+
+    /// The table the current-target-old is renamed to during the atomic swap.
+    fn old_table_name(&self) -> String {
+        format!("{}__faucet_ovw_old", self.config.table_name)
+    }
+
+    /// The table the data-write path targets. For `write_mode: overwrite` every
+    /// write in this sink's lifetime lands in the staging table; otherwise the
+    /// configured table.
+    fn effective_table_name(&self) -> String {
+        if self.config.write.is_overwrite() {
+            self.staging_table_name()
+        } else {
+            self.config.table_name.clone()
+        }
     }
 
     /// Read the target table's PRIMARY/UNIQUE indexes from
@@ -447,7 +473,7 @@ impl MysqlSink {
         let placeholders: Vec<&str> = records.iter().map(|_| "(?)").collect();
         let insert_sql = format!(
             "INSERT INTO {} ({}) VALUES {}",
-            quote_ident_mysql(&self.config.table_name),
+            quote_ident_mysql(&self.effective_table_name()),
             quote_ident_mysql(column),
             placeholders.join(", ")
         );
@@ -490,10 +516,11 @@ impl MysqlSink {
         }
 
         // Get column names from the table.
+        let effective_table = self.effective_table_name();
         let columns: Vec<String> = sqlx::query(
             "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = ? AND TABLE_SCHEMA = DATABASE() ORDER BY ORDINAL_POSITION"
         )
-        .bind(&self.config.table_name)
+        .bind(&effective_table)
         .fetch_all(&mut *conn)
         .await
         .map_err(|e| FaucetError::Sink(format!("failed to query table columns: {e}")))?
@@ -503,8 +530,7 @@ impl MysqlSink {
 
         if columns.is_empty() {
             return Err(FaucetError::Sink(format!(
-                "table '{}' has no columns or does not exist",
-                self.config.table_name
+                "table '{effective_table}' has no columns or does not exist"
             )));
         }
 
@@ -575,7 +601,7 @@ impl MysqlSink {
                 (0..sub.len()).map(|_| row_placeholder.as_str()).collect();
             let base_query = format!(
                 "INSERT INTO {} ({}) VALUES {}",
-                quote_ident_mysql(&self.config.table_name),
+                quote_ident_mysql(&effective_table),
                 col_names.join(", "),
                 value_tuples.join(", ")
             );
@@ -996,7 +1022,89 @@ impl faucet_core::Sink for MysqlSink {
             faucet_core::WriteMode::Append,
             faucet_core::WriteMode::Upsert,
             faucet_core::WriteMode::Delete,
+            faucet_core::WriteMode::Overwrite,
         ]
+    }
+
+    fn is_overwrite(&self) -> bool {
+        self.config.write.is_overwrite()
+    }
+
+    /// Create the staging table as an empty structural clone of the target
+    /// (`CREATE TABLE staging LIKE target`, which copies columns AND indexes),
+    /// dropping any leftover staging/old tables from a crashed run first. The
+    /// target must already exist — overwrite replaces its rows, not its schema.
+    async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+        let staging = quote_ident_mysql(&self.staging_table_name());
+        let old = quote_ident_mysql(&self.old_table_name());
+        let target = quote_ident_mysql(&self.config.table_name);
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MySQL pool acquire failed: {e}")))?;
+        for stmt in [
+            format!("DROP TABLE IF EXISTS {staging}"),
+            format!("DROP TABLE IF EXISTS {old}"),
+            format!("CREATE TABLE {staging} LIKE {target}"),
+        ] {
+            sqlx::query(&stmt).execute(&mut *conn).await.map_err(|e| {
+                FaucetError::Sink(format!(
+                    "mysql overwrite: prepare staging from '{}' (does the table exist?): {e}",
+                    self.config.table_name
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Atomically replace the destination via `RENAME TABLE` — MySQL performs a
+    /// multi-table rename atomically and, unlike `TRUNCATE`/`DROP`, without an
+    /// implicit commit that could strand a half-done swap. `target → old,
+    /// staging → target` publishes the freshly-loaded staging table as the new
+    /// target in one step; the old table is then dropped.
+    async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+        let staging = quote_ident_mysql(&self.staging_table_name());
+        let old = quote_ident_mysql(&self.old_table_name());
+        let target = quote_ident_mysql(&self.config.table_name);
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MySQL pool acquire failed: {e}")))?;
+        sqlx::query(&format!(
+            "RENAME TABLE {target} TO {old}, {staging} TO {target}"
+        ))
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| FaucetError::Sink(format!("mysql overwrite swap (RENAME) failed: {e}")))?;
+        sqlx::query(&format!("DROP TABLE IF EXISTS {old}"))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("mysql overwrite: drop old table: {e}")))?;
+        Ok(())
+    }
+
+    /// Drop the staging (and any old) table so a failed/cancelled overwrite
+    /// leaves nothing behind. Best-effort — the destination was never touched.
+    async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+        let staging = quote_ident_mysql(&self.staging_table_name());
+        let old = quote_ident_mysql(&self.old_table_name());
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("MySQL pool acquire failed: {e}")))?;
+        for stmt in [
+            format!("DROP TABLE IF EXISTS {staging}"),
+            format!("DROP TABLE IF EXISTS {old}"),
+        ] {
+            sqlx::query(&stmt)
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("mysql overwrite: drop staging: {e}")))?;
+        }
+        Ok(())
     }
 
     fn dedups_by_key(&self) -> bool {
@@ -1122,8 +1230,13 @@ impl faucet_core::Sink for MysqlSink {
             return Ok(0);
         }
 
-        // Non-append modes: plan the writes and apply atomically.
-        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+        // Upsert/delete modes: plan the writes and apply atomically. Append and
+        // overwrite are insert-shaped (overwrite lands in the staging table via
+        // `effective_table_name`).
+        if matches!(
+            self.config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) {
             let plan = faucet_core::plan_writes(records, &self.config.write);
             if let Some((idx, msg)) = plan.failed.first() {
                 return Err(FaucetError::Sink(format!(
@@ -1179,7 +1292,11 @@ impl faucet_core::Sink for MysqlSink {
         &self,
         records: &[Value],
     ) -> Result<Vec<faucet_core::RowOutcome>, FaucetError> {
-        if matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+        if !matches!(
+            self.config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) {
+            // Append and overwrite: insert-shaped, no per-row key failures.
             self.write_batch(records).await?;
             return Ok(records.iter().map(|_| Ok(())).collect());
         }

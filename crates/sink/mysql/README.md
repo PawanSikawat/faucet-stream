@@ -403,3 +403,12 @@ This crate has no optional features of its own; enable it in the CLI/umbrella vi
 ## License
 
 Licensed under either of [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) or [MIT license](https://opensource.org/licenses/MIT) at your option.
+
+## Overwrite (`write_mode: overwrite`)
+
+Full-refresh: each run atomically **replaces** the whole table. Writes are
+staged into a `CREATE TABLE … LIKE` clone (`{table}__faucet_ovw`) and published
+with an atomic `RENAME TABLE` swap (MySQL auto-commits DDL, so a rename — not a
+transaction — is what makes the swap atomic) only after the run succeeds, so a
+mid-run failure leaves the previous rows intact. No `key` is needed; the target
+table must already exist.

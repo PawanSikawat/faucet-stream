@@ -159,8 +159,10 @@ impl PostgresSink {
     /// Create a new PostgreSQL sink. Establishes a connection pool.
     pub async fn new(config: PostgresSinkConfig) -> Result<Self, FaucetError> {
         config.write.validate()?;
-        if !matches!(config.write.write_mode, faucet_core::WriteMode::Append)
-            && !matches!(config.column_mapping, PostgresColumnMapping::AutoMap)
+        if matches!(
+            config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) && !matches!(config.column_mapping, PostgresColumnMapping::AutoMap)
         {
             return Err(FaucetError::Config(
                 "postgres sink: write_mode upsert/delete requires column_mapping: auto_map \
@@ -168,8 +170,14 @@ impl PostgresSink {
                     .into(),
             ));
         }
+        // COPY has no ON CONFLICT, so it cannot express upsert/delete. It IS
+        // fine for overwrite, whose writes are a plain append into the staging
+        // table (the atomic swap is separate DDL).
         if matches!(config.write_method, PostgresWriteMethod::Copy)
-            && !matches!(config.write.write_mode, faucet_core::WriteMode::Append)
+            && matches!(
+                config.write.write_mode,
+                faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+            )
         {
             return Err(FaucetError::Config(format!(
                 "postgres sink: write_method: copy is append-only (COPY has no ON CONFLICT); \
@@ -185,6 +193,24 @@ impl PostgresSink {
             .map_err(|e| FaucetError::Sink(format!("PostgreSQL connection failed: {e}")))?;
 
         Ok(Self { config, pool })
+    }
+
+    /// Staging table name used while an overwrite run is in flight (same schema
+    /// as the target).
+    fn staging_table_name(&self) -> String {
+        format!("{}__faucet_ovw", self.config.table_name)
+    }
+
+    /// The base table name the data-write path targets. For `write_mode:
+    /// overwrite` every write in this sink's lifetime lands in the staging
+    /// table (created by [`begin_overwrite`], swapped by [`commit_overwrite`]);
+    /// otherwise the configured table.
+    fn effective_table_name(&self) -> String {
+        if self.config.write.is_overwrite() {
+            self.staging_table_name()
+        } else {
+            self.config.table_name.clone()
+        }
     }
 
     /// Discover the target relation's column names and underlying types
@@ -239,7 +265,8 @@ impl PostgresSink {
         if records.is_empty() {
             return Ok(0);
         }
-        let table_ref = qualified_table_ref(self.config.schema.as_deref(), &self.config.table_name);
+        let table_ref =
+            qualified_table_ref(self.config.schema.as_deref(), &self.effective_table_name());
 
         let (statement, payload) = match &self.config.column_mapping {
             PostgresColumnMapping::Jsonb { column } => {
@@ -303,7 +330,7 @@ impl PostgresSink {
         let json_values: Vec<serde_json::Value> = records.to_vec();
         let query = format!(
             "INSERT INTO {} ({}) SELECT * FROM unnest($1::jsonb[])",
-            qualified_table_ref(self.config.schema.as_deref(), &self.config.table_name),
+            qualified_table_ref(self.config.schema.as_deref(), &self.effective_table_name()),
             quote_ident(column)
         );
 
@@ -361,7 +388,8 @@ impl PostgresSink {
         // `numeric`, `jsonb`, `uuid`, `text`, …) — identical to the old
         // `information_schema.columns.udt_name` — used as the per-placeholder
         // cast target below.
-        let table_ref = qualified_table_ref(self.config.schema.as_deref(), &self.config.table_name);
+        let table_ref =
+            qualified_table_ref(self.config.schema.as_deref(), &self.effective_table_name());
         let columns = self.discover_columns(&mut *conn, &table_ref).await?;
 
         // Pre-validate all records and collect matched (column, udt, value)
@@ -768,7 +796,92 @@ impl faucet_core::Sink for PostgresSink {
             faucet_core::WriteMode::Append,
             faucet_core::WriteMode::Upsert,
             faucet_core::WriteMode::Delete,
+            faucet_core::WriteMode::Overwrite,
         ]
+    }
+
+    fn is_overwrite(&self) -> bool {
+        self.config.write.is_overwrite()
+    }
+
+    /// Create the staging table as an empty clone of the target's columns
+    /// (`CREATE TABLE staging (LIKE target INCLUDING DEFAULTS)`), dropping any
+    /// leftover staging from a crashed run first. The target must already exist
+    /// (the sink never auto-creates it) — overwrite replaces its rows, not its
+    /// definition.
+    async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+        let staging =
+            qualified_table_ref(self.config.schema.as_deref(), &self.staging_table_name());
+        let target = qualified_table_ref(self.config.schema.as_deref(), &self.config.table_name);
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("PostgreSQL pool acquire failed: {e}")))?;
+        sqlx::query(&format!("DROP TABLE IF EXISTS {staging}"))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| {
+                FaucetError::Sink(format!("postgres overwrite: drop stale staging: {e}"))
+            })?;
+        sqlx::query(&format!(
+            "CREATE TABLE {staging} (LIKE {target} INCLUDING DEFAULTS)"
+        ))
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| {
+            FaucetError::Sink(format!(
+                "postgres overwrite: create staging from '{}' (does the table exist?): {e}",
+                self.config.table_name
+            ))
+        })?;
+        Ok(())
+    }
+
+    /// Atomically replace the destination in one transaction: `TRUNCATE target;
+    /// INSERT INTO target SELECT * FROM staging; DROP TABLE staging`. Postgres
+    /// runs TRUNCATE and DDL transactionally, so a failure rolls the whole swap
+    /// back and the prior rows survive.
+    async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+        let staging =
+            qualified_table_ref(self.config.schema.as_deref(), &self.staging_table_name());
+        let target = qualified_table_ref(self.config.schema.as_deref(), &self.config.table_name);
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("postgres overwrite: begin swap: {e}")))?;
+        for stmt in [
+            format!("TRUNCATE TABLE {target}"),
+            format!("INSERT INTO {target} SELECT * FROM {staging}"),
+            format!("DROP TABLE {staging}"),
+        ] {
+            sqlx::query(&stmt)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("postgres overwrite swap failed: {e}")))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("postgres overwrite: commit swap: {e}")))?;
+        Ok(())
+    }
+
+    /// Drop the staging table so a failed/cancelled overwrite leaves nothing
+    /// behind. Best-effort — the destination was never touched.
+    async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+        let staging =
+            qualified_table_ref(self.config.schema.as_deref(), &self.staging_table_name());
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("PostgreSQL pool acquire failed: {e}")))?;
+        sqlx::query(&format!("DROP TABLE IF EXISTS {staging}"))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| FaucetError::Sink(format!("postgres overwrite: drop staging: {e}")))?;
+        Ok(())
     }
 
     fn dedups_by_key(&self) -> bool {
@@ -934,7 +1047,10 @@ impl faucet_core::Sink for PostgresSink {
             return Ok(0);
         }
 
-        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+        if matches!(
+            self.config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) {
             let plan = faucet_core::plan_writes(records, &self.config.write);
             if let Some((idx, msg)) = plan.failed.first() {
                 return Err(FaucetError::Sink(format!(
@@ -948,6 +1064,8 @@ impl faucet_core::Sink for PostgresSink {
                 })?;
             return self.apply_plan(&mut conn, &plan).await;
         }
+        // Append and overwrite are insert-shaped; overwrite writes land in the
+        // staging table via `effective_table_name`.
 
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
             // Sentinel: pass the entire upstream page through in a single
@@ -1003,7 +1121,11 @@ impl faucet_core::Sink for PostgresSink {
         &self,
         records: &[Value],
     ) -> Result<Vec<faucet_core::RowOutcome>, FaucetError> {
-        if matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+        if !matches!(
+            self.config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) {
+            // Append and overwrite: insert-shaped, no per-row key failures.
             self.write_batch(records).await?;
             return Ok(records.iter().map(|_| Ok(())).collect());
         }
