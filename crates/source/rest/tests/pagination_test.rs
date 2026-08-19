@@ -44,6 +44,64 @@ fn cursor_pagination_stops_on_null() {
 }
 
 #[test]
+fn cursor_in_body_extracts_token_and_exposes_body_cursor() {
+    let style = PaginationStyle::CursorInBody {
+        next_token_path: "$.paging.next.after".into(),
+        body_cursor_field: "after".into(),
+    };
+
+    // First page: no cursor extracted yet → nothing to inject.
+    let mut state = PaginationState::default();
+    assert!(style.body_cursor(&state).is_none());
+
+    let body = json!({"results": [{"id": 1}], "paging": {"next": {"after": "c1"}}});
+    let has_next = style.advance(&body, &no_headers(), &mut state, 1).unwrap();
+    assert!(has_next);
+    assert_eq!(state.next_token, Some("c1".into()));
+    // The extracted cursor is exposed for injection into the next request body.
+    assert_eq!(style.body_cursor(&state), Some(("after", "c1")));
+}
+
+#[test]
+fn cursor_in_body_stops_when_cursor_absent() {
+    let style = PaginationStyle::CursorInBody {
+        next_token_path: "$.paging.next.after".into(),
+        body_cursor_field: "after".into(),
+    };
+    let body = json!({"results": [{"id": 3}], "paging": {}});
+    let mut state = PaginationState::default();
+    let has_next = style.advance(&body, &no_headers(), &mut state, 1).unwrap();
+    assert!(!has_next);
+}
+
+#[test]
+fn cursor_in_body_stops_on_repeated_cursor() {
+    // Loop guard: a server that keeps returning the same `after` must not loop.
+    let style = PaginationStyle::CursorInBody {
+        next_token_path: "$.paging.next.after".into(),
+        body_cursor_field: "after".into(),
+    };
+    let body = json!({"results": [{"id": 1}], "paging": {"next": {"after": "same"}}});
+    let mut state = PaginationState::default();
+    assert!(style.advance(&body, &no_headers(), &mut state, 1).unwrap());
+    // Same cursor again → stop rather than loop forever.
+    assert!(!style.advance(&body, &no_headers(), &mut state, 1).unwrap());
+}
+
+#[test]
+fn body_cursor_is_none_for_non_body_styles() {
+    let style = PaginationStyle::Cursor {
+        next_token_path: "$.c".into(),
+        param_name: "cursor".into(),
+    };
+    let state = PaginationState {
+        next_token: Some("x".into()),
+        ..Default::default()
+    };
+    assert!(style.body_cursor(&state).is_none());
+}
+
+#[test]
 fn page_number_increments() {
     let style = PaginationStyle::PageNumber {
         param_name: "page".into(),
