@@ -28,7 +28,7 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "transform-wasm", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "templates", "cli-dev", "encryption", "cli-tui", "mcp", "delta-s3", "delta-azure", "delta-gcs", "mtls"]
+full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "transform-wasm", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "templates", "cli-dev", "encryption", "cli-tui", "mcp", "delta-s3", "delta-azure", "delta-gcs", "mtls", "oauth1"]
 
 # Data Movement Catalog (#279): the `catalog:` config block + post-run
 # recording (datasets, schema timelines, volume/freshness stats, lineage
@@ -237,6 +237,10 @@ mtls = [
     "faucet-source-xml?/mtls",
     "faucet-source-graphql?/mtls",
 ]
+
+# OAuth1 (HMAC-SHA256) request-signing auth provider (#496), e.g. NetSuite TBA.
+# `cargo install faucet-cli --features oauth1`.
+oauth1 = ["faucet-auth/oauth1"]
 
 # Opt-in Arrow columnar record path (RFC 0002 / #375). Activates the columnar
 # fast path on the Arrow-capable connectors the user has enabled (optional-dep

@@ -140,6 +140,32 @@ never written to logs or error messages.
 > shared `auth: { ref }` provider uses that provider's own client and does not
 > present the source's certificate — use inline auth for mTLS endpoints.
 
+## OAuth1 request signing (HMAC-SHA256)
+
+Some APIs (e.g. NetSuite Token-Based Auth) authenticate by **signing each
+request** rather than issuing a bearer token. The `oauth1` provider signs every
+request's method + URL + query per RFC 5849. It's a catalog provider used via
+`auth: { ref }`, and requires the `oauth1` build feature
+(`cargo install faucet-cli --features oauth1`):
+
+```yaml
+auth:
+  netsuite:
+    type: oauth1
+    config:
+      consumer_key: ${secret:NS_CONSUMER_KEY}
+      consumer_secret: ${secret:NS_CONSUMER_SECRET}
+      token: ${secret:NS_TOKEN}
+      token_secret: ${secret:NS_TOKEN_SECRET}
+      realm: ${param.account}      # NetSuite account id
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://${param.account_lower}.suitetalk.api.netsuite.com
+      auth: { ref: netsuite }
+```
+
 ## Shared auth providers (`auth: { ref }`)
 
 When several connectors authenticate against the **same** system — e.g. four

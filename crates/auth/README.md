@@ -40,6 +40,7 @@ The `faucet-cli` binary always links `faucet-auth` to power the top-level `auth:
 | `oauth2` | [`OAuth2ClientCredentialsProvider`] | OAuth2 `client_credentials` grant. Fetches a token from the token endpoint, caches it, refreshes single-flight. |
 | `oauth2_refresh` | [`OAuth2RefreshProvider`] | OAuth2 `refresh_token` grant with refresh-token **rotation capture** (a single active access token + a rotating refresh token, shared safely). |
 | `token_endpoint` | [`TokenEndpointProvider`] | Fetches a token from any HTTP endpoint and extracts it from the JSON response via JSONPath. The escape hatch for non-standard token APIs. |
+| `oauth1` | `OAuth1Provider` | OAuth1 one-legged **request signing** (HMAC-SHA256) — signs each request's method + URL + query per RFC 5849 (no token to fetch). For NetSuite Token-Based Auth and similar. Requires the `oauth1` crate feature. |
 
 `build_provider(&Value)` is the entry point: it reads a `{ type, config }` spec and returns a `SharedAuthProvider` (`Arc<dyn AuthProvider>`).
 
@@ -124,6 +125,34 @@ auth:
       apply_as:
         header: "Cookie"
         template: "B1SESSION={token}; CompanyDB=${param.company_db}"
+```
+
+### `oauth1` (HMAC-SHA256 request signing)
+
+Unlike the token providers, OAuth1 has **no token to fetch** — it signs every
+request individually (the signature covers the HTTP method, URL, and query
+parameters). Requires the `oauth1` crate feature (`cargo add faucet-auth
+--features oauth1`, or `cargo install faucet-cli --features oauth1`).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `consumer_key` | string | — *(required)* | OAuth1 consumer (client) key. |
+| `consumer_secret` | string | — *(required)* | OAuth1 consumer secret. |
+| `token` | string | — *(required)* | OAuth1 access token. |
+| `token_secret` | string | — *(required)* | OAuth1 access-token secret. |
+| `realm` | string | *(none)* | Optional `realm` (e.g. the NetSuite account id). |
+| `signature_method` | string | `HMAC-SHA256` | Only `HMAC-SHA256` is supported. |
+
+```yaml
+auth:
+  netsuite:
+    type: oauth1
+    config:
+      consumer_key: "${secret:ns_consumer_key}"
+      consumer_secret: "${secret:ns_consumer_secret}"
+      token: "${secret:ns_token}"
+      token_secret: "${secret:ns_token_secret}"
+      realm: "${param.account}"   # NetSuite account id
 ```
 
 ## CLI usage — the top-level `auth:` catalog

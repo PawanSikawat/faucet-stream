@@ -695,7 +695,18 @@ impl RestStream {
         // Bearer token via the per-source cache (cached until expiry, avoiding a
         // token fetch on every request).
         let resolved_auth = if let Some(provider) = &self.auth_provider {
-            credential_to_auth(provider.credential().await?)
+            // A per-request signer (OAuth1, #496) signs this exact method + URL +
+            // query; every other provider returns `None` here and we apply its
+            // reusable credential.
+            let query: std::collections::BTreeMap<String, String> =
+                params.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            match provider
+                .sign_request(self.config.method.as_str(), &url, &query)
+                .await?
+            {
+                Some(cred) => credential_to_auth(cred),
+                None => credential_to_auth(provider.credential().await?),
+            }
         } else {
             match &self.config.auth {
                 AuthSpec::Inline(Auth::OAuth2 {
