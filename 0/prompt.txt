@@ -748,3 +748,13 @@ ci failing
 ---
 
 ci has failed
+
+---
+
+Once the test is fixed and this PR is merged, you create another PR which will solve all the new issues as you have already discussed.
+
+---
+
+https://github.com/faucet-hq/faucet-stream/actions/runs/32157652778/job/95907464042?pr=493
+
+patch coverage is failing as your test coverage is at 77%. fix it and make sure you are pushing atleast 95% test coverage. also since all other ci are green and you will only be Pushing test code. Let me know, and I will directly merge the PR and won't wait for the workflow to open.
