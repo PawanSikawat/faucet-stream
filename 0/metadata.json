@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0DHSDP9E215RB5SDRDCK574",
+  "session_id": "55398c64-7c65-40db-9b68-886111a86d7f",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-19T17:41:04.114433Z",
+  "branch": "feat/rest-mtls",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8",
+  "turn_id": "3020dd66c12b",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 1154,
+    "cache_creation_tokens": 2268926,
+    "cache_read_tokens": 335904305,
+    "output_tokens": 465228,
+    "api_call_count": 578
+  },
+  "session_metrics": {
+    "turn_count": 9
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    }
+  ]
+}
