@@ -288,7 +288,9 @@ pub async fn build_source(
             let cfg =
                 decode::<faucet_source_graphql::GraphqlStreamConfig>("source", "graphql", config)?;
             cfg.validate()?;
-            let mut s = faucet_source_graphql::GraphqlStream::new(cfg);
+            // `try_new` builds the client (incl. any mutual-TLS identity), so a
+            // bad `tls:` block is a typed error instead of a panic.
+            let mut s = faucet_source_graphql::GraphqlStream::try_new(cfg)?;
             if let Some(name) = &auth_ref {
                 s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
             }
@@ -300,7 +302,9 @@ pub async fn build_source(
         #[cfg(feature = "source-xml")]
         "xml" => {
             let cfg = decode::<faucet_source_xml::XmlStreamConfig>("source", "xml", config)?;
-            let mut s = faucet_source_xml::XmlStream::new(cfg);
+            // `try_new` validates the config and builds the client (incl. any
+            // mutual-TLS identity), so a bad `tls:` block is a typed error.
+            let mut s = faucet_source_xml::XmlStream::try_new(cfg)?;
             if let Some(name) = &auth_ref {
                 s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
             }

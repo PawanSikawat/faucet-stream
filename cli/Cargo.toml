@@ -28,7 +28,7 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "transform-wasm", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "templates", "cli-dev", "encryption", "cli-tui", "mcp", "delta-s3", "delta-azure", "delta-gcs"]
+full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "transform-wasm", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "templates", "cli-dev", "encryption", "cli-tui", "mcp", "delta-s3", "delta-azure", "delta-gcs", "mtls"]
 
 # Data Movement Catalog (#279): the `catalog:` config block + post-run
 # recording (datasets, schema timelines, volume/freshness stats, lineage
@@ -227,6 +227,15 @@ compression = [
     "faucet-sink-gcs?/compression",
     "faucet-source-azure-blob?/compression",
     "faucet-sink-azure-blob?/compression",
+]
+
+# Mutual-TLS client-certificate auth (#495) on whichever HTTP sources are
+# enabled. Optional-dep forwarding, so it never pulls a source the user didn't
+# request. `cargo install faucet-cli --features mtls`.
+mtls = [
+    "faucet-source-rest?/mtls",
+    "faucet-source-xml?/mtls",
+    "faucet-source-graphql?/mtls",
 ]
 
 # Opt-in Arrow columnar record path (RFC 0002 / #375). Activates the columnar

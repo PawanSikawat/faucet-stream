@@ -3,7 +3,7 @@
 use crate::auth::Auth;
 use crate::auth::oauth2::TokenCache;
 use crate::auth::token_endpoint::TokenEndpointCache;
-use crate::config::RestStreamConfig;
+use crate::config::{RestStreamConfig, TlsClientConfig};
 use crate::extract;
 use crate::pagination::{PaginationState, PaginationStyle};
 use crate::retry;
@@ -60,6 +60,67 @@ const DEFAULT_MAX_RETRIES: u32 = 3;
 /// [`DEFAULT_MAX_RETRIES`].
 const DEFAULT_RETRY_BACKOFF: Duration = Duration::from_secs(1);
 
+/// Attach a mutual-TLS client identity (from [`TlsClientConfig`]) to the HTTP
+/// client builder. Only compiled with the `mtls` feature; the non-`mtls` stub
+/// errors so a `tls:` block on a build without the feature fails loudly rather
+/// than silently sending no client certificate.
+#[cfg(feature = "mtls")]
+fn apply_client_tls(
+    builder: reqwest::ClientBuilder,
+    tls: &TlsClientConfig,
+) -> Result<reqwest::ClientBuilder, FaucetError> {
+    let identity = build_identity(tls)?;
+    // Use the native-tls backend explicitly: the identity is built with
+    // native-tls constructors, and the workspace may also have rustls compiled
+    // in (feature unification) which would otherwise be selected.
+    let mut builder = builder.identity(identity).use_native_tls();
+    if let Some(v) = &tls.min_version {
+        // `TlsClientConfig::validate` guarantees `v` is "1.2" or "1.3".
+        let version = if v == "1.3" {
+            reqwest::tls::Version::TLS_1_3
+        } else {
+            reqwest::tls::Version::TLS_1_2
+        };
+        builder = builder.min_tls_version(version);
+    }
+    Ok(builder)
+}
+
+#[cfg(not(feature = "mtls"))]
+fn apply_client_tls(
+    _builder: reqwest::ClientBuilder,
+    _tls: &TlsClientConfig,
+) -> Result<reqwest::ClientBuilder, FaucetError> {
+    Err(FaucetError::Config(
+        "a `tls:` (mutual-TLS) block is configured, but this build of \
+         faucet-source-rest lacks the `mtls` feature; rebuild with \
+         `--features mtls`"
+            .into(),
+    ))
+}
+
+/// Build a [`reqwest::Identity`] from the PEM pair or the PKCS#12 file. Errors
+/// never echo key material — only the backend's opaque parse message.
+#[cfg(feature = "mtls")]
+fn build_identity(tls: &TlsClientConfig) -> Result<reqwest::Identity, FaucetError> {
+    if let Some(p12_path) = &tls.client_identity_pkcs12 {
+        let der = std::fs::read(p12_path).map_err(|e| {
+            FaucetError::Config(format!(
+                "tls: could not read PKCS#12 file {p12_path:?}: {e}"
+            ))
+        })?;
+        let password = tls.pkcs12_password.as_deref().unwrap_or("");
+        reqwest::Identity::from_pkcs12_der(&der, password)
+            .map_err(|e| FaucetError::Config(format!("tls: invalid PKCS#12 identity: {e}")))
+    } else {
+        // `validate()` guarantees both are present on the PEM path.
+        let cert = tls.client_cert.as_deref().unwrap_or_default();
+        let key = tls.client_key.as_deref().unwrap_or_default();
+        reqwest::Identity::from_pkcs8_pem(cert.as_bytes(), key.as_bytes())
+            .map_err(|e| FaucetError::Config(format!("tls: invalid PEM client identity: {e}")))
+    }
+}
+
 /// Map a [`Credential`] from a shared provider onto the REST [`Auth`]
 /// representation so the existing header-application path can be reused.
 fn credential_to_auth(cred: Credential) -> Auth {
@@ -95,6 +156,13 @@ impl RestStream {
         let mut builder = Client::builder();
         if let Some(t) = config.timeout {
             builder = builder.timeout(t);
+        }
+        // Mutual TLS: attach a client certificate/identity to the shared client
+        // so it is presented on every request — data pages AND any inline auth
+        // token request (both use `self.client`).
+        if let Some(tls) = &config.tls {
+            tls.validate()?;
+            builder = apply_client_tls(builder, tls)?;
         }
         // Build the default retry policy from REST's own legacy reliability
         // fields so behavior is unchanged when no policy is injected. The REST
@@ -1190,5 +1258,84 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(source.dataset_uri(), "https://api.example.com/v1/data");
+    }
+}
+
+/// Mutual-TLS unit tests (#495). Lib-level so llvm-cov attributes coverage of
+/// `apply_client_tls` / `build_identity` / the `new()` TLS branch reliably.
+#[cfg(all(test, feature = "mtls"))]
+mod mtls_tests {
+    use super::*;
+    use crate::config::TlsClientConfig;
+
+    const CERT: &str = include_str!("../tests/fixtures/mtls/cert.pem");
+    const KEY: &str = include_str!("../tests/fixtures/mtls/key.pem");
+
+    fn pem() -> TlsClientConfig {
+        TlsClientConfig {
+            client_cert: Some(CERT.to_string()),
+            client_key: Some(KEY.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn pem_identity_builds() {
+        let cfg = RestStreamConfig::new("https://x.test", "/y").tls(pem());
+        assert!(RestStream::new(cfg).is_ok());
+    }
+
+    #[test]
+    fn min_version_branches_are_exercised() {
+        // 1.2 is universally supported and must build.
+        let mut tls = pem();
+        tls.min_version = Some("1.2".into());
+        assert!(RestStream::new(RestStreamConfig::new("https://x.test", "/y").tls(tls)).is_ok());
+        // 1.3 exercises the other branch; some native-tls backends (e.g. macOS
+        // SecureTransport) reject a 1.3 floor at client-build time, so only
+        // require it not to panic.
+        let mut tls = pem();
+        tls.min_version = Some("1.3".into());
+        let _ = RestStream::new(RestStreamConfig::new("https://x.test", "/y").tls(tls));
+    }
+
+    #[test]
+    fn pkcs12_identity_builds() {
+        let p12 = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/mtls/identity.p12"
+        );
+        let tls = TlsClientConfig {
+            client_identity_pkcs12: Some(p12.to_string()),
+            pkcs12_password: Some("changeit".into()),
+            ..Default::default()
+        };
+        let cfg = RestStreamConfig::new("https://x.test", "/y").tls(tls);
+        assert!(RestStream::new(cfg).is_ok());
+    }
+
+    #[test]
+    fn invalid_pem_errors_without_leaking_key() {
+        let tls = TlsClientConfig {
+            client_cert: Some("-----BEGIN CERTIFICATE-----\nbad\n-----END CERTIFICATE-----".into()),
+            client_key: Some("SUPERSECRETKEY".into()),
+            ..Default::default()
+        };
+        let cfg = RestStreamConfig::new("https://x.test", "/y").tls(tls);
+        let err = RestStream::new(cfg)
+            .map(|_| ())
+            .expect_err("bad PEM must error");
+        assert!(!err.to_string().contains("SUPERSECRETKEY"));
+    }
+
+    #[test]
+    fn missing_pkcs12_file_errors() {
+        let tls = TlsClientConfig {
+            client_identity_pkcs12: Some("/no/such.p12".into()),
+            pkcs12_password: Some("x".into()),
+            ..Default::default()
+        };
+        let cfg = RestStreamConfig::new("https://x.test", "/y").tls(tls);
+        assert!(RestStream::new(cfg).is_err());
     }
 }

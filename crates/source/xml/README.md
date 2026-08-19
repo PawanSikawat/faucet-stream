@@ -115,6 +115,15 @@ auth:
     token: ${env:FEED_TOKEN}
 ```
 
+### Mutual TLS (client certificates)
+
+For endpoints that require a client certificate, add a `tls:` block (requires the
+crate's `mtls` feature). Supply a PEM pair (`client_cert` + `client_key`) or a
+PKCS#12 file (`client_identity_pkcs12` + `pkcs12_password`), optionally with
+`min_version: "1.2" | "1.3"`. The certificate is presented on every request. See
+the [`faucet-source-rest` README](../rest/README.md#mutual-tls-client-certificates)
+for the full field reference.
+
 ```yaml
 # HTTP Basic
 auth:

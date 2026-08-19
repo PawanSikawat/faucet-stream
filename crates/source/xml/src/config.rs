@@ -1,6 +1,6 @@
 //! XML source configuration.
 
-use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE, FaucetError};
+use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE, FaucetError, TlsClientConfig};
 use reqwest::header::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -217,6 +217,11 @@ pub struct XmlStreamConfig {
     /// BigQuery load jobs) that prefer one large request to many small ones.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Optional client-certificate (mutual TLS) config. When set, the source
+    /// presents a client certificate on every request (data + inline auth token
+    /// request). Requires the crate's `mtls` feature.
+    #[serde(default)]
+    pub tls: Option<TlsClientConfig>,
 }
 
 fn default_batch_size() -> usize {
@@ -239,7 +244,15 @@ impl XmlStreamConfig {
             max_pages: None,
             query_params: std::collections::HashMap::new(),
             batch_size: DEFAULT_BATCH_SIZE,
+            tls: None,
         }
+    }
+
+    /// Attach a mutual-TLS client identity (requires the `mtls` feature at build
+    /// time; otherwise [`XmlStream::try_new`](crate::XmlStream::try_new) errors).
+    pub fn tls(mut self, tls: TlsClientConfig) -> Self {
+        self.tls = Some(tls);
+        self
     }
 
     /// Set the HTTP method (default: GET).
@@ -331,6 +344,9 @@ impl XmlStreamConfig {
                     "xml: a `soap` block requires `method: POST` — SOAP is a POST protocol".into(),
                 ));
             }
+        }
+        if let Some(tls) = &self.tls {
+            tls.validate()?;
         }
         Ok(())
     }

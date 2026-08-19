@@ -62,6 +62,42 @@ For non-standard token endpoints, `token_endpoint` lets you describe the request
 and point at the access-token and expiry fields in the response. See
 `faucet schema source rest` for the full field list.
 
+## Mutual TLS (client certificates)
+
+Some enterprise/gov APIs (e.g. ADP) require the client to present a certificate
+(**mutual TLS**). The `rest`, `xml`, and `graphql` sources accept a `tls:` block
+that attaches a client identity to **every** request — data requests *and* any
+inline token-endpoint request (they share one HTTP client). Build the CLI with
+the `mtls` feature (`cargo install faucet-cli --features mtls`); without it a
+`tls:` block is a load-time error rather than being silently ignored.
+
+```yaml
+source:
+  type: rest
+  config:
+    base_url: https://api.eu.adp.com
+    tls:
+      client_cert: ${file:./adp-cert.pem}   # PEM cert chain (inline / ${file:} / ${secret:})
+      client_key:  ${file:./adp-key.pem}    # PEM PKCS#8 private key
+      # min_version: "1.2"                   # optional: "1.2" | "1.3"
+```
+
+Or point at a PKCS#12 (`.p12`/`.pfx`) bundle instead of the PEM pair:
+
+```yaml
+    tls:
+      client_identity_pkcs12: ./adp-identity.p12
+      pkcs12_password: ${env:ADP_P12_PASSWORD}
+```
+
+Supply **either** the PEM pair **or** the PKCS#12 file, not both. Key material is
+never written to logs or error messages.
+
+> **Shared providers:** mTLS lives on the *source's* client, so it covers inline
+> auth (the token request goes through the same client). A token minted by a
+> shared `auth: { ref }` provider uses that provider's own client and does not
+> present the source's certificate — use inline auth for mTLS endpoints.
+
 ## Shared auth providers (`auth: { ref }`)
 
 When several connectors authenticate against the **same** system — e.g. four

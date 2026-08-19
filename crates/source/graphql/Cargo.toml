@@ -10,6 +10,11 @@ readme = "README.md"
 keywords = ["graphql", "api", "etl", "pipeline", "connector"]
 categories.workspace = true
 
+[features]
+# Mutual-TLS client-certificate auth (#495): enables the `tls:` config block by
+# turning on reqwest's native-tls identity APIs. Opt-in — off by default.
+mtls = ["reqwest/native-tls"]
+
 [dependencies]
 faucet-core.workspace = true
 schemars.workspace = true

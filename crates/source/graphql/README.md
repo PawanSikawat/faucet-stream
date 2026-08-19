@@ -108,6 +108,15 @@ faucet run pipeline.yaml
 | `bearer` | `{ token: <string> }` | Adds `Authorization: Bearer <token>`. |
 | `custom` | `{ headers: { <name>: <value>, … } }` | Attaches arbitrary headers (API keys, cookies, tenant headers) to every request. |
 
+### Mutual TLS (client certificates)
+
+For endpoints requiring a client certificate, add a `tls:` block (requires the
+crate's `mtls` feature): a PEM pair (`client_cert` + `client_key`) or a PKCS#12
+file (`client_identity_pkcs12` + `pkcs12_password`), optional `min_version`. The
+certificate is presented on every request. See the
+[`faucet-source-rest` README](../rest/README.md#mutual-tls-client-certificates)
+for the full field reference.
+
 ```yaml
 # Bearer token (resolved from the environment at load time)
 auth:

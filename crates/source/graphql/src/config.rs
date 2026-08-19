@@ -1,6 +1,8 @@
 //! GraphQL source configuration.
 
-use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE, FaucetError, validate_batch_size};
+use faucet_core::{
+    AuthSpec, DEFAULT_BATCH_SIZE, FaucetError, TlsClientConfig, validate_batch_size,
+};
 use reqwest::header::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -85,6 +87,11 @@ pub struct GraphqlStreamConfig {
     /// surface as `FaucetError::Config` at stream-time.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Optional client-certificate (mutual TLS) config. When set, the source
+    /// presents a client certificate on every request (data + inline auth token
+    /// request). Requires the crate's `mtls` feature.
+    #[serde(default)]
+    pub tls: Option<TlsClientConfig>,
 }
 
 fn default_batch_size() -> usize {
@@ -104,7 +111,16 @@ impl GraphqlStreamConfig {
             pagination: None,
             max_pages: None,
             batch_size: DEFAULT_BATCH_SIZE,
+            tls: None,
         }
+    }
+
+    /// Attach a mutual-TLS client identity (requires the `mtls` feature at build
+    /// time; otherwise [`GraphqlStream::try_new`](crate::GraphqlStream::try_new)
+    /// errors).
+    pub fn tls(mut self, tls: TlsClientConfig) -> Self {
+        self.tls = Some(tls);
+        self
     }
 
     /// Set the GraphQL variables.
@@ -170,6 +186,9 @@ impl GraphqlStreamConfig {
             ));
         }
         validate_batch_size(self.batch_size)?;
+        if let Some(tls) = &self.tls {
+            tls.validate()?;
+        }
         Ok(())
     }
 }
