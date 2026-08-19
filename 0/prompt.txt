@@ -1,0 +1,14 @@
+https://github.com/faucet-hq/faucet-stream/pull/493
+
+ci failing for this, test coverage is low can you fix it
+
+also So even when the CI failed, why didn't it post a message on the PR with all the details of what files are missing, what the percentage is, and all this kind of message that         
+  normally kudukav pushes?
+
+---
+
+I have merged this now. Now let's work on the other new issues that we created and create a single PR for them.
+
+---
+
+can we add this too: https://github.com/faucet-hq/faucet-stream/issues/495
