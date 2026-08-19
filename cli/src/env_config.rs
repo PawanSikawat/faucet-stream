@@ -346,6 +346,7 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
         resilience: None,
         // Pure-env mode doesn't (yet) assemble an `sla:` block.
         sla: None,
+        reconcile: None,
         shard: None,
         replication: None,
         backfill: None,

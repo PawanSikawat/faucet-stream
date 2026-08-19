@@ -201,6 +201,17 @@
       "items": {
         "$ref": "#/$defs/NotificationSpec"
       }
+    },
+    "reconcile": {
+      "description": "Optional completeness reconciliation (#502): after a successful root run,\ncompare rows written against an authoritative count probe and **fail the\nrun** on a shortfall beyond tolerance — a silent-truncation guard,\nespecially for `write_mode: overwrite`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReconcileSpec"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "additionalProperties": false,
@@ -17190,6 +17201,52 @@
         }
       },
       "type": "object"
+    },
+    "ReconcileSpec": {
+      "description": "Top-level `reconcile:` block.",
+      "type": "object",
+      "properties": {
+        "count": {
+          "description": "The authoritative-count probe: a source that returns the expected row\ncount (as a single record / value).",
+          "$ref": "#/$defs/CountProbe"
+        },
+        "tolerance_pct": {
+          "description": "Allowed shortfall, as a percentage of the authoritative count. `0.0`\n(default) requires `written >= authoritative`. `1.0` tolerates up to a 1%\nshortfall before failing.",
+          "type": "number",
+          "format": "double",
+          "default": 0.0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "count"
+      ]
+    },
+    "CountProbe": {
+      "description": "A source that yields the authoritative count.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Connector type (e.g. `postgres`, `rest`).",
+          "type": "string"
+        },
+        "config": {
+          "description": "Connector-specific config (e.g. a `SELECT count(*) AS n …` query).",
+          "default": null
+        },
+        "count_field": {
+          "description": "Field in the probe's first record holding the count. When omitted, the\nfirst numeric field of the first record is used (so a bare\n`SELECT count(*)` works whatever the column is named).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ]
     }
   }
 }

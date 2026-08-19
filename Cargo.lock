@@ -4124,12 +4124,16 @@ name = "faucet-auth"
 version = "1.0.10"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "faucet-core",
  "futures",
+ "hmac 0.12.1",
  "jsonpath-rust",
+ "percent-encoding",
  "reqwest 0.13.3",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tracing",

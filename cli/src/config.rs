@@ -115,6 +115,13 @@ pub struct PipelineConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sla: Option<crate::sla::SlaSpec>,
 
+    /// Optional completeness reconciliation (#502): after a successful root run,
+    /// compare rows written against an authoritative count probe and **fail the
+    /// run** on a shortfall beyond tolerance — a silent-truncation guard,
+    /// especially for `write_mode: overwrite`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconcile: Option<crate::reconcile::ReconcileSpec>,
+
     /// Optional source-shard distribution for clustered (Mode B) execution.
     /// Only consumed by `faucet serve --cluster`: a run whose source
     /// [is shardable](faucet_core::Source::is_shardable) is split into

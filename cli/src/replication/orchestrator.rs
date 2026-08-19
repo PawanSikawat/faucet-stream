@@ -27,6 +27,8 @@ pub struct ReplicationOptions {
     pub resilience: Option<faucet_core::ResiliencePolicy>,
     /// Optional freshness/volume SLA (#202), evaluated after each phase's runs.
     pub sla: Option<crate::sla::SlaSpec>,
+    /// Optional completeness reconciliation (#502), evaluated after each phase's runs.
+    pub reconcile: Option<crate::reconcile::ReconcileSpec>,
     /// Optional notifier (#280), shared across both phases' runs.
     #[cfg(feature = "notify")]
     pub notifier: Option<std::sync::Arc<crate::notify::Notifier>>,
@@ -99,6 +101,7 @@ fn make_opts(opts: &ReplicationOptions, cancel: Option<CancellationToken>) -> Ex
         cancel,
         resilience: opts.resilience.clone(),
         sla: opts.sla.clone(),
+        reconcile: opts.reconcile.clone(),
         #[cfg(feature = "lineage")]
         lineage: None,
         #[cfg(feature = "lineage")]

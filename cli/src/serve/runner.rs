@@ -446,6 +446,7 @@ async fn execute_shard(
         // Inert under `shard: Some(..)` (a shard's volume is not the row's) —
         // carried for uniformity with the whole-run path below.
         sla: cfg.sla.clone(),
+        reconcile: cfg.reconcile.clone(),
         #[cfg(feature = "lineage")]
         lineage,
         #[cfg(feature = "lineage")]
@@ -1255,6 +1256,7 @@ async fn execute_run(
         cancel: Some(coop.clone()),
         resilience,
         sla: cfg.sla.clone(),
+        reconcile: cfg.reconcile.clone(),
         #[cfg(feature = "lineage")]
         lineage,
         #[cfg(feature = "lineage")]

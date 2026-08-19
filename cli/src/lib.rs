@@ -46,6 +46,7 @@ pub mod partition;
 pub mod pipeline_test;
 #[cfg(feature = "cli-progress")]
 pub mod progress;
+pub mod reconcile;
 pub mod registry;
 pub mod registry_index;
 pub mod replication;
@@ -308,6 +309,7 @@ pub async fn run_from_yaml_str(yaml: &str) -> CliResult<executor::RunSummary> {
             cancel: None,
             resilience,
             sla: cfg.sla.clone(),
+            reconcile: cfg.reconcile.clone(),
             #[cfg(feature = "lineage")]
             lineage: None,
             #[cfg(feature = "lineage")]

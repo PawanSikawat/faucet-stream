@@ -99,6 +99,11 @@ pub struct ExecuteOptions {
     /// Violations emit metrics + warnings; they never fail the run. `None`
     /// disables the pass entirely.
     pub sla: Option<crate::sla::SlaSpec>,
+    /// Optional completeness reconciliation (#502): after every successful
+    /// **root** invocation, run a count probe and **fail the run** on a shortfall
+    /// beyond tolerance. `None` disables the pass. Same root/real-run scoping as
+    /// the SLA pass (skipped for dry-run / `--limit` / shard / cancelled runs).
+    pub reconcile: Option<crate::reconcile::ReconcileSpec>,
     /// Shared OpenLineage emitter, built once from the `lineage:` block. `None`
     /// disables lineage (and adds zero overhead). Gated on the `lineage` feature.
     #[cfg(feature = "lineage")]
@@ -1316,6 +1321,29 @@ async fn run_one_invocation(
         Err(e) => Err(e),
     };
 
+    // ── Completeness reconciliation (#502) ───────────────────────────────────
+    // On a successful root run, compare rows written against an authoritative
+    // count probe; a shortfall beyond tolerance turns the run into an error
+    // (silent-truncation guard). Runs BEFORE the lineage/SLA/notify passes so
+    // they all observe the failure. Same root/real-run scoping as SLA: skipped
+    // for dry-run / --limit / shard / cancelled runs.
+    let result = match (&result, &opts.reconcile) {
+        (Ok(r), Some(spec))
+            if matches!(node.role, NodeRole::Root)
+                && !opts.dry_run
+                && opts.limit.is_none()
+                && opts.shard.is_none()
+                && !cancel.is_cancelled() =>
+        {
+            let written = r.records_written as u64;
+            match crate::reconcile::run(spec, &opts.auth, written).await {
+                Ok(()) => result,
+                Err(e) => Err(e),
+            }
+        }
+        _ => result,
+    };
+
     #[cfg(feature = "lineage")]
     if let Some((em, mut ctx, hb)) = lineage_ctx {
         if let Some(h) = hb {
@@ -2046,6 +2074,7 @@ mod tests {
             delivery: faucet_core::DeliveryMode::default(),
             resilience: None,
             sla: None,
+            reconcile: None,
             shard: None,
             replication: None,
             backfill: None,
@@ -2084,6 +2113,7 @@ mod tests {
                 cancel: None,
                 resilience: None,
                 sla: None,
+                reconcile: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -2334,6 +2364,7 @@ matrix:
                 cancel: None,
                 resilience: None,
                 sla: None,
+                reconcile: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -2397,6 +2428,7 @@ matrix:
                 cancel: None,
                 resilience: None,
                 sla: None,
+                reconcile: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -2625,6 +2657,7 @@ execution:
                 cancel: None,
                 resilience: None,
                 sla: None,
+                reconcile: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -2713,6 +2746,7 @@ pipeline:
                 cancel: None,
                 resilience: None,
                 sla: None,
+                reconcile: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -2775,6 +2809,7 @@ matrix:
                 cancel: None,
                 resilience: None,
                 sla: None,
+                reconcile: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -2846,6 +2881,7 @@ execution:
                 cancel: None,
                 resilience: None,
                 sla: None,
+                reconcile: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -2918,6 +2954,7 @@ matrix:
                 cancel: None,
                 resilience: None,
                 sla: None,
+                reconcile: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]
@@ -3179,6 +3216,7 @@ matrix:
             cancel: None,
             resilience: None,
             sla: None,
+            reconcile: None,
             #[cfg(feature = "lineage")]
             lineage: None,
             #[cfg(feature = "lineage")]
@@ -3810,6 +3848,7 @@ matrix:
                 cancel: None,
                 resilience: None,
                 sla: None,
+                reconcile: None,
                 #[cfg(feature = "lineage")]
                 lineage: None,
                 #[cfg(feature = "lineage")]

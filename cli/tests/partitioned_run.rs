@@ -29,6 +29,7 @@ fn opts(name: &str, max_concurrent: Option<usize>) -> ExecuteOptions {
         cancel: None,
         resilience: None,
         sla: None,
+        reconcile: None,
         #[cfg(feature = "lineage")]
         lineage: None,
         #[cfg(feature = "lineage")]

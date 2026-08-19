@@ -114,6 +114,7 @@ async fn run_once(url: &str, state_dir: &str) {
             clock: chrono::Utc::now().fixed_offset(),
             resilience: None,
             sla: None,
+            reconcile: None,
             #[cfg(feature = "notify")]
             notifier: None,
             #[cfg(feature = "catalog")]

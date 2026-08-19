@@ -265,6 +265,7 @@ pub(crate) async fn execute(
             cancel: tui_cancel.clone(),
             resilience,
             sla: cfg.sla.clone(),
+            reconcile: cfg.reconcile.clone(),
             #[cfg(feature = "lineage")]
             lineage,
             #[cfg(feature = "lineage")]
