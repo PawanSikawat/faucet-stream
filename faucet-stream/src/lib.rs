@@ -33,6 +33,7 @@
 //! | `source-webhook` | Webhook HTTP receiver source |
 //! | `source-websocket` | WebSocket streaming source |
 //! | `source-csv` | CSV file source |
+//! | `source-http-file` | Authenticated HTTP file source (CSV/Excel over an authed URL) |
 //! | `source-elasticsearch` | Elasticsearch search/scroll source |
 //! | `source-kafka` | Apache Kafka consumer source |
 //! | `source-kinesis` | AWS Kinesis Data Streams source |
@@ -193,6 +194,11 @@ pub mod source {
     #[cfg(feature = "source-csv")]
     pub mod csv {
         pub use faucet_source_csv::*;
+    }
+
+    #[cfg(feature = "source-http-file")]
+    pub mod http_file {
+        pub use faucet_source_http_file::*;
     }
 
     #[cfg(feature = "source-elasticsearch")]
@@ -377,6 +383,11 @@ pub mod source {
     #[cfg(feature = "source-csv")]
     pub mod csv {
         pub use faucet_source_csv::*;
+    }
+
+    #[cfg(feature = "source-http-file")]
+    pub mod http_file {
+        pub use faucet_source_http_file::*;
     }
 
     #[cfg(feature = "source-elasticsearch")]

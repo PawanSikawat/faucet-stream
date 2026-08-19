@@ -1,0 +1,34 @@
+# Download an authenticated CSV (or Excel) file from an HTTP/Graph URL and
+# write it out as JSONL. The `http-file` source fetches the blob once, applies
+# auth, and parses it into records.
+#
+#   faucet validate cli/examples/http_file_to_jsonl.yaml
+#   AUTH_TOKEN=... faucet run cli/examples/http_file_to_jsonl.yaml
+#
+# `format: auto` (the default) infers CSV vs Excel from the URL extension.
+# Excel parsing requires the `excel` feature:
+#   cargo install faucet-cli --features source-http-file-excel
+version: 1
+name: http_file_to_jsonl
+
+pipeline:
+  source:
+    type: http-file
+    config:
+      # A Microsoft Graph / OneDrive / SharePoint `…/content` endpoint, a signed
+      # download URL, or any authed static host.
+      url: https://example.com/exports/contacts.csv
+      auth:
+        type: bearer
+        config:
+          token: ${env:AUTH_TOKEN}
+      # format: auto            # csv | excel | auto (default)
+      # delimiter: ","          # CSV delimiter
+      # has_headers: true       # first CSV row supplies field names
+      # sheet: "Sheet1"         # Excel: worksheet name or 0-based index
+      # header_row: 0           # Excel: 0-based header row
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/contacts.jsonl

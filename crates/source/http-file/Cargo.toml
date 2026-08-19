@@ -1,0 +1,39 @@
+[package]
+name = "faucet-source-http-file"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Authenticated HTTP file source (CSV/Excel over an authed URL, e.g. Microsoft Graph) for the faucet-stream ecosystem"
+readme = "README.md"
+keywords = ["csv", "excel", "onedrive", "etl", "connector"]
+categories.workspace = true
+
+[features]
+# Excel (.xlsx/.xls) parsing via calamine. CSV is always available.
+excel = ["dep:calamine"]
+
+[dependencies]
+faucet-core.workspace = true
+schemars.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+reqwest = { workspace = true }
+csv-async = { workspace = true }
+calamine = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["io-util"] }
+async-stream = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
+serde_json.workspace = true
+futures = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

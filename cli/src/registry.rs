@@ -448,6 +448,21 @@ pub async fn build_source(
             cfg.validate()?;
             Ok(Box::new(faucet_source_csv::CsvSource::new(cfg)))
         }
+        #[cfg(feature = "source-http-file")]
+        "http-file" => {
+            let cfg = decode::<faucet_source_http_file::HttpFileSourceConfig>(
+                "source",
+                "http-file",
+                config,
+            )?;
+            cfg.validate()?;
+            // `new` builds the HTTP client, so a bad config is a typed error.
+            let mut s = faucet_source_http_file::HttpFileSource::new(cfg)?;
+            if let Some(name) = &auth_ref {
+                s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
+            }
+            Ok(Box::new(s))
+        }
         #[cfg(feature = "source-singer")]
         "singer" => {
             let cfg =
@@ -1027,6 +1042,8 @@ pub fn source_schema(kind: &str) -> CliResult<Value> {
         "websocket" => Ok(schema::<faucet_source_websocket::WebsocketSourceConfig>()),
         #[cfg(feature = "source-csv")]
         "csv" => Ok(schema::<faucet_source_csv::CsvSourceConfig>()),
+        #[cfg(feature = "source-http-file")]
+        "http-file" => Ok(schema::<faucet_source_http_file::HttpFileSourceConfig>()),
         #[cfg(feature = "source-singer")]
         "singer" => Ok(schema::<faucet_source_singer::SingerSourceConfig>()),
         #[cfg(feature = "source-elasticsearch")]
@@ -1241,6 +1258,11 @@ fn builtin_source_descriptions() -> Vec<(&'static str, &'static str)> {
     ));
     #[cfg(feature = "source-csv")]
     v.push(("csv", "CSV file source"));
+    #[cfg(feature = "source-http-file")]
+    v.push((
+        "http-file",
+        "Authenticated HTTP file source (CSV/Excel over an authed URL)",
+    ));
     #[cfg(feature = "source-singer")]
     v.push((
         "singer",

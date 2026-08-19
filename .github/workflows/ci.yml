@@ -230,6 +230,8 @@ jobs:
           - source-webhook
           - source-websocket
           - source-csv
+          - source-http-file
+          - source-http-file-excel
           - source-elasticsearch
           - source-kafka
           - source-kinesis

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "faucet-stream connector registry \u2014 the index behind `faucet search` / `faucet install`. Built-in connectors are `verified` and ship in the `faucet` binary (enable with `--features <kind>-<name>`). Community connectors: open a PR adding an entry with `verified: false`, an explicit `crate`, and (optionally) a `feature`; users consume them by building a custom binary (see cli/README.md \u2192 Custom binaries with third-party connectors). `crate` defaults to `faucet-<kind>-<name>` and `feature` to `<kind>-<name>` when omitted. `tier` is the connector conformance maturity tier (stable/experimental/beta/draft, #330); for verified built-ins it is validated against the score computed by `faucet conformance` (see the `builtin_tiers_match_conformance` test), so it never drifts from the code.",
+  "_comment": "faucet-stream connector registry — the index behind `faucet search` / `faucet install`. Built-in connectors are `verified` and ship in the `faucet` binary (enable with `--features <kind>-<name>`). Community connectors: open a PR adding an entry with `verified: false`, an explicit `crate`, and (optionally) a `feature`; users consume them by building a custom binary (see cli/README.md → Custom binaries with third-party connectors). `crate` defaults to `faucet-<kind>-<name>` and `feature` to `<kind>-<name>` when omitted. `tier` is the connector conformance maturity tier (stable/experimental/beta/draft, #330); for verified built-ins it is validated against the score computed by `faucet conformance` (see the `builtin_tiers_match_conformance` test), so it never drifts from the code.",
   "connectors": [
     {
       "name": "rest",
@@ -21,7 +21,7 @@
       "kind": "source",
       "verified": true,
       "tier": "stable",
-      "description": "XML / SOAP API source with XML\u2192JSON conversion"
+      "description": "XML / SOAP API source with XML→JSON conversion"
     },
     {
       "name": "grpc",
@@ -91,7 +91,7 @@
       "kind": "source",
       "verified": true,
       "tier": "stable",
-      "description": "Azure Blob Storage / ADLS Gen2 source \u2014 JSONL, JSON array, or raw text"
+      "description": "Azure Blob Storage / ADLS Gen2 source — JSONL, JSON array, or raw text"
     },
     {
       "name": "mssql",
@@ -133,7 +133,7 @@
       "kind": "source",
       "verified": true,
       "tier": "stable",
-      "description": "Google Cloud Storage source \u2014 JSONL, JSON array, or raw text"
+      "description": "Google Cloud Storage source — JSONL, JSON array, or raw text"
     },
     {
       "name": "redis",
@@ -162,6 +162,13 @@
       "verified": true,
       "tier": "stable",
       "description": "CSV file source"
+    },
+    {
+      "name": "http-file",
+      "kind": "source",
+      "verified": true,
+      "tier": "stable",
+      "description": "Authenticated HTTP file source (CSV/Excel over an authed URL)"
     },
     {
       "name": "singer",
@@ -301,7 +308,7 @@
       "kind": "sink",
       "verified": true,
       "tier": "stable",
-      "description": "Google Cloud Storage sink \u2014 JSONL files"
+      "description": "Google Cloud Storage sink — JSONL files"
     },
     {
       "name": "mongodb",
@@ -399,14 +406,14 @@
       "kind": "sink",
       "verified": true,
       "tier": "stable",
-      "description": "ClickHouse sink (HTTP INSERT \u2026 FORMAT JSONEachRow; optional async inserts)"
+      "description": "ClickHouse sink (HTTP INSERT … FORMAT JSONEachRow; optional async inserts)"
     },
     {
       "name": "azure-blob",
       "kind": "sink",
       "verified": true,
       "tier": "stable",
-      "description": "Azure Blob Storage / ADLS Gen2 sink \u2014 JSONL files"
+      "description": "Azure Blob Storage / ADLS Gen2 sink — JSONL files"
     },
     {
       "name": "duckdb",

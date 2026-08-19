@@ -13081,6 +13081,114 @@
           "additionalProperties": false
         },
         {
+          "additionalProperties": false,
+          "properties": {
+            "config": {
+              "anyOf": [
+                {
+                  "description": "Configuration for [`HttpFileSource`](crate::HttpFileSource).",
+                  "properties": {
+                    "auth": {
+                      "$ref": "#/$defs/source_http-file__AuthSpec",
+                      "default": {
+                        "type": "none"
+                      },
+                      "description": "Authentication for the request. Inline or `{ ref: <name> }`."
+                    },
+                    "batch_size": {
+                      "default": 1000,
+                      "description": "Records per emitted page (default [`DEFAULT_BATCH_SIZE`](faucet_core::DEFAULT_BATCH_SIZE)).\n`0` drains the whole file into a single page.",
+                      "format": "uint",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "string"
+                      ]
+                    },
+                    "delimiter": {
+                      "default": 44,
+                      "description": "CSV field delimiter (default `,`).",
+                      "format": "uint8",
+                      "maximum": 255,
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "string"
+                      ]
+                    },
+                    "format": {
+                      "$ref": "#/$defs/source_http-file__FileFormat",
+                      "default": "auto",
+                      "description": "File format. `auto` (default) infers from the URL extension."
+                    },
+                    "has_headers": {
+                      "default": true,
+                      "description": "Whether the first CSV row is a header row supplying field names\n(default `true`). When `false`, fields are named `column_0`, `column_1`, …",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ]
+                    },
+                    "header_row": {
+                      "default": 0,
+                      "description": "0-based row index of the Excel header row (default `0`). Rows above it\nare skipped; the header row supplies field names.",
+                      "format": "uint",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "string"
+                      ]
+                    },
+                    "sheet": {
+                      "default": null,
+                      "description": "Worksheet to read: a sheet name, or a 0-based index as a string. When\nomitted, the first worksheet is used.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "timeout_secs": {
+                      "default": null,
+                      "description": "Per-request HTTP timeout in seconds (default `60`).",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ]
+                    },
+                    "url": {
+                      "description": "URL of the file to download (e.g. a Microsoft Graph\n`/drive/items/{id}/content` endpoint). Supports `{key}` context\nsubstitution.",
+                      "type": "string"
+                    }
+                  },
+                  "title": "HttpFileSourceConfig",
+                  "type": "object"
+                },
+                true
+              ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
+            },
+            "transforms": {
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "http-file"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "http-file",
+          "type": "object"
+        },
+        {
           "type": "object",
           "title": "singer",
           "properties": {
@@ -17246,6 +17354,146 @@
       "additionalProperties": false,
       "required": [
         "type"
+      ]
+    },
+    "source_http-file__AuthReference": {
+      "additionalProperties": true,
+      "description": "A `{ ref: <name> }` pointer to a named provider in the top-level `auth:`\ncatalog. The only permitted key is `ref`.",
+      "properties": {
+        "ref": {
+          "description": "Name of the provider in the top-level `auth:` catalog.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "source_http-file__AuthSpec": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/source_http-file__HttpFileAuth",
+          "description": "Inline auth, spelled out on the connector."
+        },
+        {
+          "$ref": "#/$defs/source_http-file__AuthReference",
+          "description": "A reference to a shared provider in the top-level `auth:` catalog."
+        }
+      ],
+      "description": "A connector's `auth:` field: **either** an inline auth definition `A`\n(the `{ type, config }` shape), **or** a `{ ref: <name> }` reference to a\nshared provider defined in the top-level `auth:` catalog.\n\n`ref` is mutually exclusive with inline fields — supplying both is a\ndeserialization error."
+    },
+    "source_http-file__FileFormat": {
+      "description": "File format of the downloaded blob.",
+      "oneOf": [
+        {
+          "const": "auto",
+          "description": "Infer from the URL extension (`.xlsx`/`.xls` → Excel, else CSV). Default.",
+          "type": "string"
+        },
+        {
+          "const": "csv",
+          "description": "Comma/delimiter-separated text.",
+          "type": "string"
+        },
+        {
+          "const": "excel",
+          "description": "Excel workbook (`.xlsx`/`.xls`). Requires the `excel` crate feature.",
+          "type": "string"
+        }
+      ]
+    },
+    "source_http-file__HttpFileAuth": {
+      "description": "Authentication for the file download. Inline `{ type, config }` or a\n`{ ref: <name> }` pointer to a shared provider — the same shape every other\nHTTP connector uses, so a OneDrive/Graph token minted by an `oauth2_refresh`\nprovider can be shared via `auth: { ref }`.",
+      "oneOf": [
+        {
+          "description": "No authentication.",
+          "properties": {
+            "type": {
+              "const": "none",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "description": "`Authorization: Bearer <token>`.",
+          "properties": {
+            "config": {
+              "properties": {
+                "token": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": {
+              "const": "bearer",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "description": "HTTP Basic credentials.",
+          "properties": {
+            "config": {
+              "properties": {
+                "password": {
+                  "type": "string"
+                },
+                "username": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": {
+              "const": "basic",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "description": "An API key in a named header (e.g. `X-Api-Key`).",
+          "properties": {
+            "config": {
+              "properties": {
+                "header": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": {
+              "const": "api_key",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "description": "Arbitrary headers attached to the request.",
+          "properties": {
+            "config": {
+              "properties": {
+                "headers": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "type": {
+              "const": "custom",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
       ]
     }
   }
