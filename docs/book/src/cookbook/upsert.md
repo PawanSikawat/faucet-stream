@@ -323,10 +323,12 @@ refreshes its contents.
 | `mssql` | one transaction: `DELETE` + `INSERT` (explicit non-IDENTITY column list) from a `SELECT … INTO … WHERE 1=0` clone + `DROP` |
 | `mongodb` | load a `{collection}__faucet_ovw` staging collection, then atomic `renameCollection(dropTarget: true)` (needs the rename privilege; unsupported on sharded collections) |
 | `bigquery` | **bucket-free** — load a `LIKE` temp table via the query API, then `BEGIN TRANSACTION; TRUNCATE; INSERT … SELECT; COMMIT` (preserves the target's partitioning/clustering); no GCS staging bucket required |
+| `elasticsearch` | index into a fresh physical index `{index}-faucet-ovw-…` (mappings copied from the current target), then an atomic `POST /_aliases` swap repoints the read alias and the old index is dropped |
 
-**Elasticsearch is not supported** for overwrite: it has no atomic way to replace
-a concrete index (a delete-then-reindex would risk data loss on a commit-time
-failure). Safe ES overwrite needs an alias-based design, tracked as a follow-up.
+**Elasticsearch requires `index` to be an alias** (not a concrete index): the
+overwrite swaps the alias atomically, so a reader never sees a half-replaced
+dataset. Point `index` at an alias (or a not-yet-existing name — the first run
+creates the alias); a concrete index of that name is rejected at `begin`.
 
 ### Incompatibilities (rejected at `faucet validate`)
 
