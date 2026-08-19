@@ -28,7 +28,7 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "transform-wasm", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "templates", "cli-dev", "encryption", "cli-tui", "mcp", "delta-s3", "delta-azure", "delta-gcs", "mtls", "oauth1"]
+full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "transform-wasm", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "templates", "cli-dev", "encryption", "cli-tui", "mcp", "delta-s3", "delta-azure", "delta-gcs", "mtls", "oauth1", "source-rest-excel"]
 
 # Data Movement Catalog (#279): the `catalog:` config block + post-run
 # recording (datasets, schema timelines, volume/freshness stats, lineage
@@ -134,6 +134,8 @@ sink = [
 state = ["state-redis", "state-postgres"]
 
 source-rest = ["dep:faucet-source-rest"]
+# Excel (.xlsx/.xls) response parsing for the REST source's `response_format: excel` (#497).
+source-rest-excel = ["source-rest", "faucet-source-rest/excel"]
 source-graphql = ["dep:faucet-source-graphql"]
 source-xml = ["dep:faucet-source-xml"]
 source-grpc = ["dep:faucet-source-grpc"]

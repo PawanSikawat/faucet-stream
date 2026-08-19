@@ -168,10 +168,11 @@ transform-wasm = ["dep:faucet-transform-wasm"]
 ## syntax, so this flag never pulls the connector itself).
 encryption = ["faucet-core/encryption", "faucet-sink-jsonl?/encryption"]
 ## Every connector and state backend.
-full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "arrow", "quality", "quality-jsonschema", "contract", "masking", "lineage", "lineage-kafka", "transform-sql", "transform-wasm", "transform-cdc-unwrap", "encryption", "delta-s3", "delta-azure", "delta-gcs", "mtls", "oauth1"]
+full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "arrow", "quality", "quality-jsonschema", "contract", "masking", "lineage", "lineage-kafka", "transform-sql", "transform-wasm", "transform-cdc-unwrap", "encryption", "delta-s3", "delta-azure", "delta-gcs", "mtls", "oauth1", "source-rest-excel"]
 
 ## Individual source connectors.
 source-rest = ["dep:faucet-source-rest"]
+source-rest-excel = ["source-rest", "faucet-source-rest/excel"]
 source-singer = ["dep:faucet-source-singer"]
 source-graphql = ["dep:faucet-source-graphql"]
 source-xml = ["dep:faucet-source-xml"]

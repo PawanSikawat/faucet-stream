@@ -105,6 +105,32 @@ faucet run pipeline.yaml
 
 A **`204 No Content`** response — or any `2xx` with an empty/whitespace-only body — is treated as an empty page ("no data"), not a parse error. A non-empty body that isn't valid JSON still fails loudly with `FaucetError::Json`.
 
+### Response format — authenticated CSV / Excel files
+
+By default the REST source parses a **JSON** body and extracts records via `records_path`. Set `response_format` to consume an authenticated **file** endpoint instead — a Microsoft Graph / OneDrive / SharePoint `…/content` download, a signed export URL, or any authed host serving a CSV/Excel file — reusing all of this source's auth (inline **or** a shared `auth: { ref }` provider), retry, and `${...}` substitution.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `response_format` | `json` \| `csv` \| `excel` | `json` | How to parse the body. `csv`/`excel` parse a whole tabular file into records. `excel` requires the crate's `excel` feature. |
+| `csv_delimiter` | int (byte) / char | `,` | CSV field delimiter. `response_format: csv` only. |
+| `csv_has_headers` | bool | `true` | Whether the first CSV row supplies field names (else `column_0`, `column_1`, …). `csv` only. |
+| `excel_sheet` | string / null | first sheet | Worksheet name, or a 0-based index as a string. `excel` only. |
+| `excel_header_row` | int | `0` | 0-based index of the Excel header row. `excel` only. |
+
+In file mode a **single** response is fetched: `pagination` must be `none` and `records_path` does not apply (both are rejected at load time). CSV values are strings; Excel numbers/booleans/dates are decoded to their JSON types. Enable Excel with `cargo add faucet-source-rest --features excel` (or `cargo install faucet-cli --features source-rest-excel`).
+
+```yaml
+source:
+  type: rest
+  config:
+    base_url: https://graph.microsoft.com
+    path: /v1.0/me/drive/items/ITEM_ID/content
+    pagination: none
+    response_format: excel
+    excel_sheet: "Sheet1"
+    auth: { ref: graph }   # a shared oauth2_refresh provider
+```
+
 #### Unified `resilience:` policy
 
 When driven by the CLI, a pipeline-level [`resilience:`](https://faucet-hq.github.io/faucet-stream/cookbook/resilience.html) block can inject one shared retry policy into this source. **Legacy fields win when set explicitly:** if you set `max_retries` or `retry_backoff` to anything other than their defaults (`3` / `1`), the per-connector value is used and the injected policy is ignored for that field — an explicit setting is never silently overridden. Otherwise the injected policy applies.

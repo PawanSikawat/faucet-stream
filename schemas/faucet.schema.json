@@ -10129,39 +10129,123 @@
     "SourceConnector": {
       "oneOf": [
         {
-          "type": "object",
-          "title": "rest",
+          "additionalProperties": false,
           "properties": {
-            "type": {
-              "const": "rest"
-            },
             "config": {
               "anyOf": [
                 {
+                  "description": "Configuration for a RestStream.",
                   "properties": {
+                    "auth": {
+                      "$ref": "#/$defs/source_rest__AuthSpec",
+                      "description": "Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`\npointer to a shared provider in the CLI's top-level `auth:` catalog."
+                    },
                     "base_url": {
                       "type": "string"
+                    },
+                    "body": true,
+                    "csv_delimiter": {
+                      "default": 44,
+                      "description": "CSV field delimiter byte (default `,`). Used only when\n`response_format: csv`.",
+                      "format": "uint8",
+                      "maximum": 255,
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "string"
+                      ]
+                    },
+                    "csv_has_headers": {
+                      "default": true,
+                      "description": "Whether the first CSV row is a header row supplying field names\n(default `true`). When `false`, fields are named `column_0`, `column_1`, …",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ]
+                    },
+                    "excel_header_row": {
+                      "default": 0,
+                      "description": "0-based index of the Excel header row (default `0`). Rows above it are\nskipped; the header row supplies field names. `response_format: excel` only.",
+                      "format": "uint",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "string"
+                      ]
+                    },
+                    "excel_sheet": {
+                      "default": null,
+                      "description": "Excel worksheet to read: a sheet name, or a 0-based index as a string.\nWhen omitted, the first worksheet is used. `response_format: excel` only.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "max_pages": {
+                      "format": "uint",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ]
+                    },
+                    "max_retries": {
+                      "description": "Number of retries (after the first attempt) for transient request\nfailures. Default `3`.\n\n**Precedence note:** the REST source predates the unified pipeline\n`resilience:` policy. When this field (or [`retry_backoff`](Self::retry_backoff))\nis left at its default, an injected `RetryPolicy` (e.g. from a\npipeline-level `resilience:` block, via\n[`RestStream::with_retry_policy`](crate::RestStream::with_retry_policy))\ngoverns the retry budget. Setting this field away from its default makes\nit win — an explicit per-connector value is never silently overridden by\na pipeline-wide default.",
+                      "format": "uint32",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "string"
+                      ]
+                    },
+                    "method": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "description": "Human-readable stream name (used in logging and Singer SCHEMA messages).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "pagination": {
+                      "$ref": "#/$defs/source_rest__PaginationStyle"
+                    },
+                    "partition_concurrency": {
+                      "description": "Maximum number of partitions to fetch concurrently.\n`None` means sequential processing (backward compatible default).",
+                      "format": "uint",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ]
+                    },
+                    "partitions": {
+                      "description": "Each entry is a context map whose values are substituted into `path`\nplaceholders. The stream is executed once per partition and results are\nconcatenated.  Empty means run once with no substitution.",
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
                     },
                     "path": {
                       "description": "URL path, relative to `base_url`. May contain `{key}` placeholders that\nare substituted per-partition (e.g. `\"/orgs/{org_id}/users\"`).",
                       "type": "string"
                     },
-                    "method": {
-                      "type": "string"
-                    },
-                    "auth": {
-                      "description": "Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`\npointer to a shared provider in the CLI's top-level `auth:` catalog.",
-                      "$ref": "#/$defs/source_rest__AuthSpec"
+                    "primary_keys": {
+                      "description": "Field names that uniquely identify a record (Singer `key_properties`).",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
                     },
                     "query_params": {
-                      "type": "object",
                       "additionalProperties": {
                         "type": "string"
-                      }
-                    },
-                    "body": true,
-                    "pagination": {
-                      "$ref": "#/$defs/source_rest__PaginationStyle"
+                      },
+                      "type": "object"
                     },
                     "records_path": {
                       "type": [
@@ -10169,74 +10253,50 @@
                         "null"
                       ]
                     },
-                    "max_pages": {
-                      "type": [
-                        "integer",
-                        "null",
-                        "string"
-                      ],
-                      "format": "uint",
-                      "minimum": 0
-                    },
-                    "request_delay": {
-                      "type": [
-                        "integer",
-                        "null",
-                        "string"
-                      ],
-                      "format": "uint64",
-                      "minimum": 0,
-                      "default": null
-                    },
-                    "timeout": {
-                      "type": [
-                        "integer",
-                        "null",
-                        "string"
-                      ],
-                      "format": "uint64",
-                      "minimum": 0,
-                      "default": null
-                    },
-                    "max_retries": {
-                      "description": "Number of retries (after the first attempt) for transient request\nfailures. Default `3`.\n\n**Precedence note:** the REST source predates the unified pipeline\n`resilience:` policy. When this field (or [`retry_backoff`](Self::retry_backoff))\nis left at its default, an injected `RetryPolicy` (e.g. from a\npipeline-level `resilience:` block, via\n[`RestStream::with_retry_policy`](crate::RestStream::with_retry_policy))\ngoverns the retry budget. Setting this field away from its default makes\nit win — an explicit per-connector value is never silently overridden by\na pipeline-wide default.",
-                      "type": [
-                        "integer",
-                        "string"
-                      ],
-                      "format": "uint32",
-                      "minimum": 0
-                    },
-                    "retry_backoff": {
-                      "description": "Base exponential-backoff delay between retries. Default `1s`. Shares the\nlegacy-field precedence rule documented on [`max_retries`](Self::max_retries).",
-                      "type": [
-                        "integer",
-                        "string"
-                      ],
-                      "format": "uint64",
-                      "minimum": 0
-                    },
-                    "tolerated_http_errors": {
-                      "description": "HTTP status codes that should **not** cause an error. Responses with\nthese codes are treated as empty pages (no records, no further pages).",
-                      "type": "array",
-                      "items": {
-                        "type": [
-                          "integer",
-                          "string"
-                        ],
-                        "format": "uint16",
-                        "minimum": 0,
-                        "maximum": 65535
-                      }
-                    },
-                    "replication_method": {
-                      "$ref": "#/$defs/source_rest__ReplicationMethod"
-                    },
                     "replication_key": {
                       "description": "Field name (not a JSONPath) used for incremental replication bookmarking.",
                       "type": [
                         "string",
                         "null"
+                      ]
+                    },
+                    "replication_method": {
+                      "$ref": "#/$defs/source_rest__ReplicationMethod"
+                    },
+                    "request_delay": {
+                      "default": null,
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ]
+                    },
+                    "response_format": {
+                      "$ref": "#/$defs/source_rest__ResponseFormat",
+                      "default": "json",
+                      "description": "How to parse the response body. `json` (default) uses JSONPath\nextraction (`records_path`); `csv` / `excel` parse a tabular **file**\nbody into records — for authenticated file endpoints such as a Microsoft\nGraph / OneDrive / SharePoint `…/content` download or any signed export\nURL. In file mode a single response is fetched (pagination must be\n`none`) and `records_path` does not apply. `excel` requires the crate's\n`excel` feature."
+                    },
+                    "retry_backoff": {
+                      "description": "Base exponential-backoff delay between retries. Default `1s`. Shares the\nlegacy-field precedence rule documented on [`max_retries`](Self::max_retries).",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "string"
+                      ]
+                    },
+                    "schema": {
+                      "description": "JSON Schema describing the structure of each record."
+                    },
+                    "schema_sample_size": {
+                      "description": "Maximum number of records to sample when inferring the schema via\n[`crate::stream::RestStream::infer_schema`].  `0` means sample all\navailable records (up to `max_pages`).  Defaults to `100`.",
+                      "format": "uint",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "string"
                       ]
                     },
                     "start_replication_value": {
@@ -10249,49 +10309,15 @@
                         "null"
                       ]
                     },
-                    "name": {
-                      "description": "Human-readable stream name (used in logging and Singer SCHEMA messages).",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "primary_keys": {
-                      "description": "Field names that uniquely identify a record (Singer `key_properties`).",
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    },
-                    "schema": {
-                      "description": "JSON Schema describing the structure of each record."
-                    },
-                    "schema_sample_size": {
-                      "description": "Maximum number of records to sample when inferring the schema via\n[`crate::stream::RestStream::infer_schema`].  `0` means sample all\navailable records (up to `max_pages`).  Defaults to `100`.",
-                      "type": [
-                        "integer",
-                        "string"
-                      ],
-                      "format": "uint",
-                      "minimum": 0
-                    },
-                    "partitions": {
-                      "description": "Each entry is a context map whose values are substituted into `path`\nplaceholders. The stream is executed once per partition and results are\nconcatenated.  Empty means run once with no substitution.",
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "additionalProperties": true
-                      }
-                    },
-                    "partition_concurrency": {
-                      "description": "Maximum number of partitions to fetch concurrently.\n`None` means sequential processing (backward compatible default).",
+                    "timeout": {
+                      "default": null,
+                      "format": "uint64",
+                      "minimum": 0,
                       "type": [
                         "integer",
                         "null",
                         "string"
-                      ],
-                      "format": "uint",
-                      "minimum": 0
+                      ]
                     },
                     "tls": {
                       "anyOf": [
@@ -10304,14 +10330,29 @@
                       ],
                       "default": null,
                       "description": "Optional client-certificate (mutual TLS) config. When set, the source\npresents a client certificate on **every** request — data requests and\nany inline auth token request (both go through the same HTTP client).\nRequires the crate's `mtls` feature; a `tls` block on a build without it\nis a load-time error rather than being silently ignored."
+                    },
+                    "tolerated_http_errors": {
+                      "description": "HTTP status codes that should **not** cause an error. Responses with\nthese codes are treated as empty pages (no records, no further pages).",
+                      "items": {
+                        "format": "uint16",
+                        "maximum": 65535,
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "string"
+                        ]
+                      },
+                      "type": "array"
                     }
                   },
                   "title": "RestStreamConfig",
-                  "description": "Configuration for a RestStream.",
                   "type": "object"
                 },
                 true
               ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
             },
             "transforms": {
               "type": [
@@ -10319,14 +10360,15 @@
                 "null"
               ]
             },
-            "inherit_transforms": {
-              "type": "boolean"
+            "type": {
+              "const": "rest"
             }
           },
           "required": [
             "type"
           ],
-          "additionalProperties": false
+          "title": "rest",
+          "type": "object"
         },
         {
           "type": "object",
@@ -17246,6 +17288,26 @@
       "additionalProperties": false,
       "required": [
         "type"
+      ]
+    },
+    "source_rest__ResponseFormat": {
+      "description": "How to parse the response body into records.",
+      "oneOf": [
+        {
+          "const": "json",
+          "description": "JSON — extract records via `records_path` (JSONPath). The default.",
+          "type": "string"
+        },
+        {
+          "const": "csv",
+          "description": "CSV — parse a tabular file body (each row → a JSON object). For\nauthenticated file endpoints (e.g. an export URL). Always available.",
+          "type": "string"
+        },
+        {
+          "const": "excel",
+          "description": "Excel (`.xlsx`/`.xls`) — parse a workbook body. Requires the crate's\n`excel` feature.",
+          "type": "string"
+        }
       ]
     }
   }

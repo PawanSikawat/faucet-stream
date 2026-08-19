@@ -33,6 +33,9 @@ transforms = ["faucet-core/transforms"]
 # Mutual-TLS client-certificate auth (#495): enables the `tls:` config block by
 # turning on reqwest's native-tls identity APIs. Opt-in — off by default.
 mtls = ["reqwest/native-tls"]
+# Excel (.xlsx/.xls) response parsing for `response_format: excel` (#497), via
+# calamine. CSV parsing is always available; only Excel needs this feature.
+excel = ["dep:calamine"]
 
 [dependencies]
 faucet-core.workspace = true
@@ -41,6 +44,8 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 jsonpath-rust = "1"
+csv-async = { workspace = true }
+calamine = { workspace = true, optional = true }
 tokio = { version = "1", features = ["time"] }
 base64 = "0.22"
 httpdate = "1"
