@@ -12,7 +12,7 @@ Reach for it when you want to land any faucet-stream source — a database, a qu
 ## Feature highlights
 
 - **Bulk indexing** — every chunk is a single `POST /_bulk` NDJSON request; the HTTP client is built once in `new()` and reused for every call.
-- **Write modes** — `append` (default), `upsert`, and `delete`. Upsert/delete derive a stable `_id` from `key` columns, so they're idempotent overwrites and keyed removals with no staging.
+- **Write modes** — `append` (default), `upsert`, `delete`, and `overwrite` (full-refresh via an atomic alias swap). Upsert/delete derive a stable `_id` from `key` columns, so they're idempotent overwrites and keyed removals with no staging.
 - **Four auth methods** — none, HTTP Basic, Bearer token, or API key. The shared `ElasticsearchAuth` enum is re-exported from [`faucet-common-elasticsearch`](https://crates.io/crates/faucet-common-elasticsearch) so it matches the Elasticsearch **source** byte-for-byte, and credentials are masked in `Debug` output.
 - **Shared auth providers** — `auth: { ref: <name> }` points at a provider in the CLI's top-level `auth:` catalog, so many sinks can share one token.
 - **Per-row DLQ** — overrides `write_batch_partial` to read per-item errors from the `_bulk` response, so only the documents Elasticsearch actually rejected go to the dead-letter queue (no duplicates of already-indexed rows).
@@ -77,9 +77,26 @@ faucet run pipeline.yaml
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `write_mode` | `append \| upsert \| delete` | `append` | Write semantics. See [Write modes](#write-modes-upsert--delete). |
+| `write_mode` | `append \| upsert \| delete \| overwrite` | `append` | Write semantics. See [Write modes](#write-modes-upsert--delete). `overwrite` is a full-refresh via an atomic alias swap — see below. |
 | `key` | array of string | `[]` | Key columns whose values form the document `_id`. A **single** key column is used as the `_id` verbatim (its plain string / JSON form). A **composite** (multi-column) key is encoded as a canonical JSON array of its values — *not* a separator-join — so distinct key tuples always map to distinct `_id`s (e.g. `["a_", "b"]` and `["a", "_b"]` no longer collide). Required and non-empty for `upsert`/`delete`; ignored for `append`. |
 | `delete_marker` | `{ field, values }` | *(none)* | Upsert only: rows whose `field` matches one of `values` become deletes; the marker field is stripped from upserted docs. |
+
+### Overwrite (full refresh)
+
+`write_mode: overwrite` replaces the **entire** destination each run via the
+idiomatic Elasticsearch **alias swap**, so a reader never sees a half-replaced
+dataset and a failed/cancelled run leaves the previous data intact:
+
+1. `begin` creates a fresh physical index `{index}-faucet-ovw-…` (copying the
+   current target's mappings) and the run's documents are indexed into it;
+2. `commit` atomically repoints the read alias with one `POST /_aliases` call,
+   then drops the old physical index;
+3. a failed run instead drops the staging index (`abort`) and never touches the
+   alias.
+
+**The configured `index` must be an alias** (or a not-yet-existing name — the
+first run creates the alias). A *concrete* index of that name is rejected, because
+there is no atomic replace of a concrete index. No `key` is required.
 
 ## Authentication
 

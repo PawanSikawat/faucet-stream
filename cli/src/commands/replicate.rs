@@ -71,6 +71,7 @@ pub async fn run(args: ReplicateArgs) -> CliResult<()> {
             clock: chrono::Utc::now().fixed_offset(),
             resilience,
             sla: cfg.sla.clone(),
+            reconcile: cfg.reconcile.clone(),
             #[cfg(feature = "notify")]
             notifier,
             #[cfg(feature = "catalog")]

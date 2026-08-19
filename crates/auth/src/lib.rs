@@ -22,6 +22,8 @@
 //!
 //! [`Arc`]: std::sync::Arc
 
+#[cfg(feature = "oauth1")]
+mod oauth1;
 mod oauth2;
 mod static_provider;
 mod token_endpoint;
@@ -46,6 +48,8 @@ pub(crate) fn auth_http_client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
+#[cfg(feature = "oauth1")]
+pub use oauth1::OAuth1Provider;
 pub use oauth2::{OAuth2ClientCredentialsProvider, OAuth2RefreshProvider};
 pub use static_provider::StaticProvider;
 pub use token_endpoint::TokenEndpointProvider;
@@ -74,8 +78,22 @@ pub fn build_provider(spec: &Value) -> Result<SharedAuthProvider, FaucetError> {
         )?)),
         "oauth2_refresh" => Ok(Arc::new(OAuth2RefreshProvider::from_config(&config)?)),
         "token_endpoint" => Ok(Arc::new(TokenEndpointProvider::from_config(&config)?)),
+        "oauth1" => {
+            #[cfg(feature = "oauth1")]
+            {
+                Ok(Arc::new(OAuth1Provider::from_config(&config)?))
+            }
+            #[cfg(not(feature = "oauth1"))]
+            {
+                Err(FaucetError::Config(
+                    "auth provider: `oauth1` requires the `oauth1` feature — rebuild with \
+                     `--features oauth1` (e.g. `cargo install faucet-cli --features oauth1`)"
+                        .into(),
+                ))
+            }
+        }
         other => Err(FaucetError::Config(format!(
-            "auth provider: unknown type `{other}` (expected one of: static, oauth2, oauth2_refresh, token_endpoint)"
+            "auth provider: unknown type `{other}` (expected one of: static, oauth2, oauth2_refresh, token_endpoint, oauth1)"
         ))),
     }
 }

@@ -298,6 +298,7 @@ fn make_opts(
         // SLA history and catalog volumes describe the forward sync, not a
         // historical replay — a backfill must not pollute either.
         sla: None,
+        reconcile: None,
         #[cfg(feature = "lineage")]
         lineage: None,
         #[cfg(feature = "lineage")]

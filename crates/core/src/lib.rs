@@ -44,6 +44,7 @@ pub mod schema;
 pub mod shard;
 pub mod stage;
 pub mod state;
+pub mod tls;
 pub mod topology;
 pub mod traits;
 pub mod transform;
@@ -119,6 +120,7 @@ pub use stage::{ExplodeSpec, OnMissing};
 pub use stage::{FilterOp, FilterSpec};
 pub use stage::{TransformStage, compile_stage};
 pub use state::{FileStateStore, MemoryStateStore, StateStore};
+pub use tls::TlsClientConfig;
 pub use topology::{
     Edge, JoinNode, Node, NodeKind, Topology, TopologyBuilder, TopologyOnError, TopologyOptions,
     TopologyResult,

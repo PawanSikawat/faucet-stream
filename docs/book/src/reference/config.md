@@ -757,6 +757,30 @@ history is persisted next to the pipeline's bookmarks under
 persists within a single `faucet schedule` / `serve` process. Schema:
 `faucet schema sla`.
 
+## `reconcile`
+
+Opt-in **completeness reconciliation** (#502): after a successful root run,
+fetch an authoritative row count and **fail the run** on a shortfall beyond
+tolerance — a guard against silent truncation quietly replacing good data with
+less (especially under `write_mode: overwrite`).
+
+```yaml
+reconcile:
+  count:                       # a source that returns the authoritative count
+    type: postgres
+    config:
+      connection_url: ${secret:PG_URL}
+      query: "SELECT count(*) AS n FROM orders WHERE updated_at >= '${now.date}'"
+    count_field: n             # optional; defaults to the first numeric field
+  tolerance_pct: 0.0           # allow this % shortfall before failing (default 0)
+```
+
+The count probe is any faucet source (a SQL `count(*)`, an OData `$count`
+endpoint via `rest`, …); its first returned record supplies the count. The run
+fails when `rows_written < authoritative × (1 − tolerance_pct/100)`. Compares
+rows **written** to the destination, so it is most meaningful for straight
+loads / full-refreshes. Schema: `faucet schema` (the `reconcile` block).
+
 ## `notifications`
 
 *(requires the `notify` build feature)*

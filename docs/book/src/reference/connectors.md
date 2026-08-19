@@ -211,7 +211,8 @@ schemaless sinks (MongoDB, Elasticsearch) map `key` to a match filter / `_id`.
 Iceberg upsert is not yet supported (a follow-up, blocked on `iceberg-rust`).
 `write_mode: overwrite` (full-refresh: atomically replace the whole
 destination each run) is additionally supported by **PostgreSQL, SQLite, MySQL,
-MSSQL, MongoDB, and BigQuery** — not Elasticsearch/Spanner. See
+MSSQL, MongoDB, BigQuery, and Elasticsearch** (via an atomic alias swap — the
+configured `index` must be an alias) — not Spanner. See
 [Upsert / mirror tables](../cookbook/upsert.md).
 
 Every sink in this column also supports **scoped cleanup**

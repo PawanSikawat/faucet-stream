@@ -104,6 +104,68 @@ auth:
         path: "./state/auth"      # rotated refresh_token survives across runs
 ```
 
+## Mutual TLS (client certificates)
+
+Some enterprise/gov APIs (e.g. ADP) require the client to present a certificate
+(**mutual TLS**). The `rest`, `xml`, and `graphql` sources accept a `tls:` block
+that attaches a client identity to **every** request — data requests *and* any
+inline token-endpoint request (they share one HTTP client). Build the CLI with
+the `mtls` feature (`cargo install faucet-cli --features mtls`); without it a
+`tls:` block is a load-time error rather than being silently ignored.
+
+```yaml
+source:
+  type: rest
+  config:
+    base_url: https://api.eu.adp.com
+    tls:
+      client_cert: ${file:./adp-cert.pem}   # PEM cert chain (inline / ${file:} / ${secret:})
+      client_key:  ${file:./adp-key.pem}    # PEM PKCS#8 private key
+      # min_version: "1.2"                   # optional: "1.2" | "1.3"
+```
+
+Or point at a PKCS#12 (`.p12`/`.pfx`) bundle instead of the PEM pair:
+
+```yaml
+    tls:
+      client_identity_pkcs12: ./adp-identity.p12
+      pkcs12_password: ${env:ADP_P12_PASSWORD}
+```
+
+Supply **either** the PEM pair **or** the PKCS#12 file, not both. Key material is
+never written to logs or error messages.
+
+> **Shared providers:** mTLS lives on the *source's* client, so it covers inline
+> auth (the token request goes through the same client). A token minted by a
+> shared `auth: { ref }` provider uses that provider's own client and does not
+> present the source's certificate — use inline auth for mTLS endpoints.
+
+## OAuth1 request signing (HMAC-SHA256)
+
+Some APIs (e.g. NetSuite Token-Based Auth) authenticate by **signing each
+request** rather than issuing a bearer token. The `oauth1` provider signs every
+request's method + URL + query per RFC 5849. It's a catalog provider used via
+`auth: { ref }`, and requires the `oauth1` build feature
+(`cargo install faucet-cli --features oauth1`):
+
+```yaml
+auth:
+  netsuite:
+    type: oauth1
+    config:
+      consumer_key: ${secret:NS_CONSUMER_KEY}
+      consumer_secret: ${secret:NS_CONSUMER_SECRET}
+      token: ${secret:NS_TOKEN}
+      token_secret: ${secret:NS_TOKEN_SECRET}
+      realm: ${param.account}      # NetSuite account id
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://${param.account_lower}.suitetalk.api.netsuite.com
+      auth: { ref: netsuite }
+```
+
 ## Shared auth providers (`auth: { ref }`)
 
 When several connectors authenticate against the **same** system — e.g. four

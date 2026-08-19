@@ -13,6 +13,7 @@ This is the flagship faucet-stream source: point it at any JSON-over-HTTP API, d
 
 - **Seven pagination styles** — `Cursor`, `CursorInBody` (POST-search cursor in the request body), `LinkHeader`, `NextLinkInBody`, `PageNumber`, `Offset`, and `None`, each with its own termination/loop guard so a misbehaving API can't loop forever.
 - **Eight auth methods** — `bearer`, `basic`, `api_key` (header), `api_key_query`, `oauth2` (client credentials with token caching), `token_endpoint` (fetch a token from an arbitrary endpoint), `custom` headers, and `none` — plus shared `auth: { ref }` providers via the CLI's top-level `auth:` catalog.
+- **Mutual TLS** — present a client certificate (PEM pair or PKCS#12) on every request via a `tls:` block (feature `mtls`), for APIs that require client-certificate auth.
 - **Memory-bounded streaming** — overrides `Source::stream_pages`, so `Pipeline::run` writes each page to the sink as it arrives; peak memory stays `O(page)` regardless of total record count.
 - **Resilient by default** — exponential backoff with jitter (capped at 60 s), `429` `Retry-After` (delta-seconds or HTTP-date) honouring, and a `tolerated_http_errors` allowlist for legitimately-absent resources.
 - **Incremental replication** — bookmark by any record field, persist it across runs with a state store, and resume from the last value.
@@ -151,6 +152,35 @@ The `auth` field accepts the project-wide adjacently-tagged `{ type, config }` s
 | `custom` | `headers` (map<string,string>) | Arbitrary headers attached to every request. |
 
 **`oauth2` / `token_endpoint` notes:** `expiry_ratio` is the fraction of the token lifetime after which the cached token is proactively refreshed — must be in `(0.0, 1.0]`, defaults to `0.9`. For `token_endpoint`, `token_path` is the JSONPath to the token string and `expiry_path` (optional) is the JSONPath to the expiry in seconds; when absent the token is cached indefinitely. A cached token that the API later rejects with **401 Unauthorized** (a server-side expiry the time-based cache can't see, including the cached-indefinitely case) is invalidated and the request is retried once with a freshly-fetched token, so a long run doesn't abort mid-way.
+
+### Mutual TLS (client certificates)
+
+For APIs that require the client to present a certificate (mutual TLS, e.g. ADP),
+add a `tls:` block. The identity is attached to the source's HTTP client, so it's
+presented on **every** request — data pages *and* any inline token-endpoint call.
+Requires the crate's `mtls` feature (`cargo add faucet-source-rest --features mtls`,
+or `cargo install faucet-cli --features mtls`); a `tls:` block on a build without
+it is a load-time error.
+
+```yaml
+config:
+  base_url: https://api.eu.adp.com
+  tls:
+    client_cert: ${file:./cert.pem}   # PEM cert chain (inline / ${file:} / ${secret:})
+    client_key:  ${file:./key.pem}    # PEM PKCS#8 private key
+    # min_version: "1.2"              # optional: "1.2" | "1.3"
+```
+
+| Field | Description |
+|-------|-------------|
+| `client_cert` + `client_key` | PEM certificate chain + PKCS#8 key (supply together). |
+| `client_identity_pkcs12` + `pkcs12_password` | Path to a `.p12`/`.pfx` bundle — an alternative to the PEM pair. |
+| `min_version` | Minimum TLS version, `"1.2"` or `"1.3"` (optional). |
+
+Supply **either** the PEM pair **or** the PKCS#12 file. Key material never appears
+in logs or errors. A token minted by a shared `auth: { ref }` provider uses that
+provider's own client and does **not** present this certificate — use inline auth
+for mTLS endpoints.
 
 ```yaml
 # Bearer

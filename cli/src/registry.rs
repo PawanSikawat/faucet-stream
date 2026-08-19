@@ -288,7 +288,9 @@ pub async fn build_source(
             let cfg =
                 decode::<faucet_source_graphql::GraphqlStreamConfig>("source", "graphql", config)?;
             cfg.validate()?;
-            let mut s = faucet_source_graphql::GraphqlStream::new(cfg);
+            // `try_new` builds the client (incl. any mutual-TLS identity), so a
+            // bad `tls:` block is a typed error instead of a panic.
+            let mut s = faucet_source_graphql::GraphqlStream::try_new(cfg)?;
             if let Some(name) = &auth_ref {
                 s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
             }
@@ -300,7 +302,9 @@ pub async fn build_source(
         #[cfg(feature = "source-xml")]
         "xml" => {
             let cfg = decode::<faucet_source_xml::XmlStreamConfig>("source", "xml", config)?;
-            let mut s = faucet_source_xml::XmlStream::new(cfg);
+            // `try_new` validates the config and builds the client (incl. any
+            // mutual-TLS identity), so a bad `tls:` block is a typed error.
+            let mut s = faucet_source_xml::XmlStream::try_new(cfg)?;
             if let Some(name) = &auth_ref {
                 s = s.with_auth_provider(auth_catalog::resolve(auth, name)?);
             }
@@ -872,7 +876,15 @@ pub const CLEANUP_SINK_KINDS: &[&str] = &[
 /// they agree. A subset of [`UPSERT_SINK_KINDS`] — overwrite lands on the
 /// keyed-write sinks as their lifecycle is added.
 pub const OVERWRITE_SINK_KINDS: &[&str] = &[
-    "sqlite", "postgres", "mysql", "mssql", "mongodb", "bigquery",
+    "sqlite",
+    "postgres",
+    "mysql",
+    "mssql",
+    "mongodb",
+    "bigquery",
+    // elasticsearch overwrites via an atomic alias swap (#494) rather than a
+    // staging-table swap, but exposes the same begin/commit/abort lifecycle.
+    "elasticsearch",
 ];
 
 /// Whether a sink kind supports `write_mode: overwrite`.
@@ -2032,9 +2044,16 @@ mod tests {
         assert_eq!(sink_supported_write_modes("jsonl"), &[WriteMode::Append]);
         assert_eq!(sink_supported_write_modes("kafka"), &[WriteMode::Append]);
 
-        // Overwrite (#492) lands on 6 of the upsert sinks; the rest reject it.
+        // Overwrite (#492, #494) lands on the 6 staging-swap sinks plus
+        // elasticsearch (atomic alias swap); the rest reject it.
         for k in [
-            "postgres", "sqlite", "mysql", "mssql", "mongodb", "bigquery",
+            "postgres",
+            "sqlite",
+            "mysql",
+            "mssql",
+            "mongodb",
+            "bigquery",
+            "elasticsearch",
         ] {
             assert!(
                 sink_supported_write_modes(k).contains(&WriteMode::Overwrite),
@@ -2042,10 +2061,7 @@ mod tests {
             );
             assert!(sink_supports_overwrite(k), "{k} sink_supports_overwrite");
         }
-        // Elasticsearch supports upsert but NOT overwrite (no atomic concrete-index
-        // replace); jsonl supports neither.
-        assert!(!sink_supported_write_modes("elasticsearch").contains(&WriteMode::Overwrite));
-        assert!(!sink_supports_overwrite("elasticsearch"));
+        // jsonl supports neither upsert nor overwrite.
         assert!(!sink_supports_overwrite("jsonl"));
     }
 

@@ -101,7 +101,18 @@ pub struct RestStreamConfig {
     /// Maximum number of partitions to fetch concurrently.
     /// `None` means sequential processing (backward compatible default).
     pub partition_concurrency: Option<usize>,
+
+    // ── Mutual TLS ─────────────────────────────────────────────────────────────
+    /// Optional client-certificate (mutual TLS) config. When set, the source
+    /// presents a client certificate on **every** request — data requests and
+    /// any inline auth token request (both go through the same HTTP client).
+    /// Requires the crate's `mtls` feature; a `tls` block on a build without it
+    /// is a load-time error rather than being silently ignored.
+    #[serde(default)]
+    pub tls: Option<TlsClientConfig>,
 }
+
+pub use faucet_core::TlsClientConfig;
 
 impl Default for RestStreamConfig {
     fn default() -> Self {
@@ -131,6 +142,7 @@ impl Default for RestStreamConfig {
             schema_sample_size: 100,
             partitions: Vec::new(),
             partition_concurrency: None,
+            tls: None,
         }
     }
 }
@@ -171,6 +183,13 @@ impl RestStreamConfig {
 
     pub fn body(mut self, b: Value) -> Self {
         self.body = Some(b);
+        self
+    }
+
+    /// Attach a mutual-TLS client identity (requires the `mtls` feature at build
+    /// time; otherwise [`RestStream::new`](crate::RestStream::new) errors).
+    pub fn tls(mut self, tls: TlsClientConfig) -> Self {
+        self.tls = Some(tls);
         self
     }
 

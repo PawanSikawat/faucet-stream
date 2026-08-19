@@ -321,6 +321,7 @@ notifications:
         cancel: None,
         resilience: None,
         sla: None,
+        reconcile: None,
         #[cfg(feature = "lineage")]
         lineage: None,
         #[cfg(feature = "lineage")]

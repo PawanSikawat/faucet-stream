@@ -31,6 +31,61 @@ pub struct GraphqlStream {
     retry_policy: faucet_core::RetryPolicy,
 }
 
+/// Attach a mutual-TLS client identity to the HTTP client builder (#495). Only
+/// compiled with the `mtls` feature; the stub errors so a `tls:` block on a
+/// build without the feature fails loudly instead of silently sending no cert.
+#[cfg(feature = "mtls")]
+fn apply_client_tls(
+    builder: reqwest::ClientBuilder,
+    tls: &faucet_core::TlsClientConfig,
+) -> Result<reqwest::ClientBuilder, FaucetError> {
+    let identity = build_identity(tls)?;
+    let mut builder = builder.identity(identity).use_native_tls();
+    if let Some(v) = &tls.min_version {
+        // `TlsClientConfig::validate` guarantees `v` is "1.2" or "1.3".
+        let version = if v == "1.3" {
+            reqwest::tls::Version::TLS_1_3
+        } else {
+            reqwest::tls::Version::TLS_1_2
+        };
+        builder = builder.min_tls_version(version);
+    }
+    Ok(builder)
+}
+
+#[cfg(not(feature = "mtls"))]
+fn apply_client_tls(
+    _builder: reqwest::ClientBuilder,
+    _tls: &faucet_core::TlsClientConfig,
+) -> Result<reqwest::ClientBuilder, FaucetError> {
+    Err(FaucetError::Config(
+        "a `tls:` (mutual-TLS) block is configured, but this build of \
+         faucet-source-graphql lacks the `mtls` feature; rebuild with `--features mtls`"
+            .into(),
+    ))
+}
+
+/// Build a [`reqwest::Identity`] from the PEM pair or the PKCS#12 file. Errors
+/// never echo key material — only the backend's opaque parse message.
+#[cfg(feature = "mtls")]
+fn build_identity(tls: &faucet_core::TlsClientConfig) -> Result<reqwest::Identity, FaucetError> {
+    if let Some(p12_path) = &tls.client_identity_pkcs12 {
+        let der = std::fs::read(p12_path).map_err(|e| {
+            FaucetError::Config(format!(
+                "tls: could not read PKCS#12 file {p12_path:?}: {e}"
+            ))
+        })?;
+        let password = tls.pkcs12_password.as_deref().unwrap_or("");
+        reqwest::Identity::from_pkcs12_der(&der, password)
+            .map_err(|e| FaucetError::Config(format!("tls: invalid PKCS#12 identity: {e}")))
+    } else {
+        let cert = tls.client_cert.as_deref().unwrap_or_default();
+        let key = tls.client_key.as_deref().unwrap_or_default();
+        reqwest::Identity::from_pkcs8_pem(cert.as_bytes(), key.as_bytes())
+            .map_err(|e| FaucetError::Config(format!("tls: invalid PEM client identity: {e}")))
+    }
+}
+
 /// Map a [`Credential`] from a shared provider onto the GraphQL [`GraphqlAuth`]
 /// representation so the existing header-application path can be reused.
 fn credential_to_auth(cred: Credential) -> GraphqlAuth {
@@ -57,10 +112,35 @@ fn credential_to_auth(cred: Credential) -> GraphqlAuth {
 
 impl GraphqlStream {
     /// Create a new GraphQL stream from the given configuration.
+    ///
+    /// Infallible for the common case. Prefer [`try_new`](Self::try_new) when the
+    /// config may carry a `tls:` (mutual-TLS) block: this panics if the client
+    /// (or the TLS identity) fails to build, matching the pre-existing
+    /// `Client::new()` behavior.
     pub fn new(config: GraphqlStreamConfig) -> Self {
-        Self {
+        Self::try_new(config).expect(
+            "GraphqlStream::new: client build failed; use try_new() for fallible construction",
+        )
+    }
+
+    /// Fallible constructor — builds the HTTP client, including any mutual-TLS
+    /// client identity. The CLI registry uses this (after `config.validate()`) so
+    /// a bad `tls:` block surfaces as a typed error instead of a panic. Only the
+    /// `tls:` block is validated here; the registry still calls
+    /// [`GraphqlStreamConfig::validate`] for the rest, keeping `new()` infallible
+    /// for non-TLS configs exactly as before.
+    pub fn try_new(config: GraphqlStreamConfig) -> Result<Self, FaucetError> {
+        let mut builder = Client::builder();
+        if let Some(tls) = &config.tls {
+            tls.validate()?;
+            builder = apply_client_tls(builder, tls)?;
+        }
+        let client = builder.build().map_err(|e| {
+            FaucetError::Config(format!("graphql: failed to build HTTP client: {e}"))
+        })?;
+        Ok(Self {
             config,
-            client: Client::new(),
+            client,
             auth_provider: None,
             // Reproduce the legacy `execute_with_retry(RETRY_MAX_ATTEMPTS,
             // RETRY_BASE_BACKOFF, …)` behavior exactly: `max_retries` is
@@ -73,7 +153,7 @@ impl GraphqlStream {
                 jitter: true,
                 retry_on: faucet_core::RetryClassSet::default(),
             },
-        }
+        })
     }
 
     /// Attach a custom [`RetryPolicy`](faucet_core::RetryPolicy) for transient
@@ -781,5 +861,96 @@ mod tests {
         assert_eq!(g.order.len(), CursorGuard::CAP);
         assert!(!g.seen.contains_key("c0"), "oldest cursor evicted");
         assert!(g.seen.contains_key("overflow"));
+    }
+}
+
+/// Mutual-TLS unit tests (#495) — lib-level for reliable llvm-cov attribution.
+#[cfg(all(test, feature = "mtls"))]
+mod mtls_tests {
+    use super::*;
+    use faucet_core::TlsClientConfig;
+
+    const CERT: &str = include_str!("../tests/fixtures/mtls/cert.pem");
+    const KEY: &str = include_str!("../tests/fixtures/mtls/key.pem");
+
+    fn pem() -> TlsClientConfig {
+        TlsClientConfig {
+            client_cert: Some(CERT.to_string()),
+            client_key: Some(KEY.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn cfg(tls: TlsClientConfig) -> GraphqlStreamConfig {
+        GraphqlStreamConfig::new("https://x.test/graphql", "{ ping }").tls(tls)
+    }
+
+    #[test]
+    fn pem_identity_builds() {
+        assert!(GraphqlStream::try_new(cfg(pem())).is_ok());
+    }
+
+    #[test]
+    fn min_version_branches_are_exercised() {
+        let mut tls = pem();
+        tls.min_version = Some("1.2".into());
+        assert!(GraphqlStream::try_new(cfg(tls)).is_ok());
+        // 1.3 exercises the other branch; some native-tls backends reject a 1.3
+        // floor at build time, so only require it not to panic.
+        let mut tls = pem();
+        tls.min_version = Some("1.3".into());
+        let _ = GraphqlStream::try_new(cfg(tls));
+    }
+
+    #[test]
+    fn pkcs12_identity_builds() {
+        let p12 = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/mtls/identity.p12"
+        );
+        let tls = TlsClientConfig {
+            client_identity_pkcs12: Some(p12.to_string()),
+            pkcs12_password: Some("changeit".into()),
+            ..Default::default()
+        };
+        assert!(GraphqlStream::try_new(cfg(tls)).is_ok());
+    }
+
+    #[test]
+    fn invalid_pem_errors_without_leaking_key() {
+        let tls = TlsClientConfig {
+            client_cert: Some("-----BEGIN CERTIFICATE-----\nbad\n-----END CERTIFICATE-----".into()),
+            client_key: Some("SUPERSECRETKEY".into()),
+            ..Default::default()
+        };
+        let err = GraphqlStream::try_new(cfg(tls))
+            .map(|_| ())
+            .expect_err("bad PEM must error");
+        assert!(!err.to_string().contains("SUPERSECRETKEY"));
+    }
+
+    #[test]
+    fn invalid_tls_shape_errors() {
+        let mut tls = pem();
+        tls.client_identity_pkcs12 = Some("/x.p12".into());
+        assert!(GraphqlStream::try_new(cfg(tls)).is_err());
+    }
+
+    #[test]
+    fn missing_pkcs12_file_errors() {
+        let tls = TlsClientConfig {
+            client_identity_pkcs12: Some("/no/such.p12".into()),
+            pkcs12_password: Some("x".into()),
+            ..Default::default()
+        };
+        assert!(GraphqlStream::try_new(cfg(tls)).is_err());
+    }
+
+    #[test]
+    fn config_validate_checks_tls() {
+        assert!(cfg(pem()).validate().is_ok());
+        let mut bad = pem();
+        bad.client_identity_pkcs12 = Some("/x.p12".into());
+        assert!(cfg(bad).validate().is_err());
     }
 }

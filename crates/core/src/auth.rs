@@ -116,6 +116,29 @@ pub trait AuthProvider: Send + Sync + std::fmt::Debug {
         self.credential().await
     }
 
+    /// Per-request signing hook (OAuth1 and similar, #496).
+    ///
+    /// Most providers issue a **reusable** credential via [`credential`](Self::credential);
+    /// they return `Ok(None)` here (the default) and the connector applies the
+    /// cached credential. A provider that must sign **each request individually**
+    /// (e.g. OAuth1, whose signature covers the HTTP method, URL, and query
+    /// parameters) overrides this to compute a fresh [`Credential`] — typically a
+    /// [`Credential::Header`] carrying the `Authorization` signature — from the
+    /// request. When it returns `Some`, the connector uses it **instead of**
+    /// `credential()` for that request.
+    ///
+    /// `query` is the request's query parameters (the connector's, before the
+    /// HTTP client appends them), which OAuth1 folds into its signature base
+    /// string. Object-safe: no generics, all args are borrowed primitives.
+    async fn sign_request(
+        &self,
+        _method: &str,
+        _url: &str,
+        _query: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Option<Credential>, FaucetError> {
+        Ok(None)
+    }
+
     /// Stable, non-empty name for diagnostics and metrics.
     fn provider_name(&self) -> &'static str;
 }

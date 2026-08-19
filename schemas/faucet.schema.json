@@ -201,6 +201,17 @@
       "items": {
         "$ref": "#/$defs/NotificationSpec"
       }
+    },
+    "reconcile": {
+      "description": "Optional completeness reconciliation (#502): after a successful root run,\ncompare rows written against an authoritative count probe and **fail the\nrun** on a shortfall beyond tolerance — a silent-truncation guard,\nespecially for `write_mode: overwrite`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReconcileSpec"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "additionalProperties": false,
@@ -10281,6 +10292,18 @@
                       ],
                       "format": "uint",
                       "minimum": 0
+                    },
+                    "tls": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_rest__TlsClientConfig"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Optional client-certificate (mutual TLS) config. When set, the source\npresents a client certificate on **every** request — data requests and\nany inline auth token request (both go through the same HTTP client).\nRequires the crate's `mtls` feature; a `tls` block on a build without it\nis a load-time error rather than being silently ignored."
                     }
                   },
                   "title": "RestStreamConfig",
@@ -10368,6 +10391,18 @@
                       "format": "uint",
                       "minimum": 0,
                       "default": 1000
+                    },
+                    "tls": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_graphql__TlsClientConfig"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Optional client-certificate (mutual TLS) config. When set, the source\npresents a client certificate on every request (data + inline auth token\nrequest). Requires the crate's `mtls` feature."
                     }
                   },
                   "title": "GraphqlStreamConfig",
@@ -10482,6 +10517,18 @@
                       "format": "uint",
                       "minimum": 0,
                       "default": 1000
+                    },
+                    "tls": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_xml__TlsClientConfig"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Optional client-certificate (mutual TLS) config. When set, the source\npresents a client certificate on every request (data + inline auth token\nrequest). Requires the crate's `mtls` feature."
                     }
                   },
                   "title": "XmlStreamConfig",
@@ -17030,6 +17077,175 @@
           ],
           "additionalProperties": false
         }
+      ]
+    },
+    "source_rest__TlsClientConfig": {
+      "description": "Client-certificate (mutual TLS) configuration for the HTTP sources.\n\nSupply **either** a PEM certificate + key pair (`client_cert` + `client_key`)\n**or** a PKCS#12 identity file (`client_identity_pkcs12` [+ `pkcs12_password`]).\nPEM values may be inline or pulled in with `${file:…}` / `${secret:…}` /\n`${vault:…}`; the PKCS#12 value is a path to a `.p12`/`.pfx` file (its binary\ncontent can't be embedded in a text config).",
+      "properties": {
+        "client_cert": {
+          "description": "PEM-encoded client certificate chain. Pair with `client_key`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_identity_pkcs12": {
+          "description": "Path to a PKCS#12 (`.p12`/`.pfx`) identity file — an alternative to the\nPEM pair.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_key": {
+          "description": "PEM-encoded PKCS#8 private key. Pair with `client_cert`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "min_version": {
+          "description": "Minimum negotiated TLS version: `\"1.2\"` or `\"1.3\"`. Defaults to the\nTLS backend's own minimum when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pkcs12_password": {
+          "description": "Password for the PKCS#12 file (omit or empty if the file is unencrypted).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "source_xml__TlsClientConfig": {
+      "description": "Client-certificate (mutual TLS) configuration for the HTTP sources.\n\nSupply **either** a PEM certificate + key pair (`client_cert` + `client_key`)\n**or** a PKCS#12 identity file (`client_identity_pkcs12` [+ `pkcs12_password`]).\nPEM values may be inline or pulled in with `${file:…}` / `${secret:…}` /\n`${vault:…}`; the PKCS#12 value is a path to a `.p12`/`.pfx` file (its binary\ncontent can't be embedded in a text config).",
+      "properties": {
+        "client_cert": {
+          "description": "PEM-encoded client certificate chain. Pair with `client_key`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_identity_pkcs12": {
+          "description": "Path to a PKCS#12 (`.p12`/`.pfx`) identity file — an alternative to the\nPEM pair.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_key": {
+          "description": "PEM-encoded PKCS#8 private key. Pair with `client_cert`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "min_version": {
+          "description": "Minimum negotiated TLS version: `\"1.2\"` or `\"1.3\"`. Defaults to the\nTLS backend's own minimum when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pkcs12_password": {
+          "description": "Password for the PKCS#12 file (omit or empty if the file is unencrypted).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "source_graphql__TlsClientConfig": {
+      "description": "Client-certificate (mutual TLS) configuration for the HTTP sources.\n\nSupply **either** a PEM certificate + key pair (`client_cert` + `client_key`)\n**or** a PKCS#12 identity file (`client_identity_pkcs12` [+ `pkcs12_password`]).\nPEM values may be inline or pulled in with `${file:…}` / `${secret:…}` /\n`${vault:…}`; the PKCS#12 value is a path to a `.p12`/`.pfx` file (its binary\ncontent can't be embedded in a text config).",
+      "properties": {
+        "client_cert": {
+          "description": "PEM-encoded client certificate chain. Pair with `client_key`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_identity_pkcs12": {
+          "description": "Path to a PKCS#12 (`.p12`/`.pfx`) identity file — an alternative to the\nPEM pair.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_key": {
+          "description": "PEM-encoded PKCS#8 private key. Pair with `client_cert`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "min_version": {
+          "description": "Minimum negotiated TLS version: `\"1.2\"` or `\"1.3\"`. Defaults to the\nTLS backend's own minimum when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pkcs12_password": {
+          "description": "Password for the PKCS#12 file (omit or empty if the file is unencrypted).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ReconcileSpec": {
+      "description": "Top-level `reconcile:` block.",
+      "type": "object",
+      "properties": {
+        "count": {
+          "description": "The authoritative-count probe: a source that returns the expected row\ncount (as a single record / value).",
+          "$ref": "#/$defs/CountProbe"
+        },
+        "tolerance_pct": {
+          "description": "Allowed shortfall, as a percentage of the authoritative count. `0.0`\n(default) requires `written >= authoritative`. `1.0` tolerates up to a 1%\nshortfall before failing.",
+          "type": "number",
+          "format": "double",
+          "default": 0.0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "count"
+      ]
+    },
+    "CountProbe": {
+      "description": "A source that yields the authoritative count.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Connector type (e.g. `postgres`, `rest`).",
+          "type": "string"
+        },
+        "config": {
+          "description": "Connector-specific config (e.g. a `SELECT count(*) AS n …` query).",
+          "default": null
+        },
+        "count_field": {
+          "description": "Field in the probe's first record holding the count. When omitted, the\nfirst numeric field of the first record is used (so a bare\n`SELECT count(*)` works whatever the column is named).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type"
       ]
     }
   }

@@ -30,6 +30,9 @@ transform-split-join = ["faucet-core/transform-split-join"]
 transform-filter = ["faucet-core/transform-filter"]
 transform-explode = ["faucet-core/transform-explode"]
 transforms = ["faucet-core/transforms"]
+# Mutual-TLS client-certificate auth (#495): enables the `tls:` config block by
+# turning on reqwest's native-tls identity APIs. Opt-in — off by default.
+mtls = ["reqwest/native-tls"]
 
 [dependencies]
 faucet-core.workspace = true

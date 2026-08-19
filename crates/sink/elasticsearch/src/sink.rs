@@ -37,6 +37,38 @@ pub struct ElasticsearchSink {
     /// log emitted by [`evolve_schema`](faucet_core::Sink::evolve_schema) when an
     /// evolution carries widenings / nullability relaxations (no-ops on ES).
     evolve_noop_warned: AtomicBool,
+    /// In-flight `write_mode: overwrite` state (#494). `begin_overwrite` records
+    /// the fresh staging physical index (which every `write_batch` then targets)
+    /// plus the alias's previous physical targets to detach on commit;
+    /// `commit`/`abort` clear it. `None` outside an overwrite run.
+    overwrite: std::sync::Mutex<Option<OverwriteState>>,
+}
+
+/// Staging state for an Elasticsearch `write_mode: overwrite` run (#494).
+#[derive(Clone, Debug)]
+struct OverwriteState {
+    /// Fresh physical index this run writes into (e.g. `orders-faucet-ovw-<n>`).
+    staging: String,
+    /// Physical indices the read alias currently points at, to remove on commit.
+    previous: Vec<String>,
+}
+
+/// Unique staging physical-index name for an overwrite run — the alias target's
+/// stand-in until the atomic swap. Pure so it can be unit-tested.
+fn staging_index_name(alias: &str, nonce: u128) -> String {
+    format!("{alias}-faucet-ovw-{nonce:x}")
+}
+
+/// Build the body for an atomic `POST /_aliases` swap: detach `alias` from every
+/// `previous` physical index and attach it to `staging`, all applied atomically
+/// by Elasticsearch. Pure.
+fn build_alias_swap_actions(alias: &str, staging: &str, previous: &[String]) -> Value {
+    let mut actions: Vec<Value> = previous
+        .iter()
+        .map(|idx| serde_json::json!({ "remove": { "index": idx, "alias": alias } }))
+        .collect();
+    actions.push(serde_json::json!({ "add": { "index": staging, "alias": alias } }));
+    serde_json::json!({ "actions": actions })
 }
 
 impl ElasticsearchSink {
@@ -55,7 +87,130 @@ impl ElasticsearchSink {
             auth_provider: None,
             resume_dup_warned: AtomicBool::new(false),
             evolve_noop_warned: AtomicBool::new(false),
+            overwrite: std::sync::Mutex::new(None),
         })
+    }
+
+    /// The physical index the current `write_batch` should target: the overwrite
+    /// staging index while an overwrite run is in flight, otherwise the
+    /// configured `index` (which may be an alias).
+    fn write_index(&self) -> String {
+        self.overwrite
+            .lock()
+            .expect("overwrite lock")
+            .as_ref()
+            .map(|s| s.staging.clone())
+            .unwrap_or_else(|| self.config.index.clone())
+    }
+
+    /// Physical indices the read alias `alias` currently points at. Empty when
+    /// the alias does not exist yet (first overwrite run). Errors when `alias`
+    /// names a **concrete index** — overwrite requires an alias (#494).
+    async fn overwrite_alias_targets(
+        &self,
+        alias: &str,
+        auth: &ElasticsearchAuth,
+    ) -> Result<Vec<String>, FaucetError> {
+        let url = format!("{}/_alias/{}", self.config.base_url, alias);
+        let resp = Self::apply_auth_value(self.client.get(&url), auth)
+            .send()
+            .await?;
+        if resp.status().as_u16() == 404 {
+            // No alias of that name. If a concrete index owns the name, refuse —
+            // there is no atomic replace of a concrete index.
+            let head_url = format!("{}/{}", self.config.base_url, alias);
+            let head = Self::apply_auth_value(self.client.head(&head_url), auth)
+                .send()
+                .await?;
+            if head.status().is_success() {
+                return Err(FaucetError::Sink(format!(
+                    "elasticsearch overwrite: `{alias}` is a concrete index, not an alias. \
+                     write_mode: overwrite swaps an alias atomically, so point `index` at an \
+                     alias (or a not-yet-existing name) instead."
+                )));
+            }
+            return Ok(Vec::new());
+        }
+        let resp = check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
+        let body: Value = resp.json().await?;
+        Ok(body
+            .as_object()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default())
+    }
+
+    /// Read `index`'s mappings so the staging index inherits them; `None` if the
+    /// index or its mappings can't be read (staging then relies on dynamic mapping).
+    async fn overwrite_read_mappings(
+        &self,
+        index: &str,
+        auth: &ElasticsearchAuth,
+    ) -> Result<Option<Value>, FaucetError> {
+        let url = format!("{}/{}/_mapping", self.config.base_url, index);
+        let resp = Self::apply_auth_value(self.client.get(&url), auth)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        let body: Value = resp.json().await?;
+        Ok(body
+            .as_object()
+            .and_then(|m| m.values().next())
+            .and_then(|v| v.get("mappings"))
+            .cloned())
+    }
+
+    /// Create the staging physical index, seeding its mappings when known.
+    async fn overwrite_create_index(
+        &self,
+        index: &str,
+        mappings: Option<Value>,
+        auth: &ElasticsearchAuth,
+    ) -> Result<(), FaucetError> {
+        let mut body = serde_json::Map::new();
+        if let Some(m) = mappings {
+            body.insert("mappings".to_string(), m);
+        }
+        let url = format!("{}/{}", self.config.base_url, index);
+        let req = self
+            .client
+            .put(&url)
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&Value::Object(body)).map_err(|e| {
+                FaucetError::Sink(format!("overwrite: serialize create-index body: {e}"))
+            })?);
+        let resp = Self::apply_auth_value(req, auth).send().await?;
+        check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
+        Ok(())
+    }
+
+    /// `POST /<index>/_refresh` so freshly-staged docs are searchable pre-swap.
+    async fn overwrite_refresh(
+        &self,
+        index: &str,
+        auth: &ElasticsearchAuth,
+    ) -> Result<(), FaucetError> {
+        let url = format!("{}/{}/_refresh", self.config.base_url, index);
+        let resp = Self::apply_auth_value(self.client.post(&url), auth)
+            .send()
+            .await?;
+        check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
+        Ok(())
+    }
+
+    /// `DELETE /<index>`.
+    async fn overwrite_delete_index(
+        &self,
+        index: &str,
+        auth: &ElasticsearchAuth,
+    ) -> Result<(), FaucetError> {
+        let url = format!("{}/{}", self.config.base_url, index);
+        let resp = Self::apply_auth_value(self.client.delete(&url), auth)
+            .send()
+            .await?;
+        check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
+        Ok(())
     }
 
     /// Attach a shared [`AuthProvider`](faucet_core::AuthProvider). When set,
@@ -173,10 +328,7 @@ impl ElasticsearchSink {
     /// configured `_index` and an optional explicit `_id`.
     fn action_meta(&self, id: Option<String>) -> serde_json::Map<String, Value> {
         let mut action_meta = serde_json::Map::new();
-        action_meta.insert(
-            "_index".to_string(),
-            Value::String(self.config.index.clone()),
-        );
+        action_meta.insert("_index".to_string(), Value::String(self.write_index()));
         if let Some(id) = id {
             action_meta.insert("_id".to_string(), Value::String(id));
         }
@@ -799,11 +951,106 @@ impl faucet_core::Sink for ElasticsearchSink {
             faucet_core::WriteMode::Append,
             faucet_core::WriteMode::Upsert,
             faucet_core::WriteMode::Delete,
+            faucet_core::WriteMode::Overwrite,
         ]
     }
 
     fn dedups_by_key(&self) -> bool {
         self.config.write.dedups_by_key()
+    }
+
+    fn is_overwrite(&self) -> bool {
+        self.config.write.is_overwrite()
+    }
+
+    /// Prepare an alias-backed overwrite (#494). The configured `index` **must be
+    /// an alias** (or not yet exist): a fresh physical index `<index>-faucet-ovw-…`
+    /// is created (copying the current target's mappings when there is one), this
+    /// run's writes are indexed into it, and `commit_overwrite` atomically moves
+    /// the alias. Refusing a *concrete* index named `index` is what keeps the swap
+    /// safe — there is no atomic replace of a concrete index in Elasticsearch.
+    async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+        let auth = self.resolve_auth().await?;
+        let alias = self.config.index.clone();
+
+        // Discover the alias's current physical targets (if any) and reject a
+        // concrete index of the same name.
+        let previous = self.overwrite_alias_targets(&alias, &auth).await?;
+        let mappings = match previous.first() {
+            Some(idx) => self.overwrite_read_mappings(idx, &auth).await?,
+            None => None,
+        };
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let staging = staging_index_name(&alias, nonce);
+        self.overwrite_create_index(&staging, mappings, &auth)
+            .await?;
+
+        *self.overwrite.lock().expect("overwrite lock") =
+            Some(OverwriteState { staging, previous });
+        Ok(())
+    }
+
+    /// Atomically repoint the alias to the staging index and drop the old
+    /// physical indices. The `POST /_aliases` action set is applied atomically by
+    /// Elasticsearch, so a reader never sees the alias unbound or pointing at two
+    /// generations at once.
+    async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+        let state = self
+            .overwrite
+            .lock()
+            .expect("overwrite lock")
+            .clone()
+            .ok_or_else(|| {
+                FaucetError::Sink("commit_overwrite called without begin_overwrite".into())
+            })?;
+        let auth = self.resolve_auth().await?;
+        let alias = self.config.index.clone();
+
+        // Make the staged docs searchable before the swap.
+        self.overwrite_refresh(&state.staging, &auth).await?;
+
+        let body = build_alias_swap_actions(&alias, &state.staging, &state.previous);
+        let url = format!("{}/_aliases", self.config.base_url);
+        let req = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&body).map_err(|e| {
+                FaucetError::Sink(format!("overwrite: serialize alias actions: {e}"))
+            })?);
+        let resp = Self::apply_auth_value(req, &auth).send().await?;
+        check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
+
+        // Best-effort drop of the now-detached old physical indices.
+        for old in &state.previous {
+            if let Err(e) = self.overwrite_delete_index(old, &auth).await {
+                tracing::warn!(index = %old, error = %e, "overwrite: could not delete old index after swap");
+            }
+        }
+        *self.overwrite.lock().expect("overwrite lock") = None;
+        tracing::info!(alias = %alias, staging = %state.staging, "Elasticsearch overwrite committed (alias swapped)");
+        Ok(())
+    }
+
+    /// Discard the staging index after a failed/cancelled overwrite — the alias
+    /// and its current target are left untouched.
+    async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+        let staging = self
+            .overwrite
+            .lock()
+            .expect("overwrite lock")
+            .as_ref()
+            .map(|s| s.staging.clone());
+        if let Some(staging) = staging {
+            let auth = self.resolve_auth().await?;
+            self.overwrite_delete_index(&staging, &auth).await?;
+        }
+        *self.overwrite.lock().expect("overwrite lock") = None;
+        Ok(())
     }
 
     /// Elasticsearch can add new fields to an existing index in place via
@@ -1025,9 +1272,14 @@ impl faucet_core::Sink for ElasticsearchSink {
 
         // Upsert / delete routing: plan the page (dedup last-write-wins, strip
         // the delete marker) and emit `index` / `delete` bulk actions whose
-        // `_id` derives from `key`. Append falls through to the existing
-        // chunked `index` fast path below.
-        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+        // `_id` derives from `key`. Append **and Overwrite** fall through to the
+        // existing chunked `index` fast path below — an overwrite run indexes
+        // into the staging physical index (via `action_meta` → `write_index`),
+        // and `commit_overwrite` swaps the alias afterward.
+        if !matches!(
+            self.config.write.write_mode,
+            faucet_core::WriteMode::Append | faucet_core::WriteMode::Overwrite
+        ) {
             let plan = faucet_core::plan_writes(records, &self.config.write);
             if let Some((idx, msg)) = plan.failed.first() {
                 return Err(FaucetError::Sink(format!(
@@ -1134,7 +1386,12 @@ impl faucet_core::Sink for ElasticsearchSink {
         // silent downstream duplication. We now attribute each `_bulk` item
         // result back to its original page index/indices and return per-row
         // outcomes, never an outer `Err` for an item-level rejection.
-        if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+        // Overwrite is insert-shaped into the staging index — falls through to
+        // the append partial path below (all rows targeted at `write_index`).
+        if !matches!(
+            self.config.write.write_mode,
+            faucet_core::WriteMode::Append | faucet_core::WriteMode::Overwrite
+        ) {
             // `plan_origins` mirrors `plan_writes` (same key extraction, same
             // last-write-wins dedup) but additionally records, for each emitted
             // bulk action, the original page indices that fed into it. Because
@@ -1653,5 +1910,36 @@ mod tests {
         let action1: Value = serde_json::from_str(lines[2]).unwrap();
         assert_eq!(action1["delete"]["_id"], "2");
         assert_eq!(action1["delete"]["_index"], "idx");
+    }
+
+    #[test]
+    fn staging_index_name_is_prefixed_and_unique() {
+        let a = staging_index_name("orders", 0x1a2b);
+        assert!(a.starts_with("orders-faucet-ovw-"), "{a}");
+        assert_ne!(a, staging_index_name("orders", 0x1a2c));
+    }
+
+    #[test]
+    fn alias_swap_actions_remove_all_previous_then_add_staging() {
+        let body = build_alias_swap_actions(
+            "orders",
+            "orders-faucet-ovw-1",
+            &["orders-old-a".to_string(), "orders-old-b".to_string()],
+        );
+        let actions = body["actions"].as_array().unwrap();
+        assert_eq!(actions.len(), 3, "two removes + one add");
+        assert_eq!(actions[0]["remove"]["index"], "orders-old-a");
+        assert_eq!(actions[0]["remove"]["alias"], "orders");
+        assert_eq!(actions[1]["remove"]["index"], "orders-old-b");
+        assert_eq!(actions[2]["add"]["index"], "orders-faucet-ovw-1");
+        assert_eq!(actions[2]["add"]["alias"], "orders");
+    }
+
+    #[test]
+    fn alias_swap_first_run_only_adds() {
+        let body = build_alias_swap_actions("orders", "orders-faucet-ovw-1", &[]);
+        let actions = body["actions"].as_array().unwrap();
+        assert_eq!(actions.len(), 1);
+        assert!(actions[0].get("add").is_some());
     }
 }

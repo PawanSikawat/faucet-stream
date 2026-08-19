@@ -10,7 +10,7 @@ pub mod convert;
 pub mod serde_helpers;
 pub mod stream;
 
-pub use faucet_core::{FaucetError, Source};
+pub use faucet_core::{FaucetError, Source, TlsClientConfig};
 
 pub use config::{SoapConfig, SoapVersion, XmlAuth, XmlPagination, XmlStreamConfig};
 pub use stream::XmlStream;

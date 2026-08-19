@@ -117,6 +117,7 @@ struct ReloadedBundle {
     execution: Option<crate::config::ExecutionSpec>,
     resilience: Option<faucet_core::ResiliencePolicy>,
     sla: Option<crate::sla::SlaSpec>,
+    reconcile: Option<crate::reconcile::ReconcileSpec>,
     cron: String,
     timezone: String,
 }
@@ -143,6 +144,7 @@ async fn reload_bundle(path: &std::path::Path, profile: Option<&str>) -> CliResu
         execution: cfg.execution.clone(),
         resilience,
         sla: cfg.sla.clone(),
+        reconcile: cfg.reconcile.clone(),
         cron,
         timezone,
     })
@@ -218,6 +220,7 @@ pub async fn run(args: ScheduleArgs) -> CliResult<()> {
             &pipeline_name,
             &resilience,
             &cfg.sla,
+            &cfg.reconcile,
             #[cfg(feature = "lineage")]
             &lineage,
             #[cfg(feature = "lineage")]
@@ -240,6 +243,7 @@ pub async fn run(args: ScheduleArgs) -> CliResult<()> {
         timezone,
         resilience,
         cfg.sla.clone(),
+        cfg.reconcile.clone(),
         path,
         args.profile,
         #[cfg(feature = "lineage")]
@@ -264,6 +268,7 @@ fn make_opts(
     clock: chrono::DateTime<chrono::FixedOffset>,
     resilience: &Option<faucet_core::ResiliencePolicy>,
     sla: &Option<crate::sla::SlaSpec>,
+    reconcile: &Option<crate::reconcile::ReconcileSpec>,
     #[cfg(feature = "lineage")] lineage: &Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
     #[cfg(feature = "lineage")] lineage_cfg: &Option<faucet_lineage::LineageConfig>,
     #[cfg(feature = "notify")] notifier: &Option<std::sync::Arc<crate::notify::Notifier>>,
@@ -282,6 +287,7 @@ fn make_opts(
         cancel: None,
         resilience: resilience.clone(),
         sla: sla.clone(),
+        reconcile: reconcile.clone(),
         #[cfg(feature = "lineage")]
         lineage: lineage.clone(),
         #[cfg(feature = "lineage")]
@@ -397,6 +403,7 @@ async fn run_once(
     pipeline_name: &str,
     resilience: &Option<faucet_core::ResiliencePolicy>,
     sla: &Option<crate::sla::SlaSpec>,
+    reconcile: &Option<crate::reconcile::ReconcileSpec>,
     #[cfg(feature = "lineage")] lineage: &Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
     #[cfg(feature = "lineage")] lineage_cfg: &Option<faucet_lineage::LineageConfig>,
     #[cfg(feature = "notify")] notifier: &Option<std::sync::Arc<crate::notify::Notifier>>,
@@ -411,6 +418,7 @@ async fn run_once(
         compiled.clock_at(now),
         resilience,
         sla,
+        reconcile,
         #[cfg(feature = "lineage")]
         lineage,
         #[cfg(feature = "lineage")]
@@ -463,6 +471,7 @@ async fn run_loop(
     mut timezone: String,
     mut resilience: Option<faucet_core::ResiliencePolicy>,
     mut sla: Option<crate::sla::SlaSpec>,
+    mut reconcile: Option<crate::reconcile::ReconcileSpec>,
     path: std::path::PathBuf,
     profile: Option<String>,
     #[cfg(feature = "lineage")] lineage: Option<std::sync::Arc<faucet_lineage::LineageEmitter>>,
@@ -538,6 +547,7 @@ async fn run_loop(
                         compiled.clock_at(next_due),
                         &resilience,
                         &sla,
+                        &reconcile,
                         #[cfg(feature = "lineage")]
                         &lineage,
                         #[cfg(feature = "lineage")]
@@ -688,6 +698,7 @@ async fn run_loop(
                                 compiled.clock_at(sched_for),
                                 &resilience,
                                 &sla,
+                        &reconcile,
                                 #[cfg(feature = "lineage")]
                                 &lineage,
                                 #[cfg(feature = "lineage")]
@@ -721,6 +732,7 @@ async fn run_loop(
                         execution = b.execution;
                         resilience = b.resilience;
                         sla = b.sla;
+                        reconcile = b.reconcile;
                         cron = b.cron;
                         timezone = b.timezone;
                         breaker_cooldown = resilience
@@ -982,6 +994,7 @@ mod tests {
             Utc::now().fixed_offset(),
             &None,
             &None,
+            &None,
             #[cfg(feature = "lineage")]
             &None,
             #[cfg(feature = "lineage")]
@@ -1017,6 +1030,7 @@ mod tests {
             &None,
             &auth,
             clock,
+            &None,
             &None,
             &None,
             #[cfg(feature = "lineage")]

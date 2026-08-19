@@ -283,6 +283,10 @@ jobs:
           - auth
           - full
           - compression
+          # Mutual-TLS client-certificate auth on the HTTP sources (#495)
+          - mtls
+          # OAuth1 request-signing auth provider (#496)
+          - oauth1
           # Opt-in Arrow columnar record path (RFC 0002 / #375)
           - arrow
           # Encryption at rest (state bookmarks + JSONL/DLQ, #207)
