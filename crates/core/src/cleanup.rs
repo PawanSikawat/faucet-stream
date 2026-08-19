@@ -420,6 +420,46 @@ mod tests {
         assert_eq!(p.max_keys, 1);
     }
 
+    #[tokio::test]
+    async fn cleanup_tracker_forwards_overwrite_lifecycle() {
+        // The tracker must forward the overwrite lifecycle to the inner sink so
+        // an overwrite run still stages/swaps when scoped cleanup wraps it.
+        struct OvwSink {
+            log: std::sync::Mutex<Vec<&'static str>>,
+        }
+        #[async_trait::async_trait]
+        impl Sink for OvwSink {
+            async fn write_batch(&self, r: &[Value]) -> Result<usize, FaucetError> {
+                Ok(r.len())
+            }
+            fn is_overwrite(&self) -> bool {
+                true
+            }
+            async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+                self.log.lock().unwrap().push("begin");
+                Ok(())
+            }
+            async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+                self.log.lock().unwrap().push("commit");
+                Ok(())
+            }
+            async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+                self.log.lock().unwrap().push("abort");
+                Ok(())
+            }
+        }
+        let inner = OvwSink {
+            log: std::sync::Mutex::new(Vec::new()),
+        };
+        let policy = CleanupPolicy::new(scope(), vec!["id".into()], 10).unwrap();
+        let tracker = CleanupTracker::new(&inner, &policy);
+        assert!(tracker.is_overwrite());
+        tracker.begin_overwrite().await.unwrap();
+        tracker.commit_overwrite().await.unwrap();
+        tracker.abort_overwrite().await.unwrap();
+        assert_eq!(*inner.log.lock().unwrap(), vec!["begin", "commit", "abort"]);
+    }
+
     #[test]
     fn accumulates_keys_across_pages() {
         let mut seen = SeenKeys::new();

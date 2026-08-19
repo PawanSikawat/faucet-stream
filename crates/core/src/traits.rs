@@ -751,6 +751,18 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn default_overwrite_methods_reject_or_noop() {
+        // A sink that does not opt into overwrite (MockSink uses the defaults):
+        // `is_overwrite` is false, begin/commit return the typed "unsupported"
+        // error, and abort is a no-op success.
+        let sink = MockSink::new();
+        assert!(!sink.is_overwrite());
+        assert!(sink.begin_overwrite().await.is_err());
+        assert!(sink.commit_overwrite().await.is_err());
+        assert!(sink.abort_overwrite().await.is_ok());
+    }
+
     // ── Source tests ────────────────────────────────────────────────────────
 
     #[tokio::test]
