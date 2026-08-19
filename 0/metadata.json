@@ -1,0 +1,64 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0C9G3AW2VRF9KY8TAC00AQX",
+  "session_id": "55398c64-7c65-40db-9b68-886111a86d7f",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-19T05:56:55.527668Z",
+  "branch": "feat/tap-replication-rest-auth",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "Cargo.lock",
+    "crates/auth/Cargo.toml",
+    "crates/auth/README.md",
+    "crates/auth/src/oauth2.rs",
+    "crates/auth/src/token_endpoint.rs",
+    "crates/source/rest/README.md",
+    "crates/source/rest/src/pagination/mod.rs",
+    "crates/source/rest/src/stream.rs",
+    "crates/source/rest/tests/cursor_in_body_test.rs",
+    "crates/source/rest/tests/pagination_test.rs",
+    "crates/source/rest/tests/stop_on_204_test.rs",
+    "docs/book/src/cookbook/auth.md",
+    "docs/book/src/cookbook/pagination.md",
+    "docs/book/src/reference/config.md",
+    "schemas/faucet.schema.json"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8",
+  "turn_id": "3fc0b75695e1",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 348,
+    "cache_creation_tokens": 395497,
+    "cache_read_tokens": 52015135,
+    "output_tokens": 124724,
+    "api_call_count": 175
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-19T05:56:55.431305Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 943,
+    "human_modified": 42,
+    "human_removed": 0,
+    "total_committed": 943,
+    "total_lines_changed": 985,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    }
+  ]
+}

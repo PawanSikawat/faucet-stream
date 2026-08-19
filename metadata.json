@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0C9G3AW2VRF9KY8TAC00AQX",
+  "strategy": "manual-commit",
+  "branch": "feat/tap-replication-rest-auth",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "Cargo.lock",
+    "crates/auth/Cargo.toml",
+    "crates/auth/README.md",
+    "crates/auth/src/oauth2.rs",
+    "crates/auth/src/token_endpoint.rs",
+    "crates/source/rest/README.md",
+    "crates/source/rest/src/pagination/mod.rs",
+    "crates/source/rest/src/stream.rs",
+    "crates/source/rest/tests/cursor_in_body_test.rs",
+    "crates/source/rest/tests/pagination_test.rs",
+    "crates/source/rest/tests/stop_on_204_test.rs",
+    "docs/book/src/cookbook/auth.md",
+    "docs/book/src/cookbook/pagination.md",
+    "docs/book/src/reference/config.md",
+    "schemas/faucet.schema.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 348,
+    "cache_creation_tokens": 395497,
+    "cache_read_tokens": 52015135,
+    "output_tokens": 124724,
+    "api_call_count": 175
+  }
+}
