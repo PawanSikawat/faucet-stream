@@ -432,7 +432,14 @@ auth:
       client_id: ${secret:API_CLIENT_ID}
       client_secret: ${secret:API_CLIENT_SECRET}
       refresh_token: ${secret:API_REFRESH_TOKEN}
+      persist: { path: "./state/auth" }   # persist a rotated refresh_token across runs
 ```
+
+`oauth2_refresh` accepts `persist: { path }` to durably store a **rotated**
+refresh token so later runs survive rotation. `token_endpoint` accepts
+`encoding: form` (urlencoded body) and `apply_as: { header, template }` (place
+the token in a custom header, e.g. a session cookie). See the
+[authentication cookbook](../cookbook/auth.md).
 
 ## `delivery`
 

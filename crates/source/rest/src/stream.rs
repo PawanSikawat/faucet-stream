@@ -429,9 +429,18 @@ impl RestStream {
                     _ => None,
                 };
 
+                // POST-search (CursorInBody): the extracted cursor is injected
+                // into the request body for every page after the first.
+                let body_cursor: Option<(String, String)> = self
+                    .config
+                    .pagination
+                    .body_cursor(&state)
+                    .map(|(f, v)| (f.to_string(), v.to_string()));
+
                 let params_clone = params.clone();
                 let ctx_ref = owned_context.as_ref();
                 let is_first_page = pages_fetched == 0;
+                let body_cursor_ref = body_cursor.as_ref().map(|(f, v)| (f.as_str(), v.as_str()));
                 let (body, resp_headers) = retry::execute_with_retry(
                     // The REST runner takes retries-after-first; the policy holds
                     // total attempts. Feed both knobs from the resolved policy so
@@ -446,6 +455,7 @@ impl RestStream {
                             url_override.as_deref(),
                             ctx_ref,
                             is_first_page,
+                            body_cursor_ref,
                         )
                     },
                 )
@@ -598,9 +608,16 @@ impl RestStream {
         url_override: Option<&str>,
         path_context: Option<&HashMap<String, Value>>,
         is_first_page: bool,
+        body_cursor: Option<(&str, &str)>,
     ) -> Result<(Value, HeaderMap), FaucetError> {
         match self
-            .execute_request_once(params, url_override, path_context, is_first_page)
+            .execute_request_once(
+                params,
+                url_override,
+                path_context,
+                is_first_page,
+                body_cursor,
+            )
             .await
         {
             Err(FaucetError::HttpStatus { status: 401, .. }) if self.uses_inline_cached_token() => {
@@ -609,8 +626,14 @@ impl RestStream {
                      invalidating the token cache and retrying once with a fresh token"
                 );
                 self.invalidate_inline_token_cache().await;
-                self.execute_request_once(params, url_override, path_context, is_first_page)
-                    .await
+                self.execute_request_once(
+                    params,
+                    url_override,
+                    path_context,
+                    is_first_page,
+                    body_cursor,
+                )
+                .await
             }
             other => other,
         }
@@ -652,6 +675,7 @@ impl RestStream {
         url_override: Option<&str>,
         path_context: Option<&HashMap<String, Value>>,
         is_first_page: bool,
+        body_cursor: Option<(&str, &str)>,
     ) -> Result<(Value, HeaderMap), FaucetError> {
         let use_override = url_override.is_some();
         let url = match url_override {
@@ -758,27 +782,52 @@ impl RestStream {
             req = req.query(&[(param.as_str(), value.as_str())]);
         }
 
-        if let Some(body) = &self.config.body {
-            // Substitute context into body string values when available. Use the
-            // JSON-safe variant: `substitute_context` does NOT escape the value,
-            // so a context value carrying a JSON metacharacter (`"`, `\`, newline)
-            // corrupts the serialized body — the old `unwrap_or(Value::String(..))`
-            // fallback then silently coerced the whole object into a bare string
-            // and POSTed garbage (audit #321 H7). `substitute_context_json`
-            // JSON-escapes string values; an un-parseable result is now a hard
-            // error rather than a silently-wrong payload.
-            if let Some(ctx) = path_context {
-                let body_str = body.to_string();
-                let substituted = faucet_core::util::substitute_context_json(&body_str, ctx);
-                let substituted_value: Value = serde_json::from_str(&substituted).map_err(|e| {
-                    FaucetError::Source(format!(
-                        "REST source: context substitution produced an invalid JSON body: {e}"
-                    ))
-                })?;
-                req = req.json(&substituted_value);
-            } else {
-                req = req.json(body);
+        // Build the request JSON body, if any. Substitute context into body
+        // string values when available. Use the JSON-safe variant:
+        // `substitute_context` does NOT escape the value, so a context value
+        // carrying a JSON metacharacter (`"`, `\`, newline) corrupts the
+        // serialized body — the old `unwrap_or(Value::String(..))` fallback then
+        // silently coerced the whole object into a bare string and POSTed garbage
+        // (audit #321 H7). `substitute_context_json` JSON-escapes string values;
+        // an un-parseable result is now a hard error rather than a silently-wrong
+        // payload.
+        let mut body_value: Option<Value> = match &self.config.body {
+            Some(body) => match path_context {
+                Some(ctx) => {
+                    let body_str = body.to_string();
+                    let substituted = faucet_core::util::substitute_context_json(&body_str, ctx);
+                    let substituted_value: Value =
+                        serde_json::from_str(&substituted).map_err(|e| {
+                            FaucetError::Source(format!(
+                                "REST source: context substitution produced an invalid JSON body: {e}"
+                            ))
+                        })?;
+                    Some(substituted_value)
+                }
+                None => Some(body.clone()),
+            },
+            None => None,
+        };
+        // CursorInBody: inject the pagination cursor into the request body for
+        // pages after the first. If no base body was configured, start from an
+        // empty object so the cursor still lands somewhere.
+        if let Some((field, cursor)) = body_cursor {
+            let obj = body_value.get_or_insert_with(|| Value::Object(serde_json::Map::new()));
+            match obj.as_object_mut() {
+                Some(map) => {
+                    map.insert(field.to_string(), Value::String(cursor.to_string()));
+                }
+                None => {
+                    return Err(FaucetError::Source(
+                        "REST source: pagination `CursorInBody` requires a JSON object request \
+                         body to inject the cursor into"
+                            .into(),
+                    ));
+                }
             }
+        }
+        if let Some(body) = &body_value {
+            req = req.json(body);
         }
 
         let resp = req.send().await?;

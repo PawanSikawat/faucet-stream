@@ -22,6 +22,19 @@ pub enum PaginationStyle {
         next_token_path: String,
         param_name: String,
     },
+    /// POST-search pagination: the next-page cursor is read from the response
+    /// body via `next_token_path` and written **into the request JSON body** at
+    /// `body_cursor_field` for the next request (rather than a query param).
+    ///
+    /// The first request uses `config.body` unchanged; each subsequent request
+    /// sets `body[body_cursor_field] = <extracted cursor>`. Pagination stops when
+    /// `next_token_path` is null/absent, and a repeated cursor trips the same
+    /// loop guard as [`PaginationStyle::Cursor`]. Used by e.g. HubSpot CRM
+    /// `POST /crm/v3/objects/{obj}/search` (`$.paging.next.after` → `after`).
+    CursorInBody {
+        next_token_path: String,
+        body_cursor_field: String,
+    },
     LinkHeader,
     /// The full URL of the next page is embedded in the response body.
     /// `next_link_path` is a JSONPath expression pointing to that URL field
@@ -86,6 +99,8 @@ impl PaginationStyle {
             PaginationStyle::Cursor { param_name, .. } => {
                 cursor::apply_params(params, param_name, &state.next_token);
             }
+            // The cursor is injected into the request body, not the query string.
+            PaginationStyle::CursorInBody { .. } => {}
             PaginationStyle::LinkHeader => {}
             PaginationStyle::NextLinkInBody { .. } => {}
             PaginationStyle::PageNumber {
@@ -137,6 +152,24 @@ impl PaginationStyle {
                     if state.next_token == state.previous_token {
                         tracing::warn!(
                             "pagination loop detected: cursor {:?} repeated — stopping",
+                            state.next_token
+                        );
+                        return Ok(false);
+                    }
+                    state.previous_token = state.next_token.clone();
+                }
+                Ok(has_next)
+            }
+            PaginationStyle::CursorInBody {
+                next_token_path, ..
+            } => {
+                // Reuse the cursor extraction + loop guard; the only difference
+                // from `Cursor` is where the cursor is applied (body, not param).
+                let has_next = cursor::advance(body, next_token_path, &mut state.next_token)?;
+                if has_next {
+                    if state.next_token == state.previous_token {
+                        tracing::warn!(
+                            "pagination loop detected: body cursor {:?} repeated — stopping",
                             state.next_token
                         );
                         return Ok(false);
@@ -239,6 +272,23 @@ impl PaginationStyle {
                 }
                 Ok(has_next)
             }
+        }
+    }
+
+    /// For [`PaginationStyle::CursorInBody`], the `(body_cursor_field, cursor)`
+    /// to inject into the next request's JSON body — `Some` only once a cursor
+    /// has been extracted (i.e. from the second page on). Every other style, and
+    /// the first page of `CursorInBody`, returns `None` (the request body is
+    /// used unchanged).
+    pub fn body_cursor<'a>(&'a self, state: &'a PaginationState) -> Option<(&'a str, &'a str)> {
+        match self {
+            PaginationStyle::CursorInBody {
+                body_cursor_field, ..
+            } => state
+                .next_token
+                .as_deref()
+                .map(|tok| (body_cursor_field.as_str(), tok)),
+            _ => None,
         }
     }
 }

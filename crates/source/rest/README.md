@@ -11,7 +11,7 @@ This is the flagship faucet-stream source: point it at any JSON-over-HTTP API, d
 
 ## Feature highlights
 
-- **Six pagination styles** — `Cursor`, `LinkHeader`, `NextLinkInBody`, `PageNumber`, `Offset`, and `None`, each with its own termination/loop guard so a misbehaving API can't loop forever.
+- **Seven pagination styles** — `Cursor`, `CursorInBody` (POST-search cursor in the request body), `LinkHeader`, `NextLinkInBody`, `PageNumber`, `Offset`, and `None`, each with its own termination/loop guard so a misbehaving API can't loop forever.
 - **Eight auth methods** — `bearer`, `basic`, `api_key` (header), `api_key_query`, `oauth2` (client credentials with token caching), `token_endpoint` (fetch a token from an arbitrary endpoint), `custom` headers, and `none` — plus shared `auth: { ref }` providers via the CLI's top-level `auth:` catalog.
 - **Mutual TLS** — present a client certificate (PEM pair or PKCS#12) on every request via a `tls:` block (feature `mtls`), for APIs that require client-certificate auth.
 - **Memory-bounded streaming** — overrides `Source::stream_pages`, so `Pipeline::run` writes each page to the sink as it arrives; peak memory stays `O(page)` regardless of total record count.
@@ -329,10 +329,13 @@ The `pagination` field selects a `PaginationStyle` (tagged by `type`). `max_page
 |----------------|--------|------------|
 | `None` | — | After the first page. |
 | `Cursor` | `next_token_path`, `param_name` | Next-token JSONPath is null/absent, or the same cursor repeats (loop detection). |
+| `CursorInBody` | `next_token_path`, `body_cursor_field` | POST-search endpoints: the next-page cursor is read from the response body and written **into the request JSON body** at `body_cursor_field` (rather than a query param). Stops when the cursor is null/absent or repeats. E.g. HubSpot CRM `POST …/search` — `$.paging.next.after` → `after`. |
 | `LinkHeader` | — | No `rel="next"` in the `Link` response header, or the same link repeats. |
 | `NextLinkInBody` | `next_link_path` | Next-page URL is absent, null, empty, or repeats. |
 | `PageNumber` | `param_name`, `start_page`, `page_size`, `page_size_param` | A zero-record page, or the same body returned twice in a row (content-stagnation detection for APIs that clamp out-of-range pages). |
 | `Offset` | `offset_param`, `limit_param`, `limit`, `total_path` | A zero-record page, offset reaches `total` (via `total_path`), or a page returns fewer records than `limit`. |
+
+An HTTP **`204 No Content`** (or any 2xx with an empty body) is treated as an empty page, so a feed that ends with a `204` after its last data page (e.g. ADP's `$top`/`$skip` paging) terminates cleanly rather than erroring.
 
 ## Streaming & batching
 

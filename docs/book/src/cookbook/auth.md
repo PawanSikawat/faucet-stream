@@ -62,6 +62,48 @@ For non-standard token endpoints, `token_endpoint` lets you describe the request
 and point at the access-token and expiry fields in the response. See
 `faucet schema source rest` for the full field list.
 
+Two knobs cover the less-standard flows:
+
+- **`encoding: form`** sends the token request as
+  `application/x-www-form-urlencoded` (OAuth endpoints that expect a `resource=`
+  param need this; the default is `json`).
+- **`apply_as: { header, template }`** puts the fetched token in an arbitrary
+  header instead of `Authorization: Bearer` — e.g. a session cookie. `template`
+  is the header value with `{token}` substituted.
+
+```yaml
+auth:
+  sap:                          # SAP B1: SessionId carried as a cookie
+    type: token_endpoint
+    config:
+      url: "https://host:50000/b1s/v1/Login"
+      body: { CompanyDB: "${param.company_db}", UserName: "${param.user}", Password: "${secret:sap_pw}" }
+      token_path: "$.SessionId"
+      apply_as: { header: "Cookie", template: "B1SESSION={token}; CompanyDB=${param.company_db}" }
+```
+
+## Persisting a rotating refresh token
+
+Some providers (Microsoft Graph, Rippling) **rotate the `refresh_token` on every
+refresh** — the old one is invalidated. In-memory rotation works for a single
+run, but the *next* scheduled run would present the now-stale seed and get a 401.
+Set `persist.path` on an `oauth2_refresh` provider to durably store the rotated
+token (a file-backed state store) so later runs pick up where the last one left
+off:
+
+```yaml
+auth:
+  graph:
+    type: oauth2_refresh
+    config:
+      token_url: "https://login.microsoftonline.com/${param.tenant}/oauth2/v2.0/token"
+      client_id: "${secret:graph_client_id}"
+      client_secret: "${secret:graph_client_secret}"
+      refresh_token: "${secret:graph_seed_refresh_token}"   # seed; used only until the first rotation
+      persist:
+        path: "./state/auth"      # rotated refresh_token survives across runs
+```
+
 ## Mutual TLS (client certificates)
 
 Some enterprise/gov APIs (e.g. ADP) require the client to present a certificate

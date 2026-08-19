@@ -79,8 +79,24 @@ A fixed credential. Exactly one of the three shapes below must be present.
 | `token_url` | string | — *(required)* | OAuth2 token endpoint. |
 | `client_id` | string | — *(required)* | OAuth2 client ID. |
 | `client_secret` | string | — *(required)* | OAuth2 client secret. |
-| `refresh_token` | string | — *(required)* | Initial refresh token. A rotated token in the response is captured in place for the next refresh. |
+| `refresh_token` | string | — *(required)* | Initial (seed) refresh token. A rotated token in the response is captured in place for the next refresh. |
 | `expiry_ratio` | number | `0.9` | Refresh after `expires_in × expiry_ratio` seconds. Must be a finite number in `(0, 1]`. |
+| `persist` | object | *(none)* | Durably persist the rotated `refresh_token` so a **later** run authenticates after the token rotates (providers like Microsoft / Rippling rotate on every refresh; without this the second scheduled run 401s). `persist.path` is a file-backed state-store directory; the rotated token is written after each refresh and re-read on startup in preference to the config seed. Optional `persist.key` overrides the auto-derived (stable, identity-scoped) storage key. |
+
+`persist` example:
+
+```yaml
+auth:
+  graph:
+    type: oauth2_refresh
+    config:
+      token_url: "https://login.microsoftonline.com/${param.tenant}/oauth2/v2.0/token"
+      client_id: "${secret:graph_client_id}"
+      client_secret: "${secret:graph_client_secret}"
+      refresh_token: "${secret:graph_seed_refresh_token}"   # seed; used only until the first rotation
+      persist:
+        path: "./state/auth"        # rotated refresh_token survives across runs
+```
 
 ### `token_endpoint`
 
@@ -88,10 +104,27 @@ A fixed credential. Exactly one of the three shapes below must be present.
 |-------|------|---------|-------------|
 | `url` | string | — *(required)* | HTTP endpoint to fetch the token from. |
 | `method` | string | `POST` | HTTP method. |
-| `body` | object | *(none)* | JSON request body (e.g. carrying `client_id` / `client_secret`). Omit for a GET. |
+| `encoding` | string | `json` | Request-body encoding: `json` (default) or `form` (`application/x-www-form-urlencoded`, required by OAuth token endpoints that expect a `resource=` param). `form` requires a flat object `body` of string/number/boolean values. |
+| `body` | object | *(none)* | Request body (e.g. carrying `client_id` / `client_secret` / `resource`). Omit for a GET. |
 | `token_path` | string | — *(required)* | JSONPath selecting the token from the response (e.g. `$.auth.access_token`). String and numeric matches are accepted. |
 | `expiry_path` | string | *(none)* | JSONPath selecting `expires_in` (seconds) from the response. When absent, the token is cached without an expiry. |
 | `expiry_ratio` | number | `0.9` | Refresh after `expires_in × expiry_ratio` seconds. Must be a finite number in `(0, 1]`. |
+| `apply_as` | object | *(Bearer)* | Where the fetched token is placed on each request. Default is `Authorization: Bearer <token>`. Set `apply_as: { header, template }` to place it in an arbitrary header (e.g. a session cookie): `template` is the header value with `{token}` substituted (defaults to the bare token). |
+
+`apply_as` example — SAP Business One session cookie:
+
+```yaml
+auth:
+  sap:
+    type: token_endpoint
+    config:
+      url: "https://host:50000/b1s/v1/Login"
+      body: { CompanyDB: "${param.company_db}", UserName: "${param.user}", Password: "${secret:sap_pw}" }
+      token_path: "$.SessionId"
+      apply_as:
+        header: "Cookie"
+        template: "B1SESSION={token}; CompanyDB=${param.company_db}"
+```
 
 ## CLI usage — the top-level `auth:` catalog
 
