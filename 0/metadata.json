@@ -3,24 +3,24 @@
   "checkpoint_id": "01M0CEK059PG7T6EZQCZHY2CS3",
   "session_id": "55398c64-7c65-40db-9b68-886111a86d7f",
   "strategy": "manual-commit",
-  "created_at": "2026-08-19T07:25:53.056098Z",
+  "created_at": "2026-08-19T13:32:16.174267Z",
   "branch": "feat/rest-mtls",
-  "checkpoints_count": 1,
+  "checkpoints_count": 4,
   "save_step_count": 1,
   "files_touched": [],
   "agent": "Claude Code",
   "model": "claude-opus-4-8",
-  "turn_id": "9b76baa6cd4a",
+  "turn_id": "c43aa1e4d700",
   "compact_transcript_start": 0,
   "token_usage": {
-    "input_tokens": 622,
-    "cache_creation_tokens": 575704,
-    "cache_read_tokens": 122520768,
-    "output_tokens": 228113,
-    "api_call_count": 312
+    "input_tokens": 752,
+    "cache_creation_tokens": 1298364,
+    "cache_read_tokens": 164443010,
+    "output_tokens": 309271,
+    "api_call_count": 377
   },
   "session_metrics": {
-    "turn_count": 2
+    "turn_count": 6
   },
   "prompt_attributions": [
     {

@@ -3,7 +3,7 @@
   "checkpoint_id": "01M0CEK059PG7T6EZQCZHY2CS3",
   "strategy": "manual-commit",
   "branch": "feat/rest-mtls",
-  "checkpoints_count": 1,
+  "checkpoints_count": 4,
   "files_touched": null,
   "sessions": [
     {
@@ -15,10 +15,10 @@
     }
   ],
   "token_usage": {
-    "input_tokens": 622,
-    "cache_creation_tokens": 575704,
-    "cache_read_tokens": 122520768,
-    "output_tokens": 228113,
-    "api_call_count": 312
+    "input_tokens": 752,
+    "cache_creation_tokens": 1298364,
+    "cache_read_tokens": 164443010,
+    "output_tokens": 309271,
+    "api_call_count": 377
   }
 }
