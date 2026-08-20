@@ -44,6 +44,10 @@ use tokio::sync::{Mutex, Semaphore};
 /// so the per-level snapshot and per-child-unit hand-off are pointer bumps, not
 /// deep clones of the JSON tree (#160).
 type CapturedRecords = Arc<Mutex<HashMap<String, Vec<Arc<Value>>>>>;
+
+/// Enumerated discovery dimensions (#501), keyed by discovery row id. Populated
+/// by discovery invocations, read when building the `for_each` cross-product.
+type DiscoveredDims = Arc<Mutex<HashMap<String, crate::discovery_matrix::Dim>>>;
 use tokio_util::sync::CancellationToken;
 
 /// Knobs passed to [`run_expanded`].
@@ -246,6 +250,9 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
     // as `Arc<Value>` so the per-level snapshot clone and the per-child-unit
     // hand-off are pointer bumps, not deep clones of the JSON tree (#160).
     let captured: CapturedRecords = Arc::new(Mutex::new(HashMap::new()));
+    // Discovery dimensions (#501): value-sets enumerated by `discover:` rows,
+    // read when a `for_each` row builds its cross-product.
+    let discovered: DiscoveredDims = Arc::new(Mutex::new(HashMap::new()));
 
     let mut outcomes: Vec<InvocationOutcome> = Vec::new();
     let mut skipped_subtrees: HashSet<String> = HashSet::new();
@@ -293,7 +300,9 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
             .filter(|id| {
                 let node = &nodes_by_id[*id];
                 let parent_done = match &node.role {
-                    NodeRole::Root => true,
+                    // Discovery/Product have no `parent:`; their prerequisites
+                    // (the `for_each` dims) are carried in `depends_on`.
+                    NodeRole::Root | NodeRole::Discovery { .. } | NodeRole::Product { .. } => true,
                     NodeRole::Child { parent_id, .. } => {
                         completed.contains(parent_id) || skipped_subtrees.contains(parent_id)
                     }
@@ -336,7 +345,7 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                 .iter()
                 .filter_map(|id| match &nodes_by_id[id].role {
                     NodeRole::Child { parent_id, .. } => Some(parent_id.as_str()),
-                    NodeRole::Root => None,
+                    _ => None,
                 })
                 .collect();
             let mut cap = captured.lock().await;
@@ -382,7 +391,80 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                         parent_record: None,
                         state_key,
                         parent_record_key: None,
+                        product_ctx: None,
                     });
+                }
+                NodeRole::Discovery { .. } => {
+                    // One invocation; run_unit intercepts it to enumerate the
+                    // dimension. State is unused, so the key is a placeholder.
+                    let state_key = build_state_key(&opts.pipeline_name, &node.id, None);
+                    units.push(Unit {
+                        node: node.clone(),
+                        parent_record: None,
+                        state_key,
+                        parent_record_key: None,
+                        product_ctx: None,
+                    });
+                }
+                NodeRole::Product { dims } => {
+                    // Gather the enumerated dimensions in declared order. They
+                    // are guaranteed present: each dim is in this row's
+                    // `depends_on`, so a skipped/failed dim already skipped this
+                    // row above. The `missing` guard is defensive.
+                    let resolved: Vec<crate::discovery_matrix::Dim> = {
+                        let dim_map = discovered.lock().await;
+                        let mut v = Vec::with_capacity(dims.len());
+                        let mut missing = None;
+                        for d in dims {
+                            match dim_map.get(d) {
+                                Some(dim) => v.push(dim.clone()),
+                                None => {
+                                    missing = Some(d.clone());
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(d) = missing {
+                            skipped_subtrees.insert(id.clone());
+                            tracing::warn!(row = %id, dimension = %d, "for_each dimension unavailable — row skipped");
+                            continue;
+                        }
+                        v
+                    };
+                    let size = crate::discovery_matrix::product_size(&resolved);
+                    if size == 0 {
+                        tracing::info!(row = %id, "for_each cross-product is empty — row skipped");
+                        continue;
+                    }
+                    if size > crate::discovery_matrix::MAX_MATRIX_PRODUCT {
+                        return Err(CliError::Config(format!(
+                            "matrix row '{id}': for_each cross-product is {size} invocations, over \
+                             the limit of {} — narrow the discovery dimensions",
+                            crate::discovery_matrix::MAX_MATRIX_PRODUCT
+                        )));
+                    }
+                    let uses_state = node.state.is_some() || opts.state_path_override.is_some();
+                    let mut seen_keys: HashSet<String> = HashSet::new();
+                    for ctx in crate::discovery_matrix::cartesian(&resolved) {
+                        let suffix =
+                            crate::discovery_matrix::tuple_state_key_suffix(&resolved, &ctx);
+                        let state_key =
+                            build_state_key(&opts.pipeline_name, &node.id, Some(&suffix));
+                        validate_unit_state_key(&node.id, uses_state, &state_key)?;
+                        if !seen_keys.insert(state_key.clone()) {
+                            return Err(CliError::DuplicateStateKey {
+                                id: node.id.clone(),
+                                state_key,
+                            });
+                        }
+                        units.push(Unit {
+                            node: node.clone(),
+                            parent_record: None,
+                            state_key,
+                            parent_record_key: Some(suffix),
+                            product_ctx: Some(ctx),
+                        });
+                    }
                 }
                 NodeRole::Child {
                     parent_id,
@@ -419,6 +501,7 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                             parent_record: Some(record.clone()),
                             state_key,
                             parent_record_key: Some(pk_string),
+                            product_ctx: None,
                         });
                     }
                 }
@@ -450,12 +533,13 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
             let sem = Arc::clone(&semaphore);
             let opts2 = Arc::clone(&opts);
             let captured = Arc::clone(&captured);
+            let discovered = Arc::clone(&discovered);
             let capture = projections.get(&unit.node.id).cloned();
             let meta = (unit.node.id.clone(), unit.parent_record_key.clone());
             let unit_cancel = level_cancel.clone();
             let handle = joinset.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore not closed");
-                run_unit(&unit, capture, &captured, &opts2, unit_cancel).await
+                run_unit(&unit, capture, &captured, &discovered, &opts2, unit_cancel).await
             });
             task_meta.insert(handle.id(), meta);
         }
@@ -574,20 +658,31 @@ struct Unit {
     parent_record: Option<Arc<Value>>,
     state_key: String,
     parent_record_key: Option<String>,
+    /// Per-tuple interpolation context for a discovery-driven `for_each` row
+    /// (#501): `{dim_id -> { alias: value }}`. `None` for roots/children.
+    product_ctx: Option<HashMap<String, Value>>,
 }
 
 async fn run_unit(
     unit: &Unit,
     capture: Option<Arc<Projection>>,
     captured: &CapturedRecords,
+    discovered: &DiscoveredDims,
     opts: &ExecuteOptions,
     cancel: CancellationToken,
 ) -> InvocationOutcome {
+    // A discovery row (#501) enumerates a value-set instead of running a
+    // source→sink pipeline: build its source, drain it, project + dedup, and
+    // publish the dimension for dependent `for_each` rows. No sink, no capture.
+    if let NodeRole::Discovery { select, as_alias } = &unit.node.role {
+        return run_discovery(&unit.node, select, as_alias, discovered, opts).await;
+    }
     let needs_capture = capture.is_some();
     let started = std::time::Instant::now();
     let result = run_one_invocation(
         &unit.node,
         unit.parent_record.as_deref(),
+        unit.product_ctx.as_ref(),
         &unit.state_key,
         capture,
         opts,
@@ -634,6 +729,73 @@ async fn run_unit(
             records_written: 0,
             error: Some(e.to_string()),
             metrics: Some(base_metrics()),
+        },
+    }
+}
+
+/// Run a discovery row (#501): build its source, drain it, project `select`,
+/// dedup, and publish the dimension for dependent `for_each` rows. No sink is
+/// built and nothing is written — the outcome records the enumerated count.
+async fn run_discovery(
+    node: &ExpandedNode,
+    select: &str,
+    as_alias: &str,
+    discovered: &DiscoveredDims,
+    opts: &ExecuteOptions,
+) -> InvocationOutcome {
+    let started = std::time::Instant::now();
+    let source_kind = node.source.kind.clone();
+    let result: CliResult<usize> = async {
+        let mut cfg = node.source.config.clone();
+        // `${now.*}` resolves for a discovery source like any other; `${vars}`
+        // and shared `auth: { ref }` are already handled by the registry build.
+        resolve_now_inplace(&mut cfg, opts.clock)?;
+        let source = build_source(
+            &source_kind,
+            cfg,
+            &opts.auth,
+            opts.resilience.as_ref().map(|r| &r.retry),
+        )
+        .await?;
+        let records = source.fetch_all().await?;
+        let values = crate::discovery_matrix::project_dedup(&records, select);
+        let n = values.len();
+        discovered.lock().await.insert(
+            node.id.clone(),
+            crate::discovery_matrix::Dim {
+                id: node.id.clone(),
+                alias: as_alias.to_string(),
+                values,
+            },
+        );
+        Ok(n)
+    }
+    .await;
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let metrics = |records_read: usize| InvocationMetrics {
+        source_kind: source_kind.clone(),
+        sink_kind: String::new(),
+        duration_ms,
+        records_read: Some(records_read as u64),
+        ..Default::default()
+    };
+    match result {
+        Ok(n) => {
+            tracing::info!(row = %node.id, values = n, "discovery dimension enumerated");
+            InvocationOutcome {
+                row_id: node.id.clone(),
+                parent_record_key: None,
+                records_written: 0,
+                error: None,
+                metrics: Some(metrics(n)),
+            }
+        }
+        Err(e) => InvocationOutcome {
+            row_id: node.id.clone(),
+            parent_record_key: None,
+            records_written: 0,
+            error: Some(e.to_string()),
+            metrics: Some(metrics(0)),
         },
     }
 }
@@ -970,6 +1132,7 @@ async fn build_pipeline<'a>(
 async fn run_one_invocation(
     node: &ExpandedNode,
     parent_record: Option<&Value>,
+    product_ctx: Option<&HashMap<String, Value>>,
     state_key: &str,
     capture: Option<Arc<Projection>>,
     opts: &ExecuteOptions,
@@ -1034,12 +1197,26 @@ async fn run_one_invocation(
         reject_unresolved_backfill_tokens(scope, "complete_for")?;
     }
 
-    if let (Some(record), NodeRole::Child { parent_id, .. }) = (parent_record, &node.role) {
-        let ctx: HashMap<String, Value> = HashMap::from([(parent_id.clone(), record.clone())]);
-        resolve_inplace(&mut source_cfg, &ctx)?;
-        resolve_inplace(&mut sink_cfg, &ctx)?;
-        if let Some(scope) = cleanup_scope.as_mut() {
-            resolve_inplace(scope, &ctx)?;
+    // Runtime fan-out context. A `parent:` child sees `{parent_id: record}`;
+    // a discovery-driven `for_each` row (#501) sees `{dim_id: {alias: value}}`
+    // for each dimension in its product tuple. Both resolve `${id.path}` tokens
+    // through the same `interpolate_record` path.
+    {
+        let mut ctx: HashMap<String, Value> = HashMap::new();
+        if let (Some(record), NodeRole::Child { parent_id, .. }) = (parent_record, &node.role) {
+            ctx.insert(parent_id.clone(), record.clone());
+        }
+        if let Some(pc) = product_ctx {
+            for (k, v) in pc {
+                ctx.insert(k.clone(), v.clone());
+            }
+        }
+        if !ctx.is_empty() {
+            resolve_inplace(&mut source_cfg, &ctx)?;
+            resolve_inplace(&mut sink_cfg, &ctx)?;
+            if let Some(scope) = cleanup_scope.as_mut() {
+                resolve_inplace(scope, &ctx)?;
+            }
         }
     }
 

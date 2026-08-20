@@ -122,6 +122,13 @@ pub enum NodeRole {
         parent_id: String,
         parent_key: String,
     },
+    /// Discovery dimension (#501) — runs its source once, projects `select`,
+    /// dedups, and publishes the value-set under `as_alias`. No sink.
+    Discovery { select: String, as_alias: String },
+    /// Discovery-driven fan-out (#501) — runs once per tuple of the cartesian
+    /// product of the named discovery dimensions. `dims` are discovery row ids
+    /// (also mirrored into `depends_on` for readiness/skip/cycle reuse).
+    Product { dims: Vec<String> },
 }
 
 #[derive(Debug, Clone)]
@@ -290,6 +297,8 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             delivery: None,
             tags: Vec::new(),
             partition: None,
+            discover: None,
+            for_each: Vec::new(),
         }];
         &synthetic_row
     } else {
@@ -313,6 +322,83 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
         ids.push(id);
     }
     let id_set: HashSet<&str> = ids.iter().map(String::as_str).collect();
+
+    // 1b) Discovery-driven matrix (#501): identify `discover:` rows and validate
+    // the `discover:` / `for_each:` shapes before the graph checks below, so
+    // `for_each` dims can be folded into the dependency graph.
+    let discovery_ids: HashSet<&str> = rows
+        .iter()
+        .zip(ids.iter())
+        .filter(|(row, _)| row.discover.is_some())
+        .map(|(_, id)| id.as_str())
+        .collect();
+    for (i, row) in rows.iter().enumerate() {
+        let id = ids[i].as_str();
+        if let Some(disc) = &row.discover {
+            if !row.for_each.is_empty() {
+                return Err(CliError::Config(format!(
+                    "matrix row '{id}': a `discover:` row cannot also declare `for_each:`"
+                )));
+            }
+            if row.parent.is_some() {
+                return Err(CliError::Config(format!(
+                    "matrix row '{id}': a `discover:` row cannot also declare `parent:`"
+                )));
+            }
+            if row.sink.is_some() {
+                return Err(CliError::Config(format!(
+                    "matrix row '{id}': a `discover:` row has no sink — remove its `sink:` override"
+                )));
+            }
+            if row.transforms.is_some() {
+                return Err(CliError::Config(format!(
+                    "matrix row '{id}': a `discover:` row does not run transforms"
+                )));
+            }
+            if disc.select.trim().is_empty() {
+                return Err(CliError::Config(format!(
+                    "matrix row '{id}': `discover.select` must not be empty"
+                )));
+            }
+            if !is_ident(&disc.as_alias) {
+                return Err(CliError::Config(format!(
+                    "matrix row '{id}': `discover.as` ('{}') must match ^[a-z0-9][a-z0-9_-]*$",
+                    disc.as_alias
+                )));
+            }
+        }
+        if !row.for_each.is_empty() {
+            if row.parent.is_some() {
+                return Err(CliError::Config(format!(
+                    "matrix row '{id}': `for_each:` and `parent:` cannot be combined (v1) — a row \
+                     fans out over the discovery cross-product OR a parent's records, not both"
+                )));
+            }
+            let mut seen_dims: HashSet<&str> = HashSet::new();
+            for dim in &row.for_each {
+                if dim.as_str() == id {
+                    return Err(CliError::Config(format!(
+                        "matrix row '{id}': `for_each` cannot reference itself"
+                    )));
+                }
+                if !id_set.contains(dim.as_str()) {
+                    return Err(CliError::Config(format!(
+                        "matrix row '{id}': `for_each` references unknown row '{dim}'"
+                    )));
+                }
+                if !discovery_ids.contains(dim.as_str()) {
+                    return Err(CliError::Config(format!(
+                        "matrix row '{id}': `for_each` row '{dim}' is not a `discover:` row"
+                    )));
+                }
+                if !seen_dims.insert(dim.as_str()) {
+                    return Err(CliError::Config(format!(
+                        "matrix row '{id}': `for_each` lists '{dim}' more than once"
+                    )));
+                }
+            }
+        }
+    }
 
     // 2) Validate parents + detect cycles.
     let mut parents: HashMap<&str, &str> = HashMap::new();
@@ -358,6 +444,14 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             }
             if !deps.contains(dep) {
                 deps.push(dep.clone());
+            }
+        }
+        // A `for_each` row (#501) waits for every discovery dimension it fans
+        // out over; model those as `depends_on` edges so readiness, the skip
+        // cascade, and cycle detection all reuse the existing machinery.
+        for dim in &row.for_each {
+            if !deps.contains(dim) {
+                deps.push(dim.clone());
             }
         }
         deps_by_row.push(deps);
@@ -421,6 +515,72 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
     for &i in &order {
         let row = &rows[i];
         let row_id = ids[i].as_str();
+
+        // Discovery row (#501): a value-enumeration step with no sink. Build a
+        // minimal node from `discover.source` and skip the entire source→sink
+        // pipeline (templates, write-mode, exactly-once, drift, cleanup) — none
+        // of it applies to an enumeration that writes nothing.
+        if let Some(disc) = &row.discover {
+            // Resolve the discovery source: a `{ ref }` merges over the named
+            // `pipeline.sources` template; a standalone `{ type, config }` is
+            // used verbatim (NOT merged over `default`, which would pollute the
+            // enumeration with the data source's `${dim}` tokens).
+            let src = if disc.source.r#ref.is_some() {
+                registry.resolve("source", row_id, Some(&disc.source))?
+            } else {
+                let kind = disc.source.kind.clone().ok_or_else(|| {
+                    CliError::Config(format!(
+                        "matrix row '{row_id}': `discover.source` needs a `type` (or a `ref` to a \
+                         pipeline.sources template)"
+                    ))
+                })?;
+                ConnectorSpec {
+                    kind,
+                    config: disc
+                        .source
+                        .config
+                        .clone()
+                        .unwrap_or_else(|| Value::Object(Default::default())),
+                    transforms: None,
+                    inherit_transforms: true,
+                    status: None,
+                    tags: Vec::new(),
+                    complete_for: None,
+                }
+            };
+            out.push(ExpandedNode {
+                id: ids[i].clone(),
+                row_index: i,
+                role: NodeRole::Discovery {
+                    select: disc.select.clone(),
+                    as_alias: disc.as_alias.clone(),
+                },
+                // `sink` is a never-built placeholder (run_discovery ignores it).
+                sink: src.clone(),
+                source: src,
+                transforms: Vec::new(),
+                state: None,
+                dlq: None,
+                delivery: faucet_core::DeliveryMode::AtLeastOnce,
+                delivery_guarantee: faucet_core::DeliveryGuarantee::AtLeastOnce,
+                #[cfg(feature = "quality")]
+                quality: None,
+                #[cfg(feature = "contract")]
+                contract: None,
+                #[cfg(feature = "masking")]
+                masking: None,
+                sink_ref: "default".to_string(),
+                schema: None,
+                depends_on: deps_by_row[i].clone(),
+                status: crate::config::SourceStatus::default(),
+                tags: Vec::new(),
+                deferred_refs: Vec::new(),
+                source_override: None,
+                cleanup_scope: None,
+            });
+            continue;
+        }
+
         let merged_source = registry.resolve("source", row_id, row.source.as_ref())?;
         let merged_sink = registry.resolve("sink", row_id, row.sink.as_ref())?;
         // The sink template name this row resolved (or the legacy `default`),
@@ -430,12 +590,20 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             .as_ref()
             .and_then(|s| s.r#ref.clone())
             .unwrap_or_else(|| "default".to_string());
-        let role = match &row.parent {
-            None => NodeRole::Root,
-            Some(p) => NodeRole::Child {
-                parent_id: p.clone(),
-                parent_key: row.parent_key.clone(),
-            },
+        let role = if !row.for_each.is_empty() {
+            // Discovery-driven fan-out (#501): runs once per cartesian-product
+            // tuple of the named dimensions (also mirrored into `depends_on`).
+            NodeRole::Product {
+                dims: row.for_each.clone(),
+            }
+        } else {
+            match &row.parent {
+                None => NodeRole::Root,
+                Some(p) => NodeRole::Child {
+                    parent_id: p.clone(),
+                    parent_key: row.parent_key.clone(),
+                },
+            }
         };
         let mut deferred = Vec::new();
         collect_deferred(&merged_source.config, &mut deferred);
@@ -1197,6 +1365,17 @@ fn resolve_tags(
     Ok(set.into_iter().collect())
 }
 
+/// True when `s` matches `^[a-z0-9][a-z0-9_-]*$` (a discovery alias, #501).
+fn is_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit() => {
+            chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+        }
+        _ => false,
+    }
+}
+
 /// A tag must be lowercase kebab/snake: `^[a-z0-9][a-z0-9_-]*$`.
 fn validate_tag(tag: &str, row_id: &str) -> CliResult<()> {
     let ok = {
@@ -1527,6 +1706,141 @@ matrix:
         assert!(matches!(facts.role, NodeRole::Root));
         let dims = nodes.iter().find(|n| n.id == "dims").unwrap();
         assert!(dims.depends_on.is_empty());
+    }
+
+    // ── Discovery-driven request matrix (#501) ─────────────────────────────
+
+    fn disc_cfg(matrix: &str) -> String {
+        format!(
+            r#"
+version: 1
+pipeline: {{ source: {{ type: rest, config: {{}} }}, sink: {{ type: jsonl, config: {{ path: ./o }} }} }}
+matrix:
+{matrix}
+"#
+        )
+    }
+
+    #[test]
+    fn discovery_and_product_roles_are_assigned() {
+        let c = cfg(&disc_cfg(
+            r#"  - id: subs
+    discover:
+      source: { type: rest, config: {} }
+      select: "$.id"
+      as: subsidiary_id
+  - id: report
+    for_each: [subs]"#,
+        ));
+        let nodes = expand(&c).unwrap();
+        let subs = nodes.iter().find(|n| n.id == "subs").unwrap();
+        match &subs.role {
+            NodeRole::Discovery { select, as_alias } => {
+                assert_eq!(select, "$.id");
+                assert_eq!(as_alias, "subsidiary_id");
+            }
+            other => panic!("expected Discovery, got {other:?}"),
+        }
+        let report = nodes.iter().find(|n| n.id == "report").unwrap();
+        match &report.role {
+            NodeRole::Product { dims } => assert_eq!(dims, &vec!["subs".to_string()]),
+            other => panic!("expected Product, got {other:?}"),
+        }
+        // The dim is folded into depends_on so readiness/skip/cycle reuse it.
+        assert_eq!(report.depends_on, vec!["subs".to_string()]);
+    }
+
+    #[test]
+    fn discover_with_for_each_is_rejected() {
+        let c = cfg(&disc_cfg(
+            r#"  - id: a
+    discover: { source: { type: rest, config: {} }, select: "$.id", as: x }
+    for_each: [a]"#,
+        ));
+        let err = expand(&c).unwrap_err().to_string();
+        assert!(err.contains("cannot also declare"), "{err}");
+    }
+
+    #[test]
+    fn discover_with_sink_is_rejected() {
+        let c = cfg(&disc_cfg(
+            r#"  - id: a
+    discover: { source: { type: rest, config: {} }, select: "$.id", as: x }
+    sink: { type: jsonl, config: { path: ./o } }"#,
+        ));
+        let err = expand(&c).unwrap_err().to_string();
+        assert!(err.contains("has no sink"), "{err}");
+    }
+
+    #[test]
+    fn for_each_on_non_discovery_row_is_rejected() {
+        let c = cfg(&disc_cfg(
+            r#"  - id: plain
+  - id: report
+    for_each: [plain]"#,
+        ));
+        let err = expand(&c).unwrap_err().to_string();
+        assert!(err.contains("is not a `discover:` row"), "{err}");
+    }
+
+    #[test]
+    fn for_each_unknown_row_is_rejected() {
+        let c = cfg(&disc_cfg(
+            r#"  - id: report
+    for_each: [ghost]"#,
+        ));
+        let err = expand(&c).unwrap_err().to_string();
+        assert!(err.contains("unknown row 'ghost'"), "{err}");
+    }
+
+    #[test]
+    fn for_each_with_parent_is_rejected() {
+        let c = cfg(&disc_cfg(
+            r#"  - id: subs
+    discover: { source: { type: rest, config: {} }, select: "$.id", as: x }
+  - id: p
+  - id: report
+    parent: p
+    for_each: [subs]"#,
+        ));
+        let err = expand(&c).unwrap_err().to_string();
+        assert!(err.contains("cannot be combined"), "{err}");
+    }
+
+    #[test]
+    fn discover_bad_alias_is_rejected() {
+        let c = cfg(&disc_cfg(
+            r#"  - id: a
+    discover: { source: { type: rest, config: {} }, select: "$.id", as: "Bad Alias" }"#,
+        ));
+        let err = expand(&c).unwrap_err().to_string();
+        assert!(err.contains("must match"), "{err}");
+    }
+
+    #[test]
+    fn discovery_source_ref_resolves_named_template() {
+        let c = cfg(r#"
+version: 1
+pipeline:
+  sources:
+    api: { type: rest, config: { base_url: https://x, path: /list } }
+  sink: { type: jsonl, config: { path: ./o } }
+matrix:
+  - id: subs
+    discover:
+      source: { ref: api, config: { path: /subsidiaries } }
+      select: "$.id"
+      as: sid
+  - id: report
+    for_each: [subs]
+    source: { ref: api }
+"#);
+        let nodes = expand(&c).unwrap();
+        let subs = nodes.iter().find(|n| n.id == "subs").unwrap();
+        // The named template resolved (kind rest) and the override applied.
+        assert_eq!(subs.source.kind, "rest");
+        assert_eq!(subs.source.config["path"], "/subsidiaries");
+        assert_eq!(subs.source.config["base_url"], "https://x");
     }
 
     #[test]

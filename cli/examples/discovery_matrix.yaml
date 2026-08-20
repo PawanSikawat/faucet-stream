@@ -1,0 +1,66 @@
+# Discovery-driven request matrix (#501): fan a stream out over the CROSS
+# PRODUCT of value-sets enumerated from live discovery calls at run time —
+# "sync this report once per {subsidiary} × {custom-field}".
+#
+#   faucet validate cli/examples/discovery_matrix.yaml
+#
+# A `discover:` row runs its source once, projects `select` from each record,
+# dedups, and publishes the value-set under `as`. A `for_each: [dims]` row then
+# runs once per tuple of the cartesian product, with `${dim.alias}` substituted
+# into the source URL and sink path. Discovery + fan-out rows share one
+# `pipeline.sources` template (the `ref` path) and override only the deltas.
+version: 1
+name: reports_by_subsidiary_and_field
+
+pipeline:
+  # One complete REST template both the discovery calls and the report fan-out
+  # reference — same auth / base_url, different path per row.
+  sources:
+    api:
+      type: rest
+      config:
+        method: GET
+        base_url: https://api.example.com
+        path: /
+        auth:
+          type: bearer
+          config:
+            token: ${env:API_TOKEN}
+        query_params: {}
+        pagination: { type: None }
+        replication_method: { type: FullTable }
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/report-${subsidiaries.subsidiary_id}-${fields.field_id}.jsonl
+
+matrix:
+  # ── Discovery dimensions (run once each, deduped, cached) ──
+  - id: subsidiaries
+    discover:
+      source:
+        ref: api
+        config: { path: /subsidiaries, records_path: "$.subsidiaries[*]" }
+      select: "$.id"
+      as: subsidiary_id
+
+  - id: fields
+    discover:
+      source:
+        ref: api
+        config: { path: /custom-fields, records_path: "$.fields[*]" }
+      select: "$.id"
+      as: field_id
+
+  # ── Fan-out: one invocation per (subsidiary × field) tuple ──
+  - id: trial_balance
+    for_each: [subsidiaries, fields]
+    source:
+      ref: api
+      config:
+        path: /reports/trial-balance
+        records_path: "$.rows[*]"
+        query_params:
+          subsidiary_id: "${subsidiaries.subsidiary_id}"
+          field_id: "${fields.field_id}"

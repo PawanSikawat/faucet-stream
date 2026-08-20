@@ -21,6 +21,7 @@ pub mod commands;
 pub mod compose;
 pub mod config;
 pub mod conformance;
+pub mod discovery_matrix;
 pub mod dlq_replay;
 pub mod env_config;
 pub mod env_loader;
