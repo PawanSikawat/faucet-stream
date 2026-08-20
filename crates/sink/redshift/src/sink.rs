@@ -263,6 +263,13 @@ impl faucet_core::Sink for RedshiftSink {
         "redshift"
     }
 
+    /// Redshift bulk-loads via `COPY … FROM 's3://…'` under `write_strategy: copy`
+    /// (#528). The `staging` capability is advertised so the CLI + tooling can
+    /// surface it.
+    fn supports_staged_load(&self) -> bool {
+        true
+    }
+
     fn config_schema(&self) -> Value {
         serde_json::to_value(faucet_core::schema_for!(RedshiftSinkConfig))
             .expect("schema serialization")

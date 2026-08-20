@@ -4573,6 +4573,7 @@ dependencies = [
  "metrics-exporter-opentelemetry",
  "metrics-exporter-prometheus",
  "metrics-util",
+ "object_store",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

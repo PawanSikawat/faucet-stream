@@ -413,6 +413,12 @@ impl faucet_core::Sink for SnowflakeSink {
         "snowflake"
     }
 
+    /// Snowflake bulk-loads via `COPY INTO … FROM @stage` under `bulk_load`
+    /// (#528). Advertise the `staging` capability.
+    fn supports_staged_load(&self) -> bool {
+        true
+    }
+
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(SnowflakeSinkConfig))
             .expect("schema serialization")

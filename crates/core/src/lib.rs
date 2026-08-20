@@ -44,6 +44,7 @@ pub mod retry;
 pub mod schema;
 pub mod shard;
 pub mod stage;
+pub mod staging;
 pub mod state;
 pub mod tls;
 pub mod topology;
@@ -134,6 +135,10 @@ pub use stage::{ExplodeSpec, OnMissing};
 #[cfg(feature = "transform-filter")]
 pub use stage::{FilterOp, FilterSpec};
 pub use stage::{TransformStage, compile_stage};
+pub use staging::{
+    StagedFile, StagingCleanup, StagingCompression, StagingFormat, StagingLocation, StagingScheme,
+    StagingSpec, serialize_records,
+};
 pub use state::{FileStateStore, MemoryStateStore, StateStore};
 pub use tls::TlsClientConfig;
 pub use topology::{

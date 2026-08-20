@@ -659,6 +659,12 @@ impl faucet_core::Sink for BigQuerySink {
         "bigquery"
     }
 
+    /// BigQuery bulk-loads via a GCS-staged Parquet load job under `bulk_load`
+    /// (#528). Advertise the `staging` capability.
+    fn supports_staged_load(&self) -> bool {
+        true
+    }
+
     fn config_schema(&self) -> serde_json::Value {
         serde_json::to_value(faucet_core::schema_for!(BigQuerySinkConfig))
             .expect("schema serialization")
