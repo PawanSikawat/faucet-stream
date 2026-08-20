@@ -36,6 +36,7 @@ pub const RESERVED_IDS: &[&str] = &[
     "partition",
     "bookmark",
     "job_id",
+    "window",
 ];
 
 /// One fully-merged matrix row, ready for the executor.
@@ -1350,6 +1351,7 @@ fn check_refs(value: &Value, id_set: &HashSet<&str>, owner: &str) -> CliResult<(
                 && id != "partition"
                 && id != "bookmark"
                 && id != "job_id"
+                && id != "window"
                 && !id_set.contains(id)
             {
                 return Err(CliError::UnknownInterpolationId {
@@ -1440,13 +1442,15 @@ fn collect_deferred(value: &Value, out: &mut Vec<DeferredRef>) {
                 // resolved at run time, not parent-record dependencies — skip
                 // them so the executor doesn't treat them as deferred
                 // parent-record refs. `bookmark` is consumed *inside* a source's
-                // `replication_bind.template` (#513) — the connector renders it,
-                // so the CLI must pass it through untouched.
+                // `replication_bind.template` (#513), `window` inside a source's
+                // `window.{lower,upper}.template` (#527) — the connector renders
+                // them, so the CLI must pass them through untouched.
                 if id == "now"
                     || id == "backfill"
                     || id == "partition"
                     || id == "bookmark"
                     || id == "job_id"
+                    || id == "window"
                 {
                     continue;
                 }
@@ -1664,6 +1668,31 @@ pipeline:
     config:
       base_url: https://x
       async_job: { submit: { url: /jobs }, job_id: "$.id", poll: { url: "/jobs/${job_id}" }, status: { path: "$.s", success: [Done] }, fetch: { url: "/jobs/${job_id}/r" } }
+  sink: { type: jsonl, config: { path: ./o } }
+"#);
+        let nodes = expand(&c).unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn window_token_is_reserved_and_passes_through() {
+        // `${window}` is consumed inside a source's `window.{lower,upper}.template`
+        // (#527); expand must treat it as a reserved deferred id, not a ref.
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://x
+      path: /report
+      replication_method: incremental
+      replication_key: updated_at
+      start_replication_value: "2024-01-01"
+      window:
+        step: 30d
+        lower: { into: query, name: start_date, template: "${window}", format: date }
+        upper: { into: query, name: end_date, template: "${window}", format: date }
   sink: { type: jsonl, config: { path: ./o } }
 "#);
         let nodes = expand(&c).unwrap();

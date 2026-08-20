@@ -52,6 +52,7 @@ pub mod transform;
 pub mod transforming_source;
 pub mod util;
 pub mod verify;
+pub mod window;
 pub mod write_mode;
 
 #[cfg(feature = "compression")]
@@ -112,7 +113,8 @@ pub use pipeline::{
     validate_batch_size,
 };
 pub use replication::{
-    BindFormat, BindTarget, ReplicationBind, ReplicationMethod, format_bookmark, json_gt,
+    BindFormat, BindTarget, ReplicationBind, ReplicationMethod, format_bookmark, format_instant,
+    json_gt, parse_instant,
 };
 pub use resilience::{
     BackoffKind, CircuitBreaker, CircuitBreakerConfig, PoisonAction, PoisonPolicy,
@@ -153,6 +155,9 @@ pub use transform::{HashAlgorithm, HashEncoding};
 pub use transforming_source::TransformingSource;
 pub use util::redact_uri_credentials;
 pub use verify::{IntegrityCheck, LengthCheck, VerifyingReader};
+pub use window::{
+    WINDOW_PLACEHOLDER, Window, WindowBind, WindowSpec, enumerate_windows, parse_step,
+};
 pub use write_mode::{
     DeleteMarker, KeyTuple, OverwriteScope, WriteMode, WritePlan, WriteSpec, key_to_doc_id,
     key_to_filter, plan_writes,
