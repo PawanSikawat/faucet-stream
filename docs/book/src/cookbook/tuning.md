@@ -85,3 +85,12 @@ make bench-postgres   # adds the Docker Postgres scenarios (B & C)
 
 The harness methodology and current numbers live in
 [BENCHMARKS.md](https://github.com/faucet-hq/faucet-stream/blob/main/BENCHMARKS.md).
+
+## See also
+
+- [Performance tuning](../operations/tuning.md) — the destination-side and
+  runtime knobs (connection pools, concurrency, retries) that complement the
+  config knobs here.
+- [Adaptive batching](./adaptive-batching.md) — let faucet size batches for you.
+- [Connector capability matrix](../reference/capability-matrix.md) — per-connector
+  streaming and batch support.

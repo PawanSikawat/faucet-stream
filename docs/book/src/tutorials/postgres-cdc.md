@@ -71,3 +71,10 @@ The state key is `postgres-cdc:<slot>`. Use a durable backend (`redis` /
 - `tls: disable | require | verify_ca | verify_full` configures the replication
   connection (default `disable` = plaintext; use `verify_full` over untrusted
   networks).
+
+## See also
+
+- [Upsert / mirror tables](../cookbook/upsert.md) — turn the raw CDC envelopes
+  this tutorial emits into an up-to-date mirror (inserts, updates, deletes).
+- [Incremental replication & state](../cookbook/state.md) — how bookmarks make
+  the run resumable.

@@ -97,3 +97,10 @@ The `--json` shape:
 - Probe `reason`/`hint` text is scrubbed for resolved secrets, but don't run with
   `FAUCET_LOG=debug` against a config holding live secrets (third-party connector
   logging is outside faucet's redaction boundary).
+
+## See also
+
+- [Troubleshooting & FAQ](../operations/troubleshooting.md) — common runtime
+  errors and their fixes (this page covers the `faucet doctor` tool itself).
+- [Observability](../operations/observability.md) — the metrics to watch when a
+  run misbehaves.

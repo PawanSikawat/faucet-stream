@@ -76,3 +76,9 @@ faucet run cli/examples/airtable_to_jsonl.yaml
   `filterByFormula` on a `Last Modified` field to narrow, or run full-table.
 - **Writing back** — an Airtable *sink* is out of scope; this recipe is
   read-only.
+
+## See also
+
+- [Authentication](./auth.md) — the bearer-token setup this recipe relies on.
+- [Pagination styles](./pagination.md) — how the REST source walks Airtable's
+  `offset` cursor.

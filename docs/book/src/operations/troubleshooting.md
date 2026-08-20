@@ -58,3 +58,8 @@ the [metrics](./observability.md) to find the bottleneck.
 
 Open an issue at
 [github.com/faucet-hq/faucet-stream/issues](https://github.com/faucet-hq/faucet-stream/issues).
+
+## See also
+
+- [Troubleshooting with `faucet doctor`](../cookbook/troubleshooting.md) — the
+  built-in pre-flight that probes every connector in a config before you run it.
