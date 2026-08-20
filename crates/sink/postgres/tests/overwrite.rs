@@ -8,7 +8,7 @@
 //! run land in a staging table, so the destination keeps its old rows until the
 //! atomic swap — and an aborted run leaves the previous rows fully intact.
 
-use faucet_core::{Sink, WriteMode, WriteSpec};
+use faucet_core::{OverwriteScope, Sink, WriteMode, WriteSpec};
 use faucet_sink_postgres::{PostgresColumnMapping, PostgresSink, PostgresSinkConfig};
 use serde_json::json;
 use testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
@@ -105,6 +105,43 @@ async fn overwrite_replaces_all_rows_on_commit() {
         !staging_exists(&url).await,
         "staging table must be dropped after commit"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn scoped_overwrite_replaces_only_in_window_rows() {
+    let (_container, url) = start_postgres().await;
+    create_kv_table(&url).await;
+    // id 1 is out of the [10, 20) window (kept); id 15 is in-window (replaced).
+    seed(
+        &url,
+        "INSERT INTO kv (id, name) VALUES (1, 'keep'), (15, 'old_in')",
+    )
+    .await;
+
+    let mut config = overwrite_config(&url);
+    config.scope = Some(OverwriteScope::Window {
+        column: "id".into(),
+        from: json!(10),
+        to: json!(20),
+    });
+    let sink = PostgresSink::new(config).await.expect("sink new");
+
+    sink.begin_overwrite().await.expect("begin");
+    sink.write_batch(&[
+        json!({"id": 15, "name": "new_in"}),
+        json!({"id": 16, "name": "new_in2"}),
+    ])
+    .await
+    .expect("write");
+
+    // Before commit the destination still holds the OLD rows.
+    assert_eq!(names_ordered(&url).await, vec!["keep", "old_in"]);
+
+    sink.commit_overwrite().await.expect("commit");
+
+    // Out-of-window id 1 preserved; in-window id 15 replaced; id 16 added.
+    assert_eq!(names_ordered(&url).await, vec!["keep", "new_in", "new_in2"]);
+    assert!(!staging_exists(&url).await, "staging dropped after commit");
 }
 
 #[tokio::test(flavor = "multi_thread")]

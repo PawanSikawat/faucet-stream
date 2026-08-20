@@ -275,6 +275,22 @@ pub fn build_overwrite_commit_sql(target_ref: &str, temp_ref: &str) -> String {
     )
 }
 
+/// Scoped/windowed overwrite commit (#518): delete only the rows matching
+/// `where_clause`, then insert the staged rows, in one transaction. Preserves
+/// out-of-scope rows and the target's partitioning/clustering.
+pub fn build_scoped_overwrite_commit_sql(
+    target_ref: &str,
+    temp_ref: &str,
+    where_clause: &str,
+) -> String {
+    format!(
+        "BEGIN TRANSACTION;\n\
+         DELETE FROM {target_ref} WHERE {where_clause};\n\
+         INSERT INTO {target_ref} SELECT * FROM {temp_ref};\n\
+         COMMIT TRANSACTION;"
+    )
+}
+
 /// The typed `INSERT … SELECT FROM UNNEST(JSON_QUERY_ARRAY(@payload))` statement.
 pub(crate) fn build_insert_select(
     columns: &[FieldSpec],
@@ -612,6 +628,24 @@ mod tests {
         assert!(sql.starts_with("BEGIN TRANSACTION;"));
         assert!(sql.contains("TRUNCATE TABLE `p.d.t`;"));
         assert!(sql.contains("INSERT INTO `p.d.t` SELECT * FROM `p.d.t__faucet_ovw`;"));
+        assert!(sql.trim_end().ends_with("COMMIT TRANSACTION;"));
+    }
+
+    #[test]
+    fn scoped_overwrite_commit_sql_deletes_in_scope_then_inserts() {
+        let target = table_ref("p", "d", "t");
+        let temp = table_ref("p", "d", "t__faucet_ovw");
+        let sql = build_scoped_overwrite_commit_sql(
+            &target,
+            &temp,
+            "`posting_date` >= '2024-06-01' AND `posting_date` < '2024-07-01'",
+        );
+        assert!(sql.starts_with("BEGIN TRANSACTION;"));
+        assert!(sql.contains(
+            "DELETE FROM `p.d.t` WHERE `posting_date` >= '2024-06-01' AND `posting_date` < '2024-07-01';"
+        ));
+        assert!(sql.contains("INSERT INTO `p.d.t` SELECT * FROM `p.d.t__faucet_ovw`;"));
+        assert!(!sql.contains("TRUNCATE"));
         assert!(sql.trim_end().ends_with("COMMIT TRANSACTION;"));
     }
 

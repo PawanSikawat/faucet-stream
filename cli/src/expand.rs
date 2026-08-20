@@ -867,6 +867,33 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             }
         }
 
+        // ── Scoped/windowed overwrite gate (#518) ───────────────────────────
+        // A `scope:` block replaces only the rows matching it (a date window)
+        // instead of truncating. Valid only with `write_mode: overwrite` on a
+        // sink that implements the scoped begin/delete/insert swap.
+        if let Some(scope_val) = merged_sink.config.get("scope") {
+            if !matches!(mode, faucet_core::WriteMode::Overwrite) {
+                return Err(CliError::Config(format!(
+                    "row '{}': `scope` is only valid with `write_mode: overwrite`",
+                    ids[i]
+                )));
+            }
+            if !crate::registry::sink_supports_scoped_overwrite(&merged_sink.kind) {
+                return Err(CliError::Config(format!(
+                    "row '{}': scoped overwrite (`scope`) is not supported by sink '{}' \
+                     (scoped-overwrite sinks: {})",
+                    ids[i],
+                    merged_sink.kind,
+                    crate::registry::SCOPED_OVERWRITE_SINK_KINDS.join(", ")
+                )));
+            }
+            let scope: faucet_core::OverwriteScope = serde_json::from_value(scope_val.clone())
+                .map_err(|e| CliError::Config(format!("row '{}': invalid `scope`: {e}", ids[i])))?;
+            scope
+                .validate()
+                .map_err(|e| CliError::Config(format!("row '{}': {e}", ids[i])))?;
+        }
+
         // Derived end-to-end delivery guarantee (issue #292): computed for
         // *every* row — regardless of the requested `delivery:` mode — so
         // `faucet validate` / `doctor` report the truth (a keyed-upsert row is
@@ -3069,6 +3096,70 @@ pipeline:
         assert!(
             expand(&c).is_ok(),
             "overwrite needs no key and postgres supports it"
+        );
+    }
+
+    #[test]
+    fn scoped_overwrite_passes_on_postgres() {
+        let c = cfg(r#"
+version: 1
+name: t
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:
+    type: postgres
+    config:
+      connection_url: "postgres://x"
+      table_name: t
+      column_mapping: auto_map
+      write_mode: overwrite
+      scope: { window: { column: posting_date, from: "2024-06-01", to: "2024-07-01" } }
+"#);
+        assert!(expand(&c).is_ok(), "postgres supports scoped overwrite");
+    }
+
+    #[test]
+    fn rejects_scope_on_non_scoped_sink() {
+        let c = cfg(r#"
+version: 1
+name: t
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:
+    type: sqlite
+    config:
+      connection_url: "sqlite://x"
+      table_name: t
+      column_mapping: auto_map
+      write_mode: overwrite
+      scope: { window: { column: d, from: 1, to: 2 } }
+"#);
+        let msg = format!("{}", expand(&c).unwrap_err());
+        assert!(
+            msg.contains("scoped overwrite") && msg.contains("not supported"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_scope_without_overwrite_mode() {
+        let c = cfg(r#"
+version: 1
+name: t
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:
+    type: postgres
+    config:
+      connection_url: "postgres://x"
+      table_name: t
+      column_mapping: auto_map
+      scope: { window: { column: d, from: 1, to: 2 } }
+"#);
+        let msg = format!("{}", expand(&c).unwrap_err());
+        assert!(
+            msg.contains("only valid with `write_mode: overwrite`"),
+            "{msg}"
         );
     }
 

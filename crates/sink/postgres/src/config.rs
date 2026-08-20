@@ -109,6 +109,11 @@ pub struct PostgresSinkConfig {
     /// on `insert` so data + watermark commit in one transaction.
     #[serde(default)]
     pub write_method: PostgresWriteMethod,
+    /// Scoped/windowed overwrite (#518): with `write_mode: overwrite`, replace
+    /// only the rows matching this scope (e.g. a date window) instead of
+    /// truncating the whole table. The prior out-of-scope rows are preserved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<faucet_core::OverwriteScope>,
 }
 
 fn default_batch_size() -> usize {
@@ -145,6 +150,7 @@ impl PostgresSinkConfig {
             max_connections: 5,
             write: faucet_core::WriteSpec::default(),
             write_method: PostgresWriteMethod::default(),
+            scope: None,
         }
     }
 

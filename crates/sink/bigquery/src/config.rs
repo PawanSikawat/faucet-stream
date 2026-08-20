@@ -53,6 +53,11 @@ pub struct BigQuerySinkConfig {
     /// column(s) of the target table.
     #[serde(flatten)]
     pub write: faucet_core::WriteSpec,
+    /// Scoped/windowed overwrite (#518): with `write_mode: overwrite`, replace
+    /// only the rows matching this scope (e.g. a partition/date window) instead
+    /// of the whole table — the out-of-scope rows are preserved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<faucet_core::OverwriteScope>,
     /// Arrow columnar **load-job** mode (#380): buffer Arrow `RecordBatch`es to
     /// Parquet, stage them on a GCS bucket, then run a BigQuery `PARQUET` load
     /// job (`jobs.insert`) instead of the per-row `insertAll` path. Only
@@ -121,6 +126,7 @@ impl BigQuerySinkConfig {
             batch_size: DEFAULT_BATCH_SIZE,
             insert_id_field: None,
             write: faucet_core::WriteSpec::default(),
+            scope: None,
             #[cfg(feature = "arrow")]
             bulk_load: None,
         }

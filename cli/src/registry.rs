@@ -892,6 +892,18 @@ pub fn sink_supports_overwrite(kind: &str) -> bool {
     OVERWRITE_SINK_KINDS.contains(&kind)
 }
 
+/// Sinks that support a **scoped/windowed** overwrite (#518) — replacing only
+/// the rows matching a `scope` (a date window) instead of the whole table. A
+/// subset of [`OVERWRITE_SINK_KINDS`]; the others still support full overwrite.
+/// (v1: the atomic scoped delete + staged insert; the wider SQL family and
+/// key-scope are follow-ups.)
+pub const SCOPED_OVERWRITE_SINK_KINDS: &[&str] = &["postgres", "bigquery"];
+
+/// Whether a sink kind supports a scoped overwrite `scope`.
+pub fn sink_supports_scoped_overwrite(kind: &str) -> bool {
+    SCOPED_OVERWRITE_SINK_KINDS.contains(&kind)
+}
+
 /// Source kinds that implement live dataset discovery (`Source::discover`,
 /// issue #211) — mirrors the discoverable-source list in the connector docs.
 /// Single source of truth for the conformance scorecard (#330).

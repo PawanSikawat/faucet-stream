@@ -150,8 +150,8 @@ pub use transforming_source::TransformingSource;
 pub use util::redact_uri_credentials;
 pub use verify::{IntegrityCheck, LengthCheck, VerifyingReader};
 pub use write_mode::{
-    DeleteMarker, KeyTuple, WriteMode, WritePlan, WriteSpec, key_to_doc_id, key_to_filter,
-    plan_writes,
+    DeleteMarker, KeyTuple, OverwriteScope, WriteMode, WritePlan, WriteSpec, key_to_doc_id,
+    key_to_filter, plan_writes,
 };
 
 // Re-export dependencies that connector authors need, so they only depend on

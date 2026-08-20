@@ -917,11 +917,19 @@ impl faucet_core::Sink for BigQuerySink {
     /// path, so there is no streaming buffer to miss.
     async fn commit_overwrite(&self) -> Result<(), FaucetError> {
         let temp = self.overwrite_temp_ref();
-        self.run_ddl(idempotent::build_overwrite_commit_sql(
-            &self.table_ref(),
-            &temp,
-        ))
-        .await?;
+        let sql = match &self.config.scope {
+            Some(scope) => {
+                // Backtick-quote the scoped column (strip any backticks).
+                let col = format!("`{}`", scope.column().replace('`', ""));
+                idempotent::build_scoped_overwrite_commit_sql(
+                    &self.table_ref(),
+                    &temp,
+                    &scope.render_where_literal(&col),
+                )
+            }
+            None => idempotent::build_overwrite_commit_sql(&self.table_ref(), &temp),
+        };
+        self.run_ddl(sql).await?;
         self.run_ddl(format!("DROP TABLE IF EXISTS {temp}")).await
     }
 

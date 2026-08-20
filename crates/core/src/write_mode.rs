@@ -53,6 +53,82 @@ pub struct DeleteMarker {
     pub values: Vec<String>,
 }
 
+/// Scope for a **scoped/windowed overwrite** (#518): with `write_mode:
+/// overwrite`, replace only the destination rows matching this scope instead of
+/// truncating the whole table. The sink-side sibling of scoped cleanup (#478).
+///
+/// v1 supports a half-open date/number **window** on a single column.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum OverwriteScope {
+    /// Replace rows where `column` is in the half-open range `[from, to)`.
+    Window {
+        /// The destination column to window on.
+        column: String,
+        /// Inclusive lower bound.
+        from: Value,
+        /// Exclusive upper bound.
+        to: Value,
+    },
+}
+
+impl OverwriteScope {
+    /// The scoped column name.
+    pub fn column(&self) -> &str {
+        match self {
+            OverwriteScope::Window { column, .. } => column,
+        }
+    }
+
+    /// Validate the scope at config-load time.
+    pub fn validate(&self) -> Result<(), FaucetError> {
+        match self {
+            OverwriteScope::Window { column, from, to } => {
+                if column.trim().is_empty() {
+                    return Err(FaucetError::Config(
+                        "overwrite scope: window `column` must not be empty".into(),
+                    ));
+                }
+                if from.is_null() || to.is_null() {
+                    return Err(FaucetError::Config(
+                        "overwrite scope: window `from`/`to` must not be null".into(),
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Render a SQL `WHERE` predicate over the (already-quoted) column using
+    /// escaped SQL **literals** for the bounds. Literals (not bind params) are
+    /// used so the engine coerces a string bound to the column's real type
+    /// (`date >= '2024-06-01'` works; a text-typed bind param would not). String
+    /// literals have their single quotes doubled, so a crafted bound cannot
+    /// break out of the quotes.
+    pub fn render_where_literal(&self, quoted_col: &str) -> String {
+        match self {
+            OverwriteScope::Window { from, to, .. } => format!(
+                "{quoted_col} >= {} AND {quoted_col} < {}",
+                sql_literal(from),
+                sql_literal(to)
+            ),
+        }
+    }
+}
+
+/// Render a JSON scalar as a SQL literal (strings single-quoted + escaped).
+fn sql_literal(v: &Value) -> String {
+    match v {
+        Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        // Validated non-null upstream; any residual maps to NULL (never matches
+        // a range comparison, so the delete is a safe no-op rather than wrong).
+        _ => "NULL".to_owned(),
+    }
+}
+
 /// Shared write-mode config, embedded in each upsert-capable sink config via
 /// `#[serde(flatten)]` so `write_mode` / `key` / `delete_marker` appear at the
 /// sink-config top level.
@@ -448,8 +524,7 @@ mod tests {
     fn overwrite_mode_flags_and_needs_no_key() {
         let spec = WriteSpec {
             write_mode: WriteMode::Overwrite,
-            key: vec![],
-            delete_marker: None,
+            ..Default::default()
         };
         assert!(spec.is_overwrite());
         assert!(!spec.dedups_by_key());
@@ -459,6 +534,68 @@ mod tests {
         // Non-overwrite specs report false.
         assert!(!WriteSpec::default().is_overwrite());
         assert!(!upsert_spec(&["id"]).is_overwrite());
+    }
+
+    #[test]
+    fn overwrite_scope_window_validates_and_renders() {
+        let scope = OverwriteScope::Window {
+            column: "posting_date".into(),
+            from: json!("2024-06-01"),
+            to: json!("2024-07-01"),
+        };
+        assert_eq!(scope.column(), "posting_date");
+        assert!(scope.validate().is_ok());
+        let whr = scope.render_where_literal("\"posting_date\"");
+        assert_eq!(
+            whr,
+            "\"posting_date\" >= '2024-06-01' AND \"posting_date\" < '2024-07-01'"
+        );
+
+        // Empty column / null bounds are rejected.
+        assert!(
+            OverwriteScope::Window {
+                column: " ".into(),
+                from: json!(1),
+                to: json!(2)
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            OverwriteScope::Window {
+                column: "c".into(),
+                from: json!(null),
+                to: json!(2)
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn scope_window_number_bounds() {
+        let scope = OverwriteScope::Window {
+            column: "seq".into(),
+            from: json!(100),
+            to: json!(200),
+        };
+        assert!(scope.validate().is_ok());
+        assert_eq!(
+            scope.render_where_literal("`seq`"),
+            "`seq` >= 100 AND `seq` < 200"
+        );
+    }
+
+    #[test]
+    fn scope_literal_escapes_quotes() {
+        // A crafted bound cannot break out of the string literal.
+        let scope = OverwriteScope::Window {
+            column: "c".into(),
+            from: json!("x' OR '1'='1"),
+            to: json!("z"),
+        };
+        let whr = scope.render_where_literal("\"c\"");
+        assert!(whr.contains("'x'' OR ''1''=''1'"), "{whr}");
     }
 
     #[test]
