@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0FABAEXQCYQRCTX90HV5YGR",
+  "strategy": "manual-commit",
+  "branch": "feat/reshape-transforms",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "cli/src/transforms.rs",
+    "crates/core/src/lib.rs",
+    "crates/core/src/stage.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2561,
+    "cache_creation_tokens": 4708583,
+    "cache_read_tokens": 691812978,
+    "output_tokens": 1064381,
+    "api_call_count": 1282,
+    "subagent_tokens": {
+      "input_tokens": 292,
+      "cache_creation_tokens": 1862320,
+      "cache_read_tokens": 21421122,
+      "output_tokens": 118499,
+      "api_call_count": 146
+    }
+  }
+}
