@@ -10361,6 +10361,28 @@
                         ]
                       },
                       "type": "array"
+                    },
+                    "odata": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_rest__ODataConfig"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Speak the OData protocol: `@odata.nextLink` paging, the `$.value`\nenvelope, `$select`/`$filter`/`$expand`/`$orderby` sugar, and\n`$metadata` (EDMX) → schema discovery. When set, it derives the\npagination, `records_path`, query params, and `Prefer` header at load\ntime (explicit values still win). See [`ODataConfig`]."
+                    },
+                    "replication_bind": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_rest__ReplicationBind"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Bind the stored bookmark into the outgoing request (query param / header /\nbody field / path) so the server returns only new rows. Composes with the\nexisting `replication_key` client-side filter, which stays active as a\nsafety net. Requires `replication_method: incremental` + `replication_key`."
                     }
                   },
                   "title": "RestStreamConfig",
@@ -17350,6 +17372,166 @@
         "select",
         "as"
       ],
+      "type": "object"
+    },
+    "source_rest__BindFormat": {
+      "description": "How the bookmark value is formatted before it is substituted into the\n[`ReplicationBind::template`].\n\nFor every non-[`Raw`](BindFormat::Raw) format the bookmark is first parsed\ninto an instant: a string is read as RFC 3339, a bare `YYYY-MM-DD` date\n(midnight UTC), or a naive `YYYY-MM-DDTHH:MM:SS` (assumed UTC); a JSON\nnumber is read as **epoch seconds**. It is then re-emitted in the target\nrepresentation, so `epoch_ms` ← ISO string and `iso8601` ← epoch number both\nwork.",
+      "oneOf": [
+        {
+          "const": "raw",
+          "description": "Emit the scalar verbatim (string as-is, number as its decimal form).\nThe default; no timestamp parsing.",
+          "type": "string"
+        },
+        {
+          "const": "iso8601",
+          "description": "RFC 3339 / ISO-8601 UTC timestamp, e.g. `2024-06-01T00:00:00Z`.",
+          "type": "string"
+        },
+        {
+          "const": "epoch_s",
+          "description": "Unix epoch **seconds** (integer).",
+          "type": "string"
+        },
+        {
+          "const": "epoch_ms",
+          "description": "Unix epoch **milliseconds** (integer).",
+          "type": "string"
+        },
+        {
+          "const": "date",
+          "description": "Calendar date `YYYY-MM-DD` (UTC).",
+          "type": "string"
+        }
+      ]
+    },
+    "source_rest__BindTarget": {
+      "description": "Where a rendered bookmark is injected into the outgoing request.",
+      "oneOf": [
+        {
+          "const": "query",
+          "description": "A query-string parameter (default) — e.g. `?updated_after=…`.",
+          "type": "string"
+        },
+        {
+          "const": "header",
+          "description": "A request header — e.g. `If-Modified-Since: …`.",
+          "type": "string"
+        },
+        {
+          "const": "body",
+          "description": "A top-level field of the JSON request body (POST-search APIs).",
+          "type": "string"
+        },
+        {
+          "const": "path",
+          "description": "A `{name}` placeholder in the request path.",
+          "type": "string"
+        }
+      ]
+    },
+    "source_rest__ODataConfig": {
+      "additionalProperties": true,
+      "description": "OData protocol options for the REST source (#512).\n\nA minimal block — `{ entity: Orders }` — is enough; it derives paging,\nthe `$.value` envelope, and (for `faucet discover`) `$metadata` parsing.\nThe query-option fields render into the standard `$select`/`$filter`/\n`$expand`/`$orderby` params.",
+      "properties": {
+        "entity": {
+          "description": "Entity set to read (appended to `base_url` as the path, e.g. `Orders`).\nOptional when the path already names the entity.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expand": {
+          "description": "`$expand` — related entities to inline (one level).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "filter": {
+          "description": "`$filter` — server-side filter expression (verbatim).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "orderby": {
+          "description": "`$orderby` — server-side ordering (verbatim).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "page_size": {
+          "description": "Server page size, sent as `Prefer: odata.maxpagesize=<n>`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null",
+            "string"
+          ]
+        },
+        "select": {
+          "description": "`$select` — columns to return.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "version": {
+          "$ref": "#/$defs/source_rest__ODataVersion",
+          "default": "v4",
+          "description": "Protocol version (default `v4`)."
+        }
+      },
+      "type": "object"
+    },
+    "source_rest__ODataVersion": {
+      "description": "OData protocol version, which selects the paging-link key.",
+      "oneOf": [
+        {
+          "const": "v2",
+          "description": "OData v2 — JSON-light next link `odata.nextLink`.",
+          "type": "string"
+        },
+        {
+          "const": "v4",
+          "description": "OData v4 (default) — next link `@odata.nextLink`.",
+          "type": "string"
+        }
+      ]
+    },
+    "source_rest__ReplicationBind": {
+      "additionalProperties": true,
+      "description": "Declarative binding of the stored bookmark into the **outgoing request** —\n\"server-side incremental push-down\" (#513).\n\nToday faucet tracks bookmarks and filters incrementally *client-side* (after\ndownload). A bind lets a source instead push the bookmark into the request\n(query param / header / body field / path) so the server returns only the\nnew rows. The existing client-side [`filter_incremental`] stays active as a\nsafety net for servers that don't honour the filter exactly.",
+      "properties": {
+        "advance_from": {
+          "description": "Optional JSONPath into the response body to advance the bookmark from,\ninstead of `max(record[replication_key])`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "format": {
+          "$ref": "#/$defs/source_rest__BindFormat",
+          "default": "raw",
+          "description": "How to format the bookmark before substitution."
+        },
+        "into": {
+          "$ref": "#/$defs/source_rest__BindTarget",
+          "default": "query",
+          "description": "Where to place the rendered value."
+        },
+        "name": {
+          "description": "The parameter / header / body-field / path-placeholder name.",
+          "type": "string"
+        },
+        "template": {
+          "default": "${bookmark}",
+          "description": "Template rendered with [`BIND_PLACEHOLDER`] (`${bookmark}`) replaced by\nthe formatted bookmark. Defaults to the bare `${bookmark}`; set e.g.\n`\"gte|${bookmark}\"` (Greenhouse) or `\"[${bookmark} TO *]\"` (Lucene).",
+          "type": "string"
+        }
+      },
       "type": "object"
     }
   }
