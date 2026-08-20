@@ -1421,3 +1421,33 @@ CLI build (otel,source-rest,sink-jsonl,sink-stdout,transforms): pass
 CLI build (source-rest,sink-jsonl,sink-stdout,transforms): pass</event>
 If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
 </task-notification>
+
+---
+
+<task-notification>
+<task-id>b0kp00615</task-id>
+<tool-use-id>toolu_017aMdmjX78huVt8oSnmo9VQ</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/720710a6-74e3-4980-ac3f-04abbbc1c178/tasks/b0kp00615.output</output-file>
+<status>completed</status>
+<summary>Background command "semver-checks against pristine git-tag baseline" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>b21gmf83p</task-id>
+<summary>Monitor event: "semver-checks rev completion"</summary>
+<event>=== SEMVER RESULT ===
+Summary no semver update required</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>b21gmf83p</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/720710a6-74e3-4980-ac3f-04abbbc1c178/tasks/b21gmf83p.output</output-file>
+<status>completed</status>
+<summary>Monitor "semver-checks rev completion" stream ended</summary>
+</task-notification>
