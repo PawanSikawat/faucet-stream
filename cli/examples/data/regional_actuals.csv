@@ -1,0 +1,4 @@
+account_id,region_id,jan,feb,mar,raw_meta
+4000,1,1200,1350,1410,"{""source"":""gl"",""fx"":""USD""}"
+4000,2,800,,905,"{""source"":""gl"",""fx"":""EUR""}"
+5000,3,300,320,,"{""source"":""gl"",""fx"":""JPY""}"

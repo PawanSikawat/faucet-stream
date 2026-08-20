@@ -1,0 +1,51 @@
+# Reshape transforms (#516) — turn a wide, coded, nested record into the shape
+# a warehouse table expects, without SQL:
+#   • lookup      — enrich a code with a human-readable label (inline reference)
+#   • unpivot     — pivot monthly columns into one row per month (wide → long)
+#   • json_encode — land a nested field as a flat JSON string column
+#
+#   faucet validate cli/examples/reshape_transforms.yaml
+#   faucet run      cli/examples/reshape_transforms.yaml
+version: 1
+name: reshape_transforms
+
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./data/regional_actuals.csv   # account_id, region_id, jan, feb, mar, raw_meta
+
+  # Transforms run in order. Note `unpivot` keeps only `id_fields` + the
+  # key/value pair, so anything you want to survive it must be an id field
+  # (or stamped afterwards).
+  transforms:
+    # 1) land any nested field as a flat JSON string (matches a STRING column).
+    #    Most useful on JSON/REST sources with real nested objects; on a flat
+    #    CSV source it is a harmless no-op.
+    - type: json_encode
+      config:
+        fields: [raw_meta]
+
+    # 2) code → label, from an inline reference table (no SQL).
+    - type: lookup
+      config:
+        values:
+          - { id: "1", name: "North America" }
+          - { id: "2", name: "EMEA" }
+          - { id: "3", name: "APAC" }
+        on: { record: region_id, ref: id }
+        add: { region_name: name }
+
+    # 3) wide monthly columns → one row per month, carrying the ids across.
+    - type: unpivot
+      config:
+        id_fields: [account_id, region_id, region_name]
+        key_name: month
+        value_name: amount
+        columns: [jan, feb, mar]
+        drop_nulls: true
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/regional_long.jsonl

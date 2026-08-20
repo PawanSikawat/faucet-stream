@@ -55,6 +55,11 @@ pub enum TransformStage {
     /// container with a prefix, scalars/arrays replace the leaf in place.
     #[cfg(feature = "transform-explode")]
     Explode(ExplodeSpec),
+    /// Wide/map → long reshape. 1→0..N. Emits one row per selected column
+    /// (wide form) or per entry of an object field (map form), carrying the
+    /// `id_fields` onto each output row. See [`UnpivotSpec`].
+    #[cfg(feature = "transform-unpivot")]
+    Unpivot(UnpivotSpec),
     /// CDC envelope → flat row + marker. 1→0|1.
     /// Normalizes `{op, before, after, …}` into a flat row stamped with
     /// `__op: "u"` (upsert) or `__op: "d"` (delete). DDL/truncate events
@@ -78,6 +83,8 @@ impl std::fmt::Debug for TransformStage {
             Self::Filter(s) => f.debug_tuple("Filter").field(s).finish(),
             #[cfg(feature = "transform-explode")]
             Self::Explode(s) => f.debug_tuple("Explode").field(s).finish(),
+            #[cfg(feature = "transform-unpivot")]
+            Self::Unpivot(s) => f.debug_tuple("Unpivot").field(s).finish(),
             #[cfg(feature = "transform-cdc-unwrap")]
             Self::CdcUnwrap(s) => f.debug_tuple("CdcUnwrap").field(s).finish(),
             Self::Custom(_) => write!(f, "Custom(<fn>)"),
@@ -94,6 +101,8 @@ impl Clone for TransformStage {
             Self::Filter(s) => Self::Filter(s.clone()),
             #[cfg(feature = "transform-explode")]
             Self::Explode(s) => Self::Explode(s.clone()),
+            #[cfg(feature = "transform-unpivot")]
+            Self::Unpivot(s) => Self::Unpivot(s.clone()),
             #[cfg(feature = "transform-cdc-unwrap")]
             Self::CdcUnwrap(s) => Self::CdcUnwrap(s.clone()),
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
@@ -109,6 +118,8 @@ pub enum CompiledStage {
     Filter(CompiledFilter),
     #[cfg(feature = "transform-explode")]
     Explode(CompiledExplode),
+    #[cfg(feature = "transform-unpivot")]
+    Unpivot(CompiledUnpivot),
     #[cfg(feature = "transform-cdc-unwrap")]
     CdcUnwrap(CompiledCdcUnwrap),
     Custom(Arc<dyn Fn(Value) -> Vec<Value> + Send + Sync>),
@@ -123,6 +134,8 @@ impl std::fmt::Debug for CompiledStage {
             Self::Filter(cf) => f.debug_tuple("Filter").field(cf).finish(),
             #[cfg(feature = "transform-explode")]
             Self::Explode(e) => f.debug_tuple("Explode").field(e).finish(),
+            #[cfg(feature = "transform-unpivot")]
+            Self::Unpivot(u) => f.debug_tuple("Unpivot").field(u).finish(),
             #[cfg(feature = "transform-cdc-unwrap")]
             Self::CdcUnwrap(c) => f.debug_tuple("CdcUnwrap").field(c).finish(),
             Self::Custom(_) => write!(f, "Custom(<fn>)"),
@@ -148,6 +161,8 @@ impl Clone for CompiledStage {
                 separator: e.separator.clone(),
                 on_missing: e.on_missing,
             }),
+            #[cfg(feature = "transform-unpivot")]
+            Self::Unpivot(u) => Self::Unpivot(u.clone()),
             #[cfg(feature = "transform-cdc-unwrap")]
             Self::CdcUnwrap(c) => Self::CdcUnwrap(c.clone()),
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
@@ -786,6 +801,120 @@ impl CompiledCdcUnwrap {
     }
 }
 
+// ── Unpivot spec (#516) ──────────────────────────────────────────────────────
+
+/// Spec for [`TransformStage::Unpivot`] — a wide/map → long reshape (1→0..N).
+///
+/// Two forms:
+/// - **wide** (default): each column in `columns` — or every field except
+///   `id_fields` when `columns` is empty — becomes a row
+///   `{<id_fields…>, <key_name>: <column name>, <value_name>: <cell>}`.
+/// - **map** (`from` set): the object at `from` is expanded — each entry becomes
+///   `{<id_fields…>, <key_name>: <entry key>, <value_name>: <entry value>}`.
+///
+/// Output rows carry only `id_fields` plus the key/value pair. When the reshape
+/// yields no rows (missing `from`, or no columns) the original record is passed
+/// through unchanged unless `drop_if_empty` is set — records are never silently
+/// dropped by default.
+#[cfg(feature = "transform-unpivot")]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct UnpivotSpec {
+    /// Fields copied verbatim onto every output row.
+    #[serde(default)]
+    pub id_fields: Vec<String>,
+    /// Name of the emitted key column (holds the column name / entry key).
+    pub key_name: String,
+    /// Name of the emitted value column (holds the cell / entry value).
+    pub value_name: String,
+    /// Wide form: columns to unpivot. Empty = every field except `id_fields`.
+    #[serde(default)]
+    pub columns: Vec<String>,
+    /// Map form: unpivot the entries of this object field instead of columns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// Skip entries/cells whose value is JSON `null`.
+    #[serde(default)]
+    pub drop_nulls: bool,
+    /// Drop the record when the reshape yields no rows, instead of passing the
+    /// original through.
+    #[serde(default)]
+    pub drop_if_empty: bool,
+}
+
+/// Validated [`UnpivotSpec`] backing [`CompiledStage::Unpivot`].
+#[cfg(feature = "transform-unpivot")]
+#[derive(Debug, Clone)]
+pub struct CompiledUnpivot {
+    spec: UnpivotSpec,
+}
+
+#[cfg(feature = "transform-unpivot")]
+impl CompiledUnpivot {
+    fn compile(spec: &UnpivotSpec) -> Result<Self, FaucetError> {
+        if spec.key_name.trim().is_empty() || spec.value_name.trim().is_empty() {
+            return Err(FaucetError::Transform(
+                "unpivot: `key_name` and `value_name` must be non-empty".to_owned(),
+            ));
+        }
+        Ok(Self { spec: spec.clone() })
+    }
+
+    fn apply(&self, rec: Value) -> Vec<Value> {
+        let s = &self.spec;
+        let Value::Object(map) = &rec else {
+            return vec![rec];
+        };
+        // id columns copied onto every output row.
+        let mut id = serde_json::Map::new();
+        for f in &s.id_fields {
+            if let Some(v) = map.get(f) {
+                id.insert(f.clone(), v.clone());
+            }
+        }
+        let mut out: Vec<Value> = Vec::new();
+        let mut emit = |k: String, v: Value| {
+            if s.drop_nulls && v.is_null() {
+                return;
+            }
+            let mut row = id.clone();
+            row.insert(s.key_name.clone(), Value::String(k));
+            row.insert(s.value_name.clone(), v);
+            out.push(Value::Object(row));
+        };
+        match &s.from {
+            Some(field) => {
+                if let Some(Value::Object(obj)) = map.get(field) {
+                    for (k, v) in obj {
+                        emit(k.clone(), v.clone());
+                    }
+                }
+            }
+            None => {
+                let skip: std::collections::HashSet<&str> =
+                    s.id_fields.iter().map(String::as_str).collect();
+                let cols: Vec<String> = if s.columns.is_empty() {
+                    map.keys()
+                        .filter(|k| !skip.contains(k.as_str()))
+                        .cloned()
+                        .collect()
+                } else {
+                    s.columns.clone()
+                };
+                for c in cols {
+                    if let Some(v) = map.get(&c).cloned() {
+                        emit(c, v);
+                    }
+                }
+            }
+        }
+        if out.is_empty() && !s.drop_if_empty {
+            vec![rec]
+        } else {
+            out
+        }
+    }
+}
+
 /// Compile a [`TransformStage`] into its [`CompiledStage`] form.
 pub fn compile_stage(s: &TransformStage) -> Result<CompiledStage, FaucetError> {
     match s {
@@ -795,6 +924,10 @@ pub fn compile_stage(s: &TransformStage) -> Result<CompiledStage, FaucetError> {
         #[cfg(feature = "transform-explode")]
         TransformStage::Explode(spec) => {
             Ok(CompiledStage::Explode(CompiledExplode::compile(spec)?))
+        }
+        #[cfg(feature = "transform-unpivot")]
+        TransformStage::Unpivot(spec) => {
+            Ok(CompiledStage::Unpivot(CompiledUnpivot::compile(spec)?))
         }
         #[cfg(feature = "transform-cdc-unwrap")]
         TransformStage::CdcUnwrap(spec) => {
@@ -858,6 +991,8 @@ fn apply_one_stage(rec: Value, stage: &CompiledStage) -> Result<Vec<Value>, Fauc
         }
         #[cfg(feature = "transform-explode")]
         CompiledStage::Explode(e) => e.apply(rec),
+        #[cfg(feature = "transform-unpivot")]
+        CompiledStage::Unpivot(u) => Ok(u.apply(rec)),
         #[cfg(feature = "transform-cdc-unwrap")]
         CompiledStage::CdcUnwrap(c) => c.apply(rec),
         CompiledStage::Custom(f) => Ok(f(rec)),
@@ -1901,5 +2036,81 @@ mod tests {
         // mysql/mongo short form.
         let my = apply_stages(json!({"op": "u", "after": {"id": 2, "v": 9}}), &stages).unwrap();
         assert_eq!(my, vec![json!({"id": 2, "v": 9, "__op": "u"})]);
+    }
+
+    #[cfg(feature = "transform-unpivot")]
+    fn unpivot(spec: UnpivotSpec) -> Vec<CompiledStage> {
+        vec![compile_stage(&TransformStage::Unpivot(spec)).unwrap()]
+    }
+
+    #[cfg(feature = "transform-unpivot")]
+    fn upspec(id: &[&str], from: Option<&str>, cols: &[&str]) -> UnpivotSpec {
+        UnpivotSpec {
+            id_fields: id.iter().map(|s| s.to_string()).collect(),
+            key_name: "k".into(),
+            value_name: "v".into(),
+            columns: cols.iter().map(|s| s.to_string()).collect(),
+            from: from.map(String::from),
+            drop_nulls: false,
+            drop_if_empty: false,
+        }
+    }
+
+    #[cfg(feature = "transform-unpivot")]
+    #[test]
+    fn unpivot_wide_all_non_id_columns() {
+        let out = apply_stages(
+            json!({"id": 7, "jan": 10, "feb": 20}),
+            &unpivot(upspec(&["id"], None, &[])),
+        )
+        .unwrap();
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|r| r["id"] == json!(7)));
+        let jan = out.iter().find(|r| r["k"] == json!("jan")).unwrap();
+        assert_eq!(jan["v"], json!(10));
+    }
+
+    #[cfg(feature = "transform-unpivot")]
+    #[test]
+    fn unpivot_map_form_expands_object_entries() {
+        let out = apply_stages(
+            json!({"report_id": "r1", "cells": {"a": 1, "b": 2}}),
+            &unpivot(upspec(&["report_id"], Some("cells"), &[])),
+        )
+        .unwrap();
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|r| r["report_id"] == json!("r1")));
+    }
+
+    #[cfg(feature = "transform-unpivot")]
+    #[test]
+    fn unpivot_selected_columns_and_drop_nulls() {
+        let mut spec = upspec(&["id"], None, &["a", "b"]);
+        spec.drop_nulls = true;
+        let out =
+            apply_stages(json!({"id": 1, "a": 5, "b": null, "c": 9}), &unpivot(spec)).unwrap();
+        // only `a` emitted: `b` is null-dropped, `c` is not selected.
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["k"], json!("a"));
+        assert_eq!(out[0]["v"], json!(5));
+    }
+
+    #[cfg(feature = "transform-unpivot")]
+    #[test]
+    fn unpivot_empty_passes_record_through() {
+        let out = apply_stages(
+            json!({"id": 1}),
+            &unpivot(upspec(&["id"], Some("missing"), &[])),
+        )
+        .unwrap();
+        assert_eq!(out, vec![json!({"id": 1})]); // passthrough, never silently dropped
+    }
+
+    #[cfg(feature = "transform-unpivot")]
+    #[test]
+    fn unpivot_empty_key_name_rejected() {
+        let mut spec = upspec(&[], None, &[]);
+        spec.key_name = String::new();
+        assert!(compile_stage(&TransformStage::Unpivot(spec)).is_err());
     }
 }

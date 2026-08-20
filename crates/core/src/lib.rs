@@ -114,6 +114,8 @@ pub use retry::execute_with_retry;
 pub use shard::ShardSpec;
 #[cfg(feature = "transform-cdc-unwrap")]
 pub use stage::CdcUnwrapSpec;
+#[cfg(feature = "transform-unpivot")]
+pub use stage::UnpivotSpec;
 #[cfg(feature = "transform-explode")]
 pub use stage::{ExplodeSpec, OnMissing};
 #[cfg(feature = "transform-filter")]
@@ -130,6 +132,8 @@ pub use traits::{RowOutcome, Sink, Source};
 pub use transform::JsonParseOnError;
 #[cfg(feature = "transform-keys-case")]
 pub use transform::KeyCaseMode;
+#[cfg(feature = "transform-lookup")]
+pub use transform::LookupOnMissing;
 pub use transform::RecordTransform;
 #[cfg(feature = "transform-value-case")]
 pub use transform::ValueCaseMode;

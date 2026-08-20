@@ -60,6 +60,7 @@ use std::sync::Arc;
     feature = "transform-rename-field",
     feature = "transform-value-case",
     feature = "transform-spell-symbols",
+    feature = "transform-lookup",
 ))]
 use std::collections::HashMap;
 
@@ -506,6 +507,45 @@ pub enum RecordTransform {
         into: Option<String>,
     },
 
+    /// Serialize a nested field to a JSON **string** (the inverse of
+    /// [`JsonParse`](RecordTransform::JsonParse)).
+    ///
+    /// Each named field whose value is an object or array is replaced in place
+    /// with its compact JSON-string form — the common shaping step for landing
+    /// nested data as a flat `STRING` column. Scalar (already-flat) values and
+    /// absent fields are left unchanged (idempotent).
+    ///
+    /// _Requires feature `transform-json-encode`._
+    #[cfg(feature = "transform-json-encode")]
+    JsonEncode { fields: Vec<String> },
+
+    /// Enrich each record by joining it against a small in-memory reference
+    /// table — a code→label lookup, without SQL.
+    ///
+    /// The record's `on_record` value is matched against the reference rows'
+    /// `on_ref` value; on a hit, each `(output_column, reference_column)` pair in
+    /// `add` is written onto the record. Keys are compared by their scalar
+    /// string form so `42` matches `"42"`. Behaviour on a miss is governed by
+    /// [`LookupOnMissing`]. This is a 1→1 enrichment (it never drops rows).
+    ///
+    /// The reference rows are resolved at config-load time (inline `values`, or
+    /// a `csv`/`jsonl` file loaded by the CLI) and carried here verbatim.
+    ///
+    /// _Requires feature `transform-lookup`._
+    #[cfg(feature = "transform-lookup")]
+    Lookup {
+        /// Resolved reference rows.
+        reference: Vec<Map<String, Value>>,
+        /// Field on the incoming record to match on.
+        on_record: String,
+        /// Field on the reference rows to match against.
+        on_ref: String,
+        /// `(output column on the record, source column on the reference row)`.
+        add: Vec<(String, String)>,
+        /// What to do when no reference row matches.
+        on_missing: LookupOnMissing,
+    },
+
     /// A user-supplied transformation function.
     ///
     /// The function receives each record as a [`Value`] and returns the
@@ -513,6 +553,30 @@ pub enum RecordTransform {
     ///
     /// Always available — not guarded by any feature flag.
     Custom(Arc<dyn Fn(Value) -> Value + Send + Sync>),
+}
+
+/// Behaviour when a [`RecordTransform::Lookup`] finds no matching reference row.
+#[cfg(feature = "transform-lookup")]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum LookupOnMissing {
+    /// Write each `add` output column as JSON `null` (default).
+    #[default]
+    Null,
+    /// Leave the record unchanged (add no columns).
+    Keep,
+    /// Fail the batch with a [`FaucetError::Transform`].
+    Error,
 }
 
 impl fmt::Debug for RecordTransform {
@@ -633,6 +697,26 @@ impl fmt::Debug for RecordTransform {
                 .field("delimiter", delimiter)
                 .field("into", into)
                 .finish(),
+            #[cfg(feature = "transform-json-encode")]
+            Self::JsonEncode { fields } => f
+                .debug_struct("JsonEncode")
+                .field("fields", fields)
+                .finish(),
+            #[cfg(feature = "transform-lookup")]
+            Self::Lookup {
+                reference,
+                on_record,
+                on_ref,
+                add,
+                on_missing,
+            } => f
+                .debug_struct("Lookup")
+                .field("reference_rows", &reference.len())
+                .field("on_record", on_record)
+                .field("on_ref", on_ref)
+                .field("add", add)
+                .field("on_missing", on_missing)
+                .finish(),
             Self::Custom(_) => write!(f, "Custom(<fn>)"),
         }
     }
@@ -751,6 +835,24 @@ impl Clone for RecordTransform {
                 delimiter: delimiter.clone(),
                 into: into.clone(),
             },
+            #[cfg(feature = "transform-json-encode")]
+            Self::JsonEncode { fields } => Self::JsonEncode {
+                fields: fields.clone(),
+            },
+            #[cfg(feature = "transform-lookup")]
+            Self::Lookup {
+                reference,
+                on_record,
+                on_ref,
+                add,
+                on_missing,
+            } => Self::Lookup {
+                reference: reference.clone(),
+                on_record: on_record.clone(),
+                on_ref: on_ref.clone(),
+                add: add.clone(),
+                on_missing: *on_missing,
+            },
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
         }
     }
@@ -868,6 +970,22 @@ impl Clone for CompiledTransform {
                 field: field.clone(),
                 delimiter: delimiter.clone(),
                 into: into.clone(),
+            },
+            #[cfg(feature = "transform-json-encode")]
+            Self::JsonEncode { fields } => Self::JsonEncode {
+                fields: fields.clone(),
+            },
+            #[cfg(feature = "transform-lookup")]
+            Self::Lookup {
+                index,
+                on_record,
+                add,
+                on_missing,
+            } => Self::Lookup {
+                index: index.clone(),
+                on_record: on_record.clone(),
+                add: add.clone(),
+                on_missing: *on_missing,
             },
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
         }
@@ -1004,6 +1122,19 @@ pub enum CompiledTransform {
         field: String,
         delimiter: String,
         into: Option<String>,
+    },
+    #[cfg(feature = "transform-json-encode")]
+    JsonEncode {
+        fields: Vec<String>,
+    },
+    #[cfg(feature = "transform-lookup")]
+    Lookup {
+        /// Reference rows indexed by the scalar-string form of `on_ref`
+        /// (first row wins on duplicate keys).
+        index: HashMap<String, Map<String, Value>>,
+        on_record: String,
+        add: Vec<(String, String)>,
+        on_missing: LookupOnMissing,
     },
     Custom(Arc<dyn Fn(Value) -> Value + Send + Sync>),
 }
@@ -1184,7 +1315,55 @@ pub fn compile(t: &RecordTransform) -> Result<CompiledTransform, FaucetError> {
             delimiter: delimiter.clone(),
             into: into.clone(),
         }),
+        #[cfg(feature = "transform-json-encode")]
+        RecordTransform::JsonEncode { fields } => Ok(CompiledTransform::JsonEncode {
+            fields: fields.clone(),
+        }),
+        #[cfg(feature = "transform-lookup")]
+        RecordTransform::Lookup {
+            reference,
+            on_record,
+            on_ref,
+            add,
+            on_missing,
+        } => {
+            if on_record.trim().is_empty() || on_ref.trim().is_empty() {
+                return Err(FaucetError::Transform(
+                    "lookup: `on_record` and `on_ref` must be non-empty".into(),
+                ));
+            }
+            if add.is_empty() {
+                return Err(FaucetError::Transform(
+                    "lookup: `add` must name at least one output column".into(),
+                ));
+            }
+            // Index the reference rows by the scalar-string form of `on_ref`;
+            // the first row for a given key wins.
+            let mut index = HashMap::with_capacity(reference.len());
+            for row in reference {
+                if let Some(k) = row.get(on_ref).map(value_to_key) {
+                    index.entry(k).or_insert_with(|| row.clone());
+                }
+            }
+            Ok(CompiledTransform::Lookup {
+                index,
+                on_record: on_record.clone(),
+                add: add.clone(),
+                on_missing: *on_missing,
+            })
+        }
         RecordTransform::Custom(f) => Ok(CompiledTransform::Custom(Arc::clone(f))),
+    }
+}
+
+/// Scalar-string key form for [`RecordTransform::Lookup`] matching, so `42`
+/// matches `"42"`. `null` maps to the empty string.
+#[cfg(feature = "transform-lookup")]
+fn value_to_key(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
     }
 }
 
@@ -1277,6 +1456,15 @@ fn apply_one(value: Value, t: &CompiledTransform) -> Result<Value, FaucetError> 
             delimiter,
             into,
         } => Ok(join_field(value, field, delimiter, into.as_deref())),
+        #[cfg(feature = "transform-json-encode")]
+        CompiledTransform::JsonEncode { fields } => Ok(json_encode_fields(value, fields)),
+        #[cfg(feature = "transform-lookup")]
+        CompiledTransform::Lookup {
+            index,
+            on_record,
+            add,
+            on_missing,
+        } => lookup_field(value, index, on_record, add, *on_missing),
         CompiledTransform::Custom(f) => Ok(f(value)),
     }
 }
@@ -2001,6 +2189,64 @@ fn hex_encode(bytes: &[u8]) -> String {
         s.push(HEX[(b & 0x0f) as usize] as char);
     }
     s
+}
+
+// ── JsonEncode / Lookup (#516) ───────────────────────────────────────────────
+
+/// [`RecordTransform::JsonEncode`] — replace each named object/array field with
+/// its compact JSON-string form. Scalars and absent fields are left unchanged.
+#[cfg(feature = "transform-json-encode")]
+fn json_encode_fields(mut value: Value, fields: &[String]) -> Value {
+    if let Value::Object(map) = &mut value {
+        for f in fields {
+            if let Some(v) = map.get_mut(f)
+                && matches!(v, Value::Object(_) | Value::Array(_))
+            {
+                let s = serde_json::to_string(v).unwrap_or_else(|_| "null".to_string());
+                *v = Value::String(s);
+            }
+        }
+    }
+    value
+}
+
+/// [`RecordTransform::Lookup`] — enrich a record from an indexed reference set.
+#[cfg(feature = "transform-lookup")]
+fn lookup_field(
+    mut value: Value,
+    index: &HashMap<String, Map<String, Value>>,
+    on_record: &str,
+    add: &[(String, String)],
+    on_missing: LookupOnMissing,
+) -> Result<Value, FaucetError> {
+    let Value::Object(map) = &mut value else {
+        return Ok(value);
+    };
+    let key = map.get(on_record).map(value_to_key);
+    let matched = key.as_deref().and_then(|k| index.get(k));
+    match matched {
+        Some(row) => {
+            for (out, src) in add {
+                let v = row.get(src).cloned().unwrap_or(Value::Null);
+                map.insert(out.clone(), v);
+            }
+        }
+        None => match on_missing {
+            LookupOnMissing::Null => {
+                for (out, _) in add {
+                    map.insert(out.clone(), Value::Null);
+                }
+            }
+            LookupOnMissing::Keep => {}
+            LookupOnMissing::Error => {
+                return Err(FaucetError::Transform(format!(
+                    "lookup: no reference row for {on_record}={:?}",
+                    key.unwrap_or_default()
+                )));
+            }
+        },
+    }
+    Ok(value)
 }
 
 // ── JsonParse ───────────────────────────────────────────────────────────────
@@ -4690,6 +4936,99 @@ mod tests {
             &compiled(&json_parse_spec("v", JsonParseOnError::Error)),
         );
         assert_eq!(result, record);
+    }
+
+    #[cfg(feature = "transform-json-encode")]
+    #[test]
+    fn json_encode_stringifies_nested_only() {
+        let out = apply_all(
+            json!({"id": 1, "addr": {"city": "NYC"}, "tags": [1, 2], "name": "a"}),
+            &compiled(&[RecordTransform::JsonEncode {
+                fields: vec![
+                    "addr".into(),
+                    "tags".into(),
+                    "name".into(),
+                    "missing".into(),
+                ],
+            }]),
+        );
+        assert_eq!(out["addr"], json!("{\"city\":\"NYC\"}"));
+        assert_eq!(out["tags"], json!("[1,2]"));
+        assert_eq!(out["name"], json!("a")); // scalar left untouched (idempotent)
+        assert_eq!(out["id"], json!(1));
+    }
+
+    #[cfg(feature = "transform-lookup")]
+    fn ref_rows(v: Value) -> Vec<Map<String, Value>> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_object().unwrap().clone())
+            .collect()
+    }
+
+    #[cfg(feature = "transform-lookup")]
+    #[test]
+    fn lookup_enriches_on_hit_and_nulls_on_miss() {
+        let spec = RecordTransform::Lookup {
+            reference: ref_rows(json!([{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}])),
+            on_record: "user_id".into(),
+            on_ref: "id".into(),
+            add: vec![("user_name".into(), "name".into())],
+            on_missing: LookupOnMissing::Null,
+        };
+        let hit = apply_all(
+            json!({"user_id": 1}),
+            &compiled(std::slice::from_ref(&spec)),
+        );
+        assert_eq!(hit["user_name"], json!("Alice"));
+        let miss = apply_all(json!({"user_id": 9}), &compiled(&[spec]));
+        assert_eq!(miss["user_name"], json!(null));
+    }
+
+    #[cfg(feature = "transform-lookup")]
+    #[test]
+    fn lookup_matches_number_against_string_key() {
+        let spec = RecordTransform::Lookup {
+            reference: ref_rows(json!([{"code": "42", "label": "answer"}])),
+            on_record: "code".into(),
+            on_ref: "code".into(),
+            add: vec![("label".into(), "label".into())],
+            on_missing: LookupOnMissing::Keep,
+        };
+        // Record carries numeric 42; reference key is "42" — matched by scalar form.
+        let out = apply_all(json!({"code": 42}), &compiled(&[spec]));
+        assert_eq!(out["label"], json!("answer"));
+    }
+
+    #[cfg(feature = "transform-lookup")]
+    #[test]
+    fn lookup_on_missing_error_fails() {
+        let c = compile(&RecordTransform::Lookup {
+            reference: Vec::new(),
+            on_record: "k".into(),
+            on_ref: "k".into(),
+            add: vec![("x".into(), "y".into())],
+            on_missing: LookupOnMissing::Error,
+        })
+        .unwrap();
+        let res = super::apply_all(json!({"k": "z"}), std::slice::from_ref(&c));
+        assert!(res.is_err());
+    }
+
+    #[cfg(feature = "transform-lookup")]
+    #[test]
+    fn lookup_empty_add_is_rejected_at_compile() {
+        assert!(
+            compile(&RecordTransform::Lookup {
+                reference: Vec::new(),
+                on_record: "k".into(),
+                on_ref: "k".into(),
+                add: Vec::new(),
+                on_missing: LookupOnMissing::Null,
+            })
+            .is_err()
+        );
     }
 
     #[cfg(feature = "transform-coalesce")]
