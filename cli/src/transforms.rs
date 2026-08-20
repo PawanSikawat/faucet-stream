@@ -599,10 +599,15 @@ fn registry() -> Vec<TransformDef> {
                 description: "Reshape wide columns or a map field into long key/value rows.",
                 schema_fn: || schema::<UnpivotSpec>(),
                 compile_fn: |kind, config| {
+                    // `unpivot` is 1→N, so it compiles to an object-safe
+                    // `TransformStage::Custom` (no dedicated enum variant —
+                    // keeps `TransformStage` additive-only). `into_stage`
+                    // validates the spec at load time.
                     let spec = decode::<UnpivotSpec>(kind, config)?;
-                    let stage = TransformStage::Unpivot(spec);
-                    validate_stage(kind, &stage)?;
-                    Ok(stage)
+                    spec.into_stage().map_err(|e| CliError::InvalidTransform {
+                        name: kind.to_owned(),
+                        message: e.to_string(),
+                    })
                 },
             },
             TransformDef {

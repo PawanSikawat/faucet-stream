@@ -55,11 +55,6 @@ pub enum TransformStage {
     /// container with a prefix, scalars/arrays replace the leaf in place.
     #[cfg(feature = "transform-explode")]
     Explode(ExplodeSpec),
-    /// Wide/map → long reshape. 1→0..N. Emits one row per selected column
-    /// (wide form) or per entry of an object field (map form), carrying the
-    /// `id_fields` onto each output row. See [`UnpivotSpec`].
-    #[cfg(feature = "transform-unpivot")]
-    Unpivot(UnpivotSpec),
     /// CDC envelope → flat row + marker. 1→0|1.
     /// Normalizes `{op, before, after, …}` into a flat row stamped with
     /// `__op: "u"` (upsert) or `__op: "d"` (delete). DDL/truncate events
@@ -83,8 +78,6 @@ impl std::fmt::Debug for TransformStage {
             Self::Filter(s) => f.debug_tuple("Filter").field(s).finish(),
             #[cfg(feature = "transform-explode")]
             Self::Explode(s) => f.debug_tuple("Explode").field(s).finish(),
-            #[cfg(feature = "transform-unpivot")]
-            Self::Unpivot(s) => f.debug_tuple("Unpivot").field(s).finish(),
             #[cfg(feature = "transform-cdc-unwrap")]
             Self::CdcUnwrap(s) => f.debug_tuple("CdcUnwrap").field(s).finish(),
             Self::Custom(_) => write!(f, "Custom(<fn>)"),
@@ -101,8 +94,6 @@ impl Clone for TransformStage {
             Self::Filter(s) => Self::Filter(s.clone()),
             #[cfg(feature = "transform-explode")]
             Self::Explode(s) => Self::Explode(s.clone()),
-            #[cfg(feature = "transform-unpivot")]
-            Self::Unpivot(s) => Self::Unpivot(s.clone()),
             #[cfg(feature = "transform-cdc-unwrap")]
             Self::CdcUnwrap(s) => Self::CdcUnwrap(s.clone()),
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
@@ -118,8 +109,6 @@ pub enum CompiledStage {
     Filter(CompiledFilter),
     #[cfg(feature = "transform-explode")]
     Explode(CompiledExplode),
-    #[cfg(feature = "transform-unpivot")]
-    Unpivot(CompiledUnpivot),
     #[cfg(feature = "transform-cdc-unwrap")]
     CdcUnwrap(CompiledCdcUnwrap),
     Custom(Arc<dyn Fn(Value) -> Vec<Value> + Send + Sync>),
@@ -134,8 +123,6 @@ impl std::fmt::Debug for CompiledStage {
             Self::Filter(cf) => f.debug_tuple("Filter").field(cf).finish(),
             #[cfg(feature = "transform-explode")]
             Self::Explode(e) => f.debug_tuple("Explode").field(e).finish(),
-            #[cfg(feature = "transform-unpivot")]
-            Self::Unpivot(u) => f.debug_tuple("Unpivot").field(u).finish(),
             #[cfg(feature = "transform-cdc-unwrap")]
             Self::CdcUnwrap(c) => f.debug_tuple("CdcUnwrap").field(c).finish(),
             Self::Custom(_) => write!(f, "Custom(<fn>)"),
@@ -161,8 +148,6 @@ impl Clone for CompiledStage {
                 separator: e.separator.clone(),
                 on_missing: e.on_missing,
             }),
-            #[cfg(feature = "transform-unpivot")]
-            Self::Unpivot(u) => Self::Unpivot(u.clone()),
             #[cfg(feature = "transform-cdc-unwrap")]
             Self::CdcUnwrap(c) => Self::CdcUnwrap(c.clone()),
             Self::Custom(f) => Self::Custom(Arc::clone(f)),
@@ -803,7 +788,10 @@ impl CompiledCdcUnwrap {
 
 // ── Unpivot spec (#516) ──────────────────────────────────────────────────────
 
-/// Spec for [`TransformStage::Unpivot`] — a wide/map → long reshape (1→0..N).
+/// Spec for the `unpivot` transform — a wide/map → long reshape (1→0..N).
+///
+/// Compile it with [`UnpivotSpec::compile`] and attach it to a pipeline as a
+/// [`TransformStage::Custom`] via [`UnpivotSpec::into_stage`].
 ///
 /// Two forms:
 /// - **wide** (default): each column in `columns` — or every field except
@@ -841,7 +829,25 @@ pub struct UnpivotSpec {
     pub drop_if_empty: bool,
 }
 
-/// Validated [`UnpivotSpec`] backing [`CompiledStage::Unpivot`].
+#[cfg(feature = "transform-unpivot")]
+impl UnpivotSpec {
+    /// Validate the spec, returning a reusable [`CompiledUnpivot`].
+    pub fn compile(&self) -> Result<CompiledUnpivot, FaucetError> {
+        CompiledUnpivot::compile(self)
+    }
+
+    /// Compile and wrap this reshape as a [`TransformStage::Custom`] (1→0..N),
+    /// the object-safe way to attach it to any pipeline without a dedicated
+    /// stage variant.
+    pub fn into_stage(&self) -> Result<TransformStage, FaucetError> {
+        let compiled = self.compile()?;
+        Ok(TransformStage::Custom(Arc::new(move |rec| {
+            compiled.apply(rec)
+        })))
+    }
+}
+
+/// Validated [`UnpivotSpec`] — apply it per record with [`CompiledUnpivot::apply`].
 #[cfg(feature = "transform-unpivot")]
 #[derive(Debug, Clone)]
 pub struct CompiledUnpivot {
@@ -859,7 +865,8 @@ impl CompiledUnpivot {
         Ok(Self { spec: spec.clone() })
     }
 
-    fn apply(&self, rec: Value) -> Vec<Value> {
+    /// Reshape one record into 0..N long-format rows.
+    pub fn apply(&self, rec: Value) -> Vec<Value> {
         let s = &self.spec;
         let Value::Object(map) = &rec else {
             return vec![rec];
@@ -926,9 +933,6 @@ pub fn compile_stage(s: &TransformStage) -> Result<CompiledStage, FaucetError> {
             Ok(CompiledStage::Explode(CompiledExplode::compile(spec)?))
         }
         #[cfg(feature = "transform-unpivot")]
-        TransformStage::Unpivot(spec) => {
-            Ok(CompiledStage::Unpivot(CompiledUnpivot::compile(spec)?))
-        }
         #[cfg(feature = "transform-cdc-unwrap")]
         TransformStage::CdcUnwrap(spec) => {
             Ok(CompiledStage::CdcUnwrap(CompiledCdcUnwrap::compile(spec)?))
@@ -992,7 +996,6 @@ fn apply_one_stage(rec: Value, stage: &CompiledStage) -> Result<Vec<Value>, Fauc
         #[cfg(feature = "transform-explode")]
         CompiledStage::Explode(e) => e.apply(rec),
         #[cfg(feature = "transform-unpivot")]
-        CompiledStage::Unpivot(u) => Ok(u.apply(rec)),
         #[cfg(feature = "transform-cdc-unwrap")]
         CompiledStage::CdcUnwrap(c) => c.apply(rec),
         CompiledStage::Custom(f) => Ok(f(rec)),
@@ -2040,7 +2043,7 @@ mod tests {
 
     #[cfg(feature = "transform-unpivot")]
     fn unpivot(spec: UnpivotSpec) -> Vec<CompiledStage> {
-        vec![compile_stage(&TransformStage::Unpivot(spec)).unwrap()]
+        vec![compile_stage(&spec.into_stage().unwrap()).unwrap()]
     }
 
     #[cfg(feature = "transform-unpivot")]
@@ -2111,7 +2114,11 @@ mod tests {
     fn unpivot_empty_key_name_rejected() {
         let mut spec = upspec(&[], None, &[]);
         spec.key_name = String::new();
-        assert!(compile_stage(&TransformStage::Unpivot(spec)).is_err());
+        assert!(spec.into_stage().is_err());
+        // `compile()` rejects it the same way.
+        let mut spec2 = upspec(&[], None, &[]);
+        spec2.key_name = String::new();
+        assert!(spec2.compile().is_err());
     }
 
     #[cfg(feature = "transform-unpivot")]
@@ -2124,14 +2131,12 @@ mod tests {
 
     #[cfg(feature = "transform-unpivot")]
     #[test]
-    fn unpivot_stage_debug_and_clone() {
+    fn unpivot_spec_and_compiled_debug_and_clone() {
         let spec = upspec(&["id"], None, &["a", "b"]);
-        let stage = TransformStage::Unpivot(spec);
-        assert!(format!("{stage:?}").contains("Unpivot"));
-        assert!(format!("{:?}", stage.clone()).contains("Unpivot"));
-
-        let compiled = compile_stage(&stage).unwrap();
-        assert!(format!("{compiled:?}").contains("Unpivot"));
+        assert!(format!("{spec:?}").contains("UnpivotSpec"));
+        let _ = spec.clone();
+        let compiled = spec.compile().unwrap();
+        assert!(format!("{compiled:?}").contains("CompiledUnpivot"));
         let _ = compiled.clone();
     }
 }

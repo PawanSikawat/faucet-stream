@@ -115,7 +115,7 @@ pub use shard::ShardSpec;
 #[cfg(feature = "transform-cdc-unwrap")]
 pub use stage::CdcUnwrapSpec;
 #[cfg(feature = "transform-unpivot")]
-pub use stage::UnpivotSpec;
+pub use stage::{CompiledUnpivot, UnpivotSpec};
 #[cfg(feature = "transform-explode")]
 pub use stage::{ExplodeSpec, OnMissing};
 #[cfg(feature = "transform-filter")]
