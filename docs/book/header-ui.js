@@ -97,24 +97,25 @@
       }
     });
 
-    // ---- Code blocks: always dark ------------------------------------------
-    // A dark code panel on a light page reads best, so keep code blocks on
-    // mdBook's dark `tomorrow-night` highlight theme in EVERY page theme.
-    // mdBook's book.js swaps the highlight stylesheet per theme, so we re-assert
-    // our choice on load and after every toggle.
-    function forceDarkCode() {
-      var want = {
-        "mdbook-highlight-css": true, // light syntax theme  -> disabled
-        "mdbook-ayu-highlight-css": true, // ayu syntax theme -> disabled
-        "mdbook-tomorrow-night-css": false, // dark syntax theme -> enabled
-      };
-      Object.keys(want).forEach(function (id) {
-        var el = document.getElementById(id);
-        if (el) el.disabled = want[id];
-      });
+    // ---- Code blocks: always CONTRAST the page -----------------------------
+    // Dark code panel on a light page, light code panel on a dark page, so code
+    // always stands out. mdBook paints code backgrounds from its highlight
+    // stylesheet (light `highlight.css` vs dark `tomorrow-night.css`) and swaps
+    // it to MATCH the page theme; we invert that — pick the OPPOSITE sheet from
+    // the page — and re-assert it on load and after every toggle.
+    function forceContrastCode() {
+      var cl = document.documentElement.classList;
+      var pageDark =
+        cl.contains("navy") || cl.contains("coal") || cl.contains("ayu");
+      var lightSheet = document.getElementById("mdbook-highlight-css");
+      var ayuSheet = document.getElementById("mdbook-ayu-highlight-css");
+      var darkSheet = document.getElementById("mdbook-tomorrow-night-css");
+      if (lightSheet) lightSheet.disabled = !pageDark; // light code only on a dark page
+      if (darkSheet) darkSheet.disabled = pageDark; //   dark code only on a light page
+      if (ayuSheet) ayuSheet.disabled = true;
     }
-    forceDarkCode();
-    window.addEventListener("load", forceDarkCode);
+    forceContrastCode();
+    window.addEventListener("load", forceContrastCode);
 
     // ---- Theme: one light/dark toggle ---------------------------------------
     if (right) {
@@ -157,7 +158,7 @@
         } else {
           setTheme(goDark ? DARK : LIGHT); // fallback if mdBook's buttons are absent
         }
-        forceDarkCode(); // book.js just reset the highlight theme — force dark again
+        forceContrastCode(); // book.js reset the highlight theme — re-invert it
         updateIcon();
       });
       updateIcon();
