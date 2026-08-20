@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0EP595XEMH9VNJV0YVWW9NW",
+  "session_id": "55398c64-7c65-40db-9b68-886111a86d7f",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-20T04:16:45.747422Z",
+  "branch": "feat/discovery-matrix",
+  "checkpoints_count": 14,
+  "save_step_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8",
+  "turn_id": "3c5bd736dd65",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 1930,
+    "cache_creation_tokens": 4098254,
+    "cache_read_tokens": 483992103,
+    "output_tokens": 743296,
+    "api_call_count": 966
+  },
+  "session_metrics": {
+    "turn_count": 30
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    }
+  ]
+}

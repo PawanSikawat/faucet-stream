@@ -1,0 +1,536 @@
+https://github.com/faucet-hq/faucet-stream/pull/493
+
+ci failing for this, test coverage is low can you fix it
+
+also So even when the CI failed, why didn't it post a message on the PR with all the details of what files are missing, what the percentage is, and all this kind of message that         
+  normally kudukav pushes?
+
+---
+
+I have merged this now. Now let's work on the other new issues that we created and create a single PR for them.
+
+---
+
+can we add this too: https://github.com/faucet-hq/faucet-stream/issues/495
+
+---
+
+<task-notification>
+<task-id>bbkcbkyy1</task-id>
+<tool-use-id>toolu_016it5se1RfeuE7LwQSnmmuf</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/720710a6-74e3-4980-ac3f-04abbbc1c178/tasks/bbkcbkyy1.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-measure with consistent features" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+https://github.com/faucet-hq/faucet-stream/actions?query=is%3Aaction_required+is%3Ain_progress+is%3Aqueued+is%3Astale
+
+Why is the CI stuck on the previous PR that you created?
+
+---
+
+it public repo
+
+---
+
+Requested labels: ubuntu-latest
+Job defined at: faucet-hq/faucet-stream/.github/workflows/docs.yml@refs/pull/505/merge
+Waiting for a runner to pick up this job...
+Evaluating build.if
+Evaluating: success()
+Result: true
+
+---
+
+I cancelled all the workflows. Can you re-run it again to see if it is working fine?
+
+---
+
+continue
+
+---
+
+<task-notification>
+<task-id>bnizbfu7t</task-id>
+<tool-use-id>toolu_01SGshxX3faxNr8uxXnrTkRX</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/720710a6-74e3-4980-ac3f-04abbbc1c178/tasks/bnizbfu7t.output</output-file>
+<status>killed</status>
+<summary>Background command "Wait for mTLS coverage result" was stopped</summary>
+</task-notification>
+
+---
+
+there are some conflicts, resolve those
+
+alsi solve all pending issues in same pr
+
+---
+
+ci has failed can u check
+
+---
+
+The PR is merged. Let's pick the next one that is 497.
+
+---
+
+<task-notification>
+<task-id>bofdso0ct</task-id>
+<summary>Monitor event: "CI checks on PR #507 (emit each completed check)"</summary>
+<event>announce: SKIPPED
+build-global-artifacts: SKIPPED
+build-local-artifacts (${{ join(matrix.targets, ', ') }}): SKIPPED
+host: SKIPPED
+plan: SUCCESS
+publish-homebrew-formula: SKIPPED</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bofdso0ct</task-id>
+<summary>Monitor event: "CI checks on PR #507 (emit each completed check)"</summary>
+<event>Detect code changes: SUCCESS</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bofdso0ct</task-id>
+<summary>Monitor event: "CI checks on PR #507 (emit each completed check)"</summary>
+<event>Build book: SUCCESS
+Deploy to GitHub Pages: SKIPPED
+Doc counts: SUCCESS</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bofdso0ct</task-id>
+<summary>Monitor event: "CI checks on PR #507 (emit each completed check)"</summary>
+<event>[Monitor timed out — re-arm if needed.]</event>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bw9clrpei</task-id>
+<summary>Monitor event: "PR #507 CI: failures + key required checks + merge"</summary>
+<event>[Monitor timed out — re-arm if needed.]</event>
+</task-notification>
+
+---
+
+What is this? Why have you created a new create itself? Couldn't we use it in rest?
+
+---
+
+<task-notification>
+<task-id>bp8eyl9yv</task-id>
+<summary>Monitor event: "PR #508 CI: failures, key checks, merge"</summary>
+<event>[Monitor timed out — re-arm if needed.]</event>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>byaa8hep0</task-id>
+<summary>Monitor event: "PR #508 CI watch (waiting for Actions to resume)"</summary>
+<event>[Monitor timed out — re-arm if needed.]</event>
+</task-notification>
+
+---
+
+Why source rest axle still a separate crate?
+
+---
+
+<task-notification>
+<task-id>bvwz80neg</task-id>
+<summary>Monitor event: "PR #508 CI watch (Actions still paused)"</summary>
+<event>API stability (cargo-semver-checks): SUCCESS
+CLI build (observability,source-rest,sink-jsonl,sink-stdout,transforms): SUCCESS
+CLI build (source-rest,sink-jsonl,sink-stdout,transforms): SUCCESS</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bvwz80neg</task-id>
+<summary>Monitor event: "PR #508 CI watch (Actions still paused)"</summary>
+<event>CLI build (otel,source-rest,sink-jsonl,sink-stdout,transforms): SUCCESS</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bvwz80neg</task-id>
+<summary>Monitor event: "PR #508 CI watch (Actions still paused)"</summary>
+<event>Feature isolation (source-rest-excel): SUCCESS</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bvwz80neg</task-id>
+<summary>Monitor event: "PR #508 CI watch (Actions still paused)"</summary>
+<event>[Monitor timed out — re-arm if needed.]</event>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>byp0ge8qk</task-id>
+<summary>Monitor event: "PR #508 CI watch — final required checks + merge"</summary>
+<event>API stability (cargo-semver-checks): SUCCESS
+CLI build (observability,source-rest,sink-jsonl,sink-stdout,transforms): SUCCESS
+CLI build (otel,source-rest,sink-jsonl,sink-stdout,transforms): SUCCESS
+CLI build (source-rest,sink-jsonl,sink-stdout,transforms): SUCCESS
+Docs: SUCCESS
+Feature isolation (source-rest-excel): SUCCESS</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>byp0ge8qk</task-id>
+<summary>Monitor event: "PR #508 CI watch — final required checks + merge"</summary>
+<event>CLI build (full): SUCCESS</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>byp0ge8qk</task-id>
+<summary>Monitor event: "PR #508 CI watch — final required checks + merge"</summary>
+<event>Clippy: SUCCESS</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>byp0ge8qk</task-id>
+<summary>Monitor event: "PR #508 CI watch — final required checks + merge"</summary>
+<event>Feature isolation (source-rest): SUCCESS</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>byp0ge8qk</task-id>
+<summary>Monitor event: "PR #508 CI watch — final required checks + merge"</summary>
+<event>Coverage: SUCCESS</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+Ok, this is B.I.R.E.s Merced. 
+
+Now let's work on issue number 501. Tell me, what is the design discussion that you are looking at?
+
+---
+
+<task-notification>
+<task-id>ad6f9aa087a1423b9</task-id>
+<tool-use-id>toolu_01SiKg3ZwnLEoeR3dBQQr1Sr</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/720710a6-74e3-4980-ac3f-04abbbc1c178/tasks/ad6f9aa087a1423b9.output</output-file>
+<status>completed</status>
+<summary>Agent "Map matrix fan-out internals" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I now have a complete picture. Here is the contract map.
+
+---
+
+# faucet-stream Matrix Machinery — Contract Map
+
+Everything below is against repo root `/Users/c-sikawats/Documents/GitHub/Personal/faucet-stream`. The four focus files are large (config.rs 2150 lines, expand.rs 3033, executor.rs 3873); the structures and control flow you need are all in the first sections I quote below.
+
+## 1. Verbatim struct definitions
+
+### `MatrixRow` — `cli/src/config.rs:510-583`
+
+```rust
+/// One row of the `matrix:` block.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MatrixRow {
+    /// Row identifier. ... Anonymous rows get a synthetic `row-N` id.
+    #[serde(default)]
+    pub id: Option&lt;String&gt;,
+
+    /// If set, this row runs once per record produced by the named parent row.
+    #[serde(default)]
+    pub parent: Option&lt;String&gt;,
+
+    /// Row ids this row waits for. ... Pure completion-ordering — unlike
+    /// `parent:`, no records are consumed and no per-record fan-out occurs.
+    #[serde(default)]
+    pub depends_on: Vec&lt;String&gt;,
+
+    /// Dotted field path inside each parent record that uniquely identifies
+    /// the record. Used as the state-key suffix. Default: `id`.
+    #[serde(default = "default_parent_key")]
+    pub parent_key: String,
+
+    /// Partial override of `pipeline.source` (deep-merged).
+    #[serde(default)]
+    pub source: Option&lt;PartialConnector&gt;,
+
+    /// Partial override of `pipeline.sink` (deep-merged).
+    #[serde(default)]
+    pub sink: Option&lt;PartialConnector&gt;,
+
+    /// Row-level transforms. Appended after `T_pipeline` and `T_source` ...
+    #[serde(default)]
+    pub transforms: Option&lt;Vec&lt;TransformSpec&gt;&gt;,
+
+    /// When `false`, drops upstream `T_pipeline` and `T_source` transforms
+    /// for this row. Default `true`.
+    #[serde(default = "default_true")]
+    pub inherit_transforms: bool,
+
+    /// If `Some`, replaces `pipeline.state` wholesale.
+    #[serde(default)]
+    pub state: Option&lt;StateStoreSpec&gt;,
+
+    /// Matrix-row override semantics:
+    /// - field absent  → `None`     — inherit from `pipeline.dlq`
+    /// - `dlq: null`   → `Some(None)` — disable DLQ for this row
+    /// - `dlq: { ... }` → `Some(Some(spec))` — replace base DLQ wholesale
+    #[serde(default, deserialize_with = "deserialize_dlq_override")]
+    pub dlq: Option&lt;Option&lt;DlqSpec&gt;&gt;,
+
+    /// Per-row delivery override. `None` inherits the top-level `delivery`.
+    #[serde(default)]
+    pub delivery: Option&lt;faucet_core::DeliveryMode&gt;,
+
+    /// Free-form classification tags for this row (#376). ...
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec&lt;String&gt;,
+
+    /// Split this row into N independent invocations over a chunked range (#479) ...
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition: Option&lt;crate::partition::PartitionSpec&gt;,
+}
+```
+
+Notes for your feature:
+- `parent_key` default is `"id"` (`default_parent_key`, config.rs:1048).
+- The row's `source`/`sink` are `Option&lt;PartialConnector&gt;` (config.rs:460-478), which carries `r#ref` (template name), `kind` (`type` override), `config` (deep-merge), and `status`. There is no `matrix` field on `MatrixRow` itself — the cross-product you want does not exist yet; a row is a single point, and fan-out today is only per-parent-record or per-partition-chunk.
+- `PipelineConfig.matrix` is `Vec&lt;MatrixRow&gt;` at **config.rs:80** (`#[serde(default)]`; empty = one anonymous row). Topology mode (`pipeline.nodes`) is mutually exclusive with a non-empty `matrix` (config.rs:238-248).
+
+### `ExpandedNode` — `cli/src/expand.rs:40-114`
+
+```rust
+/// One fully-merged matrix row, ready for the executor.
+#[derive(Debug, Clone)]
+pub struct ExpandedNode {
+    pub id: String,
+    pub row_index: usize,
+    pub role: NodeRole,
+    pub source: ConnectorSpec,
+    pub sink: ConnectorSpec,
+    pub transforms: Vec&lt;TransformSpec&gt;,
+    pub state: Option&lt;StateStoreSpec&gt;,
+    /// Resolved DLQ spec for this row, or `None` if no DLQ applies.
+    pub dlq: Option&lt;crate::config::DlqSpec&gt;,
+    #[cfg(feature = "quality")]
+    pub quality: Option&lt;faucet_core::QualitySpec&gt;,
+    #[cfg(feature = "contract")]
+    pub contract: Option&lt;faucet_core::ContractSpec&gt;,
+    #[cfg(feature = "masking")]
+    pub masking: Option&lt;faucet_core::MaskingSpec&gt;,
+    /// The sink template name this node resolved (`sink.ref`, or `"default"`) ...
+    pub sink_ref: String,
+    /// Compiled schema-drift policy spec (pipeline-level; same for every node).
+    pub schema: Option&lt;faucet_core::SchemaDriftSpec&gt;,
+    /// Delivery guarantee for this row. ...
+    pub delivery: faucet_core::DeliveryMode,
+    /// The **derived** end-to-end guarantee this row's source × sink × config
+    /// actually provides (issue #292) ...
+    pub delivery_guarantee: faucet_core::DeliveryGuarantee,
+    /// Row ids this node waits for (deduplicated, declaration order). ...
+    pub depends_on: Vec&lt;String&gt;,
+    /// Resolved readiness status for this row's source (#371) ...
+    pub status: crate::config::SourceStatus,
+    /// Effective classification tags (#376) = source-template `tags` ∪ row `tags` ...
+    pub tags: Vec&lt;String&gt;,
+    /// Every `${id.path}` placeholder that survived load-time interpolation. ...
+    pub deferred_refs: Vec&lt;DeferredRef&gt;,
+    /// A pre-built source that replaces the registry-built one for this node.
+    /// Set only by `faucet dlq replay` (#281) ...
+    pub source_override: Option&lt;crate::dlq_replay::reader::SourceOverride&gt;,
+    /// Scoped-cleanup claim (#478) ...
+    pub cleanup_scope: Option&lt;std::collections::BTreeMap&lt;String, serde_json::Value&gt;&gt;,
+}
+```
+
+Supporting enums/structs (expand.rs:116-132):
+
+```rust
+#[derive(Debug, Clone)]
+pub enum NodeRole {
+    Root,
+    Child { parent_id: String, parent_key: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct DeferredRef {
+    pub referenced_id: String,   // the `id` in ${id.path}
+    pub dotted_path: String,     // the `path` in ${id.path}
+    pub token: String,           // the literal `${id.path}` token text
+}
+```
+
+`source_override` is the escape hatch already used to inject a pre-built source (DLQ replay); your discovery feature could reuse the same idea if you need to substitute a runtime-built source.
+
+## 2. How a `parent:` child gets its N invocations at runtime
+
+The whole runtime lives in `run_expanded()` — **executor.rs:216-568** — which runs **level-by-level** (roots = level 0), not a recursive walk.
+
+Data structures:
+- `CapturedRecords = Arc&lt;Mutex&lt;HashMap&lt;String, Vec&lt;Arc&lt;Value&gt;&gt;&gt;&gt;&gt;` — **executor.rs:46**. Keyed by node id; holds each parent's emitted records as `Arc&lt;Value&gt;` (pointer-clone hand-off, #160).
+- A parent's records are captured by wrapping its sink in a `CapturingSink` (constructed in `run_one_invocation`, executor.rs:1088-1096) and, on success, appended to the map in `run_unit` (**executor.rs:606-617**): `.extend(records.into_iter().map(Arc::new))`. Capture only happens when `capture.is_some()`, i.e. the node has children (see `build_projections`).
+- Only the referenced fields are kept: `build_projections()` (**executor.rs:778-817**) computes a `Projection::Full` or `Projection::Paths(...)` per parent from each child's `parent_key` plus its `deferred_refs`. Applied via `project_record` (executor.rs:759).
+
+Per-level fan-out (**executor.rs:334-424**):
+1. `ready` = every remaining node whose parent and all `depends_on` are terminal (executor.rs:290-308).
+2. `level_records` drains the consumed parents' records out of the shared map (executor.rs:334-347).
+3. For a `NodeRole::Child`, it fetches `parent_records = level_records.get(parent_id)` and loops over **each record**, building one `Unit` per record (**executor.rs:387-423**). Empty parent output → child skipped (executor.rs:392-398).
+
+The per-record context map passed to interpolation is built in **`run_one_invocation`, executor.rs:1037-1044**:
+
+```rust
+if let (Some(record), NodeRole::Child { parent_id, .. }) = (parent_record, &amp;node.role) {
+    let ctx: HashMap&lt;String, Value&gt; = HashMap::from([(parent_id.clone(), record.clone())]);
+    resolve_inplace(&amp;mut source_cfg, &amp;ctx)?;
+    resolve_inplace(&amp;mut sink_cfg, &amp;ctx)?;
+    if let Some(scope) = cleanup_scope.as_mut() {
+        resolve_inplace(scope, &amp;ctx)?;
+    }
+}
+```
+
+So the ctx map shape is `{ parent_id =&gt; full_parent_record_json }` — a single entry keyed by the parent's row id. `resolve_inplace` (a local helper in executor.rs that walks strings calling `interpolate_record`) is what expands `${parent_id.dotted.path}` per record. Note `${now.*}` is resolved *before* this, on every invocation, via `resolve_now_inplace` (executor.rs:1015-1016).
+
+Concurrency model (executor.rs:444-461): all units of a level are spawned into a `tokio::task::JoinSet`; each task first `sem.acquire().await` on a shared `Arc&lt;Semaphore&gt;` (executor.rs:228, size `max_concurrent` = config or `default_concurrency()` clamped 1..=8, executor.rs:207-212). Roots and children share the one budget.
+
+## 3. Per-invocation state key + `build_state_key`
+
+**executor.rs:641-651**:
+
+```rust
+/// Produce `{pipeline_name}::{row_id}` or `{pipeline_name}::{row_id}::{key}`.
+pub(crate) fn build_state_key(
+    pipeline_name: &amp;str,
+    row_id: &amp;str,
+    parent_key: Option&lt;&amp;str&gt;,
+) -&gt; String {
+    match parent_key {
+        None =&gt; format!("{pipeline_name}::{row_id}"),
+        Some(k) =&gt; format!("{pipeline_name}::{row_id}::{k}"),
+    }
+}
+```
+
+Callers:
+- Root: `build_state_key(&amp;opts.pipeline_name, &amp;node.id, None)` — **executor.rs:378**.
+- Child: **executor.rs:402-422**. For each parent record it computes `pk_value = resolve_parent_key(record, parent_key)` (executor.rs:671-681, dotted-path walk) then `pk_string = value_to_string_brief(...)` (falls back to `"(missing)"`), then `build_state_key(&amp;opts.pipeline_name, &amp;node.id, Some(&amp;pk_string))`. So the child key is `{name}::{row}::{parent_record_key}`.
+- Collision guard: siblings sharing a parent are checked into a `seen_keys` set; a repeat is `CliError::DuplicateStateKey` (executor.rs:411-416).
+- `validate_unit_state_key` (executor.rs:657-668) validates the key up front only when `uses_state`.
+
+There is a further shard suffix in `run_one_invocation`: `effective_state_key = format!("{state_key}::{}", shard.id)` (executor.rs:1208-1211), and partitioned rows carry a `::partition::{chunk}` suffix baked into the node id at expand time (expand.rs:1033).
+
+`StateKeyOverride` — **executor.rs:1212-1219** — wraps the built source so the executor's per-row key overrides the source's natural (kind-shared) key:
+
+```rust
+let source: Box&lt;dyn Source&gt; = if state.is_some() &amp;&amp; source.state_key().is_some() {
+    Box::new(StateKeyOverride { inner: source, key: effective_state_key })
+} else {
+    source
+};
+```
+
+## 4. RESERVED_IDS and reserved interpolation-id prefixes
+
+`RESERVED_IDS` — **expand.rs:27-37**:
+
+```rust
+pub const RESERVED_IDS: &amp;[&amp;str] = &amp;[
+    "env", "file", "secret", "matrix", "pipeline",
+    "now", "backfill", "param", "partition",
+];
+```
+
+Enforced on row ids at **expand.rs:307-309** (`CliError::ReservedRowId`). Duplicate ids → `DuplicateRowId` (expand.rs:310-313).
+
+Reserved runtime/deferred interpolation ids (not parent-record refs) are handled specially in three places:
+- **`check_refs`** (expand.rs:1122-1159) is where an unknown `${id.path}` is rejected. It uses `iter_directives` + `classify_directive` (interpolate.rs). For a `Directive::Deferred { id, .. }`: `param` → hard error (never-bound, expand.rs:1135-1144); otherwise if `id != "now" &amp;&amp; id != "backfill" &amp;&amp; id != "partition" &amp;&amp; !id_set.contains(id)` → `CliError::UnknownInterpolationId` (expand.rs:1145-1155). `env`/`file`/`secret` never reach here because with a colon they classify as `LoadTime` and are already resolved.
+- `check_refs` is called over every row's source/sink config and the pipeline-level source/sink/sources/sinks (expand.rs:370-394).
+- `collect_deferred` (expand.rs:1220-1240) skips `now`/`backfill`/`partition` so they aren't treated as parent-record deps; everything else becomes a `DeferredRef`.
+- `reject_runtime_tokens` (expand.rs:1168-1181) rejects *any* deferred token in transform/state/dlq configs — runtime `${...}` tokens are only legal in source/sink configs.
+
+The classification rule itself is `classify_directive` — **interpolate.rs:250-258**: colon → `LoadTime { prefix, body }`; else split on first `.` → `Deferred { id, path }`.
+
+## 5. Where a runtime "run a source, project a field, dedup" step hooks in
+
+Two existing precedents build+run a source with **no sink** — both are your best hook models:
+
+1. **`faucet discover`** — `cli/src/commands/discover.rs` (this is the closest existing thing to your feature, issue #211). `run()` at discover.rs:19-110 does: `build_source(&amp;spec.kind, spec.config.clone(), &amp;auth, None)` (discover.rs:39-40), checks `source.supports_discover()`, then `source.discover().await` to enumerate datasets, filters them (`filter_datasets`), and **generates a config with one matrix row per dataset** (`render_discovered_config`, discover.rs:80). That is fan-out over discovered values, but resolved *ahead of run* into static rows, not at runtime.
+
+2. **`faucet preview`** — `cli/src/commands/preview.rs:54-77`: `build_source(...)` then `let records = source.fetch_all().await?;`, applies transform stages, takes `args.limit`, prints. No sink.
+
+3. **`reconcile::run`** — `cli/src/reconcile.rs:123-139`: the canonical minimal "build a source, drain it, extract a field" pattern:
+
+```rust
+let source = crate::registry::build_source(&amp;spec.count.kind, spec.count.config.clone(), auth, None).await?;
+let records = source.fetch_all().await?;
+let authoritative = extract_count(&amp;records, spec.count.count_field.as_deref())?;
+```
+
+The underlying primitive is the `Source` trait — `crates/core/src/traits.rs:12-48`:
+- `fetch_with_context(&amp;self, context: &amp;HashMap&lt;String, Value&gt;)` (traits.rs:20) — the primary method; **this is exactly the context-map contract your discovery step could feed**, same shape as the executor's per-record `ctx`.
+- `fetch_all(&amp;self)` (traits.rs:26) — convenience with empty context.
+- `stream_pages(...)` (traits.rs:73) for paged draining.
+
+Field projection uses `resolve_dotted(root, path)` (interpolate.rs:328-344), and the executor's `resolve_parent_key` / `walk_value` (executor.rs:671-681, 720-730) are the dotted-path readers you'd mirror. There is **no existing dedup helper** — you would add that.
+
+Assessment: the executor does *not* currently have a runtime "enumerate a value-set from a source then fan out rows over it" step. The per-parent-record fan-out (executor.rs:387-423) is the structural analog: it takes a `Vec&lt;Arc&lt;Value&gt;&gt;` and emits one Unit per element. A discovery-driven matrix would most naturally either (a) resolve to static rows before the run like `discover` does, or (b) introduce a new pre-level in `run_expanded` that runs discovery sources (via `build_source` + `fetch_all`), projects+dedups values, and synthesizes `Unit`s the way the child branch does — feeding the cross-product into the same `ctx` map / `build_state_key` machinery. The Unit-per-element loop and `CapturedRecords` are your templates; a cross-product would multiply several such value-sets before building units.
+
+## 6. How `depends_on` completion-ordering interacts with `parent:`
+
+They are **orthogonal and combinable** — a node can have both.
+
+- **Expand-time**: `parent` and `depends_on` are validated independently. Parents: single-parent-chain cycle check `detect_cycle` (expand.rs:1045-1065). `depends_on`: unknown-dep / self-dep checks + per-row dedup preserving order (expand.rs:343-364). Then the **combined** graph is checked with **Kahn's algorithm** in `detect_combined_cycle` (**expand.rs:1073-1117**): for each row, `prereqs = parent (if any) ∪ depends_on`, computes in-degrees, topo-sorts; any unprocessed node → `CliError::DependencyCycle`. This is why a cycle routed *through* a `depends_on` edge can't deadlock the executor.
+- The BFS `order` that `expand()` emits (expand.rs:410-418) is built from the **parent** graph only (roots first, then children breadth-first) — `depends_on` does **not** affect emission order; it is enforced purely at runtime.
+- **Runtime readiness** (`run_expanded`, **executor.rs:290-308**): a node is `ready` only when BOTH hold:
+  - parent is terminal: `Root =&gt; true`, else `completed.contains(parent_id) || skipped_subtrees.contains(parent_id)`;
+  - AND `node.depends_on.iter().all(|d| completed.contains(d) || skipped_subtrees.contains(d))`.
+- **Difference in semantics**: `parent:` hands off records (the child fans out once per parent record, consuming `level_records`); `depends_on:` is pure completion-ordering — no records consumed, no fan-out (see the module doc, executor.rs:13-17, and `MatrixRow.depends_on` doc, config.rs:522-527).
+- **Skip cascade**: if a parent failed/was skipped, the child subtree is skipped (executor.rs:352-358); if any `depends_on` prerequisite failed/was skipped, the node is skipped too (executor.rs:363-374). Both cascade into `skipped_subtrees`. Readiness only asks "is there anything left to wait for"; whether a terminal prereq *skips* the node is decided in the unit loop.
+
+A node with both `parent: p` and `depends_on: [d]` therefore fans out per record of `p` **and** waits for `d` to fully complete first; readiness requires both terminal, and a failure of either skips it.
+
+---
+
+### Key file:line index for building against
+- `MatrixRow`: config.rs:510-583 · `PipelineConfig.matrix`: config.rs:80 · `PartialConnector`: config.rs:460-478 · `ConnectorSpec`: config.rs:373-417
+- `ExpandedNode`: expand.rs:40-114 · `NodeRole`/`DeferredRef`: expand.rs:116-132 · `RESERVED_IDS`: expand.rs:27-37 · `expand()`: expand.rs:261-1043 · `Registry`: expand.rs:137-257 · `check_refs`: expand.rs:1122-1159 · `collect_deferred`: expand.rs:1220-1240 · `detect_combined_cycle` (Kahn): expand.rs:1073-1117 · BFS order: expand.rs:410-418
+- `run_expanded`: executor.rs:216-568 · `ExecuteOptions`: executor.rs:50-131 · `CapturedRecords`: executor.rs:46 · per-record fan-out: executor.rs:387-423 · `build_state_key`: executor.rs:641-651 · `resolve_parent_key`: executor.rs:671-681 · `build_projections`: executor.rs:778-817 · `run_one_invocation` ctx build: executor.rs:1037-1044 · `StateKeyOverride`: executor.rs:1212-1219 · Semaphore/JoinSet: executor.rs:228, 444-461 · on_error stop/cancel: executor.rs:514-562
+- `interpolate_record`: interpolate.rs:126-144 · `classify_directive`: interpolate.rs:250-258 · `resolve_dotted`: interpolate.rs:328-344 · `resolve_now`/`now_token`: interpolate.rs:150-191
+- Source-run-without-sink precedents: reconcile.rs:123-139 · commands/discover.rs:19-110 · commands/preview.rs:54-77 · `Source` trait: crates/core/src/traits.rs:12-81</result>
+<usage><subagent_tokens>147567</subagent_tokens><tool_uses>15</tool_uses><duration_ms>152235</duration_ms></usage>
+</task-notification>
