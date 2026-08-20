@@ -932,7 +932,6 @@ pub fn compile_stage(s: &TransformStage) -> Result<CompiledStage, FaucetError> {
         TransformStage::Explode(spec) => {
             Ok(CompiledStage::Explode(CompiledExplode::compile(spec)?))
         }
-        #[cfg(feature = "transform-unpivot")]
         #[cfg(feature = "transform-cdc-unwrap")]
         TransformStage::CdcUnwrap(spec) => {
             Ok(CompiledStage::CdcUnwrap(CompiledCdcUnwrap::compile(spec)?))
@@ -995,7 +994,6 @@ fn apply_one_stage(rec: Value, stage: &CompiledStage) -> Result<Vec<Value>, Fauc
         }
         #[cfg(feature = "transform-explode")]
         CompiledStage::Explode(e) => e.apply(rec),
-        #[cfg(feature = "transform-unpivot")]
         #[cfg(feature = "transform-cdc-unwrap")]
         CompiledStage::CdcUnwrap(c) => c.apply(rec),
         CompiledStage::Custom(f) => Ok(f(rec)),
