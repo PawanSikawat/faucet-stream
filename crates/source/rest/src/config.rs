@@ -14,6 +14,28 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
 
+/// How to parse the response body into records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseFormat {
+    /// JSON — extract records via `records_path` (JSONPath). The default.
+    #[default]
+    Json,
+    /// CSV — parse a tabular file body (each row → a JSON object). For
+    /// authenticated file endpoints (e.g. an export URL). Always available.
+    Csv,
+    /// Excel (`.xlsx`/`.xls`) — parse a workbook body. Requires the crate's
+    /// `excel` feature.
+    Excel,
+}
+
+fn default_csv_delimiter() -> u8 {
+    b','
+}
+fn default_csv_has_headers() -> bool {
+    true
+}
+
 /// Configuration for a RestStream.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RestStreamConfig {
@@ -110,6 +132,33 @@ pub struct RestStreamConfig {
     /// is a load-time error rather than being silently ignored.
     #[serde(default)]
     pub tls: Option<TlsClientConfig>,
+
+    // ── Response format (#497) ─────────────────────────────────────────────────
+    /// How to parse the response body. `json` (default) uses JSONPath
+    /// extraction (`records_path`); `csv` / `excel` parse a tabular **file**
+    /// body into records — for authenticated file endpoints such as a Microsoft
+    /// Graph / OneDrive / SharePoint `…/content` download or any signed export
+    /// URL. In file mode a single response is fetched (pagination must be
+    /// `none`) and `records_path` does not apply. `excel` requires the crate's
+    /// `excel` feature.
+    #[serde(default)]
+    pub response_format: ResponseFormat,
+    /// CSV field delimiter byte (default `,`). Used only when
+    /// `response_format: csv`.
+    #[serde(default = "default_csv_delimiter")]
+    pub csv_delimiter: u8,
+    /// Whether the first CSV row is a header row supplying field names
+    /// (default `true`). When `false`, fields are named `column_0`, `column_1`, …
+    #[serde(default = "default_csv_has_headers")]
+    pub csv_has_headers: bool,
+    /// Excel worksheet to read: a sheet name, or a 0-based index as a string.
+    /// When omitted, the first worksheet is used. `response_format: excel` only.
+    #[serde(default)]
+    pub excel_sheet: Option<String>,
+    /// 0-based index of the Excel header row (default `0`). Rows above it are
+    /// skipped; the header row supplies field names. `response_format: excel` only.
+    #[serde(default)]
+    pub excel_header_row: usize,
 }
 
 pub use faucet_core::TlsClientConfig;
@@ -143,11 +192,41 @@ impl Default for RestStreamConfig {
             partitions: Vec::new(),
             partition_concurrency: None,
             tls: None,
+            response_format: ResponseFormat::Json,
+            csv_delimiter: b',',
+            csv_has_headers: true,
+            excel_sheet: None,
+            excel_header_row: 0,
         }
     }
 }
 
 impl RestStreamConfig {
+    /// Validate cross-field invariants that serde alone can't express.
+    ///
+    /// File response formats (`csv` / `excel`) fetch a single response and
+    /// parse the whole body, so paginated / JSONPath-extracted requests are
+    /// rejected rather than silently ignored.
+    pub fn validate(&self) -> Result<(), faucet_core::FaucetError> {
+        if !matches!(self.response_format, ResponseFormat::Json) {
+            if !matches!(self.pagination, PaginationStyle::None) {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: `response_format: csv|excel` fetches a single file body and does not \
+                     paginate — set `pagination: none`"
+                        .into(),
+                ));
+            }
+            if self.records_path.is_some() {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: `records_path` (JSONPath) does not apply to `response_format: csv|excel` \
+                     — the whole file body becomes the record set"
+                        .into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn new(base_url: &str, path: &str) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),

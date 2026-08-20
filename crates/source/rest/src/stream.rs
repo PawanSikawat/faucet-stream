@@ -139,6 +139,8 @@ fn credential_to_auth(cred: Credential) -> Auth {
 impl RestStream {
     /// Create a new stream from the given configuration.
     pub fn new(config: RestStreamConfig) -> Result<Self, FaucetError> {
+        // Cross-field config invariants (e.g. file response formats can't paginate).
+        config.validate()?;
         // Validate expiry_ratio at construction time.
         let expiry_ratio_to_validate = match &config.auth {
             AuthSpec::Inline(Auth::OAuth2 { expiry_ratio, .. })
@@ -912,7 +914,26 @@ impl RestStream {
         if bytes.iter().all(u8::is_ascii_whitespace) {
             return Ok((Value::Array(vec![]), resp_headers));
         }
-        let body: Value = serde_json::from_slice(&bytes)?;
+        // For file response formats the whole body is a tabular file — parse it
+        // into a record array here so the downstream (records_path-less)
+        // extraction passes it straight through. `validate()` guarantees
+        // pagination is `none`, so a single response is fetched.
+        let body: Value = match self.config.response_format {
+            crate::config::ResponseFormat::Json => serde_json::from_slice(&bytes)?,
+            crate::config::ResponseFormat::Csv => Value::Array(
+                crate::format::parse_csv(
+                    &bytes,
+                    self.config.csv_delimiter,
+                    self.config.csv_has_headers,
+                )
+                .await?,
+            ),
+            crate::config::ResponseFormat::Excel => Value::Array(crate::format::parse_excel(
+                &bytes,
+                self.config.excel_sheet.as_deref(),
+                self.config.excel_header_row,
+            )?),
+        };
         Ok((body, resp_headers))
     }
 }

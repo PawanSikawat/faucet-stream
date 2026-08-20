@@ -8,6 +8,7 @@
 pub mod auth;
 pub mod config;
 pub mod extract;
+pub mod format;
 pub mod pagination;
 pub mod retry;
 pub mod serde_helpers;
@@ -21,6 +22,6 @@ pub use faucet_core::{
 pub use auth::oauth2::DEFAULT_EXPIRY_RATIO;
 pub use auth::token_endpoint::DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO;
 pub use auth::{Auth, ResponseValidator, fetch_oauth2_token, fetch_token_from_endpoint};
-pub use config::{RestStreamConfig, TlsClientConfig};
+pub use config::{ResponseFormat, RestStreamConfig, TlsClientConfig};
 pub use pagination::PaginationStyle;
 pub use stream::RestStream;
