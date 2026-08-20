@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0GG9YEDGSDJ47H0670Q86YQ",
+  "strategy": "manual-commit",
+  "branch": "feat/parity-round3-bundle",
+  "checkpoints_count": 3,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3912,
+    "cache_creation_tokens": 5976520,
+    "cache_read_tokens": 1080274549,
+    "output_tokens": 1745744,
+    "api_call_count": 1958
+  }
+}
