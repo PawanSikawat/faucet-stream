@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0G62XZYHVE9MCGV68P5GP8A",
+  "strategy": "manual-commit",
+  "branch": "feat/meltano-parity-round2",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3469,
+    "cache_creation_tokens": 5371246,
+    "cache_read_tokens": 971916672,
+    "output_tokens": 1507868,
+    "api_call_count": 1736
+  }
+}
