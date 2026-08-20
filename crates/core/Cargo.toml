@@ -32,6 +32,12 @@ transform-json-parse = []
 transform-coalesce = []
 # Split a delimited string into an array, and its inverse join (#406).
 transform-split-join = []
+# Serialize a nested field to a JSON string — inverse of json-parse (#516).
+transform-json-encode = []
+# Enrich a record by joining against a small in-memory reference table (#516).
+transform-lookup = []
+# Wide/map → long reshape stage (#516).
+transform-unpivot = []
 transform-filter = []
 transform-explode = []
 transform-cdc-unwrap = []
@@ -51,6 +57,9 @@ transforms = [
     "transform-json-parse",
     "transform-coalesce",
     "transform-split-join",
+    "transform-json-encode",
+    "transform-lookup",
+    "transform-unpivot",
     "transform-filter",
     "transform-explode",
     "transform-cdc-unwrap",

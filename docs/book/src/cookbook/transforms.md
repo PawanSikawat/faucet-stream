@@ -28,6 +28,9 @@ them are listed in `faucet list` and dispatchable as `type:` values.
 | `value_case` | Lowercase / uppercase / trim / title / capitalize string values | `fields: [..]`, `mode` |
 | `split` | Split a string field into an array on a delimiter | `field`, `delimiter`, `trim`, `into?` |
 | `join` | Join an array field into a string with a delimiter | `field`, `delimiter`, `into?` |
+| `json_encode` | Serialize a nested field to a JSON string (inverse of `json_parse`) | `fields: [..]` |
+| `unpivot` | Reshape wide columns or a map field into long key/value rows (1→N) | `id_fields`, `key_name`, `value_name`, `columns?` \| `from?`, `drop_nulls?` |
+| `lookup` | Enrich records by joining an inline / JSONL reference table | `values` \| `jsonl`, `on: {record, ref}`, `add: {out: ref_col}`, `on_missing?` |
 | `sql` | Run DuckDB SQL over the whole page; records are the `batch` relation | `query`, `relations?`, `memory_limit?`, `threads?` · page-level (sees the whole batch) · needs `transform-sql` feature · [cookbook](./sql-transform.md) |
 | `wasm` | Run a user-provided sandboxed `.wasm` module over each record | `module`, `function?`, `memory_limit_mb?`, `fuel_limit?`, `on_error?`, `reload_on_change?` · per-record · needs `transform-wasm` feature · [cookbook](./wasm-transforms.md) |
 
@@ -455,6 +458,72 @@ as compact JSON). An empty `delimiter` on `split` yields a single-element
 array holding the whole string (rather than splitting between every
 char). When `into` is set the result is written there, else in place.
 Needs the `transform-split-join` feature.
+
+## `json_encode` — nested field → JSON string
+
+```yaml
+- type: json_encode
+  config: { fields: [address, line_items] }
+```
+
+The inverse of `json_parse`: each named field whose value is an object or
+array is replaced **in place** with its compact JSON-string form — the
+standard step for landing nested data as a flat `STRING` column (e.g. when
+matching a warehouse table that stores nested structures as text). Scalar
+(already-flat) values and absent fields are left unchanged (idempotent).
+Needs the `transform-json-encode` feature.
+
+## `unpivot` — wide/map → long (1→N)
+
+```yaml
+# Wide form: monthly columns → one row per month.
+- type: unpivot
+  config:
+    id_fields: [account_id]        # copied onto every output row
+    key_name: month                # column name → this field
+    value_name: amount             # cell value → this field
+    # columns: [jan, feb, mar]     # optional; default = all non-id fields
+    drop_nulls: true               # skip null cells
+
+# Map form: expand an object field's entries into rows.
+- type: unpivot
+  config:
+    id_fields: [report_id]
+    from: cells                    # the object field to expand
+    key_name: column
+    value_name: value
+```
+
+`unpivot` reshapes each record into **N rows** — one per selected column
+(wide form) or per entry of the `from` object (map form) — carrying
+`id_fields` onto each. Output rows contain only `id_fields` plus the
+key/value pair. When the reshape yields nothing (missing `from`, or no
+columns) the original record is **passed through unchanged** unless
+`drop_if_empty: true` — records are never silently dropped. This replaces
+the SQL you'd otherwise write for gross-to-net / period-report / timeseries
+data. Needs the `transform-unpivot` feature.
+
+## `lookup` — enrich from a reference table (no SQL)
+
+```yaml
+- type: lookup
+  config:
+    values:                                  # inline reference rows …
+      - { id: "1", name: "North America" }
+      - { id: "2", name: "EMEA" }
+    # jsonl: ./ref/regions.jsonl             # … or a JSONL file (one object/line)
+    on: { record: region_id, ref: id }       # match record.region_id == ref.id
+    add: { region_name: name }               # add record.region_name = ref.name
+    on_missing: null                         # null (default) | keep | error
+```
+
+`lookup` joins each record against a small in-memory reference set by key
+(compared by scalar-string form, so `42` matches `"42"`) and writes the
+`add` columns onto the record — a code→label enrichment without a SQL
+transform. It is 1→1 (never drops rows): on a miss it writes the added
+columns as `null` (`null`), leaves the record untouched (`keep`), or fails
+the batch (`error`). The reference is resolved once at config-load. Needs
+the `transform-lookup` feature.
 
 ## Ordering rules of thumb
 

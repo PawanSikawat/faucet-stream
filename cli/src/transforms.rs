@@ -8,7 +8,7 @@ use crate::error::{CliError, CliResult};
 #[cfg(feature = "transforms")]
 use faucet_core::{
     CastOnError, CastType, HashAlgorithm, HashEncoding, JsonParseOnError, KeyCaseMode,
-    ValueCaseMode,
+    LookupOnMissing, UnpivotSpec, ValueCaseMode,
 };
 #[cfg(any(feature = "transforms", feature = "transform-cdc-unwrap"))]
 use faucet_core::{JsonSchema, schema_for};
@@ -291,6 +291,76 @@ fn cdc_drop_ops() -> Vec<String> {
 /// One row in the transform registry — the single source of truth for every
 /// built-in transform's kind, one-line description, JSON Schema, and
 /// `TransformSpec → TransformStage` decoder. `compile_one`,
+/// Match-key config for the `lookup` transform.
+#[cfg(feature = "transforms")]
+#[derive(Debug, Deserialize, JsonSchema)]
+struct LookupOnConfig {
+    /// Field on the incoming record to match on.
+    record: String,
+    /// Field on the reference rows to match against.
+    #[serde(rename = "ref")]
+    ref_field: String,
+}
+
+/// Inline-config schema for the `lookup` transform.
+#[cfg(feature = "transforms")]
+#[derive(Debug, Deserialize, JsonSchema)]
+struct LookupConfig {
+    /// Inline reference rows. Mutually exclusive with `jsonl`.
+    #[serde(default)]
+    values: Option<Vec<serde_json::Map<String, Value>>>,
+    /// Path to a JSONL file of reference rows (one JSON object per line).
+    /// Mutually exclusive with `values`.
+    #[serde(default)]
+    jsonl: Option<String>,
+    /// Match keys: `{ record: <record field>, ref: <reference field> }`.
+    on: LookupOnConfig,
+    /// Output columns to add, as `{ <output column>: <reference column> }`.
+    add: HashMap<String, String>,
+    /// Behaviour on a miss: `null` (default), `keep`, or `error`.
+    #[serde(default)]
+    on_missing: LookupOnMissing,
+}
+
+/// Resolve a `lookup` reference set from inline `values` or a `jsonl` file
+/// (exactly one must be set).
+#[cfg(feature = "transforms")]
+fn load_lookup_reference(
+    kind: &str,
+    cfg: &LookupConfig,
+) -> CliResult<Vec<serde_json::Map<String, Value>>> {
+    match (&cfg.values, &cfg.jsonl) {
+        (Some(_), Some(_)) => Err(CliError::InvalidTransform {
+            name: kind.to_owned(),
+            message: "set exactly one of `values` or `jsonl`, not both".to_owned(),
+        }),
+        (Some(rows), None) => Ok(rows.clone()),
+        (None, Some(path)) => {
+            let text = std::fs::read_to_string(path).map_err(|e| CliError::InvalidTransform {
+                name: kind.to_owned(),
+                message: format!("reading lookup jsonl '{path}': {e}"),
+            })?;
+            let mut rows = Vec::new();
+            for (i, line) in text.lines().enumerate() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let row: serde_json::Map<String, Value> =
+                    serde_json::from_str(line).map_err(|e| CliError::InvalidTransform {
+                        name: kind.to_owned(),
+                        message: format!("lookup jsonl '{path}' line {}: {e}", i + 1),
+                    })?;
+                rows.push(row);
+            }
+            Ok(rows)
+        }
+        (None, None) => Err(CliError::InvalidTransform {
+            name: kind.to_owned(),
+            message: "a reference set is required: set `values` or `jsonl`".to_owned(),
+        }),
+    }
+}
+
 /// `transform_descriptions`, and `transform_schema` all read from this list
 /// so adding a new transform means appending one entry (no parallel match
 /// arms to keep in sync).
@@ -511,6 +581,52 @@ fn registry() -> Vec<TransformDef> {
                         delimiter: cfg.delimiter,
                         into: cfg.into,
                     }))
+                },
+            },
+            TransformDef {
+                kind: "json_encode",
+                description: "Serialize a nested field to a JSON string (inverse of json_parse).",
+                schema_fn: || schema::<FieldsConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<FieldsConfig>(kind, config)?;
+                    Ok(TransformStage::Map(RecordTransform::JsonEncode {
+                        fields: cfg.fields,
+                    }))
+                },
+            },
+            TransformDef {
+                kind: "unpivot",
+                description: "Reshape wide columns or a map field into long key/value rows.",
+                schema_fn: || schema::<UnpivotSpec>(),
+                compile_fn: |kind, config| {
+                    // `unpivot` is 1→N, so it compiles to an object-safe
+                    // `TransformStage::Custom` (no dedicated enum variant —
+                    // keeps `TransformStage` additive-only). `into_stage`
+                    // validates the spec at load time.
+                    let spec = decode::<UnpivotSpec>(kind, config)?;
+                    spec.into_stage().map_err(|e| CliError::InvalidTransform {
+                        name: kind.to_owned(),
+                        message: e.to_string(),
+                    })
+                },
+            },
+            TransformDef {
+                kind: "lookup",
+                description: "Enrich records by joining against an inline/JSONL reference table.",
+                schema_fn: || schema::<LookupConfig>(),
+                compile_fn: |kind, config| {
+                    let cfg = decode::<LookupConfig>(kind, config)?;
+                    let reference = load_lookup_reference(kind, &cfg)?;
+                    let add: Vec<(String, String)> = cfg.add.into_iter().collect();
+                    let stage = TransformStage::Map(RecordTransform::Lookup {
+                        reference,
+                        on_record: cfg.on.record,
+                        on_ref: cfg.on.ref_field,
+                        add,
+                        on_missing: cfg.on_missing,
+                    });
+                    validate_stage(kind, &stage)?;
+                    Ok(stage)
                 },
             },
             #[cfg(feature = "transform-filter")]
@@ -1037,6 +1153,162 @@ mod tests {
         ];
         let out = compile_transforms(&specs).unwrap();
         assert_eq!(out.len(), 2);
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn compiles_reshape_transforms() {
+        let specs = vec![
+            TransformSpec {
+                kind: "json_encode".into(),
+                config: json!({"fields": ["addr", "line_items"]}),
+            },
+            TransformSpec {
+                kind: "unpivot".into(),
+                config: json!({"id_fields": ["id"], "key_name": "month", "value_name": "amount"}),
+            },
+            TransformSpec {
+                kind: "lookup".into(),
+                config: json!({
+                    "values": [{"id": 1, "name": "Alice"}],
+                    "on": {"record": "user_id", "ref": "id"},
+                    "add": {"user_name": "name"}
+                }),
+            },
+        ];
+        let out = compile_transforms(&specs).unwrap();
+        assert_eq!(out.len(), 3);
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn unpivot_empty_key_name_rejected_at_load() {
+        let specs = vec![TransformSpec {
+            kind: "unpivot".into(),
+            config: json!({"key_name": "", "value_name": "v"}),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        assert!(
+            matches!(&err, CliError::InvalidTransform { name, .. } if name == "unpivot"),
+            "got {err:?}"
+        );
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn lookup_requires_a_reference_and_add() {
+        // no `values`/`jsonl`
+        let no_ref = vec![TransformSpec {
+            kind: "lookup".into(),
+            config: json!({"on": {"record": "k", "ref": "k"}, "add": {"x": "y"}}),
+        }];
+        assert!(matches!(
+            compile_transforms(&no_ref).unwrap_err(),
+            CliError::InvalidTransform { .. }
+        ));
+        // empty `add`
+        let no_add = vec![TransformSpec {
+            kind: "lookup".into(),
+            config: json!({"values": [], "on": {"record": "k", "ref": "k"}, "add": {}}),
+        }];
+        assert!(matches!(
+            compile_transforms(&no_add).unwrap_err(),
+            CliError::InvalidTransform { .. }
+        ));
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn lookup_reads_a_jsonl_reference_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ref.jsonl");
+        std::fs::write(
+            &path,
+            "{\"id\":\"1\",\"name\":\"Alice\"}\n\n{\"id\":\"2\",\"name\":\"Bob\"}\n",
+        )
+        .unwrap();
+        let specs = vec![TransformSpec {
+            kind: "lookup".into(),
+            config: json!({
+                "jsonl": path.to_str().unwrap(),
+                "on": {"record": "uid", "ref": "id"},
+                "add": {"uname": "name"}
+            }),
+        }];
+        assert_eq!(compile_transforms(&specs).unwrap().len(), 1);
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn lookup_rejects_both_values_and_jsonl() {
+        let specs = vec![TransformSpec {
+            kind: "lookup".into(),
+            config: json!({
+                "values": [{"id": "1"}],
+                "jsonl": "ref.jsonl",
+                "on": {"record": "uid", "ref": "id"},
+                "add": {"uname": "name"}
+            }),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        assert!(
+            matches!(&err, CliError::InvalidTransform { name, message }
+                if name == "lookup" && message.contains("exactly one")),
+            "got {err:?}"
+        );
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn lookup_jsonl_missing_file_is_rejected_at_load() {
+        let specs = vec![TransformSpec {
+            kind: "lookup".into(),
+            config: json!({
+                "jsonl": "/nonexistent/faucet-lookup-ref.jsonl",
+                "on": {"record": "uid", "ref": "id"},
+                "add": {"uname": "name"}
+            }),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        assert!(
+            matches!(&err, CliError::InvalidTransform { name, message }
+                if name == "lookup" && message.contains("reading lookup jsonl")),
+            "got {err:?}"
+        );
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn lookup_jsonl_malformed_line_is_rejected_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.jsonl");
+        std::fs::write(&path, "{\"id\":\"1\"}\nnot json\n").unwrap();
+        let specs = vec![TransformSpec {
+            kind: "lookup".into(),
+            config: json!({
+                "jsonl": path.to_str().unwrap(),
+                "on": {"record": "uid", "ref": "id"},
+                "add": {"uname": "name"}
+            }),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        assert!(
+            matches!(&err, CliError::InvalidTransform { name, message }
+                if name == "lookup" && message.contains("line 2")),
+            "got {err:?}"
+        );
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn reshape_transforms_have_schema_and_descriptions() {
+        for k in ["json_encode", "unpivot", "lookup"] {
+            assert!(transform_schema(k).is_ok(), "schema for {k}");
+            assert!(
+                transform_descriptions().iter().any(|(n, _)| *n == k),
+                "description for {k}"
+            );
+        }
     }
 
     #[cfg(feature = "transforms")]
