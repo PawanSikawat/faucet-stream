@@ -21,8 +21,12 @@ no-section-label = false
 #                tables, landing hero). Native additional-css; no preprocessor.
 # learn-toggle — powers the Beginner/Architect toggle; both files are no-ops on
 #                pages without a [data-mode-toggle] control.
+# page-toc.js  — builds the right-hand "On this page" heading TOC (styled in
+#                custom.css); a no-op on the landing page and short pages.
+# header-ui.js — Pydantic-style header: relocates mdBook's search into the bar as
+#                an always-visible "Search ⌘K" pill + a single light/dark toggle.
 additional-css = ["custom.css", "learn-toggle.css"]
-additional-js = ["learn-toggle.js", "mermaid.min.js", "mermaid-init.js"]
+additional-js = ["learn-toggle.js", "page-toc.js", "header-ui.js", "mermaid.min.js", "mermaid-init.js"]
 
 [output.html.fold]
 enable = true
