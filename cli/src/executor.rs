@@ -2357,6 +2357,25 @@ mod tests {
         assert!(row["_faucet_loaded_at"].is_string());
     }
 
+    #[tokio::test]
+    async fn metadata_columns_disabled_stamps_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.csv");
+        let output = dir.path().join("out.jsonl");
+        std::fs::write(&input, "name\nalice\n").unwrap();
+        let mut cfg = cfg_csv_to_jsonl(&input, &output);
+        cfg.metadata_columns = Some(faucet_core::MetadataColumnsSpec {
+            enabled: false,
+            ..Default::default()
+        });
+        let nodes = expand(&cfg).unwrap();
+        run_expanded(nodes, opts("t")).await.unwrap();
+        let body = std::fs::read_to_string(&output).unwrap();
+        let row: serde_json::Value = serde_json::from_str(body.lines().next().unwrap()).unwrap();
+        assert_eq!(row["name"], "alice");
+        assert!(row.get("_faucet_run_id").is_none());
+    }
+
     /// Minimal options with a catalog handle attached.
     #[cfg(feature = "catalog")]
     fn opts_with_catalog(name: &str, handle: crate::catalog::CatalogHandle) -> ExecuteOptions {

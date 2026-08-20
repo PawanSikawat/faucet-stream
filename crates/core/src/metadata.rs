@@ -387,6 +387,54 @@ mod tests {
         assert_eq!(out, vec![json!("scalar"), json!(42)]);
     }
 
+    #[tokio::test]
+    async fn delegates_every_sink_method_to_inner() {
+        let meta = CompiledMetadata::compile(&spec(&[MetadataColumn::RunId]))
+            .unwrap()
+            .unwrap();
+        let sink = MetadataSink::new(Box::new(CapturingSink::default()), meta, ctx());
+
+        // Write paths stamp + forward.
+        assert_eq!(sink.write_batch(&[json!({"a": 1})]).await.unwrap(), 1);
+        assert_eq!(
+            sink.write_batch_partial(&[json!({"a": 1})])
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let _ = sink
+            .write_batch_idempotent(&[json!({"a": 1})], "scope", "tok")
+            .await;
+        sink.flush().await.unwrap();
+
+        // Pure forwards (inner uses trait defaults).
+        let _ = sink.check(&crate::check::CheckContext::default()).await;
+        assert!(!sink.supports_cleanup());
+        let _ = sink
+            .cleanup_scope(&BTreeMap::new(), &crate::cleanup::SeenKeys::new())
+            .await;
+        assert!(!sink.supports_idempotent_writes());
+        assert!(sink.last_committed_token("s").await.unwrap().is_none());
+        let _ = sink.supported_write_modes();
+        let _ = sink.dedups_by_key();
+        let _ = sink.sink_guarantee();
+        let _ = sink.current_schema().await.unwrap();
+        let _ = sink.supports_schema_evolution();
+        let _ = sink
+            .evolve_schema(&crate::drift::SchemaEvolution::default())
+            .await;
+        let _ = sink.config_schema();
+        let _ = sink.connector_name();
+        let _ = sink.dataset_uri();
+        assert!(!sink.is_overwrite());
+        let _ = sink.begin_overwrite().await;
+        let _ = sink.commit_overwrite().await;
+        sink.abort_overwrite().await.unwrap();
+
+        assert!(format!("{sink:?}").contains("MetadataSink"));
+    }
+
     #[test]
     fn custom_prefix_and_subset() {
         let meta = CompiledMetadata::compile(&MetadataColumnsSpec {
