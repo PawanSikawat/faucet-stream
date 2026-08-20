@@ -647,7 +647,7 @@ pipeline:
 
 ### Matrix mode — run many invocations from one config
 
-Add a `matrix:` block to run multiple invocations from the same base. Each row is **deep-merged** into `pipeline:` (objects merge recursively, arrays replace wholesale, scalars replace). Rows with `parent:` become children that fan out one invocation per record produced by the parent row. Rows with `depends_on:` wait for other rows to finish before starting (pure ordering, no record hand-off).
+Add a `matrix:` block to run multiple invocations from the same base. Each row is **deep-merged** into `pipeline:` (objects merge recursively, arrays replace wholesale, scalars replace). Rows with `parent:` become children that fan out one invocation per record produced by the parent row. Rows with `depends_on:` wait for other rows to finish before starting (pure ordering, no record hand-off). Rows with `discover:` / `for_each:` fan out over the **cartesian product** of value-sets enumerated at run time (see below).
 
 ```yaml
 version: 1
@@ -691,6 +691,17 @@ execution:
   max_concurrent: 8
   on_error: continue   # or `stop`
 ```
+
+#### `discover:` / `for_each:` — discovery-driven fan-out (#501)
+
+A `discover:` row enumerates a **value-set at run time** (build source → drain →
+project `select` → dedup, no sink), and a `for_each: [dims]` row runs once per
+tuple of the **cartesian product** of those dimensions, with `${<dim>.<alias>}`
+substituted into its config — "sync this report once per `{subsidiary} ×
+{custom-field}`". The discovery source is a `{ ref }` to a `pipeline.sources`
+template or a standalone `{ type, config }`; the product is bounded by
+`MAX_MATRIX_PRODUCT` (10 000). See `docs/book/src/reference/config.md` and
+`cli/examples/discovery_matrix.yaml`.
 
 #### `depends_on:` — completion ordering between rows
 

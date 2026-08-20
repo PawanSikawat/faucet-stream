@@ -223,7 +223,11 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
     for node in &nodes {
         // Verifying the schema lookup also catches unknown connector kinds.
         source_schema(&node.source.kind)?;
-        sink_schema(&node.sink.kind)?;
+        // A discovery row (#501) enumerates a value-set and has no sink — its
+        // `sink` field is a never-built placeholder, so skip the sink check.
+        if !matches!(node.role, NodeRole::Discovery { .. }) {
+            sink_schema(&node.sink.kind)?;
+        }
         for t in &node.transforms {
             if !available_transforms().contains(&t.kind.as_str()) {
                 return Err(CliError::UnknownTransform {
@@ -246,11 +250,13 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
     // transform *config* fails validation too.
     check_transforms(&nodes)?;
 
-    let roots = nodes
+    // "children" = per-parent-record fan-out rows; discovery / product rows run
+    // independently (no parent), so they count as top-level like roots.
+    let children = nodes
         .iter()
-        .filter(|n| matches!(n.role, NodeRole::Root))
+        .filter(|n| matches!(n.role, NodeRole::Child { .. }))
         .count();
-    let children = nodes.len() - roots;
+    let roots = nodes.len() - children;
 
     // Runtime row-selection (#370/#371/#376/#377). The selection is computed the
     // same way `faucet run` computes it, so the run/skip decision here matches
@@ -296,6 +302,8 @@ pub async fn run(args: ValidateArgs) -> CliResult<()> {
                         parent_id,
                         parent_key,
                     } => ("child", Some(parent_id.clone()), Some(parent_key.clone())),
+                    NodeRole::Discovery { .. } => ("discovery", None, None),
+                    NodeRole::Product { .. } => ("product", None, None),
                 };
                 serde_json::json!({
                     "id": node.id,
@@ -398,6 +406,12 @@ fn row_line(node: &crate::expand::ExpandedNode) -> String {
             parent_key,
         } => {
             format!("child of '{parent_id}' (parent_key={parent_key})")
+        }
+        NodeRole::Discovery { as_alias, .. } => {
+            format!("discovery (as={as_alias})")
+        }
+        NodeRole::Product { dims } => {
+            format!("product of [{}]", dims.join(", "))
         }
     };
     let deps = if node.depends_on.is_empty() {

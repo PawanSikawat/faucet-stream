@@ -141,6 +141,8 @@ fn row_explanation(node: &ExpandedNode) -> RowExplanation {
     let (role, parent) = match &node.role {
         NodeRole::Root => ("root".to_string(), None),
         NodeRole::Child { parent_id, .. } => ("child".to_string(), Some(parent_id.clone())),
+        NodeRole::Discovery { .. } => ("discovery".to_string(), None),
+        NodeRole::Product { dims } => (format!("product[{}]", dims.join(",")), None),
     };
     RowExplanation {
         id: node.id.clone(),

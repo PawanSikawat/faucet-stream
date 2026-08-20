@@ -580,6 +580,46 @@ pub struct MatrixRow {
     /// connector configs. Inherits the top-level `partition:` block when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partition: Option<crate::partition::PartitionSpec>,
+
+    /// **Discovery dimension** (#501). When set, this row enumerates a value-set
+    /// at runtime: it builds `discover.source`, drains it, projects `select`
+    /// (JSONPath) from each record, and dedups (first-seen order). The row has
+    /// no sink and writes nothing — its value-set is exposed to `for_each` rows
+    /// as `${<id>.<as>}`. Runs once per pipeline run, cached across dependents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discover: Option<DiscoverSpec>,
+
+    /// Fan this row out over the **cartesian product** of the named discovery
+    /// dimensions (#501) — one invocation per tuple, with `${<dim>.<as>}`
+    /// resolved to that tuple's value in the source/sink config. Distinct from
+    /// `parent:` (fan-out over one real pipeline's emitted records — a tree, not
+    /// a product) and `depends_on:` (completion ordering only). Each id must name
+    /// a `discover:` row; the product is bounded by `MAX_MATRIX_PRODUCT`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub for_each: Vec<String>,
+}
+
+/// A discovery dimension's source + projection (#501). See [`MatrixRow::discover`].
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DiscoverSpec {
+    /// Source to enumerate. Either a `{ ref: <name> }` pointing at a
+    /// `pipeline.sources` template (recommended — reuses a complete connector
+    /// config), or a standalone `{ type, config }`. It is **not** merged over
+    /// the `default` template — a discovery step is independent of the
+    /// pipeline's data source (which typically carries `${dim}` tokens meant
+    /// for the fan-out rows, not the enumeration).
+    pub source: PartialConnector,
+
+    /// JSONPath projecting the dimension value from each discovered record
+    /// (e.g. `$.id`). `$` selects the whole record. Null / missing values are
+    /// skipped with a warning.
+    pub select: String,
+
+    /// Alias the projected value is exposed under: a `for_each` row references
+    /// it as `${<row_id>.<as>}`. Must match `^[a-z0-9][a-z0-9_-]*$`.
+    #[serde(rename = "as")]
+    pub as_alias: String,
 }
 
 /// Readiness ladder for a matrix row's source (#371). A single ordered axis

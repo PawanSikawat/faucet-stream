@@ -311,6 +311,68 @@ Semantics:
 - Ordering works identically under `faucet run`, `schedule`, and `serve` —
   they all execute the same expanded plan.
 
+### `discover:` / `for_each:` — discovery-driven fan-out (#501)
+
+A `discover:` row enumerates a **value-set at run time** from a live endpoint,
+and a `for_each:` row fans a stream out over the **cartesian product** of those
+value-sets — "sync this report once per `{subsidiary} × {custom-field}`
+returned by a discovery call". This is the first-class version of the
+"enumerate then fan out" shape common to report-style APIs.
+
+```yaml
+pipeline:
+  sources:
+    api:                      # one complete template both roles reference
+      type: rest
+      config: { method: GET, base_url: "https://api.example.com", path: "/", auth: { type: none },
+                query_params: {}, pagination: { type: None }, replication_method: { type: FullTable } }
+  sink: { type: jsonl, config: { path: "./out/${subs.subsidiary_id}-${flds.field_id}.jsonl" } }
+
+matrix:
+  - id: subs                  # discovery dimension
+    discover:
+      source: { ref: api, config: { path: "/subsidiaries", records_path: "$.subsidiaries[*]" } }
+      select: "$.id"          # JSONPath projecting the value from each record
+      as: subsidiary_id       # exposed as ${subs.subsidiary_id}
+  - id: flds
+    discover:
+      source: { ref: api, config: { path: "/fields", records_path: "$.fields[*]" } }
+      select: "$.id"
+      as: field_id
+  - id: report                # runs once per (subsidiary × field) tuple
+    for_each: [subs, flds]
+    source:
+      ref: api
+      config:
+        path: "/reports/trial-balance"
+        records_path: "$.rows[*]"
+        query_params: { subsidiary_id: "${subs.subsidiary_id}", field_id: "${flds.field_id}" }
+```
+
+Semantics:
+
+- A **`discover:` row** runs its source once, projects `select` (a dot-path,
+  optionally `$`-prefixed; `$` = whole record) from each record, and **dedups**
+  (first-seen order; null / missing values skipped). It has **no sink** and
+  writes nothing. It runs once per pipeline run, cached across all dependents.
+- The discovery `source` is either a `{ ref: <name> }` to a `pipeline.sources`
+  template (recommended — reuses a complete connector config) or a standalone
+  `{ type, config }`. It is **not** merged over the `default` template.
+- A **`for_each: [dims]` row** runs once per tuple of the cartesian product of
+  the listed dimensions, with `${<dim>.<alias>}` substituted into its source
+  and sink config. Time windows (`${now.*}`, `faucet backfill`) compose
+  per-invocation without multiplying the matrix.
+- Each dimension is folded into the row's `depends_on`, so readiness, the skip
+  cascade, and cycle detection reuse the ordering machinery. Per-tuple state
+  keys (`{name}::{row}::alias=value&…`) let every cell resume independently.
+- Guards (all at load time via `faucet validate`): `for_each` must name
+  `discover:` rows; a `discover:` row can't carry a sink, `parent:`, or
+  `for_each:`; `for_each` can't combine with `parent:` (v1). The product is
+  bounded by `MAX_MATRIX_PRODUCT` (10 000) — a larger cross-product fails
+  rather than spawning an unbounded fleet.
+
+See `cli/examples/discovery_matrix.yaml`.
+
 ## `pipeline.nodes` / `pipeline.edges` (topology mode)
 
 An alternative to `matrix:` for pipelines that need fan-out, fan-in, or joins:
