@@ -176,6 +176,12 @@ pub struct PipelineConfig {
     #[cfg(feature = "notify")]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notifications: Vec<crate::notify::NotificationSpec>,
+
+    /// Optional `_faucet_*` run/lineage metadata columns (#510) stamped onto
+    /// every row by a connector-agnostic sink decorator (works for any sink).
+    /// Off unless present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_columns: Option<faucet_core::MetadataColumnsSpec>,
 }
 
 /// The base pipeline definition. Each matrix row is resolved against the

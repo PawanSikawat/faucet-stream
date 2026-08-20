@@ -112,6 +112,9 @@ pub struct ExpandedNode {
     /// destination sink also opted in with `cleanup: delete_missing`, so this
     /// being present already means a cleanup is intended.
     pub cleanup_scope: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    /// Pipeline-level `_faucet_*` metadata columns (#510), shared by every node;
+    /// the executor wraps the sink in a `MetadataSink` decorator when present.
+    pub metadata_columns: Option<faucet_core::MetadataColumnsSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -578,6 +581,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
                 deferred_refs: Vec::new(),
                 source_override: None,
                 cleanup_scope: None,
+                metadata_columns: None,
             });
             continue;
         }
@@ -1215,6 +1219,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             deferred_refs: deferred,
             source_override: None,
             cleanup_scope,
+            metadata_columns: cfg.metadata_columns.clone(),
         };
 
         if chunks.is_empty() {

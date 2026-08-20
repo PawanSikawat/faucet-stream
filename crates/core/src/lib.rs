@@ -32,6 +32,7 @@ pub mod idempotency;
 pub mod join;
 #[cfg(feature = "masking")]
 pub mod masking;
+pub mod metadata;
 pub mod observability;
 pub mod pipeline;
 #[cfg(feature = "quality")]
@@ -89,6 +90,9 @@ pub use idempotency::{
 };
 pub use join::{
     HashJoin, JoinConfig, JoinMode, JoinStats, KeyNormalize, OnCollision, OnDuplicate, Projection,
+};
+pub use metadata::{
+    CompiledMetadata, MetadataColumn, MetadataColumnsSpec, MetadataContext, MetadataSink,
 };
 #[cfg(feature = "contract")]
 pub use observability::instrumented_apply_contract;
