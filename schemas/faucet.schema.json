@@ -17420,6 +17420,11 @@
           "description": "Alias the projected value is exposed under: a `for_each` row references\nit as `${<row_id>.<as>}`. Must match `^[a-z0-9][a-z0-9_-]*$`.",
           "type": "string"
         },
+        "collect": {
+          "default": false,
+          "description": "**Collected (list-valued) dimension** (#531). When `true`, the whole\ndeduped value-set is published as a single list per upstream tuple rather\nthan as an independent cartesian axis — so a consuming row injects the\nentire list into one request (`${<id>.<as>}` renders it comma-joined,\ne.g. HubSpot's `?properties=a,b,c`). Required when a `discover:` row also\ndeclares `for_each:` (chained / two-level discovery), and only meaningful\non a discovery row.",
+          "type": "boolean"
+        },
         "select": {
           "description": "JSONPath projecting the dimension value from each discovered record\n(e.g. `$.id`). `$` selects the whole record. Null / missing values are\nskipped with a warning.",
           "type": "string"
