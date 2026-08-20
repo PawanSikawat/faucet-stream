@@ -7,11 +7,53 @@
    `additional-css` after mdBook's own CSS, so these rules win.
    ──────────────────────────────────────────────────────────────────────── */
 
+/* ── Self-hosted brand fonts (Geist + Geist Mono, SIL OFL 1.1) ──────────────────
+   Geist is a clean, high-x-height neo-grotesque — the same easy-to-read quality
+   the Pydantic docs get from ABC Diatype (which is a commercial font we can't
+   ship). Variable woff2 (one file = every weight), self-hosted under
+   src/assets/fonts/ so there is NO external request and the site works offline.
+   License text lives beside the fonts in that directory. `font-display: swap`
+   paints the fallback immediately, then upgrades — no invisible-text flash.
+   ──────────────────────────────────────────────────────────────────────────── */
+@font-face {
+  font-family: "Geist";
+  src: url("assets/fonts/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("assets/fonts/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --fs-green: #247368; /* the accent — dark pine green (fills; white text on it) */
   --fs-green-deep: #17544a; /* hover / link text where more contrast is needed */
   --fs-green-bright: #57a894; /* accent on dark grounds */
   --fs-ink: #1b1b18; /* near-black, warm */
+  /* Font stacks — Geist first, then the native UI font so text renders instantly
+     before the webfont loads and if it ever fails. */
+  --fs-sans: "Geist", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Open Sans", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --fs-mono: "Geist Mono", ui-monospace, "Source Code Pro", SFMono-Regular, Menlo,
+    Consolas, "Liberation Mono", monospace;
+}
+
+/* Apply the sans site-wide (content, sidebar, menu bar, TOC) — overrides
+   mdBook's bundled Open Sans on <html>. */
+html {
+  font-family: var(--fs-sans);
+}
+/* Geist Mono for all code surfaces. */
+.content code,
+.content pre,
+.content pre code,
+kbd {
+  font-family: var(--fs-mono);
 }
 
 /* ── Light / rust: warm greige paper, black text ──────────────────────────── */
@@ -285,8 +327,7 @@ mark {
   --content-max-width: 780px; /* the shared column width — a comfortable measure */
 }
 .content {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    "Open Sans", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: var(--fs-sans);
   font-size: 1.7rem; /* 17px */
   line-height: 1.72; /* the vertical rhythm / "font gap" */
   -webkit-font-smoothing: antialiased;
