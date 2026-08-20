@@ -83,10 +83,10 @@ pub fn parse_edmx(xml: &str) -> Result<(Vec<EdmEntityType>, Vec<EdmEntitySet>), 
     // (`<Property .../>`, `<EntitySet .../>`) never get a matching `End`.
     let open = |e: &BytesStart,
                 is_empty: bool,
-                    current: &mut Option<EdmEntityType>,
-                    in_key: &mut bool,
-                    types: &mut Vec<EdmEntityType>,
-                    sets: &mut Vec<EdmEntitySet>| {
+                current: &mut Option<EdmEntityType>,
+                in_key: &mut bool,
+                types: &mut Vec<EdmEntityType>,
+                sets: &mut Vec<EdmEntitySet>| {
         match local_name(e.name().as_ref()).as_str() {
             "EntityType" => {
                 let t = EdmEntityType {
@@ -105,9 +105,7 @@ pub fn parse_edmx(xml: &str) -> Result<(Vec<EdmEntityType>, Vec<EdmEntitySet>), 
                 }
             }
             "PropertyRef" => {
-                if *in_key
-                    && let (Some(cur), Some(n)) = (current.as_mut(), attr(e, "Name"))
-                {
+                if *in_key && let (Some(cur), Some(n)) = (current.as_mut(), attr(e, "Name")) {
                     cur.keys.push(n);
                 }
             }
@@ -168,7 +166,11 @@ pub fn descriptors_from_edmx(xml: &str) -> Result<Vec<DatasetDescriptor>, Faucet
         let schema = by_name.get(set.type_name.as_str()).map(|t| {
             let cols = t.properties.iter().map(|p| {
                 let frag = edm_type_to_json(&p.edm_type);
-                let frag = if p.nullable { nullable_type(frag) } else { frag };
+                let frag = if p.nullable {
+                    nullable_type(frag)
+                } else {
+                    frag
+                };
                 (p.name.clone(), frag)
             });
             columns_to_schema(cols)
@@ -218,7 +220,10 @@ mod tests {
             edm_type_to_json("Edm.DateTimeOffset"),
             json!({"type": "string"})
         );
-        assert_eq!(edm_type_to_json("Something.Custom"), json!({"type": "string"}));
+        assert_eq!(
+            edm_type_to_json("Something.Custom"),
+            json!({"type": "string"})
+        );
     }
 
     #[test]

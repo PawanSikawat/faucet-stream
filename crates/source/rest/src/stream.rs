@@ -141,8 +141,9 @@ fn credential_to_auth(cred: Credential) -> Auth {
 fn insert_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(), FaucetError> {
     let hn = HeaderName::from_bytes(name.as_bytes())
         .map_err(|e| FaucetError::Config(format!("rest: invalid header name '{name}': {e}")))?;
-    let hv = HeaderValue::from_str(value)
-        .map_err(|e| FaucetError::Config(format!("rest: invalid value for header '{name}': {e}")))?;
+    let hv = HeaderValue::from_str(value).map_err(|e| {
+        FaucetError::Config(format!("rest: invalid value for header '{name}': {e}"))
+    })?;
     headers.insert(hn, hv);
     Ok(())
 }
@@ -1336,7 +1337,8 @@ impl faucet_core::Source for RestStream {
     async fn discover(&self) -> Result<Vec<faucet_core::DatasetDescriptor>, FaucetError> {
         if self.config.odata.is_none() {
             return Err(FaucetError::Source(
-                "rest: discovery is only supported for OData sources — set an `odata:` block".into(),
+                "rest: discovery is only supported for OData sources — set an `odata:` block"
+                    .into(),
             ));
         }
         let url = format!("{}/$metadata", self.config.base_url.trim_end_matches('/'));
@@ -1347,7 +1349,9 @@ impl faucet_core::Source for RestStream {
             .headers(headers)
             .send()
             .await
-            .map_err(|e| FaucetError::Source(format!("rest: OData $metadata request failed: {e}")))?;
+            .map_err(|e| {
+                FaucetError::Source(format!("rest: OData $metadata request failed: {e}"))
+            })?;
         let status = resp.status();
         if !status.is_success() {
             return Err(FaucetError::Source(format!(
@@ -1355,10 +1359,9 @@ impl faucet_core::Source for RestStream {
                 status.as_u16()
             )));
         }
-        let xml = resp
-            .text()
-            .await
-            .map_err(|e| FaucetError::Source(format!("rest: reading OData $metadata failed: {e}")))?;
+        let xml = resp.text().await.map_err(|e| {
+            FaucetError::Source(format!("rest: reading OData $metadata failed: {e}"))
+        })?;
         crate::odata::descriptors_from_edmx(&xml)
     }
 }

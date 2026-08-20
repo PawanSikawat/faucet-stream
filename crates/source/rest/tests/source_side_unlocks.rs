@@ -76,19 +76,20 @@ async fn odata_discover_parses_metadata() {
         .mount(&server)
         .await;
 
-    let stream = RestStream::new(
-        RestStreamConfig::new(&server.uri(), "").odata(ODataConfig {
-            entity: Some("Orders".to_owned()),
-            ..Default::default()
-        }),
-    )
+    let stream = RestStream::new(RestStreamConfig::new(&server.uri(), "").odata(ODataConfig {
+        entity: Some("Orders".to_owned()),
+        ..Default::default()
+    }))
     .unwrap();
 
     assert!(stream.supports_discover());
     let datasets = stream.discover().await.unwrap();
     assert_eq!(datasets.len(), 1);
     assert_eq!(datasets[0].name, "Orders");
-    assert_eq!(datasets[0].config_patch, json!({"odata": {"entity": "Orders"}}));
+    assert_eq!(
+        datasets[0].config_patch,
+        json!({"odata": {"entity": "Orders"}})
+    );
     assert_eq!(
         datasets[0].schema.as_ref().unwrap()["properties"]["DocEntry"]["type"],
         "integer"

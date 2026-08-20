@@ -295,8 +295,9 @@ pub fn format_bookmark(value: &Value, format: BindFormat) -> Result<String, Fauc
                 "replication bind: cannot render {other} as a raw scalar"
             ))),
         },
-        BindFormat::Iso8601 => Ok(bookmark_instant(value)?
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        BindFormat::Iso8601 => {
+            Ok(bookmark_instant(value)?.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        }
         BindFormat::Date => Ok(bookmark_instant(value)?.format("%Y-%m-%d").to_string()),
         BindFormat::EpochS => Ok(bookmark_instant(value)?.timestamp().to_string()),
         BindFormat::EpochMs => Ok(bookmark_instant(value)?.timestamp_millis().to_string()),
@@ -484,7 +485,10 @@ mod tests {
     #[test]
     fn bind_format_iso8601_from_date_and_epoch() {
         let b = bind(BindTarget::Header, "${bookmark}", BindFormat::Iso8601);
-        assert_eq!(b.render(&json!("2024-06-01")).unwrap(), "2024-06-01T00:00:00Z");
+        assert_eq!(
+            b.render(&json!("2024-06-01")).unwrap(),
+            "2024-06-01T00:00:00Z"
+        );
         // Epoch seconds → ISO.
         assert_eq!(
             b.render(&json!(1_717_200_000)).unwrap(),
@@ -553,6 +557,9 @@ mod tests {
 
     #[test]
     fn bind_format_bookmark_bool_raw() {
-        assert_eq!(format_bookmark(&json!(true), BindFormat::Raw).unwrap(), "true");
+        assert_eq!(
+            format_bookmark(&json!(true), BindFormat::Raw).unwrap(),
+            "true"
+        );
     }
 }

@@ -605,10 +605,18 @@ mod tests {
         let c = ctx(&[("tok", "T"), ("sid", "S")]);
         let ra = build_request_auth(&apply, &None, &c);
         assert_eq!(ra.placements.len(), 4);
-        assert!(matches!(&ra.placements[0], CredentialPlacement::Header { name, value } if name=="X-Tok" && value=="T"));
-        assert!(matches!(&ra.placements[1], CredentialPlacement::Query { name, value } if name=="access_token" && value=="T"));
-        assert!(matches!(&ra.placements[2], CredentialPlacement::Cookie { name, value } if name=="sid" && value=="S"));
-        assert!(matches!(&ra.placements[3], CredentialPlacement::BodyField { name, value } if name=="auth" && value=="T"));
+        assert!(
+            matches!(&ra.placements[0], CredentialPlacement::Header { name, value } if name=="X-Tok" && value=="T")
+        );
+        assert!(
+            matches!(&ra.placements[1], CredentialPlacement::Query { name, value } if name=="access_token" && value=="T")
+        );
+        assert!(
+            matches!(&ra.placements[2], CredentialPlacement::Cookie { name, value } if name=="sid" && value=="S")
+        );
+        assert!(
+            matches!(&ra.placements[3], CredentialPlacement::BodyField { name, value } if name=="auth" && value=="T")
+        );
         assert!(ra.base_url.is_none());
     }
 
@@ -619,12 +627,18 @@ mod tests {
                         "encoding": "hex", "into": { "header": "Authorization", "format": "SS ${sig}" } } }
         ]))
         .unwrap();
-        let mut c = ctx(&[("client", "abc"), ("ts", "100"), ("base_url", "https://eu.host")]);
+        let mut c = ctx(&[
+            ("client", "abc"),
+            ("ts", "100"),
+            ("base_url", "https://eu.host"),
+        ]);
         c.insert("base_url".to_owned(), "https://eu.host".to_owned());
         let ra = build_request_auth(&apply, &Some("${base_url}".to_owned()), &c);
         assert_eq!(ra.placements.len(), 1);
         let expected = format!("SS {}", hmac_sign("secret", "abc:100", SigEncoding::Hex));
-        assert!(matches!(&ra.placements[0], CredentialPlacement::Header { name, value } if name=="Authorization" && *value==expected));
+        assert!(
+            matches!(&ra.placements[0], CredentialPlacement::Header { name, value } if name=="Authorization" && *value==expected)
+        );
         assert_eq!(ra.base_url.as_deref(), Some("https://eu.host"));
     }
 
@@ -706,16 +720,16 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/token"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(json!({"access_token": "AT"})),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"access_token": "AT"})))
             .mount(&server)
             .await;
         Mock::given(method("GET"))
             .and(path("/login"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                json!({"BhRestToken": "BRT", "restUrl": "https://data.example"}),
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    json!({"BhRestToken": "BRT", "restUrl": "https://data.example"}),
+                ),
+            )
             .mount(&server)
             .await;
 
@@ -771,7 +785,9 @@ mod tests {
         let p = FlowProvider::from_config(&cfg).unwrap();
 
         let c1 = p.credential().await.unwrap();
-        assert!(matches!(&c1, Credential::Header { name, value } if name == "X-Session" && value == "S1"));
+        assert!(
+            matches!(&c1, Credential::Header { name, value } if name == "X-Session" && value == "S1")
+        );
         // Cached: no ttl → second call does not re-login.
         let _ = p.credential().await.unwrap();
         assert_eq!(hits.load(Ordering::SeqCst), 1);
@@ -868,7 +884,9 @@ mod tests {
         let p = FlowProvider::from_config(&cfg).unwrap();
         assert_eq!(p.provider_name(), "flow");
         let c = p.credential().await.unwrap();
-        assert!(matches!(&c, Credential::Header { name, value } if name == "Authorization" && value == "Bearer T"));
+        assert!(
+            matches!(&c, Credential::Header { name, value } if name == "Authorization" && value == "Bearer T")
+        );
     }
 
     #[tokio::test]
@@ -958,6 +976,8 @@ mod tests {
         let p = FlowProvider::from_config(&cfg).unwrap();
         let c = p.credential().await.unwrap();
         let expected = format!("HMAC {}", hmac_sign("k", "msg", SigEncoding::Hex));
-        assert!(matches!(&c, Credential::Header { name, value } if name == "Authorization" && *value == expected));
+        assert!(
+            matches!(&c, Credential::Header { name, value } if name == "Authorization" && *value == expected)
+        );
     }
 }
