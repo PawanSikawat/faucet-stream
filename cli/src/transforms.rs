@@ -8,7 +8,7 @@ use crate::error::{CliError, CliResult};
 #[cfg(feature = "transforms")]
 use faucet_core::{
     CastOnError, CastType, HashAlgorithm, HashEncoding, JsonParseOnError, KeyCaseMode,
-    LookupOnMissing, UnpivotSpec, ValueCaseMode,
+    LookupOnMissing, TreeFlattenSpec, UnpivotSpec, ValueCaseMode,
 };
 #[cfg(any(feature = "transforms", feature = "transform-cdc-unwrap"))]
 use faucet_core::{JsonSchema, schema_for};
@@ -604,6 +604,21 @@ fn registry() -> Vec<TransformDef> {
                     // keeps `TransformStage` additive-only). `into_stage`
                     // validates the spec at load time.
                     let spec = decode::<UnpivotSpec>(kind, config)?;
+                    spec.into_stage().map_err(|e| CliError::InvalidTransform {
+                        name: kind.to_owned(),
+                        message: e.to_string(),
+                    })
+                },
+            },
+            TransformDef {
+                kind: "tree_flatten",
+                description: "Flatten a recursive report tree / matrix (nested Rows) into one row per leaf.",
+                schema_fn: || schema::<TreeFlattenSpec>(),
+                compile_fn: |kind, config| {
+                    // `tree_flatten` is 1→N, so it compiles to an object-safe
+                    // `TransformStage::Custom` (no dedicated enum variant).
+                    // `into_stage` validates the spec at load time.
+                    let spec = decode::<TreeFlattenSpec>(kind, config)?;
                     spec.into_stage().map_err(|e| CliError::InvalidTransform {
                         name: kind.to_owned(),
                         message: e.to_string(),

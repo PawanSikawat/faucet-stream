@@ -38,6 +38,8 @@ transform-json-encode = []
 transform-lookup = []
 # Wide/map → long reshape stage (#516).
 transform-unpivot = []
+# Recursive report-tree / matrix → leaf rows (#530).
+transform-tree-flatten = []
 transform-filter = []
 transform-explode = []
 transform-cdc-unwrap = []
@@ -60,6 +62,7 @@ transforms = [
     "transform-json-encode",
     "transform-lookup",
     "transform-unpivot",
+    "transform-tree-flatten",
     "transform-filter",
     "transform-explode",
     "transform-cdc-unwrap",

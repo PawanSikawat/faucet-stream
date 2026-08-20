@@ -31,6 +31,7 @@ them are listed in `faucet list` and dispatchable as `type:` values.
 | `json_encode` | Serialize a nested field to a JSON string (inverse of `json_parse`) | `fields: [..]` |
 | `unpivot` | Reshape wide columns or a map field into long key/value rows (1→N) | `id_fields`, `key_name`, `value_name`, `columns?` \| `from?`, `drop_nulls?` |
 | `lookup` | Enrich records by joining an inline / JSONL reference table | `values` \| `jsonl`, `on: {record, ref}`, `add: {out: ref_col}`, `on_missing?` |
+| `tree_flatten` | Flatten a recursive report tree / matrix (nested `Rows`) into one row per leaf (1→N) | `children`, `columns: {from, header?, value}`, `root?`, `leaf?`, `ancestors?`, `path_as?` |
 | `sql` | Run DuckDB SQL over the whole page; records are the `batch` relation | `query`, `relations?`, `memory_limit?`, `threads?` · page-level (sees the whole batch) · needs `transform-sql` feature · [cookbook](./sql-transform.md) |
 | `wasm` | Run a user-provided sandboxed `.wasm` module over each record | `module`, `function?`, `memory_limit_mb?`, `fuel_limit?`, `on_error?`, `reload_on_change?` · per-record · needs `transform-wasm` feature · [cookbook](./wasm-transforms.md) |
 
@@ -524,6 +525,41 @@ transform. It is 1→1 (never drops rows): on a miss it writes the added
 columns as `null` (`null`), leaves the record untouched (`keep`), or fails
 the batch (`error`). The reference is resolved once at config-load. Needs
 the `transform-lookup` feature.
+
+## `tree_flatten` — recursive report tree / matrix → rows (1→N)
+
+```yaml
+- type: tree_flatten
+  config:
+    root: "Rows.Row"            # path to the top-level node array (omit → the record itself)
+    children: "Rows.Row"        # a node's child-array (the recursion key)
+    leaf: has_no_children       # has_no_children (default) | has_field:<name>
+    columns:
+      from: "ColData"           # a leaf's cell array …
+      header: "Columns.Column"  # … paired positionally with these header defs …
+      header_label: "ColTitle"  # … reading each header's label from this field
+      value: "value"            # the cell field to read (ColData[i].value)
+    ancestors:
+      field: "Header.ColData[0].value"  # each group node's label
+      as: [section, subsection]         # column names per depth (extra → ancestor_N)
+    path_as: group_path         # optional: the joined path, e.g. "Income > Sales"
+    drop_empty: true            # skip leaves whose cells are all empty
+    # emit_group_rows: false    # also emit subtotal (group) rows
+    # max_depth: 64             # stack-overflow backstop
+```
+
+Financial-report APIs (QuickBooks, Xero, ZohoBooks, Rillet, Sage/Intacct)
+return a **self-referential nested-`Rows` matrix** — a tree of section →
+subsection → line. `tree_flatten` walks it depth-first, carries the section
+labels down, and emits **one flat row per leaf**, naming the value columns from
+the report's header row and the group columns from `ancestors.as`. It is the
+one reshape that otherwise forced these connectors onto the embedded-DuckDB SQL
+transform; `tree_flatten` keeps them inbuilt. Uneven branch depth leaves the
+missing ancestor levels null; a header/cell length mismatch zips to the shorter;
+a malformed/cyclic tree is truncated at `max_depth` (logged) rather than
+overflowing the stack. It also flattens any generic `children` tree (org charts,
+category trees, BOM explosions). Column-lineage is opaque (structure-changing).
+Needs the `transform-tree-flatten` feature.
 
 ## Ordering rules of thumb
 
