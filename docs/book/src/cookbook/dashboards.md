@@ -73,3 +73,11 @@ normalized) and asserts each exists in the source tree. Renaming a metric
 without updating the artifacts fails the required `Test` job. Panels group
 only by the low-cardinality labels (`pipeline`, `row`, `connector`) — never
 add record keys or run ids.
+
+## See also
+
+- [Observability](../operations/observability.md) — the metric and label
+  reference these dashboards are built on.
+- [SLA monitoring (freshness & volume)](./sla.md) and
+  [Notifications (Slack / PagerDuty / webhook)](./notifications.md) — turn
+  dashboard signals into alerts.

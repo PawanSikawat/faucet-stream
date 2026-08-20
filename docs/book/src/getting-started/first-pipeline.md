@@ -79,10 +79,12 @@ example, normalize keys to `snake_case`:
 pipeline:
   source: { type: csv, config: { path: ./data/input.csv } }
   transforms:
-    - type: snake_case
+    - { type: keys_case, config: { mode: snake } }
   sink: { type: jsonl, config: { path: ./out/records.jsonl } }
 ```
 
-Built-in config transforms are `flatten`, `rename_keys`, and `snake_case`.
+Config-exposed transforms include `flatten`, `rename_keys`, `keys_case`,
+`select`, `cast`, `redact`, and more — see the
+[record transforms recipe](../cookbook/transforms.md) for the full list.
 
 Next: [core concepts](./concepts.md).

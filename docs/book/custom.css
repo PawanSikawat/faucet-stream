@@ -112,6 +112,116 @@ summary:focus-visible {
   border-bottom: 1px solid color-mix(in srgb, var(--fs-green) 22%, transparent);
 }
 
+/* ── Pydantic-style header (header-ui.js) ──────────────────────────────────────
+   An always-visible "Search  ⌘K" pill centered in the menu bar, plus a single
+   light/dark toggle on the right. Built on mdBook's own search + theme markup:
+   its five-theme popup, its separate search-toggle icon, and the centered book
+   title are hidden; the search box is relocated into the bar and restyled.
+   ──────────────────────────────────────────────────────────────────────────── */
+#mdbook-theme-toggle,
+#mdbook-theme-list,
+#mdbook-search-toggle {
+  display: none !important;
+}
+.menu-bar.fs-has-search .menu-title {
+  display: none; /* the search pill takes the center instead of the title */
+}
+
+/* The relocated search wrapper fills the bar's center. */
+.menu-bar.fs-has-search #mdbook-search-wrapper {
+  display: flex !important; /* beats mdBook's `.hidden { display:none !important }` */
+  flex: 1 1 auto;
+  justify-content: center;
+  position: relative; /* anchor for the results dropdown */
+  margin: 0 1rem;
+  max-height: none;
+  border-bottom: none;
+  padding: 0;
+}
+.menu-bar.fs-has-search #mdbook-searchbar-outer {
+  width: 100%;
+  max-width: 44rem; /* the pill's max width */
+  margin: 0;
+}
+.menu-bar.fs-has-search .search-wrapper {
+  position: relative;
+  width: 100%;
+}
+.menu-bar.fs-has-search #mdbook-searchbar {
+  width: 100%;
+  margin: 0;
+  padding: 0.5rem 5rem 0.5rem 3.2rem; /* room for the magnifier + the ⌘K badge */
+  border-radius: 9px;
+  border: 1px solid var(--table-border-color, rgba(0, 0, 0, 0.18));
+  background-color: color-mix(in srgb, var(--fg) 4%, var(--bg));
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cpath fill='%23888' d='M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352a144 144 0 1 0 0-288 144 144 0 1 0 0 288z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: 1rem center;
+  background-size: 1.05rem;
+  font-size: 1.5rem;
+  line-height: 1.4;
+  color: var(--fg);
+  transition: border-color 0.13s ease, box-shadow 0.13s ease;
+}
+.menu-bar.fs-has-search #mdbook-searchbar:focus {
+  border-color: var(--fs-green);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--fs-green) 18%, transparent);
+  outline: none;
+}
+/* The ⌘K hint badge, right-aligned inside the pill. */
+.fs-kbd {
+  position: absolute;
+  top: 50%;
+  right: 0.7rem;
+  transform: translateY(-50%);
+  pointer-events: none;
+  font-family: inherit;
+  font-size: 1.15rem;
+  line-height: 1;
+  padding: 0.28em 0.5em;
+  color: color-mix(in srgb, var(--fg) 60%, transparent);
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  border: 1px solid var(--table-border-color, rgba(0, 0, 0, 0.16));
+  border-radius: 5px;
+}
+
+/* Results as a dropdown card under the pill (mdBook toggles its `hidden`). */
+.menu-bar.fs-has-search #mdbook-searchresults-outer {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(44rem, 92vw);
+  max-height: 70vh;
+  overflow-y: auto;
+  text-align: left;
+  background: var(--bg);
+  border: 1px solid var(--table-border-color, rgba(0, 0, 0, 0.18));
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  padding: 0.6rem 0.9rem;
+  z-index: 120;
+}
+
+/* The light/dark toggle icon. */
+#fs-theme-toggle .fa-svg {
+  display: inline-flex;
+}
+#fs-theme-toggle svg {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+/* On narrow screens keep the bar tidy: shrink the pill and drop the badge. */
+@media (max-width: 700px) {
+  .menu-bar.fs-has-search #mdbook-searchbar {
+    padding-right: 1rem;
+  }
+  .fs-kbd {
+    display: none;
+  }
+}
+
 /* ── Content links + accents (quiet) ──────────────────────────────────────── */
 .content a:not(.header) {
   text-decoration: none;
@@ -157,35 +267,157 @@ mark {
 }
 
 /* ── Typography ───────────────────────────────────────────────────────────────
-   Comfortable body text at the full content width — no per-element width cap,
-   so prose, code, and tables all share the same column and line up:
+   Tuned for long-form reading, in the spirit of the Pydantic / Material docs:
+   a comfortable measure, a strong-but-quiet heading hierarchy, generous
+   vertical rhythm, and code that sits calmly in the flow. Prose, code, and
+   tables share one column so everything lines up on the same left edge.
+     · font    — system-ui first (SF Pro / Segoe UI): crisp on every OS, the
+                 same neutral-grotesk feel Pydantic gets from Inter, with no
+                 web-font request. Open Sans (mdBook-bundled) is the fallback.
      · size    — 17px body (16px floor; 17–18px is the long-form optimum).
      · leading — 1.72 line-height (WCAG 1.4.8 asks for ≥1.5).
+     · measure — ~780px ≈ 75 characters, the readable sweet spot.
      · gutters — wider page padding so nothing hugs the edges.
    mdBook uses the 62.5% trick, so 1rem = 10px here.
    ──────────────────────────────────────────────────────────────────────────── */
 :root {
-  --page-padding: 24px; /* was 15px — symmetric breathing room on both edges */
-  --content-max-width: 860px; /* the shared column width for all content */
+  --page-padding: 24px; /* symmetric breathing room on both edges */
+  --content-max-width: 780px; /* the shared column width — a comfortable measure */
 }
 .content {
-  font-family: "Open Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Open Sans", Roboto, "Helvetica Neue", Arial, sans-serif;
   font-size: 1.7rem; /* 17px */
   line-height: 1.72; /* the vertical rhythm / "font gap" */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Paragraphs + lists: even rhythm, so blocks breathe without drifting apart. */
+.content p {
+  margin: 0 0 1.1em;
+}
+.content ul,
+.content ol {
+  margin: 0 0 1.1em;
+  padding-inline-start: 1.5em;
+}
+.content li {
+  margin: 0.3em 0;
+}
+.content li > ul,
+.content li > ol {
+  margin: 0.3em 0 0.4em; /* nested lists hug their parent item */
+}
+
+/* Headings: bold and clearly stepped, with room above each new section so the
+   eye can find the seams. `scroll-margin-top` keeps a targeted heading clear of
+   the sticky menu bar when you follow an anchor link. */
+.content h1,
+.content h2,
+.content h3,
+.content h4,
+.content h5,
+.content h6 {
+  font-weight: 700;
+  line-height: 1.25;
+  scroll-margin-top: 4rem;
 }
 .content h1,
 .content h2,
 .content h3 {
-  letter-spacing: -0.012em;
+  letter-spacing: -0.014em;
+}
+.content h1 {
+  font-size: 3.1rem; /* 31px */
+  margin: 0 0 0.8rem;
 }
 .content h2 {
-  margin-top: 2.3rem;
-  padding-bottom: 0.2em;
+  font-size: 2.3rem; /* 23px */
+  margin-top: 3rem;
+  padding-bottom: 0.28em;
   border-bottom: 1px solid var(--table-border-color, rgba(0, 0, 0, 0.1));
 }
-.content pre {
-  border-radius: 8px;
+.content h3 {
+  font-size: 1.9rem; /* 19px */
+  margin-top: 2.2rem;
+  font-weight: 600;
+}
+.content h4 {
+  font-size: 1.6rem; /* 16px */
+  margin-top: 1.8rem;
+  font-weight: 600;
+}
+
+/* Inline code: a quiet tinted chip, a hair smaller so it doesn't tower over the
+   prose x-height. */
+.content :not(pre) > code {
+  font-size: 0.88em;
+  padding: 0.12em 0.38em;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fs-green) 9%, transparent);
+}
+
+/* Code blocks: rounded, padded, softly bordered, and horizontally scrollable so
+   a long line never blows out the column. Scoped to :not(.mermaid) so mermaid
+   diagram frames (also <pre>) keep their own `.content .mermaid` styling and
+   don't pick up a second border. */
+.content pre:not(.mermaid) {
+  border-radius: 10px;
+  padding: 0.2rem 0.1rem; /* mdBook pads the inner <code>; keep the frame thin */
+  border: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
+  line-height: 1.55;
+}
+.content pre:not(.mermaid) > code {
+  font-size: 0.86em;
+}
+
+/* Tables: airy and rule-based (in the Pydantic / Material spirit) — no boxy
+   grid of borders. A bold header underlined by a firm rule, light horizontal
+   separators between rows, a quiet hover highlight, and generous padding. */
+.content table {
+  border-collapse: collapse;
+  width: auto;
+  margin: 1.4rem 0;
+  border: none;
+}
+.content table th,
+.content table td {
+  border: none;
+  padding: 0.6em 1.1em;
+  text-align: left;
+  background: transparent;
+}
+.content table thead th {
+  font-weight: 700;
+  border-bottom: 2px solid color-mix(in srgb, var(--fg) 28%, transparent);
+}
+.content table tbody td {
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+}
+.content table tbody tr:last-child td {
+  border-bottom: none;
+}
+.content table tbody tr:hover td {
+  background: color-mix(in srgb, var(--fs-green) 6%, transparent);
+}
+/* First column flush-left so the table lines up with the prose. */
+.content table th:first-child,
+.content table td:first-child {
+  padding-left: 0;
+}
+/* Drop mdBook's zebra striping — the row rules carry the structure. */
+.content table tbody tr:nth-child(2n),
+.content table tbody tr:nth-child(2n) td {
+  background: transparent;
+}
+
+/* Horizontal rule: a faint divider instead of mdBook's heavy default. */
+.content hr {
+  border: none;
+  border-top: 1px solid var(--table-border-color, rgba(0, 0, 0, 0.12));
+  margin: 2.4rem 0;
 }
 .content .mermaid {
   width: fit-content;
@@ -205,6 +437,103 @@ mark {
      thin, unreadable strip. */
   max-width: none;
   height: auto;
+}
+
+/* ── "On this page" — right-hand per-page TOC (page-toc.js) ─────────────────────
+   A quiet third column of the current page's headings, like the Pydantic /
+   Material docs. It only appears on wide viewports where there is genuine room
+   for a third column beside the sidebar and the prose; on anything narrower the
+   prose stays centered and full-width, and the TOC is hidden. Muted link text,
+   the active heading picks up the brand green.
+   ──────────────────────────────────────────────────────────────────────────── */
+.page-toc {
+  display: none;
+}
+.page-toc-title {
+  font-weight: 700;
+  font-size: 1.35rem; /* 13.5px */
+  letter-spacing: 0.02em;
+  margin-bottom: 0.7rem;
+  color: var(--fg);
+}
+.page-toc ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.page-toc li {
+  margin: 0;
+}
+.page-toc a {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3; /* long headings wrap to ≤3 lines, then ellipsis */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: anywhere; /* never clip a word mid-character */
+  padding: 0.28rem 0;
+  color: color-mix(in srgb, var(--fg) 60%, transparent);
+  text-decoration: none !important;
+  border-bottom: none !important;
+  transition: color 0.12s ease;
+}
+.page-toc a:hover {
+  color: var(--fg);
+}
+.page-toc a.active {
+  color: var(--links);
+  font-weight: 600;
+}
+.page-toc-h3 a {
+  padding-left: 0.95rem;
+  font-size: 0.94em;
+}
+
+@media (min-width: 1200px) {
+  /* Three columns — sidebar | prose | on-this-page — but only once the TOC was
+     actually built (`has-page-toc`), so TOC-less pages stay centered. The grid
+     is a centered block capped at ~1000px so the prose keeps a sane measure and
+     the TOC sits snugly beside it; existing page-padding provides outer gutters.
+     Kicks in at 1200px so it shows on ordinary laptop widths, not just very
+     wide monitors. */
+  #mdbook-content.content.has-page-toc {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 15rem;
+    column-gap: 2.8rem;
+    max-width: 1040px;
+    margin-inline: auto;
+    /* mdBook sets `overflow-y: auto` on .content, which (per spec) forces
+       overflow-x to `auto` too and turns this element into the sticky TOC's
+       scroll container — so the TOC stuck to nothing and scrolled away. Restore
+       `visible` so the sticky nav pins to the viewport instead. */
+    overflow: visible;
+    /* No `align-items: start` — the TOC wrapper must STRETCH to the full row
+       height so the sticky nav inside it has room to stay pinned. */
+  }
+  #mdbook-content.content.has-page-toc > main {
+    grid-column: 1;
+    max-width: none; /* the grid column already caps the measure */
+    margin: 0;
+    min-width: 0; /* let long code/tables scroll instead of stretching the grid */
+  }
+  #mdbook-content.content.has-page-toc > .nav-wrapper {
+    grid-column: 1; /* prev/next sits under the prose, not the TOC */
+  }
+  .has-page-toc .page-toc-wrap {
+    grid-column: 2;
+    /* stretches to the full row height by default — this is the sticky room */
+  }
+  .has-page-toc .page-toc {
+    display: block;
+    position: sticky;
+    top: calc(var(--menu-bar-height, 50px) + 1.4rem);
+    max-height: calc(100vh - var(--menu-bar-height, 50px) - 3rem);
+    overflow-y: auto;
+    padding-left: 1.1rem;
+    border-left: 1px solid var(--table-border-color, rgba(0, 0, 0, 0.12));
+    font-size: 1.4rem; /* 14px — quieter than body */
+    line-height: 1.45;
+  }
 }
 
 /* ── Landing hero + cards (introduction.md) ───────────────────────────────── */

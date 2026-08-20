@@ -89,3 +89,9 @@ pagination:
 
 > Use `faucet schema source rest` to see the exact fields and defaults for each
 > style in your installed version.
+
+## See also
+
+- [Authentication](./auth.md) — pair pagination with the right auth for your API.
+- [REST API → BigQuery (incremental)](../tutorials/rest-to-bigquery.md) — a full
+  paginated REST pipeline, end to end.

@@ -267,3 +267,8 @@ No additional coordination is required.
 | `triggers-kafka` | `queue_depth` watcher backed by Kafka consumer-group lag |
 
 All four are included in `full` and none are in `default`.
+
+## See also
+
+- [Event-driven triggers](../cookbook/triggers.md) — the task-oriented recipe for
+  wiring up file-arrival, webhook, and queue-depth triggers end to end.

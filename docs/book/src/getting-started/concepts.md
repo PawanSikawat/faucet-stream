@@ -19,7 +19,9 @@ expose a `batch_size` knob that controls the natural unit of work (a multi-row
 ## Transform
 
 An optional **transform** reshapes each record between source and sink. The
-config-exposed transforms are `flatten`, `rename_keys`, and `snake_case`;
+config-exposed transforms include `flatten`, `rename_keys`, `keys_case`,
+`select`, `cast`, and `redact` (see the
+[record transforms recipe](../cookbook/transforms.md) for the full list);
 additional custom transforms are available from Rust.
 
 ## Pipeline

@@ -49,3 +49,10 @@ Auto-detection runs per file at I/O time, so one matrix run can read a mix of
 - Parquet, Kafka, HTTP, stdout, and the database sinks are intentionally out of
   scope: Parquet has internal columnar compression and the others have native
   protocol-level options.
+
+## See also
+
+- [Throughput tuning](./tuning.md) — compression trades CPU for I/O; tune it
+  alongside batch sizes.
+- [Connector capability matrix](../reference/capability-matrix.md) — which
+  connectors expose the `compression` field.

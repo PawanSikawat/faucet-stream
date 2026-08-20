@@ -70,3 +70,9 @@ rather than relying on published figures.
 For the end-to-end throughput comparison against Meltano (Singer) — charted per
 scenario, with the full methodology and caveats — see
 [Benchmarks (vs Meltano)](../comparison/benchmarks.md).
+
+## See also
+
+- [Throughput tuning](../cookbook/tuning.md) — the config-side knobs
+  (`batch_size`, `COPY` fast-paths, sharding) that pair with the destination-side
+  wins on this page.
