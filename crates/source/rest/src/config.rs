@@ -3,7 +3,7 @@
 use crate::auth::Auth;
 use crate::pagination::PaginationStyle;
 use faucet_core::AuthSpec;
-use faucet_core::ReplicationMethod;
+use faucet_core::{ReplicationBind, ReplicationMethod};
 use reqwest::{
     Method,
     header::{HeaderMap, HeaderName, HeaderValue},
@@ -159,6 +159,79 @@ pub struct RestStreamConfig {
     /// skipped; the header row supplies field names. `response_format: excel` only.
     #[serde(default)]
     pub excel_header_row: usize,
+
+    // ── Server-side incremental push-down (#513) ────────────────────────────────
+    /// Bind the stored bookmark into the outgoing request (query param / header /
+    /// body field / path) so the server returns only new rows. Composes with the
+    /// existing `replication_key` client-side filter, which stays active as a
+    /// safety net. Requires `replication_method: incremental` + `replication_key`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replication_bind: Option<ReplicationBind>,
+
+    // ── OData (#512) ────────────────────────────────────────────────────────────
+    /// Speak the OData protocol: `@odata.nextLink` paging, the `$.value`
+    /// envelope, `$select`/`$filter`/`$expand`/`$orderby` sugar, and
+    /// `$metadata` (EDMX) → schema discovery. When set, it derives the
+    /// pagination, `records_path`, query params, and `Prefer` header at load
+    /// time (explicit values still win). See [`ODataConfig`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub odata: Option<ODataConfig>,
+}
+
+/// OData protocol version, which selects the paging-link key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ODataVersion {
+    /// OData v2 — JSON-light next link `odata.nextLink`.
+    V2,
+    /// OData v4 (default) — next link `@odata.nextLink`.
+    #[default]
+    V4,
+}
+
+impl ODataVersion {
+    /// JSONPath to the next-page link for this version.
+    pub fn next_link_path(self) -> &'static str {
+        match self {
+            // Bracketed single-quoted keys — `@`/`.` aren't bare-identifier
+            // chars, and jsonpath-rust wants `$['key']`, not `$."key"`.
+            ODataVersion::V2 => "$['odata.nextLink']",
+            ODataVersion::V4 => "$['@odata.nextLink']",
+        }
+    }
+}
+
+/// OData protocol options for the REST source (#512).
+///
+/// A minimal block — `{ entity: Orders }` — is enough; it derives paging,
+/// the `$.value` envelope, and (for `faucet discover`) `$metadata` parsing.
+/// The query-option fields render into the standard `$select`/`$filter`/
+/// `$expand`/`$orderby` params.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ODataConfig {
+    /// Protocol version (default `v4`).
+    #[serde(default)]
+    pub version: ODataVersion,
+    /// Entity set to read (appended to `base_url` as the path, e.g. `Orders`).
+    /// Optional when the path already names the entity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity: Option<String>,
+    /// `$select` — columns to return.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub select: Vec<String>,
+    /// `$expand` — related entities to inline (one level).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expand: Vec<String>,
+    /// `$filter` — server-side filter expression (verbatim).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+    /// `$orderby` — server-side ordering (verbatim).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orderby: Option<String>,
+    /// Server page size, sent as `Prefer: odata.maxpagesize=<n>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_size: Option<usize>,
 }
 
 pub use faucet_core::TlsClientConfig;
@@ -197,6 +270,8 @@ impl Default for RestStreamConfig {
             csv_has_headers: true,
             excel_sheet: None,
             excel_header_row: 0,
+            replication_bind: None,
+            odata: None,
         }
     }
 }
@@ -224,7 +299,76 @@ impl RestStreamConfig {
                 ));
             }
         }
+        if let Some(bind) = &self.replication_bind {
+            bind.validate()?;
+            if !matches!(self.replication_method, ReplicationMethod::Incremental) {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: `replication_bind` requires `replication_method: incremental`".into(),
+                ));
+            }
+            if self.replication_key.is_none() {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: `replication_bind` requires `replication_key` (the field whose \
+                     bookmark is pushed down)"
+                        .into(),
+                ));
+            }
+        }
+        if self.odata.is_some() && !matches!(self.response_format, ResponseFormat::Json) {
+            return Err(faucet_core::FaucetError::Config(
+                "rest: `odata` speaks JSON — remove `response_format: csv|excel`".into(),
+            ));
+        }
         Ok(())
+    }
+
+    /// Derive request defaults from the `odata:` block (paging, `$.value`
+    /// envelope, `$select`/`$filter`/`$expand`/`$orderby` params, and the
+    /// `Prefer` page-size header). Explicit config always wins — a field the
+    /// user already set is never overwritten. Idempotent.
+    pub fn apply_odata_defaults(&mut self) {
+        let Some(odata) = self.odata.clone() else {
+            return;
+        };
+        // Entity → path when the path doesn't already name one.
+        if self.path.trim_matches('/').is_empty()
+            && let Some(entity) = &odata.entity
+        {
+            self.path = entity.clone();
+        }
+        // OData records live under `$.value`.
+        if self.records_path.is_none() {
+            self.records_path = Some("$.value[*]".to_owned());
+        }
+        // Follow `@odata.nextLink` (v4) / `odata.nextLink` (v2).
+        if matches!(self.pagination, PaginationStyle::None) {
+            self.pagination = PaginationStyle::NextLinkInBody {
+                next_link_path: odata.version.next_link_path().to_owned(),
+            };
+        }
+        // Query-option sugar → standard params (don't clobber explicit ones).
+        let mut set_param = |k: &str, v: String| {
+            self.query_params.entry(k.to_owned()).or_insert(v);
+        };
+        if !odata.select.is_empty() {
+            set_param("$select", odata.select.join(","));
+        }
+        if !odata.expand.is_empty() {
+            set_param("$expand", odata.expand.join(","));
+        }
+        if let Some(filter) = &odata.filter {
+            set_param("$filter", filter.clone());
+        }
+        if let Some(orderby) = &odata.orderby {
+            set_param("$orderby", orderby.clone());
+        }
+        // Server page size via the `Prefer` header.
+        if let Some(n) = odata.page_size
+            && !self.headers.contains_key("prefer")
+            && let Ok(val) = HeaderValue::from_str(&format!("odata.maxpagesize={n}"))
+        {
+            self.headers.insert(HeaderName::from_static("prefer"), val);
+        }
     }
 
     pub fn new(base_url: &str, path: &str) -> Self {
@@ -346,6 +490,19 @@ impl RestStreamConfig {
         self
     }
 
+    /// Bind the stored bookmark into the outgoing request (#513).
+    pub fn replication_bind(mut self, bind: ReplicationBind) -> Self {
+        self.replication_bind = Some(bind);
+        self
+    }
+
+    /// Speak OData: derive paging, the `$.value` envelope, the query-option
+    /// sugar, and `$metadata` discovery from the block (#512).
+    pub fn odata(mut self, odata: ODataConfig) -> Self {
+        self.odata = Some(odata);
+        self
+    }
+
     // ── Singer / Meltano metadata ─────────────────────────────────────────────
 
     /// Human-readable stream name.
@@ -386,5 +543,94 @@ impl RestStreamConfig {
     pub fn partition_concurrency(mut self, concurrency: Option<usize>) -> Self {
         self.partition_concurrency = concurrency;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use faucet_core::{BindFormat, BindTarget, ReplicationBind};
+
+    fn bind() -> ReplicationBind {
+        ReplicationBind {
+            into: BindTarget::Query,
+            name: "since".to_owned(),
+            template: "${bookmark}".to_owned(),
+            format: BindFormat::Raw,
+            advance_from: None,
+        }
+    }
+
+    #[test]
+    fn replication_bind_requires_incremental_and_key() {
+        // Bind without incremental method → error.
+        let mut c = RestStreamConfig::new("https://x", "/y");
+        c.replication_bind = Some(bind());
+        assert!(c.validate().is_err());
+
+        // Incremental but no replication_key → error.
+        c.replication_method = ReplicationMethod::Incremental;
+        assert!(c.validate().is_err());
+
+        // Incremental + key → ok.
+        c.replication_key = Some("updated_at".to_owned());
+        assert!(c.validate().is_ok());
+
+        // An invalid bind (empty name) is rejected too.
+        let mut bad = c.clone();
+        bad.replication_bind = Some(ReplicationBind {
+            name: String::new(),
+            ..bind()
+        });
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn odata_rejects_non_json_response_format() {
+        let mut c = RestStreamConfig::new("https://x", "");
+        c.odata = Some(ODataConfig {
+            entity: Some("Orders".to_owned()),
+            ..Default::default()
+        });
+        c.response_format = ResponseFormat::Csv;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn apply_odata_defaults_renders_all_options_and_v2_link() {
+        let mut c = RestStreamConfig::new("https://host/odata", "");
+        c.odata = Some(ODataConfig {
+            version: ODataVersion::V2,
+            entity: Some("Orders".to_owned()),
+            select: vec!["A".to_owned(), "B".to_owned()],
+            expand: vec!["Lines".to_owned()],
+            filter: Some("A gt 1".to_owned()),
+            orderby: Some("A desc".to_owned()),
+            page_size: Some(250),
+        });
+        c.apply_odata_defaults();
+
+        assert_eq!(c.path, "Orders");
+        assert_eq!(c.records_path.as_deref(), Some("$.value[*]"));
+        assert_eq!(c.query_params.get("$select").unwrap(), "A,B");
+        assert_eq!(c.query_params.get("$expand").unwrap(), "Lines");
+        assert_eq!(c.query_params.get("$filter").unwrap(), "A gt 1");
+        assert_eq!(c.query_params.get("$orderby").unwrap(), "A desc");
+        assert_eq!(c.headers.get("prefer").unwrap(), "odata.maxpagesize=250");
+        // v2 uses the un-prefixed next-link key.
+        assert!(matches!(
+            c.pagination,
+            crate::pagination::PaginationStyle::NextLinkInBody { ref next_link_path }
+                if next_link_path == "$['odata.nextLink']"
+        ));
+        // Idempotent: a second application doesn't clobber explicit values.
+        c.apply_odata_defaults();
+        assert_eq!(c.query_params.get("$select").unwrap(), "A,B");
+    }
+
+    #[test]
+    fn odata_version_next_link_paths() {
+        assert_eq!(ODataVersion::V4.next_link_path(), "$['@odata.nextLink']");
+        assert_eq!(ODataVersion::V2.next_link_path(), "$['odata.nextLink']");
     }
 }

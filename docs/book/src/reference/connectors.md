@@ -23,7 +23,7 @@ Legend: ✓ supported · ✗ not applicable. Tier: T1 = passes the faucet-confor
 
 | Connector | Tier¹¹ | Feature | Streams¹ | Resumable² | Effectively-once³ | Compression | Discover¹⁰ | Underlying primitive |
 |-----------|:---:|---------|:---:|:---:|:---:|:---:|:---:|----------------------|
-| REST | T1 ✅ᵐ | `source-rest` | ✓ | ✓ | ✗ | ✗ | ✗ | HTTP + 6 pagination styles, JSONPath extraction; `response_format: csv\|excel` parses an authed file body (Graph/OneDrive/signed URL), Excel via `source-rest-excel` |
+| REST | T1 ✅ᵐ | `source-rest` | ✓ | ✓ | ✗ | ✗ | ✓ᵒ | HTTP + 6 pagination styles, JSONPath extraction; `response_format: csv\|excel` parses an authed file body (Graph/OneDrive/signed URL), Excel via `source-rest-excel`; `odata:` block adds OData paging/query + `$metadata` discovery; `replication_bind` pushes the bookmark server-side |
 | GraphQL | T1 ✅ᵐ | `source-graphql` | ✓ | ✗ | ✗ | ✗ | ✗ | cursor pagination, variable injection |
 | XML / SOAP | T1 ✅ᵐ | `source-xml` | ✓ | ✗ | ✗ | ✗ | ✗ | streaming XML→JSON, dot-path extraction, first-class `soap:` block (envelope + headers + fault handling) |
 | gRPC | T1 ✅ | `source-grpc` | ✓⁴ | ✗ | ✗ | ✗ | ✗ | dynamic protobuf; unary + server-streaming |
@@ -64,6 +64,8 @@ Legend: ✓ supported · ✗ not applicable. Tier: T1 = passes the faucet-confor
 ¹⁰ **Discover** = enumerates the datasets behind the connection for
 [`faucet discover`](../cookbook/discover.md) (tables / collections / indices /
 prefixes with schemas + row estimates where the catalog provides them).
+ᵒ REST supports discovery **only** with an `odata:` block, via the OData
+`$metadata` (EDMX) catalog — one dataset per entity set, with typed schemas.
 ¹ **Streams** = yields records in bounded-memory batches rather than buffering the
 whole result. ² **Resumable** = persists a bookmark to a [state store](../cookbook/state.md)
 so re-runs continue where they left off (incremental replication / CDC / Kafka

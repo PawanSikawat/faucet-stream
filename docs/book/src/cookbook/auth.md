@@ -166,6 +166,48 @@ pipeline:
       auth: { ref: netsuite }
 ```
 
+## Composable multi-step flows (`type: flow`)
+
+Some APIs make auth a small *program*: log in, capture a session token from the
+response, place it in a query param (not a header), and follow a base-URL the
+server hands back. The `flow` provider (a catalog provider, always available)
+runs a login/pre-flight chain, captures values by JSONPath, applies credential
+*placements* (header / query / cookie / body), can HMAC-sign each request, and
+overrides the base-URL per session:
+
+```yaml
+auth:
+  bullhorn:
+    type: flow
+    config:
+      steps:
+        - request: { method: POST, url: https://auth.example.com/oauth/token,
+                     form: { grant_type: refresh_token, refresh_token: ${secret:BH_RT} } }
+          capture: { access_token: "$.access_token" }
+        - request: { method: GET, url: https://login.example.com/rest-services/login,
+                     query: { access_token: "${access_token}" } }
+          capture: { bh_rest_token: "$.BhRestToken", base_url: "$.restUrl" }
+      apply:
+        - { into: query, name: BhRestToken, value: "${bh_rest_token}" }
+      base_url_from: "${base_url}"   # follow the server-supplied REST host
+      reauth_on: [401]               # re-login + retry once when the session expires
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://placeholder.example.com   # overridden by base_url_from
+      path: /entity/Candidate
+      auth: { ref: bullhorn }
+      records_path: "$.data[*]"
+```
+
+`${captured}` values from earlier steps are substituted into later steps and into
+`apply`; a signer entry is `{ sign: { alg: hmac_sha256, key, template, encoding:
+hex|base64, into: { header, format: "${sig}" } } }` (with `${ts}` / `${nonce}`
+available in the template). Header placements also work on the `xml`/`graphql`
+sources; query / cookie / body placement and dynamic base-URL are honored by
+`rest`. See the [`rest_flow_auth.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/rest_flow_auth.yaml) example.
+
 ## Shared auth providers (`auth: { ref }`)
 
 When several connectors authenticate against the **same** system — e.g. four

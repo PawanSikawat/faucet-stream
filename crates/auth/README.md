@@ -53,6 +53,45 @@ The `faucet-cli` binary always links `faucet-auth` to power the top-level `auth:
 
 Every provider is built from a `{ type, config }` object — the project-wide adjacently-tagged auth shape. The fields below are the keys inside each provider's `config`.
 
+### `flow` (composable multi-step auth)
+
+A small declarative auth *program* (#511): an optional login / pre-flight
+request chain whose responses are captured by JSONPath, credential *placement*
+across header / query / cookie / body, a pluggable HMAC request *signer*, and a
+dynamic per-session base-URL — on top of the single-flight machinery. It's the
+single biggest source-side unlock for session-cookie / multi-step ERP APIs
+(Bullhorn, Acumatica, SAP, Sage/Intacct, SkySlope, …).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `steps` | array | `[]` | Login/pre-flight chain. Each: `request: { method, url, headers, query, form \| json }` + `capture: { name: <JSONPath> }`. Later steps and `apply` see captured values via `${name}`. |
+| `apply` | array | `[]` | Per-request placements: `{ into: header\|query\|cookie\|body, name, value: "${captured}" }`, or a signer `{ sign: { alg: hmac_sha256, key, template, encoding: hex\|base64, into: { header, format: "${sig}" } } }`. |
+| `base_url_from` | string / null | `null` | Template (over captured values) yielding a per-session base-URL that overrides the connector's configured one. |
+| `ttl_secs` | int / null | `null` | Re-run the login chain after this many seconds. |
+| `reauth_on` | array<int> | `[]` | HTTP statuses that trigger a re-login + one retry (honored by the REST source). |
+
+```yaml
+auth:
+  bullhorn:
+    type: flow
+    config:
+      steps:
+        - request: { method: POST, url: "https://auth/oauth/token",
+                     form: { grant_type: refresh_token, refresh_token: "${env:RT}" } }
+          capture: { access_token: "$.access_token" }
+        - request: { method: GET, url: "https://login/rest-services/login",
+                     query: { access_token: "${access_token}" } }
+          capture: { bh_rest_token: "$.BhRestToken", base_url: "$.restUrl" }
+      apply:
+        - { into: query, name: BhRestToken, value: "${bh_rest_token}" }
+      base_url_from: "${base_url}"
+      reauth_on: [401]
+```
+
+Header placements also apply to `xml` / `graphql` sources (via `credential()`);
+query / cookie / body placement and dynamic base-URL are consumed by the `rest`
+source (which reads the richer `request_auth`).
+
 ### `static`
 
 A fixed credential. Exactly one of the three shapes below must be present.

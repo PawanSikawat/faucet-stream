@@ -9,13 +9,13 @@ use crate::pagination::{PaginationState, PaginationStyle};
 use crate::retry;
 use async_trait::async_trait;
 use faucet_core::replication::{
-    ReplicationMethod, filter_incremental, max_replication_value, max_value,
+    BindTarget, ReplicationMethod, filter_incremental, max_replication_value, max_value,
 };
 use faucet_core::schema;
-use faucet_core::{AuthSpec, Credential, FaucetError, SharedAuthProvider};
+use faucet_core::{AuthSpec, Credential, CredentialPlacement, FaucetError, SharedAuthProvider};
 use futures_core::Stream;
 use reqwest::Client;
-use reqwest::header::HeaderMap;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -136,9 +136,24 @@ fn credential_to_auth(cred: Credential) -> Auth {
     }
 }
 
+/// Insert a header from string parts, mapping invalid names/values to a typed
+/// config error rather than panicking.
+fn insert_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(), FaucetError> {
+    let hn = HeaderName::from_bytes(name.as_bytes())
+        .map_err(|e| FaucetError::Config(format!("rest: invalid header name '{name}': {e}")))?;
+    let hv = HeaderValue::from_str(value).map_err(|e| {
+        FaucetError::Config(format!("rest: invalid value for header '{name}': {e}"))
+    })?;
+    headers.insert(hn, hv);
+    Ok(())
+}
+
 impl RestStream {
     /// Create a new stream from the given configuration.
-    pub fn new(config: RestStreamConfig) -> Result<Self, FaucetError> {
+    pub fn new(mut config: RestStreamConfig) -> Result<Self, FaucetError> {
+        // Derive OData request defaults (paging, `$.value`, query sugar, Prefer)
+        // before validation so the checks see the effective request shape.
+        config.apply_odata_defaults();
         // Cross-field config invariants (e.g. file response formats can't paginate).
         config.validate()?;
         // Validate expiry_ratio at construction time.
@@ -481,16 +496,33 @@ impl RestStream {
                     };
 
                 // Track the running max replication value across pages so the
-                // final page can carry the consolidated bookmark.
-                if self.config.replication_method == ReplicationMethod::Incremental
-                    && let Some(key) = self.config.replication_key.as_deref()
-                        && let Some(page_max) = max_replication_value(&records, key) {
-                            let page_max = page_max.clone();
-                            running_max = Some(match running_max.take() {
-                                Some(prev) => max_value(prev, page_max),
-                                None => page_max,
-                            });
-                        }
+                // final page can carry the consolidated bookmark. When the
+                // replication bind declares `advance_from`, the next bookmark is
+                // read from that JSONPath in the **response body** (#513);
+                // otherwise it is `max(record[replication_key])`.
+                if self.config.replication_method == ReplicationMethod::Incremental {
+                    let page_max: Option<Value> = match self
+                        .config
+                        .replication_bind
+                        .as_ref()
+                        .and_then(|b| b.advance_from.as_deref())
+                    {
+                        Some(path) => faucet_core::util::extract_records(&body, Some(path))
+                            .ok()
+                            .and_then(|vs| vs.into_iter().next()),
+                        None => self
+                            .config
+                            .replication_key
+                            .as_deref()
+                            .and_then(|key| max_replication_value(&records, key).cloned()),
+                    };
+                    if let Some(page_max) = page_max {
+                        running_max = Some(match running_max.take() {
+                            Some(prev) => max_value(prev, page_max),
+                            None => page_max,
+                        });
+                    }
+                }
 
                 // Advance pagination state to learn whether there is a next
                 // page BEFORE yielding the current one. This way the bookmark
@@ -637,8 +669,36 @@ impl RestStream {
                 )
                 .await
             }
+            // #511: a shared provider (e.g. a multi-step flow) whose session
+            // expired mid-run — re-auth on a status it declared in `reauth_on`
+            // and retry once.
+            Err(FaucetError::HttpStatus { status, .. }) if self.provider_wants_reauth(status) => {
+                if let Some(provider) = &self.auth_provider {
+                    tracing::warn!(
+                        status,
+                        "shared auth provider requested re-auth on this status; \
+                         re-authenticating and retrying once"
+                    );
+                    let _ = provider.invalidate(&Credential::Token(String::new())).await;
+                }
+                self.execute_request_once(
+                    params,
+                    url_override,
+                    path_context,
+                    is_first_page,
+                    body_cursor,
+                )
+                .await
+            }
             other => other,
         }
+    }
+
+    /// `true` when a shared provider declared `status` in its `reauth_statuses`.
+    fn provider_wants_reauth(&self, status: u16) -> bool {
+        self.auth_provider
+            .as_ref()
+            .is_some_and(|p| p.reauth_statuses().contains(&status))
     }
 
     /// `true` when this source resolves its bearer token from one of the inline
@@ -665,49 +725,48 @@ impl RestStream {
         }
     }
 
-    /// Execute a single HTTP request and return the response body and headers.
-    ///
-    /// - When `url_override` is `Some`, that full URL is used and query params
-    ///   are **not** appended (Link header pagination encodes them in the URL).
-    /// - When `path_context` is `Some`, `{key}` placeholders in `config.path`
-    ///   are substituted with values from the context map (partition support).
-    async fn execute_request_once(
-        &self,
-        params: &HashMap<String, String>,
-        url_override: Option<&str>,
-        path_context: Option<&HashMap<String, Value>>,
-        is_first_page: bool,
-        body_cursor: Option<(&str, &str)>,
-    ) -> Result<(Value, HeaderMap), FaucetError> {
-        let use_override = url_override.is_some();
-        let url = match url_override {
-            Some(u) => u.to_string(),
-            None => {
-                let path = match path_context {
-                    Some(ctx) => faucet_core::util::substitute_context(&self.config.path, ctx),
-                    None => self.config.path.clone(),
-                };
-                format!("{}/{}", self.config.base_url, path.trim_start_matches('/'))
-            }
+    /// Resolve the server-side push-down binding for this run:
+    /// `(target, name, rendered-value)`. Returns `None` when no `replication_bind`
+    /// is configured or there is no bookmark yet (first run — a full pull).
+    async fn resolved_bind(&self) -> Result<Option<(BindTarget, String, String)>, FaucetError> {
+        let Some(bind) = &self.config.replication_bind else {
+            return Ok(None);
         };
+        let bookmark = {
+            let guard = self.runtime_start.lock().await;
+            guard.clone()
+        }
+        .or_else(|| self.config.start_replication_value.clone());
+        match bookmark {
+            Some(bm) => Ok(Some((bind.into, bind.name.clone(), bind.render(&bm)?))),
+            None => Ok(None),
+        }
+    }
 
-        // Resolve credentials to concrete auth headers. A shared auth provider
-        // (from `auth: { ref }` or injected by a library caller) takes
-        // precedence; otherwise inline OAuth2 / TokenEndpoint are resolved to a
-        // Bearer token via the per-source cache (cached until expiry, avoiding a
-        // token fetch on every request).
-        let resolved_auth = if let Some(provider) = &self.auth_provider {
-            // A per-request signer (OAuth1, #496) signs this exact method + URL +
-            // query; every other provider returns `None` here and we apply its
-            // reusable credential.
-            let query: std::collections::BTreeMap<String, String> =
-                params.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-            match provider
-                .sign_request(self.config.method.as_str(), &url, &query)
-                .await?
-            {
-                Some(cred) => credential_to_auth(cred),
-                None => credential_to_auth(provider.credential().await?),
+    /// Resolve auth headers for a non-paginated preflight request (OData
+    /// `$metadata`). Applies a flow provider's header/cookie placements or its
+    /// credential; else the inline auth (bearer via cache for OAuth2/token
+    /// endpoint). Query/body placements and `ApiKeyQuery` are not applied here.
+    async fn metadata_headers(&self, url: &str) -> Result<HeaderMap, FaucetError> {
+        let mut headers = HeaderMap::new();
+        if let Some(provider) = &self.auth_provider {
+            let ra = provider
+                .request_auth("GET", url, &std::collections::BTreeMap::new())
+                .await?;
+            if ra.is_empty() {
+                credential_to_auth(provider.credential().await?).apply(&mut headers)?;
+            } else {
+                for p in ra.placements {
+                    match p {
+                        CredentialPlacement::Header { name, value } => {
+                            insert_header(&mut headers, &name, &value)?
+                        }
+                        CredentialPlacement::Cookie { name, value } => {
+                            insert_header(&mut headers, "Cookie", &format!("{name}={value}"))?
+                        }
+                        _ => {}
+                    }
+                }
             }
         } else {
             match &self.config.auth {
@@ -729,7 +788,7 @@ impl RestStream {
                             *expiry_ratio,
                         )
                         .await?;
-                    Auth::Bearer { token }
+                    Auth::Bearer { token }.apply(&mut headers)?;
                 }
                 AuthSpec::Inline(Auth::TokenEndpoint {
                     url: token_url,
@@ -755,9 +814,158 @@ impl RestStream {
                             response_validator.as_ref(),
                         )
                         .await?;
-                    Auth::Bearer { token }
+                    Auth::Bearer { token }.apply(&mut headers)?;
                 }
-                AuthSpec::Inline(other) => other.clone(),
+                AuthSpec::Inline(other) => other.apply(&mut headers)?,
+                AuthSpec::Reference(_) => {}
+            }
+        }
+        Ok(headers)
+    }
+
+    /// Execute a single HTTP request and return the response body and headers.
+    ///
+    /// - When `url_override` is `Some`, that full URL is used and query params
+    ///   are **not** appended (Link header pagination encodes them in the URL).
+    /// - When `path_context` is `Some`, `{key}` placeholders in `config.path`
+    ///   are substituted with values from the context map (partition support).
+    async fn execute_request_once(
+        &self,
+        params: &HashMap<String, String>,
+        url_override: Option<&str>,
+        path_context: Option<&HashMap<String, Value>>,
+        is_first_page: bool,
+        body_cursor: Option<(&str, &str)>,
+    ) -> Result<(Value, HeaderMap), FaucetError> {
+        let use_override = url_override.is_some();
+
+        // #513 server-side push-down: resolve the bookmark binding for this run
+        // (`None` on the first run, before any bookmark exists).
+        let bind = self.resolved_bind().await?;
+
+        let query_btree: std::collections::BTreeMap<String, String> =
+            params.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+
+        // #511 rich per-request auth: a flow provider may place credentials
+        // across header/query/cookie/body and override the base-URL for this
+        // session. When it contributes anything, it supersedes the plain
+        // credential()/sign_request() path below.
+        let mut base_url = self.config.base_url.clone();
+        let mut ra_headers: Vec<(String, String)> = Vec::new();
+        let mut ra_query: Vec<(String, String)> = Vec::new();
+        let mut ra_cookies: Vec<(String, String)> = Vec::new();
+        let mut ra_body: Vec<(String, String)> = Vec::new();
+        let mut used_request_auth = false;
+        if let Some(provider) = &self.auth_provider {
+            let ra = provider
+                .request_auth(self.config.method.as_str(), &base_url, &query_btree)
+                .await?;
+            if !ra.is_empty() {
+                used_request_auth = true;
+                if let Some(b) = ra.base_url {
+                    base_url = b;
+                }
+                for p in ra.placements {
+                    match p {
+                        CredentialPlacement::Header { name, value } => {
+                            ra_headers.push((name, value))
+                        }
+                        CredentialPlacement::Query { name, value } => ra_query.push((name, value)),
+                        CredentialPlacement::Cookie { name, value } => {
+                            ra_cookies.push((name, value))
+                        }
+                        CredentialPlacement::BodyField { name, value } => {
+                            ra_body.push((name, value))
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Build the URL (honouring any dynamic base-URL) and apply a `path`-target
+        // push-down binding.
+        let mut url = match url_override {
+            Some(u) => u.to_string(),
+            None => {
+                let path = match path_context {
+                    Some(ctx) => faucet_core::util::substitute_context(&self.config.path, ctx),
+                    None => self.config.path.clone(),
+                };
+                format!("{}/{}", base_url, path.trim_start_matches('/'))
+            }
+        };
+        if let Some((BindTarget::Path, name, rendered)) = &bind {
+            url = url.replace(&format!("{{{name}}}"), rendered);
+        }
+
+        // Resolve inline / signed credentials — unless a flow provider already
+        // supplied the request auth. A shared provider (from `auth: { ref }` or
+        // a library caller) takes precedence over inline; inline OAuth2 /
+        // TokenEndpoint resolve to a Bearer token via the per-source cache.
+        let resolved_auth: Option<Auth> = if used_request_auth {
+            None
+        } else if let Some(provider) = &self.auth_provider {
+            // A per-request signer (OAuth1, #496) signs this exact method + URL +
+            // query; every other provider returns `None` here and we apply its
+            // reusable credential.
+            let cred = match provider
+                .sign_request(self.config.method.as_str(), &url, &query_btree)
+                .await?
+            {
+                Some(cred) => cred,
+                None => provider.credential().await?,
+            };
+            Some(credential_to_auth(cred))
+        } else {
+            match &self.config.auth {
+                AuthSpec::Inline(Auth::OAuth2 {
+                    token_url,
+                    client_id,
+                    client_secret,
+                    scopes,
+                    expiry_ratio,
+                }) => {
+                    let token = self
+                        .token_cache
+                        .get_or_refresh(
+                            &self.client,
+                            token_url,
+                            client_id,
+                            client_secret,
+                            scopes,
+                            *expiry_ratio,
+                        )
+                        .await?;
+                    Some(Auth::Bearer { token })
+                }
+                AuthSpec::Inline(Auth::TokenEndpoint {
+                    url: token_url,
+                    method: token_method,
+                    headers: token_headers,
+                    body: token_body,
+                    token_path,
+                    expiry_path,
+                    expiry_ratio,
+                    response_validator,
+                }) => {
+                    let token = self
+                        .token_endpoint_cache
+                        .get_or_refresh(
+                            &self.client,
+                            token_url,
+                            token_method,
+                            token_headers,
+                            token_body.as_ref(),
+                            token_path,
+                            expiry_path.as_deref(),
+                            *expiry_ratio,
+                            response_validator.as_ref(),
+                        )
+                        .await?;
+                    Some(Auth::Bearer { token })
+                }
+                AuthSpec::Inline(other) => Some(other.clone()),
                 AuthSpec::Reference(r) => {
                     return Err(FaucetError::Auth(format!(
                         "auth references provider '{}' but no provider was supplied; \
@@ -769,7 +977,25 @@ impl RestStream {
         };
 
         let mut headers = self.config.headers.clone();
-        resolved_auth.apply(&mut headers)?;
+        if let Some(auth) = &resolved_auth {
+            auth.apply(&mut headers)?;
+        }
+        // #511 header + cookie placements from the flow provider.
+        for (name, value) in &ra_headers {
+            insert_header(&mut headers, name, value)?;
+        }
+        if !ra_cookies.is_empty() {
+            let cookie = ra_cookies
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            insert_header(&mut headers, "Cookie", &cookie)?;
+        }
+        // #513 header-target binding.
+        if let Some((BindTarget::Header, name, rendered)) = &bind {
+            insert_header(&mut headers, name, rendered)?;
+        }
 
         let mut req = self
             .client
@@ -788,6 +1014,18 @@ impl RestStream {
             } else {
                 req = req.query(params);
             }
+        }
+        // #511 query placements from the flow provider.
+        if !ra_query.is_empty() {
+            let pairs: Vec<(&str, &str)> = ra_query
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            req = req.query(&pairs);
+        }
+        // #513 query-target binding.
+        if let Some((BindTarget::Query, name, rendered)) = &bind {
+            req = req.query(&[(name.as_str(), rendered.as_str())]);
         }
 
         // ApiKeyQuery: inject the API key as a query parameter.
@@ -834,6 +1072,28 @@ impl RestStream {
                     return Err(FaucetError::Source(
                         "REST source: pagination `CursorInBody` requires a JSON object request \
                          body to inject the cursor into"
+                            .into(),
+                    ));
+                }
+            }
+        }
+        // #511 body-field placements + #513 body-target binding.
+        let body_bind = matches!(&bind, Some((BindTarget::Body, _, _)));
+        if !ra_body.is_empty() || body_bind {
+            let obj = body_value.get_or_insert_with(|| Value::Object(serde_json::Map::new()));
+            match obj.as_object_mut() {
+                Some(map) => {
+                    for (name, value) in &ra_body {
+                        map.insert(name.clone(), Value::String(value.clone()));
+                    }
+                    if let Some((BindTarget::Body, name, rendered)) = &bind {
+                        map.insert(name.clone(), Value::String(rendered.clone()));
+                    }
+                }
+                None => {
+                    return Err(FaucetError::Source(
+                        "REST source: a body-target auth/replication binding requires a JSON \
+                         object request body"
                             .into(),
                     ));
                 }
@@ -1066,6 +1326,43 @@ impl faucet_core::Source for RestStream {
     async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
         *self.runtime_start.lock().await = Some(bookmark);
         Ok(())
+    }
+
+    fn supports_discover(&self) -> bool {
+        // OData exposes a machine-readable `$metadata` catalog; a plain REST API
+        // has none, so discovery is OData-only.
+        self.config.odata.is_some()
+    }
+
+    async fn discover(&self) -> Result<Vec<faucet_core::DatasetDescriptor>, FaucetError> {
+        if self.config.odata.is_none() {
+            return Err(FaucetError::Source(
+                "rest: discovery is only supported for OData sources — set an `odata:` block"
+                    .into(),
+            ));
+        }
+        let url = format!("{}/$metadata", self.config.base_url.trim_end_matches('/'));
+        let headers = self.metadata_headers(&url).await?;
+        let resp = self
+            .client
+            .get(&url)
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| {
+                FaucetError::Source(format!("rest: OData $metadata request failed: {e}"))
+            })?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(FaucetError::Source(format!(
+                "rest: OData $metadata returned HTTP {}",
+                status.as_u16()
+            )));
+        }
+        let xml = resp.text().await.map_err(|e| {
+            FaucetError::Source(format!("rest: reading OData $metadata failed: {e}"))
+        })?;
+        crate::odata::descriptors_from_edmx(&xml)
     }
 }
 

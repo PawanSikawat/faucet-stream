@@ -146,6 +146,58 @@ Because the REST source keeps its own `429`/`Retry-After`-aware retry runner, it
 | `start_replication_value` | JSON / null | `null` | Bookmark value; records where `record[replication_key] <= start_replication_value` are filtered out in `Incremental` mode. |
 | `state_key` | string / null | `null` | Stable key used by `Pipeline::with_state_store` to persist this stream's bookmark across runs. See [Resume & state](#resume--state). |
 
+#### Server-side incremental push-down (`replication_bind`)
+
+By default `Incremental` mode filters **client-side** (after download). A
+`replication_bind` block instead pushes the stored bookmark **into the request**
+so the server returns only new rows (the client-side filter stays on as a safety
+net). Requires `replication_method: incremental` + `replication_key`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `into` | `query \| header \| body \| path` | `query` | Where to place the rendered bookmark. |
+| `name` | string | — | Query param / header / body-field / path-placeholder name. |
+| `template` | string | `${bookmark}` | Rendered with `${bookmark}` → the formatted value, e.g. `"gte\|${bookmark}"`, `"[${bookmark} TO *]"`. |
+| `format` | `raw \| iso8601 \| epoch_s \| epoch_ms \| date` | `raw` | Value formatting (string↔epoch conversion via a parsed instant). |
+| `advance_from` | string / null | `null` | JSONPath into the **response** to advance the bookmark from, instead of `max(record[replication_key])`. |
+
+```yaml
+replication_method: { type: incremental }
+replication_key: updated_at
+start_replication_value: "2024-01-01T00:00:00Z"
+replication_bind:
+  into: query
+  name: updated_after
+  template: "gte|${bookmark}"
+  format: iso8601
+```
+
+### OData (`odata`)
+
+Speak the OData protocol natively — a single block derives `@odata.nextLink`
+paging, the `$.value` envelope, the `$select`/`$filter`/`$expand`/`$orderby`
+query options, and the `Prefer: odata.maxpagesize` header. It stays a `rest`
+source (no new crate). `faucet discover` reads the service's `$metadata` (EDMX)
+and emits one dataset per entity set, with a typed schema.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `version` | `v2 \| v4` | `v4` | Selects the next-link key (`odata.nextLink` vs `@odata.nextLink`). |
+| `entity` | string / null | `null` | Entity set → the request path (when `path` is empty). |
+| `select` | array<string> | `[]` | `$select` columns. |
+| `expand` | array<string> | `[]` | `$expand` related entities (one level). |
+| `filter` | string / null | `null` | `$filter` expression (verbatim). |
+| `orderby` | string / null | `null` | `$orderby` (verbatim). |
+| `page_size` | int / null | `null` | `Prefer: odata.maxpagesize=<n>`. |
+
+```yaml
+source:
+  type: rest
+  config:
+    base_url: "https://host/odata/v4"
+    odata: { version: v4, entity: Orders, select: [DocEntry, DocDate], page_size: 500 }
+```
+
 ### Singer / Meltano metadata
 
 | Field | Type | Default | Description |
