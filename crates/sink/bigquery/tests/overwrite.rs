@@ -3,7 +3,7 @@
 //! swap. Driven against a wiremock BigQuery so the DDL/query bodies can be
 //! asserted without a real project.
 
-use faucet_core::{Sink, WriteMode};
+use faucet_core::{OverwriteScope, Sink, WriteMode};
 use faucet_sink_bigquery::{BigQueryCredentials, BigQuerySink, BigQuerySinkConfig};
 use gcp_bigquery_client::client_builder::ClientBuilder;
 use serde::Serialize;
@@ -195,6 +195,40 @@ async fn overwrite_lifecycle_posts_bucket_free_swap() {
         qs.iter()
             .any(|q| q.contains("DROP TABLE IF EXISTS `p.d.t__faucet_ovw`")),
         "drop temp missing: {qs:?}"
+    );
+}
+
+#[tokio::test]
+async fn scoped_overwrite_commit_deletes_in_window_not_truncate() {
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    mount_table_schema(&server).await;
+    mount_query_and_job(&server, "job-s").await;
+
+    let mut config = config_overwrite();
+    config.scope = Some(OverwriteScope::Window {
+        column: "posting_date".into(),
+        from: json!("2024-06-01"),
+        to: json!("2024-07-01"),
+    });
+    let (sink, _sa) = build_sink(&server, config).await;
+
+    sink.begin_overwrite().await.expect("begin");
+    sink.write_batch(&[json!({"id": 1, "name": "a"})])
+        .await
+        .expect("write");
+    sink.commit_overwrite().await.expect("commit");
+
+    let qs = queries(&server).await;
+    assert!(
+        qs.iter().any(|q| q.contains("BEGIN TRANSACTION")
+            && q.contains("DELETE FROM `p.d.t` WHERE `posting_date` >= '2024-06-01' AND `posting_date` < '2024-07-01'")
+            && q.contains("INSERT INTO `p.d.t` SELECT * FROM `p.d.t__faucet_ovw`")),
+        "scoped commit swap missing: {qs:?}"
+    );
+    assert!(
+        !qs.iter().any(|q| q.contains("TRUNCATE TABLE `p.d.t`")),
+        "scoped overwrite must not truncate: {qs:?}"
     );
 }
 

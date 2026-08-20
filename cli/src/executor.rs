@@ -1395,6 +1395,26 @@ async fn run_one_invocation(
         source
     };
 
+    // #510: stamp `_faucet_*` run/lineage metadata columns closest to the real
+    // sink (so `loaded_at` ≈ the actual write), and inside the lineage sampler
+    // below so samples reflect the source records, not the added columns.
+    let sink: Box<dyn Sink> = match &node.metadata_columns {
+        Some(spec) => match faucet_core::CompiledMetadata::compile(spec)
+            .map_err(|e| CliError::Config(format!("metadata_columns: {e}")))?
+        {
+            Some(meta) => Box::new(faucet_core::MetadataSink::new(
+                sink,
+                meta,
+                faucet_core::MetadataContext {
+                    run_id: run_id.clone(),
+                    source: node.source.kind.clone(),
+                },
+            )),
+            None => sink,
+        },
+        None => sink,
+    };
+
     // Wrap the sink so it samples written records — outermost, immediately
     // before the pipeline is constructed (after capture/limit wrappers).
     #[cfg(feature = "lineage")]
@@ -2246,6 +2266,7 @@ mod tests {
             },
             matrix: Vec::new(),
             execution: None,
+            metadata_columns: None,
             selection: None,
             observability: None,
             delivery: faucet_core::DeliveryMode::default(),
@@ -2308,6 +2329,51 @@ mod tests {
         assert!(!summary.had_failures());
         let body = std::fs::read_to_string(&output).unwrap();
         assert_eq!(body.lines().count(), 2);
+    }
+
+    #[tokio::test]
+    async fn metadata_columns_are_stamped_onto_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.csv");
+        let output = dir.path().join("out.jsonl");
+        std::fs::write(&input, "name\nalice\n").unwrap();
+        let mut cfg = cfg_csv_to_jsonl(&input, &output);
+        cfg.metadata_columns = Some(faucet_core::MetadataColumnsSpec {
+            enabled: true,
+            prefix: "_faucet".into(),
+            columns: vec![
+                faucet_core::MetadataColumn::RunId,
+                faucet_core::MetadataColumn::Source,
+                faucet_core::MetadataColumn::LoadedAt,
+            ],
+        });
+        let nodes = expand(&cfg).unwrap();
+        run_expanded(nodes, opts("t")).await.unwrap();
+        let body = std::fs::read_to_string(&output).unwrap();
+        let row: serde_json::Value = serde_json::from_str(body.lines().next().unwrap()).unwrap();
+        assert_eq!(row["name"], "alice");
+        assert_eq!(row["_faucet_source"], "csv");
+        assert!(row["_faucet_run_id"].is_string());
+        assert!(row["_faucet_loaded_at"].is_string());
+    }
+
+    #[tokio::test]
+    async fn metadata_columns_disabled_stamps_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.csv");
+        let output = dir.path().join("out.jsonl");
+        std::fs::write(&input, "name\nalice\n").unwrap();
+        let mut cfg = cfg_csv_to_jsonl(&input, &output);
+        cfg.metadata_columns = Some(faucet_core::MetadataColumnsSpec {
+            enabled: false,
+            ..Default::default()
+        });
+        let nodes = expand(&cfg).unwrap();
+        run_expanded(nodes, opts("t")).await.unwrap();
+        let body = std::fs::read_to_string(&output).unwrap();
+        let row: serde_json::Value = serde_json::from_str(body.lines().next().unwrap()).unwrap();
+        assert_eq!(row["name"], "alice");
+        assert!(row.get("_faucet_run_id").is_none());
     }
 
     /// Minimal options with a catalog handle attached.
@@ -3285,6 +3351,7 @@ matrix:
                 status: crate::config::SourceStatus::Active,
                 tags: Vec::new(),
                 cleanup_scope: None,
+                metadata_columns: None,
                 deferred_refs: refs
                     .iter()
                     .map(|(rid, p)| DeferredRef {
@@ -3365,6 +3432,7 @@ matrix:
             status: crate::config::SourceStatus::Active,
             tags: Vec::new(),
             cleanup_scope: None,
+            metadata_columns: None,
             deferred_refs: vec![DeferredRef {
                 referenced_id: "p".into(),
                 dotted_path: "".into(),
@@ -3687,6 +3755,7 @@ matrix:
             status: crate::config::SourceStatus::Active,
             tags: Vec::new(),
             cleanup_scope: None,
+            metadata_columns: None,
             deferred_refs: Vec::new(),
             source_override: None,
         }
@@ -3910,6 +3979,7 @@ matrix:
             status: crate::config::SourceStatus::Active,
             tags: Vec::new(),
             cleanup_scope: None,
+            metadata_columns: None,
             deferred_refs: Vec::new(),
             source_override: None,
         };

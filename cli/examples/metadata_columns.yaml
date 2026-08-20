@@ -1,0 +1,20 @@
+# Opt-in `_faucet_*` run/lineage metadata columns (#510) — stamped onto every
+# row by a connector-agnostic sink decorator (works for any sink).
+#
+#   faucet run cli/examples/metadata_columns.yaml
+version: 1
+name: metadata_demo
+
+metadata_columns:
+  prefix: "_faucet"
+  columns: [extracted_at, loaded_at, run_id, source]
+
+pipeline:
+  source:
+    type: csv
+    config:
+      path: ./data/metadata_demo.csv
+  sink:
+    type: jsonl
+    config:
+      path: ./out/metadata_demo.jsonl

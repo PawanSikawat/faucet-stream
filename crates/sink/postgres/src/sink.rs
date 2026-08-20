@@ -838,21 +838,34 @@ impl faucet_core::Sink for PostgresSink {
         Ok(())
     }
 
-    /// Atomically replace the destination in one transaction: `TRUNCATE target;
-    /// INSERT INTO target SELECT * FROM staging; DROP TABLE staging`. Postgres
-    /// runs TRUNCATE and DDL transactionally, so a failure rolls the whole swap
-    /// back and the prior rows survive.
+    /// Atomically replace the destination in one transaction. Full overwrite:
+    /// `TRUNCATE target; INSERT INTO target SELECT * FROM staging; DROP staging`.
+    /// Scoped/windowed overwrite (#518): `DELETE FROM target WHERE <scope>;
+    /// INSERT …; DROP staging` — only the in-scope rows are replaced, the rest
+    /// preserved. Postgres runs TRUNCATE and DDL transactionally, so a failure
+    /// rolls the whole swap back and the prior rows survive.
     async fn commit_overwrite(&self) -> Result<(), FaucetError> {
         let staging =
             qualified_table_ref(self.config.schema.as_deref(), &self.staging_table_name());
         let target = qualified_table_ref(self.config.schema.as_deref(), &self.config.table_name);
+        // Full replace truncates; a scope replaces only the matching rows.
+        let clear = match &self.config.scope {
+            Some(scope) => {
+                let col = quote_ident(scope.column());
+                format!(
+                    "DELETE FROM {target} WHERE {}",
+                    scope.render_where_literal(&col)
+                )
+            }
+            None => format!("TRUNCATE TABLE {target}"),
+        };
         let mut tx = self
             .pool
             .begin()
             .await
             .map_err(|e| FaucetError::Sink(format!("postgres overwrite: begin swap: {e}")))?;
         for stmt in [
-            format!("TRUNCATE TABLE {target}"),
+            clear,
             format!("INSERT INTO {target} SELECT * FROM {staging}"),
             format!("DROP TABLE {staging}"),
         ] {

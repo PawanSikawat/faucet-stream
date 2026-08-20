@@ -443,3 +443,8 @@ transaction (`TRUNCATE` + `INSERT … SELECT` + `DROP`) only after the run
 succeeds, so a mid-run failure leaves the previous rows intact. No `key` is
 needed; the target table must already exist. See the
 [Overwrite cookbook](../../../docs/book/src/cookbook/upsert.md).
+
+**Scoped / windowed overwrite (#518):** add a `scope: { window: { column, from, to } }`
+to replace only the rows in a half-open `[from, to)` window — the swap becomes
+`DELETE FROM target WHERE <window>; INSERT … SELECT` in one transaction, leaving
+out-of-window rows intact.

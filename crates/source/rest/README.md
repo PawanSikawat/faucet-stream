@@ -198,6 +198,52 @@ source:
     odata: { version: v4, entity: Orders, select: [DocEntry, DocDate], page_size: 500 }
 ```
 
+### Response-decode pipeline (`decode`)
+
+Consume payloads that aren't plain JSON — including files embedded in a JSON/SOAP
+envelope. A `decode:` chain runs over the raw response **body** before record
+extraction (replaces `response_format` parsing; requires `pagination: none`):
+
+| Step | Form | Effect |
+|------|------|--------|
+| `extract` | `{ extract: "$.d.reportBytes" }` | Pull a string field out of a JSON envelope. |
+| `base64` | `base64` | Base64-decode the buffer. |
+| `gunzip` | `gunzip` | Gzip-decompress. |
+| `unzip` | `{ unzip: { member: "*.csv" } }` | Extract a zip member (glob; first file if omitted). |
+| `parse` | `{ parse: { format: json\|csv\|xlsx\|xml, … } }` | Terminal: parse bytes → records. |
+
+```yaml
+decode:
+  - extract: "$.d.reportBytes"   # base64 XLSX inside a SOAP/JSON envelope
+  - base64
+  - parse: { format: xlsx, sheet: "Sheet1", header_row: 4 }
+```
+
+### Async-job pattern (`async_job`)
+
+For bulk/export/report-run APIs (Salesforce Bulk, Stripe Reporting, …): submit a
+job → poll a status endpoint until terminal → fetch the result → hand it to the
+`decode:` pipeline. Requires `pagination: none`.
+
+| Field | Description |
+|-------|-------------|
+| `submit` | `{ method, url, headers, query, json }` — job-creation request. |
+| `job_id` | JSONPath to the job id in the submit response. |
+| `poll` | `{ url, method, interval_secs (5), timeout_secs (1800) }` — `${job_id}` substituted. |
+| `status` | `{ path, success: [...], failure: [...] }` — classify the poll response. |
+| `fetch` | `{ method, url }` — result download; body flows through `decode:`. |
+
+```yaml
+async_job:
+  submit: { method: POST, url: /jobs, json: { query: "SELECT ..." } }
+  job_id: "$.id"
+  poll:   { url: "/jobs/${job_id}", interval_secs: 5, timeout_secs: 1800 }
+  status: { path: "$.state", success: [JobComplete], failure: [Failed, Aborted] }
+  fetch:  { url: "/jobs/${job_id}/result" }
+decode:
+  - parse: { format: csv }
+```
+
 ### Singer / Meltano metadata
 
 | Field | Type | Default | Description |

@@ -35,6 +35,7 @@ pub const RESERVED_IDS: &[&str] = &[
     "param",
     "partition",
     "bookmark",
+    "job_id",
 ];
 
 /// One fully-merged matrix row, ready for the executor.
@@ -112,6 +113,9 @@ pub struct ExpandedNode {
     /// destination sink also opted in with `cleanup: delete_missing`, so this
     /// being present already means a cleanup is intended.
     pub cleanup_scope: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    /// Pipeline-level `_faucet_*` metadata columns (#510), shared by every node;
+    /// the executor wraps the sink in a `MetadataSink` decorator when present.
+    pub metadata_columns: Option<faucet_core::MetadataColumnsSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -578,6 +582,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
                 deferred_refs: Vec::new(),
                 source_override: None,
                 cleanup_scope: None,
+                metadata_columns: None,
             });
             continue;
         }
@@ -865,6 +870,33 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
                     ids[i]
                 )));
             }
+        }
+
+        // ── Scoped/windowed overwrite gate (#518) ───────────────────────────
+        // A `scope:` block replaces only the rows matching it (a date window)
+        // instead of truncating. Valid only with `write_mode: overwrite` on a
+        // sink that implements the scoped begin/delete/insert swap.
+        if let Some(scope_val) = merged_sink.config.get("scope") {
+            if !matches!(mode, faucet_core::WriteMode::Overwrite) {
+                return Err(CliError::Config(format!(
+                    "row '{}': `scope` is only valid with `write_mode: overwrite`",
+                    ids[i]
+                )));
+            }
+            if !crate::registry::sink_supports_scoped_overwrite(&merged_sink.kind) {
+                return Err(CliError::Config(format!(
+                    "row '{}': scoped overwrite (`scope`) is not supported by sink '{}' \
+                     (scoped-overwrite sinks: {})",
+                    ids[i],
+                    merged_sink.kind,
+                    crate::registry::SCOPED_OVERWRITE_SINK_KINDS.join(", ")
+                )));
+            }
+            let scope: faucet_core::OverwriteScope = serde_json::from_value(scope_val.clone())
+                .map_err(|e| CliError::Config(format!("row '{}': invalid `scope`: {e}", ids[i])))?;
+            scope
+                .validate()
+                .map_err(|e| CliError::Config(format!("row '{}': {e}", ids[i])))?;
         }
 
         // Derived end-to-end delivery guarantee (issue #292): computed for
@@ -1188,6 +1220,7 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             deferred_refs: deferred,
             source_override: None,
             cleanup_scope,
+            metadata_columns: cfg.metadata_columns.clone(),
         };
 
         if chunks.is_empty() {
@@ -1316,6 +1349,7 @@ fn check_refs(value: &Value, id_set: &HashSet<&str>, owner: &str) -> CliResult<(
                 && id != "backfill"
                 && id != "partition"
                 && id != "bookmark"
+                && id != "job_id"
                 && !id_set.contains(id)
             {
                 return Err(CliError::UnknownInterpolationId {
@@ -1408,7 +1442,12 @@ fn collect_deferred(value: &Value, out: &mut Vec<DeferredRef>) {
                 // parent-record refs. `bookmark` is consumed *inside* a source's
                 // `replication_bind.template` (#513) — the connector renders it,
                 // so the CLI must pass it through untouched.
-                if id == "now" || id == "backfill" || id == "partition" || id == "bookmark" {
+                if id == "now"
+                    || id == "backfill"
+                    || id == "partition"
+                    || id == "bookmark"
+                    || id == "job_id"
+                {
                     continue;
                 }
                 out.push(DeferredRef {
@@ -1607,6 +1646,24 @@ pipeline:
     config:
       base_url: https://x
       replication_bind: { into: query, name: since, template: "gt ${bookmark}" }
+  sink: { type: jsonl, config: { path: ./o } }
+"#);
+        let nodes = expand(&c).unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn job_id_token_is_reserved_and_passes_through() {
+        // `${job_id}` is consumed inside a source's `async_job` block (#514);
+        // expand must treat it as a reserved deferred id.
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://x
+      async_job: { submit: { url: /jobs }, job_id: "$.id", poll: { url: "/jobs/${job_id}" }, status: { path: "$.s", success: [Done] }, fetch: { url: "/jobs/${job_id}/r" } }
   sink: { type: jsonl, config: { path: ./o } }
 "#);
         let nodes = expand(&c).unwrap();
@@ -3069,6 +3126,70 @@ pipeline:
         assert!(
             expand(&c).is_ok(),
             "overwrite needs no key and postgres supports it"
+        );
+    }
+
+    #[test]
+    fn scoped_overwrite_passes_on_postgres() {
+        let c = cfg(r#"
+version: 1
+name: t
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:
+    type: postgres
+    config:
+      connection_url: "postgres://x"
+      table_name: t
+      column_mapping: auto_map
+      write_mode: overwrite
+      scope: { window: { column: posting_date, from: "2024-06-01", to: "2024-07-01" } }
+"#);
+        assert!(expand(&c).is_ok(), "postgres supports scoped overwrite");
+    }
+
+    #[test]
+    fn rejects_scope_on_non_scoped_sink() {
+        let c = cfg(r#"
+version: 1
+name: t
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:
+    type: sqlite
+    config:
+      connection_url: "sqlite://x"
+      table_name: t
+      column_mapping: auto_map
+      write_mode: overwrite
+      scope: { window: { column: d, from: 1, to: 2 } }
+"#);
+        let msg = format!("{}", expand(&c).unwrap_err());
+        assert!(
+            msg.contains("scoped overwrite") && msg.contains("not supported"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_scope_without_overwrite_mode() {
+        let c = cfg(r#"
+version: 1
+name: t
+pipeline:
+  source: { type: rest, config: { url: "http://x" } }
+  sink:
+    type: postgres
+    config:
+      connection_url: "postgres://x"
+      table_name: t
+      column_mapping: auto_map
+      scope: { window: { column: d, from: 1, to: 2 } }
+"#);
+        let msg = format!("{}", expand(&c).unwrap_err());
+        assert!(
+            msg.contains("only valid with `write_mode: overwrite`"),
+            "{msg}"
         );
     }
 

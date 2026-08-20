@@ -176,6 +176,24 @@ pub struct RestStreamConfig {
     /// time (explicit values still win). See [`ODataConfig`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub odata: Option<ODataConfig>,
+
+    // ── Response-decode pipeline (#515) ─────────────────────────────────────────
+    /// Decode the response body before record extraction: a chain of
+    /// `extract` (JSONPath) / `base64` / `gunzip` / `unzip` / `parse`
+    /// (json|csv|xlsx|xml) steps. Lets a source consume base64/compressed/file
+    /// payloads (e.g. a base64 XLSX inside a SOAP body, or a gzipped-CSV export).
+    /// When set, it replaces the `response_format` body parsing, and pagination
+    /// must be `none`. See [`DecodeStep`](crate::decode::DecodeStep).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decode: Vec<crate::decode::DecodeStep>,
+
+    // ── Async-job pattern (#514) ────────────────────────────────────────────────
+    /// Run a submit→poll→fetch job lifecycle instead of a single GET, for
+    /// bulk/export/report-run APIs (Salesforce Bulk, Stripe Reporting, …). The
+    /// fetched result flows through `decode:` / `response_format`. When set,
+    /// pagination must be `none`. See [`AsyncJobConfig`](crate::async_job::AsyncJobConfig).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub async_job: Option<crate::async_job::AsyncJobConfig>,
 }
 
 /// OData protocol version, which selects the paging-link key.
@@ -272,6 +290,8 @@ impl Default for RestStreamConfig {
             excel_header_row: 0,
             replication_bind: None,
             odata: None,
+            decode: Vec::new(),
+            async_job: None,
         }
     }
 }
@@ -318,6 +338,32 @@ impl RestStreamConfig {
             return Err(faucet_core::FaucetError::Config(
                 "rest: `odata` speaks JSON — remove `response_format: csv|excel`".into(),
             ));
+        }
+        if !self.decode.is_empty() {
+            if !matches!(self.pagination, PaginationStyle::None) {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: a `decode:` pipeline consumes a single response body — set \
+                     `pagination: none`"
+                        .into(),
+                ));
+            }
+            if !matches!(self.response_format, ResponseFormat::Json) {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: `decode:` replaces `response_format` body parsing — remove \
+                     `response_format: csv|excel`"
+                        .into(),
+                ));
+            }
+        }
+        if let Some(job) = &self.async_job {
+            job.validate()?;
+            if !matches!(self.pagination, PaginationStyle::None) {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: an `async_job:` lifecycle fetches a single result — set \
+                     `pagination: none`"
+                        .into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -500,6 +546,12 @@ impl RestStreamConfig {
     /// sugar, and `$metadata` discovery from the block (#512).
     pub fn odata(mut self, odata: ODataConfig) -> Self {
         self.odata = Some(odata);
+        self
+    }
+
+    /// Set the response-decode pipeline (#515).
+    pub fn decode(mut self, steps: Vec<crate::decode::DecodeStep>) -> Self {
+        self.decode = steps;
         self
     }
 

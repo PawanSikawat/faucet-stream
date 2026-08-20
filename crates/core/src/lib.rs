@@ -32,6 +32,7 @@ pub mod idempotency;
 pub mod join;
 #[cfg(feature = "masking")]
 pub mod masking;
+pub mod metadata;
 pub mod observability;
 pub mod pipeline;
 #[cfg(feature = "quality")]
@@ -89,6 +90,9 @@ pub use idempotency::{
 };
 pub use join::{
     HashJoin, JoinConfig, JoinMode, JoinStats, KeyNormalize, OnCollision, OnDuplicate, Projection,
+};
+pub use metadata::{
+    CompiledMetadata, MetadataColumn, MetadataColumnsSpec, MetadataContext, MetadataSink,
 };
 #[cfg(feature = "contract")]
 pub use observability::instrumented_apply_contract;
@@ -150,8 +154,8 @@ pub use transforming_source::TransformingSource;
 pub use util::redact_uri_credentials;
 pub use verify::{IntegrityCheck, LengthCheck, VerifyingReader};
 pub use write_mode::{
-    DeleteMarker, KeyTuple, WriteMode, WritePlan, WriteSpec, key_to_doc_id, key_to_filter,
-    plan_writes,
+    DeleteMarker, KeyTuple, OverwriteScope, WriteMode, WritePlan, WriteSpec, key_to_doc_id,
+    key_to_filter, plan_writes,
 };
 
 // Re-export dependencies that connector authors need, so they only depend on

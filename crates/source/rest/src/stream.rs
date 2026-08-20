@@ -136,6 +136,19 @@ fn credential_to_auth(cred: Credential) -> Auth {
     }
 }
 
+/// First JSONPath match rendered as a string (string verbatim, number as text).
+/// Used by the async-job runner to read the job id / status from responses.
+fn jsonpath_first_string(v: &Value, path: &str) -> Option<String> {
+    use jsonpath_rust::JsonPath;
+    let results = v.query(path).ok()?;
+    match results.first()? {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
 /// Insert a header from string parts, mapping invalid names/values to a typed
 /// config error rather than panicking.
 fn insert_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(), FaucetError> {
@@ -391,6 +404,14 @@ impl RestStream {
         let owned_context: Option<HashMap<String, Value>> = context.cloned();
 
         Box::pin(async_stream::try_stream! {
+            // Async-job lifecycle (#514): submit → poll → fetch replaces the
+            // normal single-GET + pagination flow and yields one result page.
+            if self.config.async_job.is_some() {
+                let records = self.run_async_job().await?;
+                yield faucet_core::StreamPage { records, bookmark: None };
+                return;
+            }
+
             // Resolve the effective start-bookmark once at the top of the stream.
             // A runtime override (applied via `Source::apply_start_bookmark` —
             // typically by the pipeline reading from a `StateStore`) takes
@@ -740,6 +761,173 @@ impl RestStream {
         match bookmark {
             Some(bm) => Ok(Some((bind.into, bind.name.clone(), bind.render(&bm)?))),
             None => Ok(None),
+        }
+    }
+
+    /// Build + send one job-lifecycle request (auth via `metadata_headers`,
+    /// plus the connector's static headers and the request's own headers/query/
+    /// json). Returns the raw response bytes; errors on non-2xx.
+    async fn job_request_bytes(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &HashMap<String, String>,
+        query: &HashMap<String, String>,
+        json: Option<&Value>,
+    ) -> Result<Vec<u8>, FaucetError> {
+        let m = reqwest::Method::from_bytes(method.to_uppercase().as_bytes()).map_err(|_| {
+            FaucetError::Config(format!("async_job: invalid HTTP method '{method}'"))
+        })?;
+        let mut hdrs = self.config.headers.clone();
+        for (k, v) in self.metadata_headers(url).await?.iter() {
+            hdrs.insert(k.clone(), v.clone());
+        }
+        for (k, v) in headers {
+            insert_header(&mut hdrs, k, v)?;
+        }
+        let mut req = self.client.request(m, url).headers(hdrs);
+        if !query.is_empty() {
+            let pairs: Vec<(&str, &str)> = query
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            req = req.query(&pairs);
+        }
+        if let Some(j) = json {
+            req = req.json(j);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| FaucetError::Source(format!("async_job: request to {url} failed: {e}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(FaucetError::HttpStatus {
+                status: status.as_u16(),
+                url: url.to_string(),
+                body: format!("async_job: {url} returned HTTP {}", status.as_u16()),
+            });
+        }
+        Ok(resp.bytes().await?.to_vec())
+    }
+
+    async fn job_request_json(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &HashMap<String, String>,
+        query: &HashMap<String, String>,
+        json: Option<&Value>,
+    ) -> Result<Value, FaucetError> {
+        let bytes = self
+            .job_request_bytes(method, url, headers, query, json)
+            .await?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| FaucetError::Source(format!("async_job: {url} returned non-JSON: {e}")))
+    }
+
+    /// Run the submit → poll → fetch job lifecycle (#514) and return the
+    /// decoded result records.
+    async fn run_async_job(&self) -> Result<Vec<Value>, FaucetError> {
+        use crate::async_job::{JobOutcome, resolve_url, substitute_job_id};
+        let job = self
+            .config
+            .async_job
+            .as_ref()
+            .expect("run_async_job called with async_job set");
+        let base = &self.config.base_url;
+
+        // 1) Submit → capture the job id.
+        let submit_url = resolve_url(base, &job.submit.url);
+        let submit_body = self
+            .job_request_json(
+                &job.submit.method,
+                &submit_url,
+                &job.submit.headers,
+                &job.submit.query,
+                job.submit.json.as_ref(),
+            )
+            .await?;
+        let job_id = jsonpath_first_string(&submit_body, &job.job_id).ok_or_else(|| {
+            FaucetError::Source(format!(
+                "async_job: submit response had no job id at '{}'",
+                job.job_id
+            ))
+        })?;
+
+        // 2) Poll until a terminal state (with interval + timeout).
+        let poll_url = resolve_url(base, &substitute_job_id(&job.poll.url, &job_id));
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(job.poll.timeout_secs);
+        loop {
+            let body = self
+                .job_request_json(
+                    &job.poll.method,
+                    &poll_url,
+                    &job.poll.headers,
+                    &job.poll.query,
+                    None,
+                )
+                .await?;
+            let status = jsonpath_first_string(&body, &job.status.path).unwrap_or_default();
+            match job.status.classify(&status) {
+                JobOutcome::Success => break,
+                JobOutcome::Failure => {
+                    return Err(FaucetError::Source(format!(
+                        "async_job: job failed with status '{status}'"
+                    )));
+                }
+                JobOutcome::Pending => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(FaucetError::Source(format!(
+                            "async_job: polling timed out after {}s (last status '{status}')",
+                            job.poll.timeout_secs
+                        )));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(job.poll.interval_secs))
+                        .await;
+                }
+            }
+        }
+
+        // 3) Fetch the result and decode it.
+        let fetch_url = resolve_url(base, &substitute_job_id(&job.fetch.url, &job_id));
+        let bytes = self
+            .job_request_bytes(
+                &job.fetch.method,
+                &fetch_url,
+                &job.fetch.headers,
+                &job.fetch.query,
+                job.fetch.json.as_ref(),
+            )
+            .await?;
+        if !self.config.decode.is_empty() {
+            crate::decode::run_decode(&bytes, &self.config.decode).await
+        } else {
+            match self.config.response_format {
+                crate::config::ResponseFormat::Json => {
+                    let v: Value = serde_json::from_slice(&bytes).map_err(|e| {
+                        FaucetError::Source(format!("async_job: result is not JSON: {e}"))
+                    })?;
+                    Ok(extract::extract_records(
+                        &v,
+                        self.config.records_path.as_deref(),
+                    )?)
+                }
+                crate::config::ResponseFormat::Csv => {
+                    crate::format::parse_csv(
+                        &bytes,
+                        self.config.csv_delimiter,
+                        self.config.csv_has_headers,
+                    )
+                    .await
+                }
+                crate::config::ResponseFormat::Excel => crate::format::parse_excel(
+                    &bytes,
+                    self.config.excel_sheet.as_deref(),
+                    self.config.excel_header_row,
+                ),
+            }
         }
     }
 
@@ -1173,6 +1361,15 @@ impl RestStream {
         let bytes = resp.bytes().await?;
         if bytes.iter().all(u8::is_ascii_whitespace) {
             return Ok((Value::Array(vec![]), resp_headers));
+        }
+        // A `decode:` pipeline (#515) takes the raw body and produces records
+        // directly (extract → base64 → gunzip/unzip → parse). It replaces the
+        // `response_format` parsing; `validate()` guarantees pagination is
+        // `none`. The records land as an array the downstream
+        // (records_path-less) extraction passes straight through.
+        if !self.config.decode.is_empty() {
+            let records = crate::decode::run_decode(&bytes, &self.config.decode).await?;
+            return Ok((Value::Array(records), resp_headers));
         }
         // For file response formats the whole body is a tabular file — parse it
         // into a record array here so the downstream (records_path-less)

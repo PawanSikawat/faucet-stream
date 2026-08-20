@@ -1,0 +1,25 @@
+# Async-job source (#514): submit an export job, poll until complete, download
+# the (CSV) result. The shape of Salesforce Bulk / Stripe Reporting exports.
+#
+#   faucet validate cli/examples/rest_async_job.yaml
+#   faucet run      cli/examples/rest_async_job.yaml
+version: 1
+name: async_export
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: "https://api.example.com"
+      auth: { type: bearer, config: { token: "${env:AUTH_TOKEN}" } }
+      pagination: { type: none }
+      async_job:
+        submit: { method: POST, url: /jobs, json: { query: "SELECT id, name FROM contacts" } }
+        job_id: "$.id"
+        poll:   { url: "/jobs/${job_id}", interval_secs: 5, timeout_secs: 1800 }
+        status: { path: "$.state", success: [JobComplete], failure: [Failed, Aborted] }
+        fetch:  { method: GET, url: "/jobs/${job_id}/result" }
+      decode:
+        - parse: { format: csv }
+  sink:
+    type: jsonl
+    config: { path: ./out/contacts.jsonl }
