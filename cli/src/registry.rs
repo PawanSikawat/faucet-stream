@@ -908,11 +908,12 @@ pub fn sink_supports_scoped_overwrite(kind: &str) -> bool {
 /// (staged bulk load, #528). These mirror each sink's
 /// [`Sink::supports_staged_load`](faucet_core::Sink::supports_staged_load)
 /// override. Redshift (`write_strategy: copy`), Snowflake (`bulk_load`), and
-/// BigQuery (`bulk_load`) load from S3 / an external stage / GCS respectively;
-/// ClickHouse (`s3()`/`gcs()` table function) and MSSQL (`COPY INTO` / `BULK
-/// INSERT`) load from the shared `staging:` block.
-pub const STAGED_LOAD_SINK_KINDS: &[&str] =
-    &["redshift", "snowflake", "bigquery", "clickhouse", "mssql"];
+/// BigQuery (`bulk_load`) load from S3 / an external stage / GCS respectively.
+/// ClickHouse (`s3()` table function) and MSSQL (`COPY INTO` / `BULK INSERT`)
+/// are tracked as a live-tested follow-up on #528 — their generated load
+/// commands can't be verified end-to-end in CI, and shipping them unverified
+/// would risk silently loading wrong data.
+pub const STAGED_LOAD_SINK_KINDS: &[&str] = &["redshift", "snowflake", "bigquery"];
 
 /// Whether a sink kind supports staged bulk load. See [`STAGED_LOAD_SINK_KINDS`].
 pub fn sink_supports_staged_load(kind: &str) -> bool {
@@ -1482,16 +1483,17 @@ mod tests {
 
     #[test]
     fn staged_load_allowlist_matches_capable_sinks() {
-        for k in ["redshift", "snowflake", "bigquery", "clickhouse", "mssql"] {
+        for k in ["redshift", "snowflake", "bigquery"] {
             assert!(
                 sink_supports_staged_load(k),
                 "{k} should support staged load"
             );
         }
-        for k in ["jsonl", "postgres", "stdout", "s3", "kafka"] {
+        // clickhouse/mssql are a live-tested follow-up on #528.
+        for k in ["jsonl", "clickhouse", "mssql", "postgres", "stdout"] {
             assert!(
                 !sink_supports_staged_load(k),
-                "{k} should not support staged load"
+                "{k} should not (yet) support staged load"
             );
         }
     }
