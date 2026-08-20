@@ -274,4 +274,20 @@ mod tests {
     fn invalid_xml_errors() {
         assert!(parse_edmx("<Schema><EntityType Name=").is_err());
     }
+
+    #[test]
+    fn property_without_name_is_skipped() {
+        // A `<Property>` with no `Name` is skipped (not added as an empty-named
+        // column); an explicit `Nullable="true"` is honoured.
+        let xml = r#"<Schema>
+          <EntityType Name="T">
+            <Property Type="Edm.String"/>
+            <Property Name="ok" Type="Edm.String" Nullable="true"/>
+          </EntityType>
+        </Schema>"#;
+        let (types, _sets) = parse_edmx(xml).unwrap();
+        assert_eq!(types[0].properties.len(), 1);
+        assert_eq!(types[0].properties[0].name, "ok");
+        assert!(types[0].properties[0].nullable);
+    }
 }

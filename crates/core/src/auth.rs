@@ -466,6 +466,11 @@ mod tests {
     #[tokio::test]
     async fn default_request_auth_is_empty_and_reauth_is_empty() {
         let p = MinimalProvider;
+        assert!(matches!(
+            p.credential().await.unwrap(),
+            Credential::Bearer(_)
+        ));
+        assert_eq!(p.provider_name(), "minimal");
         let ra = p
             .request_auth("GET", "https://x", &std::collections::BTreeMap::new())
             .await

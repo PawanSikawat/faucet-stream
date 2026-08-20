@@ -562,4 +562,17 @@ mod tests {
             "true"
         );
     }
+
+    #[test]
+    fn bind_format_non_scalar_bookmark_errors() {
+        // A composite / null bookmark cannot be parsed into an instant.
+        assert!(format_bookmark(&json!({"a": 1}), BindFormat::Iso8601).is_err());
+        assert!(format_bookmark(&json!(null), BindFormat::EpochS).is_err());
+    }
+
+    #[test]
+    fn bind_format_out_of_range_epoch_errors() {
+        // i64::MAX seconds is far outside chrono's representable range.
+        assert!(format_bookmark(&json!(i64::MAX), BindFormat::Iso8601).is_err());
+    }
 }

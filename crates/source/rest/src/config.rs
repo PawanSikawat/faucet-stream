@@ -545,3 +545,92 @@ impl RestStreamConfig {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use faucet_core::{BindFormat, BindTarget, ReplicationBind};
+
+    fn bind() -> ReplicationBind {
+        ReplicationBind {
+            into: BindTarget::Query,
+            name: "since".to_owned(),
+            template: "${bookmark}".to_owned(),
+            format: BindFormat::Raw,
+            advance_from: None,
+        }
+    }
+
+    #[test]
+    fn replication_bind_requires_incremental_and_key() {
+        // Bind without incremental method → error.
+        let mut c = RestStreamConfig::new("https://x", "/y");
+        c.replication_bind = Some(bind());
+        assert!(c.validate().is_err());
+
+        // Incremental but no replication_key → error.
+        c.replication_method = ReplicationMethod::Incremental;
+        assert!(c.validate().is_err());
+
+        // Incremental + key → ok.
+        c.replication_key = Some("updated_at".to_owned());
+        assert!(c.validate().is_ok());
+
+        // An invalid bind (empty name) is rejected too.
+        let mut bad = c.clone();
+        bad.replication_bind = Some(ReplicationBind {
+            name: String::new(),
+            ..bind()
+        });
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn odata_rejects_non_json_response_format() {
+        let mut c = RestStreamConfig::new("https://x", "");
+        c.odata = Some(ODataConfig {
+            entity: Some("Orders".to_owned()),
+            ..Default::default()
+        });
+        c.response_format = ResponseFormat::Csv;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn apply_odata_defaults_renders_all_options_and_v2_link() {
+        let mut c = RestStreamConfig::new("https://host/odata", "");
+        c.odata = Some(ODataConfig {
+            version: ODataVersion::V2,
+            entity: Some("Orders".to_owned()),
+            select: vec!["A".to_owned(), "B".to_owned()],
+            expand: vec!["Lines".to_owned()],
+            filter: Some("A gt 1".to_owned()),
+            orderby: Some("A desc".to_owned()),
+            page_size: Some(250),
+        });
+        c.apply_odata_defaults();
+
+        assert_eq!(c.path, "Orders");
+        assert_eq!(c.records_path.as_deref(), Some("$.value[*]"));
+        assert_eq!(c.query_params.get("$select").unwrap(), "A,B");
+        assert_eq!(c.query_params.get("$expand").unwrap(), "Lines");
+        assert_eq!(c.query_params.get("$filter").unwrap(), "A gt 1");
+        assert_eq!(c.query_params.get("$orderby").unwrap(), "A desc");
+        assert_eq!(c.headers.get("prefer").unwrap(), "odata.maxpagesize=250");
+        // v2 uses the un-prefixed next-link key.
+        assert!(matches!(
+            c.pagination,
+            crate::pagination::PaginationStyle::NextLinkInBody { ref next_link_path }
+                if next_link_path == "$['odata.nextLink']"
+        ));
+        // Idempotent: a second application doesn't clobber explicit values.
+        c.apply_odata_defaults();
+        assert_eq!(c.query_params.get("$select").unwrap(), "A,B");
+    }
+
+    #[test]
+    fn odata_version_next_link_paths() {
+        assert_eq!(ODataVersion::V4.next_link_path(), "$['@odata.nextLink']");
+        assert_eq!(ODataVersion::V2.next_link_path(), "$['odata.nextLink']");
+    }
+}

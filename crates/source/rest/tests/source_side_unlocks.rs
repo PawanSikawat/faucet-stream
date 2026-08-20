@@ -200,3 +200,82 @@ async fn flow_provider_places_query_token_and_overrides_base_url() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0]["id"], 7);
 }
+
+#[derive(Debug)]
+struct MockFlowHeaderCookie;
+
+#[async_trait::async_trait]
+impl AuthProvider for MockFlowHeaderCookie {
+    async fn credential(&self) -> Result<Credential, FaucetError> {
+        Err(FaucetError::Auth("use request_auth".into()))
+    }
+    async fn request_auth(
+        &self,
+        _method: &str,
+        _url: &str,
+        _query: &BTreeMap<String, String>,
+    ) -> Result<RequestAuth, FaucetError> {
+        Ok(RequestAuth::new()
+            .with_placement(CredentialPlacement::Header {
+                name: "X-Session".to_owned(),
+                value: "SID".to_owned(),
+            })
+            .with_placement(CredentialPlacement::Cookie {
+                name: "sid".to_owned(),
+                value: "abc".to_owned(),
+            }))
+    }
+    fn provider_name(&self) -> &'static str {
+        "mock-flow-hc"
+    }
+}
+
+#[tokio::test]
+async fn flow_provider_places_header_and_cookie() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/data"))
+        .and(header("X-Session", "SID"))
+        .and(header("Cookie", "sid=abc"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [{"id": 1}]})))
+        .mount(&server)
+        .await;
+    let provider: SharedAuthProvider = Arc::new(MockFlowHeaderCookie);
+    let stream =
+        RestStream::new(RestStreamConfig::new(&server.uri(), "/data").records_path("$.value[*]"))
+            .unwrap()
+            .with_auth_provider(provider);
+    let records = stream.fetch_all().await.unwrap();
+    assert_eq!(records.len(), 1);
+}
+
+#[tokio::test]
+async fn replication_bind_pushes_bookmark_into_a_header() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/events"))
+        .and(header("If-Modified-Since", "2024-06-01T00:00:00Z"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"data": [{"id": 1, "updated_at": "2024-07-01T00:00:00Z"}]})),
+        )
+        .mount(&server)
+        .await;
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/events")
+            .records_path("$.data[*]")
+            .replication_method(ReplicationMethod::Incremental)
+            .replication_key("updated_at")
+            .start_replication_value(json!("2024-06-01"))
+            .replication_bind(ReplicationBind {
+                into: faucet_core::BindTarget::Header,
+                name: "If-Modified-Since".to_owned(),
+                template: "${bookmark}".to_owned(),
+                format: faucet_core::BindFormat::Iso8601,
+                advance_from: None,
+            }),
+    )
+    .unwrap();
+    let records = stream.fetch_all().await.unwrap();
+    assert_eq!(records.len(), 1);
+}
