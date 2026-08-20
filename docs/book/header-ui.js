@@ -97,6 +97,25 @@
       }
     });
 
+    // ---- Code blocks: always dark ------------------------------------------
+    // A dark code panel on a light page reads best, so keep code blocks on
+    // mdBook's dark `tomorrow-night` highlight theme in EVERY page theme.
+    // mdBook's book.js swaps the highlight stylesheet per theme, so we re-assert
+    // our choice on load and after every toggle.
+    function forceDarkCode() {
+      var want = {
+        "mdbook-highlight-css": true, // light syntax theme  -> disabled
+        "mdbook-ayu-highlight-css": true, // ayu syntax theme -> disabled
+        "mdbook-tomorrow-night-css": false, // dark syntax theme -> enabled
+      };
+      Object.keys(want).forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.disabled = want[id];
+      });
+    }
+    forceDarkCode();
+    window.addEventListener("load", forceDarkCode);
+
     // ---- Theme: one light/dark toggle ---------------------------------------
     if (right) {
       var THEMES = ["light", "rust", "coal", "navy", "ayu"];
@@ -123,7 +142,23 @@
         updateIcon();
       };
       btn.addEventListener("click", function () {
-        setTheme(isDark() ? LIGHT : DARK);
+        // Delegate to mdBook's own theme switch via its (hidden) theme-list
+        // buttons: mdBook swaps BOTH the <html> theme class AND the syntax-
+        // highlight stylesheet (highlight.css ↔ tomorrow-night.css) and persists
+        // the choice. Our earlier hand-rolled class swap left code blocks stuck
+        // on the wrong highlight theme (light page, dark code) until the next
+        // page load re-synced them.
+        var goDark = !isDark();
+        var mdBtn = document.getElementById(
+          goDark ? "mdbook-theme-navy" : "mdbook-theme-light"
+        );
+        if (mdBtn) {
+          mdBtn.click();
+        } else {
+          setTheme(goDark ? DARK : LIGHT); // fallback if mdBook's buttons are absent
+        }
+        forceDarkCode(); // book.js just reset the highlight theme — force dark again
+        updateIcon();
       });
       updateIcon();
       right.insertBefore(btn, right.firstChild);
