@@ -1,5 +1,7 @@
 //! Incremental replication support.
 
+use crate::error::FaucetError;
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -141,6 +143,166 @@ pub fn json_gt(a: &Value, b: &Value) -> bool {
     json_compare(a, b) == Ordering::Greater
 }
 
+// ── Server-side incremental push-down (#513) ─────────────────────────────────
+
+/// The placeholder replaced by the formatted bookmark inside a
+/// [`ReplicationBind::template`].
+pub const BIND_PLACEHOLDER: &str = "${bookmark}";
+
+fn default_bind_template() -> String {
+    BIND_PLACEHOLDER.to_owned()
+}
+
+/// Where a rendered bookmark is injected into the outgoing request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BindTarget {
+    /// A query-string parameter (default) — e.g. `?updated_after=…`.
+    #[default]
+    Query,
+    /// A request header — e.g. `If-Modified-Since: …`.
+    Header,
+    /// A top-level field of the JSON request body (POST-search APIs).
+    Body,
+    /// A `{name}` placeholder in the request path.
+    Path,
+}
+
+/// How the bookmark value is formatted before it is substituted into the
+/// [`ReplicationBind::template`].
+///
+/// For every non-[`Raw`](BindFormat::Raw) format the bookmark is first parsed
+/// into an instant: a string is read as RFC 3339, a bare `YYYY-MM-DD` date
+/// (midnight UTC), or a naive `YYYY-MM-DDTHH:MM:SS` (assumed UTC); a JSON
+/// number is read as **epoch seconds**. It is then re-emitted in the target
+/// representation, so `epoch_ms` ← ISO string and `iso8601` ← epoch number both
+/// work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BindFormat {
+    /// Emit the scalar verbatim (string as-is, number as its decimal form).
+    /// The default; no timestamp parsing.
+    #[default]
+    Raw,
+    /// RFC 3339 / ISO-8601 UTC timestamp, e.g. `2024-06-01T00:00:00Z`.
+    Iso8601,
+    /// Unix epoch **seconds** (integer).
+    EpochS,
+    /// Unix epoch **milliseconds** (integer).
+    EpochMs,
+    /// Calendar date `YYYY-MM-DD` (UTC).
+    Date,
+}
+
+/// Declarative binding of the stored bookmark into the **outgoing request** —
+/// "server-side incremental push-down" (#513).
+///
+/// Today faucet tracks bookmarks and filters incrementally *client-side* (after
+/// download). A bind lets a source instead push the bookmark into the request
+/// (query param / header / body field / path) so the server returns only the
+/// new rows. The existing client-side [`filter_incremental`] stays active as a
+/// safety net for servers that don't honour the filter exactly.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReplicationBind {
+    /// Where to place the rendered value.
+    #[serde(default)]
+    pub into: BindTarget,
+    /// The parameter / header / body-field / path-placeholder name.
+    pub name: String,
+    /// Template rendered with [`BIND_PLACEHOLDER`] (`${bookmark}`) replaced by
+    /// the formatted bookmark. Defaults to the bare `${bookmark}`; set e.g.
+    /// `"gte|${bookmark}"` (Greenhouse) or `"[${bookmark} TO *]"` (Lucene).
+    #[serde(default = "default_bind_template")]
+    pub template: String,
+    /// How to format the bookmark before substitution.
+    #[serde(default)]
+    pub format: BindFormat,
+    /// Optional JSONPath into the response body to advance the bookmark from,
+    /// instead of `max(record[replication_key])`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advance_from: Option<String>,
+}
+
+impl ReplicationBind {
+    /// Validate the binding at config-load time.
+    pub fn validate(&self) -> Result<(), FaucetError> {
+        if self.name.trim().is_empty() {
+            return Err(FaucetError::Config(
+                "replication bind: `name` must not be empty".to_owned(),
+            ));
+        }
+        if !self.template.contains(BIND_PLACEHOLDER) {
+            return Err(FaucetError::Config(format!(
+                "replication bind: `template` must contain the `{BIND_PLACEHOLDER}` placeholder"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Render the binding for a concrete bookmark: format the value, then
+    /// substitute it into the template.
+    pub fn render(&self, bookmark: &Value) -> Result<String, FaucetError> {
+        let formatted = format_bookmark(bookmark, self.format)?;
+        Ok(self.template.replace(BIND_PLACEHOLDER, &formatted))
+    }
+}
+
+/// Parse a bookmark value into a UTC instant (see [`BindFormat`] for the rules).
+fn bookmark_instant(value: &Value) -> Result<DateTime<Utc>, FaucetError> {
+    match value {
+        Value::String(s) => {
+            let s = s.trim();
+            if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+                return Ok(dt.with_timezone(&Utc));
+            }
+            if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                && let Some(ndt) = d.and_hms_opt(0, 0, 0)
+            {
+                return Ok(DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc));
+            }
+            if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+                return Ok(DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc));
+            }
+            Err(FaucetError::Config(format!(
+                "replication bind: cannot parse bookmark '{s}' as a timestamp \
+                 (expected RFC 3339, YYYY-MM-DD, or YYYY-MM-DDTHH:MM:SS)"
+            )))
+        }
+        Value::Number(n) => {
+            let secs = n.as_i64().or_else(|| n.as_f64().map(|f| f as i64));
+            secs.and_then(|s| DateTime::<Utc>::from_timestamp(s, 0))
+                .ok_or_else(|| {
+                    FaucetError::Config(format!(
+                        "replication bind: numeric bookmark {n} is out of range for epoch seconds"
+                    ))
+                })
+        }
+        other => Err(FaucetError::Config(format!(
+            "replication bind: bookmark must be a string or number, got {other}"
+        ))),
+    }
+}
+
+/// Format a bookmark value per [`BindFormat`].
+pub fn format_bookmark(value: &Value, format: BindFormat) -> Result<String, FaucetError> {
+    match format {
+        BindFormat::Raw => match value {
+            Value::String(s) => Ok(s.clone()),
+            Value::Number(n) => Ok(n.to_string()),
+            Value::Bool(b) => Ok(b.to_string()),
+            other => Err(FaucetError::Config(format!(
+                "replication bind: cannot render {other} as a raw scalar"
+            ))),
+        },
+        BindFormat::Iso8601 => Ok(bookmark_instant(value)?
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        BindFormat::Date => Ok(bookmark_instant(value)?.format("%Y-%m-%d").to_string()),
+        BindFormat::EpochS => Ok(bookmark_instant(value)?.timestamp().to_string()),
+        BindFormat::EpochMs => Ok(bookmark_instant(value)?.timestamp_millis().to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,5 +438,121 @@ mod tests {
         let start = json!("2024-06-01"); // string bookmark vs numeric key
         let filtered = filter_incremental(records, "seq", &start);
         assert_eq!(filtered.len(), 1, "type mismatch must not silently drop");
+    }
+
+    // ── ReplicationBind (#513) ──────────────────────────────────────────────
+
+    fn bind(into: BindTarget, template: &str, format: BindFormat) -> ReplicationBind {
+        ReplicationBind {
+            into,
+            name: "updated_after".to_owned(),
+            template: template.to_owned(),
+            format,
+            advance_from: None,
+        }
+    }
+
+    #[test]
+    fn bind_defaults_template_to_bare_placeholder() {
+        let b: ReplicationBind =
+            serde_json::from_value(json!({ "name": "since" })).expect("deserializes");
+        assert_eq!(b.into, BindTarget::Query);
+        assert_eq!(b.template, "${bookmark}");
+        assert_eq!(b.format, BindFormat::Raw);
+        assert!(b.advance_from.is_none());
+    }
+
+    #[test]
+    fn bind_render_raw_string_and_number() {
+        let b = bind(BindTarget::Query, "${bookmark}", BindFormat::Raw);
+        assert_eq!(b.render(&json!("2024-06-01")).unwrap(), "2024-06-01");
+        assert_eq!(b.render(&json!(150)).unwrap(), "150");
+    }
+
+    #[test]
+    fn bind_render_applies_operator_template() {
+        let b = bind(BindTarget::Query, "gte|${bookmark}", BindFormat::Raw);
+        assert_eq!(
+            b.render(&json!("2024-06-01T00:00:00Z")).unwrap(),
+            "gte|2024-06-01T00:00:00Z"
+        );
+        // Lucene range form (Bullhorn).
+        let l = bind(BindTarget::Query, "[${bookmark} TO *]", BindFormat::Raw);
+        assert_eq!(l.render(&json!("20240601")).unwrap(), "[20240601 TO *]");
+    }
+
+    #[test]
+    fn bind_format_iso8601_from_date_and_epoch() {
+        let b = bind(BindTarget::Header, "${bookmark}", BindFormat::Iso8601);
+        assert_eq!(b.render(&json!("2024-06-01")).unwrap(), "2024-06-01T00:00:00Z");
+        // Epoch seconds → ISO.
+        assert_eq!(
+            b.render(&json!(1_717_200_000)).unwrap(),
+            "2024-06-01T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn bind_format_epoch_s_and_ms_from_iso() {
+        let s = bind(BindTarget::Query, "${bookmark}", BindFormat::EpochS);
+        assert_eq!(
+            s.render(&json!("2024-06-01T00:00:00Z")).unwrap(),
+            "1717200000"
+        );
+        let ms = bind(BindTarget::Query, "${bookmark}", BindFormat::EpochMs);
+        assert_eq!(
+            ms.render(&json!("2024-06-01T00:00:00Z")).unwrap(),
+            "1717200000000"
+        );
+    }
+
+    #[test]
+    fn bind_format_date_truncates_datetime() {
+        let b = bind(BindTarget::Query, "${bookmark}", BindFormat::Date);
+        assert_eq!(
+            b.render(&json!("2024-06-01T12:34:56Z")).unwrap(),
+            "2024-06-01"
+        );
+    }
+
+    #[test]
+    fn bind_format_naive_datetime_assumed_utc() {
+        let b = bind(BindTarget::Query, "${bookmark}", BindFormat::Iso8601);
+        assert_eq!(
+            b.render(&json!("2024-06-01T08:00:00")).unwrap(),
+            "2024-06-01T08:00:00Z"
+        );
+    }
+
+    #[test]
+    fn bind_format_unparseable_string_errors() {
+        let b = bind(BindTarget::Query, "${bookmark}", BindFormat::Iso8601);
+        assert!(b.render(&json!("not-a-date")).is_err());
+    }
+
+    #[test]
+    fn bind_format_raw_rejects_composite() {
+        let b = bind(BindTarget::Query, "${bookmark}", BindFormat::Raw);
+        assert!(b.render(&json!({"a": 1})).is_err());
+        assert!(b.render(&json!(null)).is_err());
+    }
+
+    #[test]
+    fn bind_validate_rejects_empty_name_and_missing_placeholder() {
+        let mut b = bind(BindTarget::Query, "${bookmark}", BindFormat::Raw);
+        b.name = "  ".to_owned();
+        assert!(b.validate().is_err());
+
+        let mut b2 = bind(BindTarget::Query, "no placeholder here", BindFormat::Raw);
+        b2.name = "since".to_owned();
+        assert!(b2.validate().is_err());
+
+        let ok = bind(BindTarget::Query, "gte|${bookmark}", BindFormat::Raw);
+        assert!(ok.validate().is_ok());
+    }
+
+    #[test]
+    fn bind_format_bookmark_bool_raw() {
+        assert_eq!(format_bookmark(&json!(true), BindFormat::Raw).unwrap(), "true");
     }
 }

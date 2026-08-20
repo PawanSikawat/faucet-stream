@@ -22,6 +22,7 @@
 //!
 //! [`Arc`]: std::sync::Arc
 
+mod flow;
 #[cfg(feature = "oauth1")]
 mod oauth1;
 mod oauth2;
@@ -48,6 +49,7 @@ pub(crate) fn auth_http_client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
+pub use flow::FlowProvider;
 #[cfg(feature = "oauth1")]
 pub use oauth1::OAuth1Provider;
 pub use oauth2::{OAuth2ClientCredentialsProvider, OAuth2RefreshProvider};
@@ -62,8 +64,8 @@ pub const DEFAULT_EXPIRY_RATIO: f64 = 0.9;
 /// `{ type, config }` spec — the shape used by the CLI's top-level `auth:`
 /// catalog.
 ///
-/// Supported `type` values: `static`, `oauth2` (client-credentials),
-/// `oauth2_refresh`, `token_endpoint`.
+/// Supported `type` values: `flow` (composable multi-step, #511), `static`,
+/// `oauth2` (client-credentials), `oauth2_refresh`, `token_endpoint`, `oauth1`.
 pub fn build_provider(spec: &Value) -> Result<SharedAuthProvider, FaucetError> {
     let kind = spec
         .get("type")
@@ -72,6 +74,7 @@ pub fn build_provider(spec: &Value) -> Result<SharedAuthProvider, FaucetError> {
     let config = spec.get("config").cloned().unwrap_or(Value::Null);
 
     match kind {
+        "flow" => Ok(Arc::new(FlowProvider::from_config(&config)?)),
         "static" => Ok(Arc::new(StaticProvider::from_config(&config)?)),
         "oauth2" => Ok(Arc::new(OAuth2ClientCredentialsProvider::from_config(
             &config,
@@ -93,7 +96,7 @@ pub fn build_provider(spec: &Value) -> Result<SharedAuthProvider, FaucetError> {
             }
         }
         other => Err(FaucetError::Config(format!(
-            "auth provider: unknown type `{other}` (expected one of: static, oauth2, oauth2_refresh, token_endpoint, oauth1)"
+            "auth provider: unknown type `{other}` (expected one of: flow, static, oauth2, oauth2_refresh, token_endpoint, oauth1)"
         ))),
     }
 }

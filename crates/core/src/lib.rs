@@ -59,7 +59,10 @@ pub mod compression;
 pub use adaptive::{
     AdaptiveBatchConfig, AdjustDirection, AdjustReason, Adjustment, AimdController, Observation,
 };
-pub use auth::{AuthProvider, AuthReference, AuthSpec, Credential, SharedAuthProvider};
+pub use auth::{
+    AuthProvider, AuthReference, AuthSpec, Credential, CredentialPlacement, RequestAuth,
+    SharedAuthProvider,
+};
 pub use check::{CheckContext, CheckReport, Probe, ProbeStatus};
 pub use cleanup::{CleanupMode, CleanupPolicy, DEFAULT_MAX_KEYS, SeenKeys};
 #[cfg(feature = "arrow")]
@@ -104,7 +107,9 @@ pub use pipeline::{
     DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, Pipeline, PipelineResult, StreamPage, run_stream,
     validate_batch_size,
 };
-pub use replication::{ReplicationMethod, json_gt};
+pub use replication::{
+    BindFormat, BindTarget, ReplicationBind, ReplicationMethod, format_bookmark, json_gt,
+};
 pub use resilience::{
     BackoffKind, CircuitBreaker, CircuitBreakerConfig, PoisonAction, PoisonPolicy,
     ResiliencePolicy, RetryClass, RetryClassSet, RetryMetrics, RetryPolicy, classify,

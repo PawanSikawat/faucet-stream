@@ -18,7 +18,7 @@ transform-select = []
 transform-drop = []
 transform-set = []
 transform-rename-field = []
-transform-cast = ["dep:chrono"]
+transform-cast = []
 transform-redact = []
 transform-value-case = []
 transform-spell-symbols = []
@@ -139,7 +139,7 @@ metrics-exporter-opentelemetry = { workspace = true, optional = true }
 async-compression = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
-chrono = { workspace = true, optional = true }
+chrono = { workspace = true }
 jsonschema = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 # BLAKE3 + base64 back the `hash` transform (feature `transform-hash`, #403).

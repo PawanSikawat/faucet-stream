@@ -34,6 +34,7 @@ pub const RESERVED_IDS: &[&str] = &[
     "backfill",
     "param",
     "partition",
+    "bookmark",
 ];
 
 /// One fully-merged matrix row, ready for the executor.
@@ -1314,6 +1315,7 @@ fn check_refs(value: &Value, id_set: &HashSet<&str>, owner: &str) -> CliResult<(
                 && id != "now"
                 && id != "backfill"
                 && id != "partition"
+                && id != "bookmark"
                 && !id_set.contains(id)
             {
                 return Err(CliError::UnknownInterpolationId {
@@ -1403,8 +1405,10 @@ fn collect_deferred(value: &Value, out: &mut Vec<DeferredRef>) {
                 // `now` / `backfill` / `partition` are reserved built-ins
                 // resolved at run time, not parent-record dependencies — skip
                 // them so the executor doesn't treat them as deferred
-                // parent-record refs.
-                if id == "now" || id == "backfill" || id == "partition" {
+                // parent-record refs. `bookmark` is consumed *inside* a source's
+                // `replication_bind.template` (#513) — the connector renders it,
+                // so the CLI must pass it through untouched.
+                if id == "now" || id == "backfill" || id == "partition" || id == "bookmark" {
                     continue;
                 }
                 out.push(DeferredRef {

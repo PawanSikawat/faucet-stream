@@ -1,0 +1,58 @@
+# Composable multi-step auth flow (#511) — a Bullhorn-style login chain.
+#
+# The `flow` provider runs a login/pre-flight chain, captures values from each
+# response by JSONPath, then places a captured token into every data request
+# (here as a query param) and redirects the source to a per-session base-URL
+# captured from the login response (`restUrl`). `reauth_on` re-runs the login
+# when the session expires mid-run.
+#
+#   faucet validate cli/examples/rest_flow_auth.yaml
+#   faucet run      cli/examples/rest_flow_auth.yaml
+version: 1
+name: bullhorn_style_flow
+
+# Shared auth catalog: built once, injected into every connector that
+# references it via `auth: { ref: session }`.
+auth:
+  session:
+    type: flow
+    config:
+      steps:
+        # 1) Exchange a refresh token for an access token.
+        - request:
+            method: POST
+            url: "https://auth.example.com/oauth/token"
+            form:
+              grant_type: refresh_token
+              refresh_token: "${env:AUTH_TOKEN}"
+          capture:
+            access_token: "$.access_token"
+        # 2) Log in with the access token; capture the session token and the
+        #    dynamic REST base-URL the API tells us to use.
+        - request:
+            method: GET
+            url: "https://login.example.com/rest-services/login"
+            query:
+              access_token: "${access_token}"
+          capture:
+            bh_rest_token: "$.BhRestToken"
+            base_url: "$.restUrl"
+      apply:
+        - { into: query, name: BhRestToken, value: "${bh_rest_token}" }
+      base_url_from: "${base_url}"
+      reauth_on: [401]
+
+pipeline:
+  source:
+    type: rest
+    config:
+      # Overridden per-session by the flow's `base_url_from` (`restUrl`).
+      base_url: "https://placeholder.example.com"
+      path: /entity/Candidate
+      auth: { ref: session }
+      records_path: "$.data[*]"
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/candidates.jsonl

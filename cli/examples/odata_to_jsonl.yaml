@@ -1,0 +1,47 @@
+# OData source (#512) with server-side incremental push-down (#513).
+#
+# The `odata:` block makes the REST source speak OData natively — it follows
+# `@odata.nextLink` paging, unwraps the `$.value` envelope, and renders the
+# `$select` / `$filter` query options. `replication_bind` then pushes the stored
+# bookmark into the request as an OData `$filter` so the server returns only rows
+# changed since the last run.
+#
+#   faucet validate cli/examples/odata_to_jsonl.yaml
+#   faucet run      cli/examples/odata_to_jsonl.yaml
+#
+# Tip: `faucet discover cli/examples/odata_to_jsonl.yaml` reads the service's
+# `$metadata` (EDMX) and emits one matrix row per entity set, with typed schemas.
+version: 1
+name: odata_orders
+
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: "https://services.example.com/odata/v4"
+      auth:
+        type: bearer
+        config: { token: "${env:AUTH_TOKEN}" }
+
+      odata:
+        version: v4
+        entity: Orders
+        select: [OrderID, CustomerID, OrderDate, Total]
+        page_size: 500
+
+      # Server-side incremental push-down: the bookmark becomes an OData
+      # `$filter` (`OrderDate gt <bookmark>`). The client-side filter on
+      # `replication_key` stays on as a safety net.
+      replication_method: { type: incremental }
+      replication_key: OrderDate
+      start_replication_value: "2024-01-01T00:00:00Z"
+      replication_bind:
+        into: query
+        name: "$filter"
+        template: "OrderDate gt ${bookmark}"
+        format: iso8601
+
+  sink:
+    type: jsonl
+    config:
+      path: ./out/orders.jsonl

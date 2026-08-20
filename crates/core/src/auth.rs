@@ -92,6 +92,124 @@ impl Credential {
     }
 }
 
+/// One placement of a captured credential into an outgoing HTTP request,
+/// produced by [`AuthProvider::request_auth`]. Unlike [`Credential`] (which is
+/// header/bearer-shaped), a placement can target a query parameter, cookie, or
+/// JSON body field — the shapes multi-step auth flows (#511) need.
+///
+/// `#[non_exhaustive]` so new placement kinds can be added as a minor change.
+#[derive(Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CredentialPlacement {
+    /// An HTTP header `name: value`.
+    Header {
+        /// Header name.
+        name: String,
+        /// Header value.
+        value: String,
+    },
+    /// A query-string parameter `?name=value`.
+    Query {
+        /// Parameter name.
+        name: String,
+        /// Parameter value.
+        value: String,
+    },
+    /// A cookie `name=value` (sent via the `Cookie` header).
+    Cookie {
+        /// Cookie name.
+        name: String,
+        /// Cookie value.
+        value: String,
+    },
+    /// A top-level field of the JSON request body.
+    BodyField {
+        /// Field name.
+        name: String,
+        /// Field value (string).
+        value: String,
+    },
+}
+
+// Hand-written `Debug` redacts the secret-bearing `value` while keeping the
+// non-secret `name` visible — same contract as `Credential`.
+impl std::fmt::Debug for CredentialPlacement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (kind, name) = match self {
+            CredentialPlacement::Header { name, .. } => ("Header", name),
+            CredentialPlacement::Query { name, .. } => ("Query", name),
+            CredentialPlacement::Cookie { name, .. } => ("Cookie", name),
+            CredentialPlacement::BodyField { name, .. } => ("BodyField", name),
+        };
+        f.debug_struct(kind)
+            .field("name", name)
+            .field("value", &"***")
+            .finish()
+    }
+}
+
+/// The per-request auth a provider contributes beyond a single [`Credential`]:
+/// zero or more [`CredentialPlacement`]s plus an optional dynamic base-URL that
+/// overrides the connector's configured one (captured from a login response —
+/// Bullhorn `restUrl`, Zoho region host, #511).
+///
+/// A connector that receives a non-[`is_empty`](RequestAuth::is_empty)
+/// `RequestAuth` uses it **instead of** the plain [`credential`](AuthProvider::credential)
+/// path for that request. `#[non_exhaustive]`: construct via [`RequestAuth::new`]
+/// and the builder methods so fields can be added as a minor change.
+#[derive(Clone, Default)]
+#[non_exhaustive]
+pub struct RequestAuth {
+    /// Credential placements to apply to the request.
+    pub placements: Vec<CredentialPlacement>,
+    /// Optional per-session base-URL override.
+    pub base_url: Option<String>,
+}
+
+impl RequestAuth {
+    /// An empty `RequestAuth` (no placements, no base-URL override).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a credential placement (builder).
+    #[must_use]
+    pub fn with_placement(mut self, placement: CredentialPlacement) -> Self {
+        self.placements.push(placement);
+        self
+    }
+
+    /// Set the dynamic base-URL override (builder).
+    #[must_use]
+    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = Some(base_url.into());
+        self
+    }
+
+    /// True when the provider contributed nothing (the connector then falls back
+    /// to the plain [`credential`](AuthProvider::credential) path).
+    pub fn is_empty(&self) -> bool {
+        self.placements.is_empty() && self.base_url.is_none()
+    }
+}
+
+// Redacting `Debug`: placements redact their own values; the base-URL is passed
+// through `redact_uri_credentials` so any embedded userinfo is scrubbed.
+impl std::fmt::Debug for RequestAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestAuth")
+            .field("placements", &self.placements)
+            .field(
+                "base_url",
+                &self
+                    .base_url
+                    .as_deref()
+                    .map(crate::util::redact_uri_credentials),
+            )
+            .finish()
+    }
+}
+
 /// A live, shareable source of credentials.
 ///
 /// One instance is shared (via [`Arc`]) across all connectors that reference it,
@@ -137,6 +255,40 @@ pub trait AuthProvider: Send + Sync + std::fmt::Debug {
         _query: &std::collections::BTreeMap<String, String>,
     ) -> Result<Option<Credential>, FaucetError> {
         Ok(None)
+    }
+
+    /// Richer per-request auth for multi-step flows (#511): credential
+    /// placements across header / query / cookie / body plus an optional
+    /// dynamic base-URL override.
+    ///
+    /// Most providers issue a single [`Credential`] and return an empty
+    /// [`RequestAuth`] here (the default); the connector then applies the plain
+    /// [`credential`](Self::credential) path. A provider that must place a
+    /// captured value somewhere other than a header, place several values at
+    /// once, or redirect the request to a captured base-URL overrides this. When
+    /// it returns a non-[`is_empty`](RequestAuth::is_empty) value, the connector
+    /// applies the placements **instead of** `credential()` for that request.
+    ///
+    /// `query` is the request's query parameters before the HTTP client appends
+    /// them (some flows fold them into a signature). Object-safe: no generics,
+    /// all args are borrowed primitives.
+    async fn request_auth(
+        &self,
+        _method: &str,
+        _url: &str,
+        _query: &std::collections::BTreeMap<String, String>,
+    ) -> Result<RequestAuth, FaucetError> {
+        Ok(RequestAuth::new())
+    }
+
+    /// HTTP status codes on which the connector should force a re-auth
+    /// (via [`invalidate`](Self::invalidate)) and retry the request once.
+    ///
+    /// The default is empty — connectors keep their built-in `401` handling.
+    /// A multi-step flow (#511) whose session cookie/token can expire mid-run
+    /// returns the statuses (e.g. `[401]`, `[401, 403]`) that mean "log in again".
+    fn reauth_statuses(&self) -> &[u16] {
+        &[]
     }
 
     /// Stable, non-empty name for diagnostics and metrics.
