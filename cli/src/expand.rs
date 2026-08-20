@@ -35,6 +35,7 @@ pub const RESERVED_IDS: &[&str] = &[
     "param",
     "partition",
     "bookmark",
+    "job_id",
 ];
 
 /// One fully-merged matrix row, ready for the executor.
@@ -1348,6 +1349,7 @@ fn check_refs(value: &Value, id_set: &HashSet<&str>, owner: &str) -> CliResult<(
                 && id != "backfill"
                 && id != "partition"
                 && id != "bookmark"
+                && id != "job_id"
                 && !id_set.contains(id)
             {
                 return Err(CliError::UnknownInterpolationId {
@@ -1440,7 +1442,12 @@ fn collect_deferred(value: &Value, out: &mut Vec<DeferredRef>) {
                 // parent-record refs. `bookmark` is consumed *inside* a source's
                 // `replication_bind.template` (#513) — the connector renders it,
                 // so the CLI must pass it through untouched.
-                if id == "now" || id == "backfill" || id == "partition" || id == "bookmark" {
+                if id == "now"
+                    || id == "backfill"
+                    || id == "partition"
+                    || id == "bookmark"
+                    || id == "job_id"
+                {
                     continue;
                 }
                 out.push(DeferredRef {
@@ -1639,6 +1646,24 @@ pipeline:
     config:
       base_url: https://x
       replication_bind: { into: query, name: since, template: "gt ${bookmark}" }
+  sink: { type: jsonl, config: { path: ./o } }
+"#);
+        let nodes = expand(&c).unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn job_id_token_is_reserved_and_passes_through() {
+        // `${job_id}` is consumed inside a source's `async_job` block (#514);
+        // expand must treat it as a reserved deferred id.
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://x
+      async_job: { submit: { url: /jobs }, job_id: "$.id", poll: { url: "/jobs/${job_id}" }, status: { path: "$.s", success: [Done] }, fetch: { url: "/jobs/${job_id}/r" } }
   sink: { type: jsonl, config: { path: ./o } }
 "#);
         let nodes = expand(&c).unwrap();
