@@ -138,9 +138,27 @@ pub fn interpolate_record(input: &str, ctx: &HashMap<String, Value>) -> CliResul
                     id: id.to_owned(),
                     path: path.to_owned(),
                 })?;
-            Ok(Some(value_to_string(&resolved)))
+            Ok(Some(value_to_string_record(&resolved)))
         }
     })
+}
+
+/// Render a resolved runtime value for substitution into a config field.
+///
+/// Like [`value_to_string`], but a JSON **array** renders as its scalar elements
+/// **comma-joined** (`["a","b","c"]` → `a,b,c`) rather than as JSON. This is the
+/// collected-dimension form (#531): a `collect: true` discovery publishes a list
+/// per tuple, and `${id.alias}` injects it as one param (e.g. HubSpot's
+/// `?properties=a,b,c`). Non-scalar array elements fall back to their JSON form.
+pub(crate) fn value_to_string_record(v: &Value) -> String {
+    match v {
+        Value::Array(items) => items
+            .iter()
+            .map(value_to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        other => value_to_string(other),
+    }
 }
 
 /// Resolve `${now.<token>}` references in `input` against the run clock. Every
@@ -760,6 +778,28 @@ mod tests {
     fn passes_through_text_with_no_directives() {
         let out = interpolate("just a string").unwrap();
         assert_eq!(out, "just a string");
+    }
+
+    #[test]
+    fn interpolate_record_comma_joins_collected_lists() {
+        // #531: a collected discovery dim resolves to a JSON array; the record
+        // interpolation renders it comma-joined so `?properties=a,b,c` works.
+        let ctx: HashMap<String, Value> = [(
+            "props".to_string(),
+            json!({"name": ["amount", "stage", "name"]}),
+        )]
+        .into();
+        let out = interpolate_record("${props.name}", &ctx).unwrap();
+        assert_eq!(out, "amount,stage,name");
+        // Embedded in a larger string, too.
+        let out2 = interpolate_record("f=${props.name}&x=1", &ctx).unwrap();
+        assert_eq!(out2, "f=amount,stage,name&x=1");
+    }
+
+    #[test]
+    fn interpolate_record_scalar_unchanged() {
+        let ctx: HashMap<String, Value> = [("types".to_string(), json!({"name": "deal"}))].into();
+        assert_eq!(interpolate_record("${types.name}", &ctx).unwrap(), "deal");
     }
 
     #[test]

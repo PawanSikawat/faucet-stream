@@ -48,6 +48,12 @@ type CapturedRecords = Arc<Mutex<HashMap<String, Vec<Arc<Value>>>>>;
 /// Enumerated discovery dimensions (#501), keyed by discovery row id. Populated
 /// by discovery invocations, read when building the `for_each` cross-product.
 type DiscoveredDims = Arc<Mutex<HashMap<String, crate::discovery_matrix::Dim>>>;
+
+/// Collected (list-valued) discovery dimensions (#531), keyed by discovery row
+/// id. A chained `discover:` row (`for_each:` + `collect: true`) populates one
+/// per-tuple list here; a consuming `Product` row injects the matching list into
+/// each tuple ctx via [`discovery_matrix::inject_collected`].
+type CollectedDims = Arc<Mutex<HashMap<String, crate::discovery_matrix::CollectedDim>>>;
 use tokio_util::sync::CancellationToken;
 
 /// Knobs passed to [`run_expanded`].
@@ -253,6 +259,9 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
     // Discovery dimensions (#501): value-sets enumerated by `discover:` rows,
     // read when a `for_each` row builds its cross-product.
     let discovered: DiscoveredDims = Arc::new(Mutex::new(HashMap::new()));
+    // Collected (list-valued) discovery dimensions (#531): per-tuple lists a
+    // chained `discover:` row publishes, injected into a consuming row's tuples.
+    let collected: CollectedDims = Arc::new(Mutex::new(HashMap::new()));
 
     let mut outcomes: Vec<InvocationOutcome> = Vec::new();
     let mut skipped_subtrees: HashSet<String> = HashSet::new();
@@ -394,58 +403,73 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                         product_ctx: None,
                     });
                 }
-                NodeRole::Discovery { .. } => {
-                    // One invocation; run_unit intercepts it to enumerate the
-                    // dimension. State is unused, so the key is a placeholder.
-                    let state_key = build_state_key(&opts.pipeline_name, &node.id, None);
-                    units.push(Unit {
-                        node: node.clone(),
-                        parent_record: None,
-                        state_key,
-                        parent_record_key: None,
-                        product_ctx: None,
-                    });
+                NodeRole::Discovery { dims, .. } => {
+                    if dims.is_empty() {
+                        // One-level discovery (#501): one invocation; run_unit
+                        // intercepts it to enumerate the dimension. State is
+                        // unused, so the key is a placeholder.
+                        let state_key = build_state_key(&opts.pipeline_name, &node.id, None);
+                        units.push(Unit {
+                            node: node.clone(),
+                            parent_record: None,
+                            state_key,
+                            parent_record_key: None,
+                            product_ctx: None,
+                        });
+                    } else {
+                        // Chained discovery (#531): fan out over the upstream
+                        // dimensions, running the enumeration once per tuple.
+                        let resolved = match resolve_product_dims(dims, &discovered, id).await? {
+                            Some(r) => r,
+                            None => {
+                                skipped_subtrees.insert(id.clone());
+                                continue;
+                            }
+                        };
+                        for ctx in crate::discovery_matrix::cartesian(&resolved) {
+                            let suffix =
+                                crate::discovery_matrix::tuple_state_key_suffix(&resolved, &ctx);
+                            let state_key =
+                                build_state_key(&opts.pipeline_name, &node.id, Some(&suffix));
+                            units.push(Unit {
+                                node: node.clone(),
+                                parent_record: None,
+                                state_key,
+                                parent_record_key: Some(suffix),
+                                product_ctx: Some(ctx),
+                            });
+                        }
+                    }
                 }
-                NodeRole::Product { dims } => {
+                NodeRole::Product {
+                    dims,
+                    collected: collected_ids,
+                } => {
                     // Gather the enumerated dimensions in declared order. They
                     // are guaranteed present: each dim is in this row's
                     // `depends_on`, so a skipped/failed dim already skipped this
-                    // row above. The `missing` guard is defensive.
-                    let resolved: Vec<crate::discovery_matrix::Dim> = {
-                        let dim_map = discovered.lock().await;
-                        let mut v = Vec::with_capacity(dims.len());
-                        let mut missing = None;
-                        for d in dims {
-                            match dim_map.get(d) {
-                                Some(dim) => v.push(dim.clone()),
-                                None => {
-                                    missing = Some(d.clone());
-                                    break;
-                                }
-                            }
-                        }
-                        if let Some(d) = missing {
+                    // row above. The guard inside is defensive.
+                    let resolved = match resolve_product_dims(dims, &discovered, id).await? {
+                        Some(r) => r,
+                        None => {
                             skipped_subtrees.insert(id.clone());
-                            tracing::warn!(row = %id, dimension = %d, "for_each dimension unavailable — row skipped");
                             continue;
                         }
-                        v
                     };
-                    let size = crate::discovery_matrix::product_size(&resolved);
-                    if size == 0 {
-                        tracing::info!(row = %id, "for_each cross-product is empty — row skipped");
-                        continue;
-                    }
-                    if size > crate::discovery_matrix::MAX_MATRIX_PRODUCT {
-                        return Err(CliError::Config(format!(
-                            "matrix row '{id}': for_each cross-product is {size} invocations, over \
-                             the limit of {} — narrow the discovery dimensions",
-                            crate::discovery_matrix::MAX_MATRIX_PRODUCT
-                        )));
-                    }
+                    // Collected (list-valued) dimensions (#531) this row injects
+                    // into each tuple ctx. Guaranteed present (each is in
+                    // `depends_on`); a missing entry injects an empty list.
+                    let collected_dims: Vec<crate::discovery_matrix::CollectedDim> = {
+                        let cmap = collected.lock().await;
+                        collected_ids
+                            .iter()
+                            .filter_map(|cid| cmap.get(cid).cloned())
+                            .collect()
+                    };
                     let uses_state = node.state.is_some() || opts.state_path_override.is_some();
                     let mut seen_keys: HashSet<String> = HashSet::new();
-                    for ctx in crate::discovery_matrix::cartesian(&resolved) {
+                    for mut ctx in crate::discovery_matrix::cartesian(&resolved) {
+                        crate::discovery_matrix::inject_collected(&mut ctx, &collected_dims);
                         let suffix =
                             crate::discovery_matrix::tuple_state_key_suffix(&resolved, &ctx);
                         let state_key =
@@ -534,12 +558,22 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
             let opts2 = Arc::clone(&opts);
             let captured = Arc::clone(&captured);
             let discovered = Arc::clone(&discovered);
+            let collected = Arc::clone(&collected);
             let capture = projections.get(&unit.node.id).cloned();
             let meta = (unit.node.id.clone(), unit.parent_record_key.clone());
             let unit_cancel = level_cancel.clone();
             let handle = joinset.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore not closed");
-                run_unit(&unit, capture, &captured, &discovered, &opts2, unit_cancel).await
+                run_unit(
+                    &unit,
+                    capture,
+                    &captured,
+                    &discovered,
+                    &collected,
+                    &opts2,
+                    unit_cancel,
+                )
+                .await
             });
             task_meta.insert(handle.id(), meta);
         }
@@ -663,19 +697,78 @@ struct Unit {
     product_ctx: Option<HashMap<String, Value>>,
 }
 
+/// Resolve the enumerated dimensions a `for_each`/chained-discovery row fans out
+/// over (#501/#531). Returns `Ok(None)` — meaning "skip this row" — when a
+/// dimension is unavailable (a dependency was skipped/failed) or the cross-product
+/// is empty; `Err` when the product exceeds [`MAX_MATRIX_PRODUCT`]. Each dim is in
+/// the row's `depends_on`, so the missing guard is defensive.
+async fn resolve_product_dims(
+    dims: &[String],
+    discovered: &DiscoveredDims,
+    id: &str,
+) -> CliResult<Option<Vec<crate::discovery_matrix::Dim>>> {
+    let resolved: Vec<crate::discovery_matrix::Dim> = {
+        let dim_map = discovered.lock().await;
+        let mut v = Vec::with_capacity(dims.len());
+        for d in dims {
+            match dim_map.get(d) {
+                Some(dim) => v.push(dim.clone()),
+                None => {
+                    tracing::warn!(row = %id, dimension = %d, "for_each dimension unavailable — row skipped");
+                    return Ok(None);
+                }
+            }
+        }
+        v
+    };
+    let size = crate::discovery_matrix::product_size(&resolved);
+    if size == 0 {
+        tracing::info!(row = %id, "for_each cross-product is empty — row skipped");
+        return Ok(None);
+    }
+    if size > crate::discovery_matrix::MAX_MATRIX_PRODUCT {
+        return Err(CliError::Config(format!(
+            "matrix row '{id}': for_each cross-product is {size} invocations, over the limit of \
+             {} — narrow the discovery dimensions",
+            crate::discovery_matrix::MAX_MATRIX_PRODUCT
+        )));
+    }
+    Ok(Some(resolved))
+}
+
 async fn run_unit(
     unit: &Unit,
     capture: Option<Arc<Projection>>,
     captured: &CapturedRecords,
     discovered: &DiscoveredDims,
+    collected: &CollectedDims,
     opts: &ExecuteOptions,
     cancel: CancellationToken,
 ) -> InvocationOutcome {
     // A discovery row (#501) enumerates a value-set instead of running a
     // source→sink pipeline: build its source, drain it, project + dedup, and
     // publish the dimension for dependent `for_each` rows. No sink, no capture.
-    if let NodeRole::Discovery { select, as_alias } = &unit.node.role {
-        return run_discovery(&unit.node, select, as_alias, discovered, opts).await;
+    // A chained discovery (#531) additionally resolves its per-tuple `${dim}`
+    // tokens and, with `collect`, publishes one list per tuple.
+    if let NodeRole::Discovery {
+        select,
+        as_alias,
+        collect,
+        dims,
+    } = &unit.node.role
+    {
+        return run_discovery(
+            &unit.node,
+            select,
+            as_alias,
+            *collect,
+            dims,
+            unit.product_ctx.as_ref(),
+            discovered,
+            collected,
+            opts,
+        )
+        .await;
     }
     let needs_capture = capture.is_some();
     let started = std::time::Instant::now();
@@ -736,11 +829,16 @@ async fn run_unit(
 /// Run a discovery row (#501): build its source, drain it, project `select`,
 /// dedup, and publish the dimension for dependent `for_each` rows. No sink is
 /// built and nothing is written — the outcome records the enumerated count.
+#[allow(clippy::too_many_arguments)]
 async fn run_discovery(
     node: &ExpandedNode,
     select: &str,
     as_alias: &str,
+    collect: bool,
+    dims: &[String],
+    product_ctx: Option<&HashMap<String, Value>>,
     discovered: &DiscoveredDims,
+    collected: &CollectedDims,
     opts: &ExecuteOptions,
 ) -> InvocationOutcome {
     let started = std::time::Instant::now();
@@ -750,6 +848,11 @@ async fn run_discovery(
         // `${now.*}` resolves for a discovery source like any other; `${vars}`
         // and shared `auth: { ref }` are already handled by the registry build.
         resolve_now_inplace(&mut cfg, opts.clock)?;
+        // Chained discovery (#531): resolve the upstream tuple `${dim}` tokens in
+        // the source config (e.g. `/crm/v3/properties/${types.name}`).
+        if let Some(pc) = product_ctx {
+            resolve_inplace(&mut cfg, pc)?;
+        }
         let source = build_source(
             &source_kind,
             cfg,
@@ -760,14 +863,31 @@ async fn run_discovery(
         let records = source.fetch_all().await?;
         let values = crate::discovery_matrix::project_dedup(&records, select);
         let n = values.len();
-        discovered.lock().await.insert(
-            node.id.clone(),
-            crate::discovery_matrix::Dim {
-                id: node.id.clone(),
-                alias: as_alias.to_string(),
-                values,
-            },
-        );
+        if collect {
+            // Publish one list per upstream tuple, keyed by the tuple, so a
+            // consuming `Product` row injects the whole list into one request.
+            let pc = product_ctx.cloned().unwrap_or_default();
+            let key = crate::discovery_matrix::collected_tuple_key(dims, &pc);
+            let mut cmap = collected.lock().await;
+            let entry = cmap.entry(node.id.clone()).or_insert_with(|| {
+                crate::discovery_matrix::CollectedDim {
+                    id: node.id.clone(),
+                    alias: as_alias.to_string(),
+                    dims: dims.to_vec(),
+                    by_tuple: HashMap::new(),
+                }
+            });
+            entry.by_tuple.insert(key, values);
+        } else {
+            discovered.lock().await.insert(
+                node.id.clone(),
+                crate::discovery_matrix::Dim {
+                    id: node.id.clone(),
+                    alias: as_alias.to_string(),
+                    values,
+                },
+            );
+        }
         Ok(n)
     }
     .await;

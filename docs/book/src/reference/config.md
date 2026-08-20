@@ -366,12 +366,53 @@ Semantics:
   cascade, and cycle detection reuse the ordering machinery. Per-tuple state
   keys (`{name}::{row}::alias=value&…`) let every cell resume independently.
 - Guards (all at load time via `faucet validate`): `for_each` must name
-  `discover:` rows; a `discover:` row can't carry a sink, `parent:`, or
-  `for_each:`; `for_each` can't combine with `parent:` (v1). The product is
+  `discover:` rows; a `discover:` row can't carry a sink or `parent:`;
+  `for_each` can't combine with `parent:` (v1). The product is
   bounded by `MAX_MATRIX_PRODUCT` (10 000) — a larger cross-product fails
   rather than spawning an unbounded fleet.
 
 See `cli/examples/discovery_matrix.yaml`.
+
+### Chained / two-level discovery + collected lists (#531)
+
+Some APIs need a **second** discovery step *per discovered value*, then the
+whole result injected into one request — the classic case being "discover the
+object types, then discover each type's fields, then read each type asking for
+all its fields" (HubSpot custom objects, Salesforce `describe`, Airtable, …).
+Two additions cover it:
+
+- **Chained discovery** — a `discover:` row may itself carry `for_each: [dims]`,
+  so it runs *once per upstream tuple* with `${<dim>.<alias>}` resolved in its
+  own source config. It must set **`collect: true`**.
+- **Collected (list-valued) dimensions** — `collect: true` publishes the whole
+  deduped value-set as **one list per upstream tuple** (not a cartesian axis).
+  A consuming row references it as `${<id>.<alias>}`, which renders the list
+  **comma-joined** (e.g. `?properties=a,b,c`). Referencing a collected row adds
+  it to the consuming row's `depends_on` automatically.
+
+```yaml
+matrix:
+  - id: types                      # 1. object types
+    discover: { source: { ref: hs_schemas }, select: "$.name", as: name }
+  - id: props                      # 2. per type, collect its property names
+    for_each: [types]
+    discover:
+      source: { ref: hs_properties, config: { path: "/crm/v3/properties/${types.name}" } }
+      select: "$.name"
+      as: name
+      collect: true
+  - id: records                    # 3. per type, read with the whole list at once
+    for_each: [types]
+    source:
+      ref: hs_objects
+      config:
+        path: "/crm/v3/objects/${types.name}"
+        query_params: { properties: "${props.name}" }
+```
+
+Guards: a chained `discover:` row (`for_each:` present) must set `collect: true`;
+`collect: true` requires `for_each:`; chained-discovery cycles are rejected at
+load time. See `cli/examples/hubspot_custom_objects.yaml`.
 
 ## `pipeline.nodes` / `pipeline.edges` (topology mode)
 

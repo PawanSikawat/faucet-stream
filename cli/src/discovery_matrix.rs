@@ -29,6 +29,54 @@ pub struct Dim {
     pub values: Vec<Value>,
 }
 
+/// A **collected (list-valued) dimension** (#531): a chained `discover:` row
+/// (`for_each: [...]` + `collect: true`) that publishes the *whole* deduped
+/// value-set as one list per upstream tuple, keyed by that tuple. A consuming
+/// row injects the list into one request (`${<id>.<alias>}` → comma-joined),
+/// rather than fanning out one invocation per element.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CollectedDim {
+    /// Discovery row id (the `${<id>.<alias>}` reference target).
+    pub id: String,
+    /// Alias the collected list is exposed under.
+    pub alias: String,
+    /// The upstream discovery dimension ids this row fanned out over, in order;
+    /// used to compute the tuple key both when storing and when injecting.
+    pub dims: Vec<String>,
+    /// The collected list per upstream tuple, keyed by [`collected_tuple_key`].
+    pub by_tuple: HashMap<String, Vec<Value>>,
+}
+
+/// A canonical, symmetric key for one upstream tuple over `dims`, derived from a
+/// per-tuple interpolation context (`{dim_id: {alias: value}}`). Both the
+/// storing side (the chained discovery, over its own `for_each` dims) and the
+/// reading side (a consuming `for_each` row, whose dims are a superset) compute
+/// the same key for the same tuple, so a collected list looks up correctly. Pure.
+pub fn collected_tuple_key(dims: &[String], ctx: &HashMap<String, Value>) -> String {
+    dims.iter()
+        .map(|d| {
+            let v = ctx.get(d).cloned().unwrap_or(Value::Null);
+            format!("{d}={}", serde_json::to_string(&v).unwrap_or_default())
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+/// Enrich a product tuple `ctx` in place with every collected dimension whose
+/// list is available for this tuple, so `${<id>.<alias>}` resolves to the list.
+/// A collected dim with no entry for the tuple injects an empty list (the
+/// consuming request then renders an empty param — the "type has no properties"
+/// fallback). Pure.
+pub fn inject_collected(ctx: &mut HashMap<String, Value>, collected: &[CollectedDim]) {
+    for cd in collected {
+        let key = collected_tuple_key(&cd.dims, ctx);
+        let list = cd.by_tuple.get(&key).cloned().unwrap_or_default();
+        let mut obj = Map::new();
+        obj.insert(cd.alias.clone(), Value::Array(list));
+        ctx.insert(cd.id.clone(), Value::Object(obj));
+    }
+}
+
 /// Project `select` (a dot-path, optionally `$`-prefixed) from each record and
 /// dedup the results in first-seen order. `null` / missing projections are
 /// skipped. `$` (or `""`) selects the whole record. Pure.
@@ -237,6 +285,52 @@ mod tests {
             product_size(&[dim("a", "x", vec![]), dim("b", "y", vec![json!(1)])]),
             0
         );
+    }
+
+    #[test]
+    fn collected_tuple_key_symmetric_between_store_and_read() {
+        // The chained discovery stores over its own dims; the consuming row reads
+        // over its (superset) dims. For the shared upstream tuple the key matches.
+        let dims = vec!["types".to_string()];
+        let store_ctx: HashMap<String, Value> =
+            [("types".to_string(), json!({"name": "deal"}))].into();
+        // Consuming row's ctx also has an extra axis, but the key uses only `dims`.
+        let read_ctx: HashMap<String, Value> = [
+            ("types".to_string(), json!({"name": "deal"})),
+            ("other".to_string(), json!({"x": 1})),
+        ]
+        .into();
+        assert_eq!(
+            collected_tuple_key(&dims, &store_ctx),
+            collected_tuple_key(&dims, &read_ctx)
+        );
+    }
+
+    #[test]
+    fn inject_collected_puts_the_list_into_ctx() {
+        let cd = CollectedDim {
+            id: "props".into(),
+            alias: "name".into(),
+            dims: vec!["types".into()],
+            by_tuple: [(
+                collected_tuple_key(
+                    &["types".into()],
+                    &[("types".to_string(), json!({"name": "deal"}))].into(),
+                ),
+                vec![json!("amount"), json!("stage")],
+            )]
+            .into(),
+        };
+        let mut ctx: HashMap<String, Value> =
+            [("types".to_string(), json!({"name": "deal"}))].into();
+        inject_collected(&mut ctx, std::slice::from_ref(&cd));
+        assert_eq!(ctx["props"]["name"], json!(["amount", "stage"]));
+
+        // A tuple with no collected entry injects an empty list.
+        let mut miss: HashMap<String, Value> =
+            [("types".to_string(), json!({"name": "ticket"}))].into();
+        inject_collected(&mut miss, &[cd]);
+        assert_eq!(miss["props"]["name"], json!([]));
     }
 
     #[test]

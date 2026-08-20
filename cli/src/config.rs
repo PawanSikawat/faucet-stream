@@ -626,6 +626,16 @@ pub struct DiscoverSpec {
     /// it as `${<row_id>.<as>}`. Must match `^[a-z0-9][a-z0-9_-]*$`.
     #[serde(rename = "as")]
     pub as_alias: String,
+
+    /// **Collected (list-valued) dimension** (#531). When `true`, the whole
+    /// deduped value-set is published as a single list per upstream tuple rather
+    /// than as an independent cartesian axis — so a consuming row injects the
+    /// entire list into one request (`${<id>.<as>}` renders it comma-joined,
+    /// e.g. HubSpot's `?properties=a,b,c`). Required when a `discover:` row also
+    /// declares `for_each:` (chained / two-level discovery), and only meaningful
+    /// on a discovery row.
+    #[serde(default)]
+    pub collect: bool,
 }
 
 /// Readiness ladder for a matrix row's source (#371). A single ordered axis
