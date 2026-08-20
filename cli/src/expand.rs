@@ -1595,6 +1595,25 @@ matrix:
     }
 
     #[test]
+    fn bookmark_token_is_reserved_and_passes_through() {
+        // `${bookmark}` is consumed inside a source's `replication_bind.template`
+        // (#513); expand must treat it as a reserved deferred id, not reject it
+        // as an unknown interpolation reference.
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://x
+      replication_bind: { into: query, name: since, template: "gt ${bookmark}" }
+  sink: { type: jsonl, config: { path: ./o } }
+"#);
+        let nodes = expand(&c).unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
     fn errors_on_self_parent_cycle() {
         let c = cfg(r#"
 version: 1

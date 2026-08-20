@@ -675,6 +675,16 @@ mod tests {
     }
 
     #[test]
+    fn build_provider_dispatches_flow() {
+        let p = crate::build_provider(&json!({
+            "type": "flow",
+            "config": { "apply": [ { "into": "header", "name": "X", "value": "v" } ] }
+        }))
+        .unwrap();
+        assert_eq!(p.provider_name(), "flow");
+    }
+
+    #[test]
     fn debug_redacts_and_summarizes() {
         let p = FlowProvider::from_config(&json!({
             "apply": [ { "into": "header", "name": "X", "value": "${t}" } ]
@@ -688,7 +698,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, Respond, ResponseTemplate};
 
     #[tokio::test]
@@ -806,6 +816,135 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn config_rejects_empty_step_url() {
+        let cfg: FlowConfig = serde_json::from_value(json!({
+            "steps": [ { "request": { "url": "  " } } ]
+        }))
+        .unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn session_ttl_caches_within_window() {
+        let server = MockServer::start().await;
+        let hits = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("POST"))
+            .and(path("/login"))
+            .respond_with(CountingLogin(hits.clone()))
+            .mount(&server)
+            .await;
+        let cfg = json!({
+            "steps": [ { "request": { "method": "POST", "url": format!("{}/login", server.uri()) },
+                         "capture": { "sid": "$.sid" } } ],
+            "apply": [ { "into": "header", "name": "X", "value": "${sid}" } ],
+            "ttl_secs": 3600
+        });
+        let p = FlowProvider::from_config(&cfg).unwrap();
+        let _ = p.credential().await.unwrap();
+        // Within the TTL window the session is reused (Session::valid == true).
+        let _ = p.credential().await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn login_sends_headers_and_json_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/login"))
+            .and(header("x-tenant", "acme"))
+            .and(body_json(json!({"scope": "read"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"tok": "T"})))
+            .mount(&server)
+            .await;
+        let cfg = json!({
+            "steps": [ { "request": { "method": "POST", "url": format!("{}/login", server.uri()),
+                         "headers": {"X-Tenant": "acme"}, "json": {"scope": "read"} },
+                         "capture": { "t": "$.tok" } } ],
+            "apply": [ { "into": "header", "name": "Authorization", "value": "Bearer ${t}" } ]
+        });
+        let p = FlowProvider::from_config(&cfg).unwrap();
+        assert_eq!(p.provider_name(), "flow");
+        let c = p.credential().await.unwrap();
+        assert!(matches!(&c, Credential::Header { name, value } if name == "Authorization" && value == "Bearer T"));
+    }
+
+    #[tokio::test]
+    async fn login_invalid_method_errors() {
+        let cfg = json!({
+            "steps": [ { "request": { "method": "BAD METHOD", "url": "https://x/login" } } ],
+            "apply": [ { "into": "header", "name": "X", "value": "static" } ]
+        });
+        let p = FlowProvider::from_config(&cfg).unwrap();
+        assert!(
+            p.request_auth("GET", "https://x", &BTreeMap::new())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn login_send_failure_errors() {
+        // Port 1 is unassignable → the send fails at the transport layer.
+        let cfg = json!({
+            "steps": [ { "request": { "url": "http://127.0.0.1:1/x" }, "capture": { "t": "$.t" } } ],
+            "apply": [ { "into": "header", "name": "X", "value": "${t}" } ]
+        });
+        let p = FlowProvider::from_config(&cfg).unwrap();
+        assert!(
+            p.request_auth("GET", "https://x", &BTreeMap::new())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn login_non_json_response_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+            .mount(&server)
+            .await;
+        let cfg = json!({
+            "steps": [ { "request": { "url": format!("{}/x", server.uri()) }, "capture": { "t": "$.t" } } ],
+            "apply": [ { "into": "header", "name": "X", "value": "${t}" } ]
+        });
+        let p = FlowProvider::from_config(&cfg).unwrap();
+        assert!(
+            p.request_auth("GET", "https://x", &BTreeMap::new())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn login_step_with_empty_capture_succeeds() {
+        // A pre-flight step that captures nothing (e.g. establishes a cookie);
+        // its non-JSON body is never parsed.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ping"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"t": "T"})))
+            .mount(&server)
+            .await;
+        let cfg = json!({
+            "steps": [
+                { "request": { "url": format!("{}/ping", server.uri()) } },
+                { "request": { "url": format!("{}/token", server.uri()) }, "capture": { "t": "$.t" } }
+            ],
+            "apply": [ { "into": "header", "name": "X", "value": "${t}" } ]
+        });
+        let p = FlowProvider::from_config(&cfg).unwrap();
+        let c = p.credential().await.unwrap();
+        assert!(matches!(&c, Credential::Header { value, .. } if value == "T"));
     }
 
     #[tokio::test]

@@ -390,6 +390,97 @@ mod tests {
         Bearer { token: String },
     }
 
+    #[derive(Debug)]
+    struct MinimalProvider;
+
+    #[async_trait]
+    impl AuthProvider for MinimalProvider {
+        async fn credential(&self) -> Result<Credential, FaucetError> {
+            Ok(Credential::Bearer("t".into()))
+        }
+        fn provider_name(&self) -> &'static str {
+            "minimal"
+        }
+    }
+
+    #[test]
+    fn credential_placement_debug_redacts_value_keeps_name() {
+        let cases = [
+            CredentialPlacement::Header {
+                name: "X-Tok".into(),
+                value: "secret".into(),
+            },
+            CredentialPlacement::Query {
+                name: "access_token".into(),
+                value: "secret".into(),
+            },
+            CredentialPlacement::Cookie {
+                name: "sid".into(),
+                value: "secret".into(),
+            },
+            CredentialPlacement::BodyField {
+                name: "auth".into(),
+                value: "secret".into(),
+            },
+        ];
+        for p in cases {
+            let s = format!("{p:?}");
+            assert!(s.contains("***"), "value must be redacted: {s}");
+            assert!(!s.contains("secret"), "secret leaked: {s}");
+        }
+    }
+
+    #[test]
+    fn request_auth_builders_and_is_empty() {
+        let empty = RequestAuth::new();
+        assert!(empty.is_empty());
+
+        let ra = RequestAuth::new()
+            .with_placement(CredentialPlacement::Query {
+                name: "t".into(),
+                value: "v".into(),
+            })
+            .with_base_url("https://host");
+        assert!(!ra.is_empty());
+        assert_eq!(ra.placements.len(), 1);
+        assert_eq!(ra.base_url.as_deref(), Some("https://host"));
+
+        // base-URL alone (no placements) is still non-empty.
+        assert!(!RequestAuth::new().with_base_url("https://h").is_empty());
+        assert!(RequestAuth::default().is_empty());
+    }
+
+    #[test]
+    fn request_auth_debug_redacts_placements_and_base_url() {
+        let ra = RequestAuth::new()
+            .with_placement(CredentialPlacement::Header {
+                name: "Authorization".into(),
+                value: "topsecret".into(),
+            })
+            .with_base_url("https://user:pw@host/path");
+        let s = format!("{ra:?}");
+        assert!(!s.contains("topsecret"), "placement value leaked: {s}");
+        assert!(!s.contains("pw"), "base-url userinfo leaked: {s}");
+    }
+
+    #[tokio::test]
+    async fn default_request_auth_is_empty_and_reauth_is_empty() {
+        let p = MinimalProvider;
+        let ra = p
+            .request_auth("GET", "https://x", &std::collections::BTreeMap::new())
+            .await
+            .unwrap();
+        assert!(ra.is_empty());
+        assert!(p.reauth_statuses().is_empty());
+        // The default sign_request also contributes nothing.
+        assert!(
+            p.sign_request("GET", "https://x", &std::collections::BTreeMap::new())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
     #[test]
     fn credential_authorization_value() {
         assert_eq!(
