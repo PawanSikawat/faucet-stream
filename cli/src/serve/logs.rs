@@ -13,13 +13,15 @@
 //! `--retain-terminal-runs-secs` — only `RunRecord` metadata honours that
 //! retention. Bulk/historic logs belong in the centralized tracing sink.
 
+use crate::serve::history::{RUN_LOG_TRUNCATED_SEQ, RunHistory, RunLogLine};
 use dashmap::DashMap;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
 /// Per-run ring-buffer capacity (lines). Past this the oldest line is evicted and
 /// late `/logs` subscribers see a `truncated` event.
@@ -33,6 +35,30 @@ pub const BROADCAST_CAPACITY: usize = 1024;
 /// so a late `/logs` fetcher can still replay it. Independent of run-record
 /// retention (spec §12).
 pub const LOG_DRAIN: Duration = Duration::from_secs(60);
+
+/// Bound on the persistence channel between capture and the writer task (#529).
+/// A log storm past this drops lines (recorded via `faucet_serve_run_logs_dropped_total`)
+/// rather than blocking the pipeline.
+const PERSIST_CHANNEL_CAPACITY: usize = 16_384;
+
+/// Flush a run's pending persisted lines once its buffer reaches this size (the
+/// rest flush at run end).
+const PERSIST_BATCH: usize = 256;
+
+/// A message on the persistence channel (#529): a captured line, or a run-end
+/// signal telling the writer to flush that run's remaining buffer.
+enum PersistMsg {
+    Line {
+        run_id: String,
+        seq: u64,
+        ts: String,
+        level: String,
+        line: String,
+    },
+    End {
+        run_id: String,
+    },
+}
 
 /// A single captured log line, tagged with a monotonic sequence number so a late
 /// `/logs` subscriber can de-duplicate ring backfill against the live tail.
@@ -71,8 +97,9 @@ impl RunBuffer {
     }
 
     /// Append a line: assign a sequence, push to the ring (evicting the oldest
-    /// past the cap), and best-effort broadcast to live subscribers.
-    fn push(&self, line: String) {
+    /// past the cap), and best-effort broadcast to live subscribers. Returns the
+    /// assigned sequence (used as the durable-log ordering key, #529).
+    fn push(&self, line: String) -> u64 {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         let entry = LogLine { seq, line };
         {
@@ -84,6 +111,7 @@ impl RunBuffer {
         }
         // No live subscribers → Err; the ring still holds the line for backfill.
         let _ = self.tx.send(LogMsg::Line(entry));
+        seq
     }
 
     fn snapshot(&self) -> Vec<LogLine> {
@@ -110,6 +138,10 @@ impl RunBuffer {
 #[derive(Clone, Default)]
 pub struct LogHub {
     inner: Arc<DashMap<String, Arc<RunBuffer>>>,
+    /// Set once (via [`enable_persistence`](LogHub::enable_persistence)) when a
+    /// durable history backend is configured (#529). `None` → ephemeral-only
+    /// behavior, unchanged.
+    persist: Arc<OnceLock<mpsc::Sender<PersistMsg>>>,
 }
 
 impl LogHub {
@@ -130,7 +162,41 @@ impl LogHub {
         )
     }
 
-    /// Append a captured line for a run (called by [`RunLogLayer::on_event`]).
+    /// Turn on durable persistence of captured logs (#529): spawn a background
+    /// writer task that batches lines into `history`, and route captured lines to
+    /// it. `max_lines_per_run` caps how many lines are persisted per run (past it,
+    /// a truncation marker is recorded). Idempotent — a second call is a no-op.
+    pub fn enable_persistence(&self, history: Arc<dyn RunHistory>, max_lines_per_run: usize) {
+        let (tx, rx) = mpsc::channel(PERSIST_CHANNEL_CAPACITY);
+        if self.persist.set(tx).is_err() {
+            return; // already enabled
+        }
+        tokio::spawn(persist_writer(rx, history, max_lines_per_run.max(1)));
+    }
+
+    /// Capture a line for a run: push to the ephemeral ring (SSE) and, when
+    /// persistence is enabled, enqueue it for durable storage (#529). Called by
+    /// [`RunLogLayer::on_event`] with the pre-redacted line.
+    pub fn capture(&self, run_id: &str, level: &str, ts: String, line: String) {
+        let seq = self.buffer(run_id).push(line.clone());
+        if let Some(tx) = self.persist.get()
+            && tx
+                .try_send(PersistMsg::Line {
+                    run_id: run_id.to_string(),
+                    seq,
+                    ts,
+                    level: level.to_string(),
+                    line,
+                })
+                .is_err()
+        {
+            metrics::counter!("faucet_serve_run_logs_dropped_total", "reason" => "queue_full")
+                .increment(1);
+        }
+    }
+
+    /// Append a captured line without level/timestamp metadata (ephemeral-only;
+    /// used by tests and any caller that doesn't persist).
     pub fn append(&self, run_id: &str, line: String) {
         self.buffer(run_id).push(line);
     }
@@ -154,16 +220,112 @@ impl LogHub {
         Some((snapshot, rx, ended))
     }
 
-    /// Mark a run terminal: broadcast `End` so live readers can close.
+    /// Mark a run terminal: broadcast `End` so live readers can close, and flush
+    /// the run's durable-log buffer (#529).
     pub fn finish(&self, run_id: &str) {
         if let Some(buf) = self.inner.get(run_id) {
             buf.finish();
+        }
+        if let Some(tx) = self.persist.get() {
+            let _ = tx.try_send(PersistMsg::End {
+                run_id: run_id.to_string(),
+            });
         }
     }
 
     /// Drop a run's buffer, freeing its ring (called after the drain window).
     pub fn drop_run(&self, run_id: &str) {
         self.inner.remove(run_id);
+    }
+}
+
+/// Per-run persistence state held by the writer task.
+#[derive(Default)]
+struct RunPersistState {
+    /// Lines buffered for the next batch insert.
+    pending: Vec<RunLogLine>,
+    /// Total lines persisted for this run so far (against the per-run cap).
+    persisted: u64,
+    /// Whether the per-run cap has been hit (→ a truncation marker at End).
+    truncated: bool,
+}
+
+/// Background task draining the persistence channel (#529): batches captured
+/// lines per run into `history`, enforces the per-run cap, and flushes at run
+/// end. All failures are logged, never fatal — persistence must never affect a
+/// run.
+async fn persist_writer(
+    mut rx: mpsc::Receiver<PersistMsg>,
+    history: Arc<dyn RunHistory>,
+    max_lines_per_run: usize,
+) {
+    let cap = max_lines_per_run as u64;
+    let mut runs: HashMap<String, RunPersistState> = HashMap::new();
+
+    async fn flush(history: &Arc<dyn RunHistory>, run_id: &str, st: &mut RunPersistState) {
+        if st.pending.is_empty() {
+            return;
+        }
+        let batch = std::mem::take(&mut st.pending);
+        let n = batch.len() as u64;
+        if let Err(e) = history.record_run_logs(run_id, &batch).await {
+            tracing::warn!(run_id, error = %e, "persisting run logs failed");
+            metrics::counter!("faucet_serve_run_logs_dropped_total", "reason" => "backend_error")
+                .increment(n);
+        } else {
+            metrics::counter!("faucet_serve_run_log_lines_total").increment(n);
+        }
+    }
+
+    while let Some(msg) = rx.recv().await {
+        match msg {
+            PersistMsg::Line {
+                run_id,
+                seq,
+                ts,
+                level,
+                line,
+            } => {
+                let st = runs.entry(run_id.clone()).or_default();
+                if st.persisted >= cap {
+                    if !st.truncated {
+                        st.truncated = true;
+                        metrics::counter!(
+                            "faucet_serve_run_logs_dropped_total", "reason" => "per_run_cap"
+                        )
+                        .increment(1);
+                    }
+                    continue;
+                }
+                st.persisted += 1;
+                st.pending.push(RunLogLine {
+                    seq,
+                    ts,
+                    level,
+                    line,
+                });
+                if st.pending.len() >= PERSIST_BATCH {
+                    flush(&history, &run_id, st).await;
+                }
+            }
+            PersistMsg::End { run_id } => {
+                if let Some(mut st) = runs.remove(&run_id) {
+                    flush(&history, &run_id, &mut st).await;
+                    if st.truncated {
+                        // Record a single sentinel so `list_run_logs` reports the gap.
+                        let marker = [RunLogLine {
+                            seq: RUN_LOG_TRUNCATED_SEQ,
+                            ts: String::new(),
+                            level: "WARN".to_string(),
+                            line: "log truncated: per-run cap reached".to_string(),
+                        }];
+                        if let Err(e) = history.record_run_logs(&run_id, &marker).await {
+                            tracing::warn!(run_id, error = %e, "persisting run-log truncation marker failed");
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -323,7 +485,8 @@ where
         let meta = event.metadata();
         let line = format!("{} {}: {}", meta.level(), meta.target(), visitor.finish());
         let line = crate::secrets::registry::redact(&line).into_owned();
-        self.hub.append(&run_id, line);
+        let ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        self.hub.capture(&run_id, meta.level().as_str(), ts, line);
     }
 }
 

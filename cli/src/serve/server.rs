@@ -181,6 +181,7 @@ fn purge_interval(retain_terminal: Duration, idem_retention: Duration) -> Durati
 pub(crate) async fn maintenance_loop(
     history: Arc<dyn RunHistory>,
     retain: Duration,
+    log_retain: Duration,
     period: Duration,
     shutdown: CancellationToken,
 ) {
@@ -190,12 +191,25 @@ pub(crate) async fn maintenance_loop(
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => break,
-            _ = tick.tick() => match history.purge_expired(retain).await {
-                Ok(n) if n > 0 => {
-                    tracing::info!(purged = n, "purged expired run records / idempotency claims")
+            _ = tick.tick() => {
+                match history.purge_expired(retain).await {
+                    Ok(n) if n > 0 => {
+                        tracing::info!(purged = n, "purged expired run records / idempotency claims")
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "history purge_expired failed"),
                 }
-                Ok(_) => {}
-                Err(e) => tracing::warn!(error = %e, "history purge_expired failed"),
+                // Persistent run logs (#529) have their own retention window.
+                if !log_retain.is_zero() {
+                    match history.purge_run_logs(log_retain).await {
+                        Ok(n) if n > 0 => {
+                            crate::serve::metrics::inc_run_logs_purged(n);
+                            tracing::info!(purged = n, "purged expired run logs")
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(error = %e, "history purge_run_logs failed"),
+                    }
+                }
             },
         }
     }
@@ -365,6 +379,23 @@ pub async fn serve(config: ServeConfig, mcp: crate::serve::McpServeSettings) -> 
             );
         }
     }
+    // Persistent run logs (#529): route captured (already-redacted) logs into the
+    // durable backend so they survive past the ephemeral SSE drain window. The
+    // in-memory backend stays ephemeral by default (persist only to a real DB).
+    if !config.log_retention.is_zero()
+        && !matches!(
+            config.history,
+            crate::serve::config::HistoryBackendSpec::Memory
+        )
+    {
+        log_hub.enable_persistence(history.clone(), config.log_max_lines_per_run);
+        tracing::info!(
+            retention_secs = config.log_retention.as_secs(),
+            max_lines_per_run = config.log_max_lines_per_run,
+            "persistent run logs enabled"
+        );
+    }
+
     let default_base = load_default_base(&config).await?;
 
     // Event-driven triggers (#196): load + validate the file (fail-fast), then
@@ -424,6 +455,7 @@ pub async fn serve(config: ServeConfig, mcp: crate::serve::McpServeSettings) -> 
     let maintenance = tokio::spawn(maintenance_loop(
         state.history(),
         config.retain_terminal_runs,
+        config.log_retention,
         purge_period,
         shutdown.clone(),
     ));

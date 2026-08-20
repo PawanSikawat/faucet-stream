@@ -87,6 +87,12 @@ pub struct ServeConfig {
     pub shutdown_grace: Duration,
     pub retain_terminal_runs: Duration,
     pub idempotency_retention: Duration,
+    /// How long persisted run logs are kept (#529), independent of run-record
+    /// retention. `0` disables durable log persistence (ephemeral SSE only).
+    pub log_retention: Duration,
+    /// Per-run cap on persisted log lines (#529). Past it, a truncation marker is
+    /// recorded and further lines are dropped.
+    pub log_max_lines_per_run: usize,
     /// Run-ownership lease TTL for multi-instance orphan fencing (#146 H7).
     pub lease_ttl: Duration,
     pub probe_timeout: Duration,
@@ -250,6 +256,8 @@ impl ServeConfig {
             shutdown_grace: Duration::from_secs(args.shutdown_grace_secs),
             retain_terminal_runs: Duration::from_secs(args.retain_terminal_runs_secs),
             idempotency_retention: Duration::from_secs(args.idempotency_retention_secs),
+            log_retention: Duration::from_secs(args.log_retention_secs),
+            log_max_lines_per_run: args.log_max_lines_per_run,
             lease_ttl: Duration::from_secs(args.lease_ttl_secs),
             probe_timeout: Duration::from_secs(args.probe_timeout_secs),
             env_file: args.env_file,

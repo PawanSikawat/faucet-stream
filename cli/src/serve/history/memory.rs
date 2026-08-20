@@ -8,8 +8,8 @@ use super::catalog::{
 };
 use super::templates;
 use super::{
-    AuditEntry, AuditFilter, Claim, DeleteOutcome, HistoryError, ListFilter, ListPage, RunHistory,
-    RunRecord,
+    AuditEntry, AuditFilter, Claim, DeleteOutcome, HistoryError, ListFilter, ListPage,
+    RUN_LOG_TRUNCATED_SEQ, RunHistory, RunLogLine, RunLogPage, RunRecord,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -63,6 +63,8 @@ pub struct MemoryHistory {
     template_launches: Mutex<std::collections::HashMap<String, Vec<templates::LaunchRecord>>>,
     /// Deprecation markers — the only *stored* part of the lifecycle status.
     template_deprecations: Mutex<std::collections::HashMap<String, templates::DeprecationRecord>>,
+    /// Persistent run logs (#529): run_id → lines (append order == seq order).
+    run_logs: Mutex<std::collections::HashMap<String, Vec<RunLogLine>>>,
     /// Retention window for idempotency claims (separate from run retention).
     idem_retention: Duration,
 }
@@ -78,6 +80,7 @@ impl MemoryHistory {
             template_tags: Mutex::new(std::collections::HashMap::new()),
             template_launches: Mutex::new(std::collections::HashMap::new()),
             template_deprecations: Mutex::new(std::collections::HashMap::new()),
+            run_logs: Mutex::new(std::collections::HashMap::new()),
             idem_retention,
         }
     }
@@ -246,6 +249,73 @@ impl RunHistory for MemoryHistory {
         rows.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then_with(|| b.id.cmp(&a.id)));
         rows.truncate(filter.limit.max(1));
         Ok(rows)
+    }
+
+    // ── Persistent run logs (#529) ────────────────────────────────────────────
+
+    async fn record_run_logs(
+        &self,
+        run_id: &str,
+        lines: &[RunLogLine],
+    ) -> Result<(), HistoryError> {
+        if lines.is_empty() {
+            return Ok(());
+        }
+        let mut map = self
+            .run_logs
+            .lock()
+            .map_err(|_| HistoryError::Backend("run_logs lock poisoned".into()))?;
+        map.entry(run_id.to_string())
+            .or_default()
+            .extend(lines.iter().cloned());
+        Ok(())
+    }
+
+    async fn list_run_logs(
+        &self,
+        run_id: &str,
+        after_seq: Option<u64>,
+        limit: usize,
+    ) -> Result<RunLogPage, HistoryError> {
+        let map = self
+            .run_logs
+            .lock()
+            .map_err(|_| HistoryError::Backend("run_logs lock poisoned".into()))?;
+        let Some(all) = map.get(run_id) else {
+            return Ok(RunLogPage::default());
+        };
+        let truncated = all.iter().any(|l| l.seq == RUN_LOG_TRUNCATED_SEQ);
+        let mut lines: Vec<RunLogLine> = all
+            .iter()
+            .filter(|l| l.seq != RUN_LOG_TRUNCATED_SEQ)
+            .filter(|l| after_seq.is_none_or(|a| l.seq > a))
+            .cloned()
+            .collect();
+        lines.sort_by_key(|l| l.seq);
+        lines.truncate(limit.max(1));
+        Ok(RunLogPage { lines, truncated })
+    }
+
+    async fn purge_run_logs(&self, older_than: Duration) -> Result<usize, HistoryError> {
+        let cutoff = Utc::now() - chrono::Duration::from_std(older_than).unwrap_or_default();
+        let mut map = self
+            .run_logs
+            .lock()
+            .map_err(|_| HistoryError::Backend("run_logs lock poisoned".into()))?;
+        let mut removed = 0usize;
+        for lines in map.values_mut() {
+            let before = lines.len();
+            // ts is RFC3339; parse to an instant (offsets aren't lexically
+            // comparable). An unparseable ts is kept rather than silently dropped.
+            lines.retain(|l| {
+                DateTime::parse_from_rfc3339(&l.ts)
+                    .map(|t| t.with_timezone(&Utc) >= cutoff)
+                    .unwrap_or(true)
+            });
+            removed += before - lines.len();
+        }
+        map.retain(|_, lines| !lines.is_empty());
+        Ok(removed)
     }
 
     async fn recover_orphans(&self) -> Result<usize, HistoryError> {

@@ -905,6 +905,15 @@ pub struct ServeArgs {
     /// Idempotency-key replay window (seconds).
     #[arg(long, default_value_t = 86_400)]
     pub idempotency_retention_secs: u64,
+    /// How long persisted run logs are kept (seconds, #529), independent of run
+    /// records. Requires a persistent `--history` backend; `0` disables durable
+    /// log persistence (ephemeral SSE only). Default: 7 days.
+    #[arg(long, default_value_t = 604_800)]
+    pub log_retention_secs: u64,
+    /// Per-run cap on persisted log lines (#529). Past it a truncation marker is
+    /// recorded and further lines are dropped.
+    #[arg(long, default_value_t = 100_000)]
+    pub log_max_lines_per_run: usize,
     /// Run-ownership lease TTL in seconds (multi-instance orphan fencing). A run
     /// is owned by the instance executing it and its lease is heartbeated at
     /// ~⅓ of this interval; only a run whose lease has expired (owner presumed

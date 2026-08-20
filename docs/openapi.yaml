@@ -96,21 +96,50 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
   /v1/runs/{id}/logs:
     get:
-      summary: Stream a run's logs (SSE)
+      summary: Stream a run's logs (SSE), or read persisted logs
       description: >
-        `text/event-stream`. Replays the run's ring buffer, then streams the live
-        tail. Events: `log` (a line), `truncated` (the reader fell behind —
-        rely on the centralized log sink), `end` (the run finished; the stream
-        closes). Log buffers are ephemeral (a short drain window after the run
-        ends); a known run whose buffer expired yields a single `end`.
+        Default (no `format`): `text/event-stream` — replays the run's ring
+        buffer then streams the live tail. Events: `log` (a line), `truncated`
+        (the reader fell behind), `end` (the run finished; the stream closes).
+        The SSE buffer is ephemeral (a short drain window after the run ends).
+
+
+        With `format=jsonl` or `format=text` (#529): the **persisted** logs from
+        the history backend — fetchable any time after the run ends, paginated
+        with `after`/`limit`. `jsonl` returns `application/x-ndjson`, one
+        `{seq,ts,level,line}` object per line (oldest-first), plus a trailing
+        `{"truncated":true}` when earlier lines were dropped by the per-run cap.
+        `text` returns `text/plain`. Requires a persistent `--history` backend
+        with `--log-retention-secs > 0`; otherwise the persisted read is empty.
       operationId: streamRunLogs
-      parameters: [ { $ref: "#/components/parameters/RunId" } ]
+      parameters:
+        - { $ref: "#/components/parameters/RunId" }
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [jsonl, text] }
+          description: Persisted-log format. Omit for the SSE stream.
+        - name: after
+          in: query
+          required: false
+          schema: { type: integer, format: int64 }
+          description: Return only lines with `seq` greater than this (pagination).
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 1000, maximum: 10000 }
+          description: Max lines per page (persisted read).
       responses:
         "200":
-          description: SSE stream.
+          description: SSE stream (default), NDJSON (`format=jsonl`), or plain text (`format=text`).
           content:
             text/event-stream:
               schema: { type: string }
+            application/x-ndjson:
+              schema: { type: string }
+            text/plain:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
   /v1/schemas:
