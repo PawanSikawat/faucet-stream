@@ -2113,4 +2113,25 @@ mod tests {
         spec.key_name = String::new();
         assert!(compile_stage(&TransformStage::Unpivot(spec)).is_err());
     }
+
+    #[cfg(feature = "transform-unpivot")]
+    #[test]
+    fn unpivot_non_object_passes_through() {
+        // A scalar (non-object) record is emitted unchanged, never dropped.
+        let out = apply_stages(json!("scalar"), &unpivot(upspec(&["id"], None, &[]))).unwrap();
+        assert_eq!(out, vec![json!("scalar")]);
+    }
+
+    #[cfg(feature = "transform-unpivot")]
+    #[test]
+    fn unpivot_stage_debug_and_clone() {
+        let spec = upspec(&["id"], None, &["a", "b"]);
+        let stage = TransformStage::Unpivot(spec);
+        assert!(format!("{stage:?}").contains("Unpivot"));
+        assert!(format!("{:?}", stage.clone()).contains("Unpivot"));
+
+        let compiled = compile_stage(&stage).unwrap();
+        assert!(format!("{compiled:?}").contains("Unpivot"));
+        let _ = compiled.clone();
+    }
 }

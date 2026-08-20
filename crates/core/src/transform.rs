@@ -5031,6 +5031,33 @@ mod tests {
         );
     }
 
+    #[cfg(all(feature = "transform-json-encode", feature = "transform-lookup"))]
+    #[test]
+    fn json_encode_and_lookup_debug_and_clone() {
+        // RecordTransform Debug + Clone for both new variants.
+        let je = RecordTransform::JsonEncode {
+            fields: vec!["meta".into()],
+        };
+        assert!(format!("{je:?}").contains("JsonEncode"));
+        assert!(format!("{:?}", je.clone()).contains("JsonEncode"));
+
+        let mut row = serde_json::Map::new();
+        row.insert("id".into(), Value::String("1".into()));
+        let lk = RecordTransform::Lookup {
+            reference: vec![row],
+            on_record: "rid".into(),
+            on_ref: "id".into(),
+            add: vec![("name".into(), "name".into())],
+            on_missing: LookupOnMissing::Null,
+        };
+        assert!(format!("{lk:?}").contains("Lookup"));
+        assert!(format!("{:?}", lk.clone()).contains("Lookup"));
+
+        // CompiledTransform Clone for both new variants.
+        let _ = compile(&je).unwrap().clone();
+        let _ = compile(&lk).unwrap().clone();
+    }
+
     #[cfg(feature = "transform-coalesce")]
     #[test]
     fn coalesce_non_null_non_string_target_untouched() {

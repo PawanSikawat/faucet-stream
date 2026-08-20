@@ -1182,10 +1182,11 @@ mod tests {
             kind: "unpivot".into(),
             config: json!({"key_name": "", "value_name": "v"}),
         }];
-        match compile_transforms(&specs).unwrap_err() {
-            CliError::InvalidTransform { name, .. } => assert_eq!(name, "unpivot"),
-            other => panic!("expected InvalidTransform, got {other:?}"),
-        }
+        let err = compile_transforms(&specs).unwrap_err();
+        assert!(
+            matches!(&err, CliError::InvalidTransform { name, .. } if name == "unpivot"),
+            "got {err:?}"
+        );
     }
 
     #[cfg(feature = "transforms")]
@@ -1244,13 +1245,53 @@ mod tests {
                 "add": {"uname": "name"}
             }),
         }];
-        match compile_transforms(&specs).unwrap_err() {
-            CliError::InvalidTransform { name, message } => {
-                assert_eq!(name, "lookup");
-                assert!(message.contains("exactly one"), "{message}");
-            }
-            other => panic!("expected InvalidTransform, got {other:?}"),
-        }
+        let err = compile_transforms(&specs).unwrap_err();
+        assert!(
+            matches!(&err, CliError::InvalidTransform { name, message }
+                if name == "lookup" && message.contains("exactly one")),
+            "got {err:?}"
+        );
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn lookup_jsonl_missing_file_is_rejected_at_load() {
+        let specs = vec![TransformSpec {
+            kind: "lookup".into(),
+            config: json!({
+                "jsonl": "/nonexistent/faucet-lookup-ref.jsonl",
+                "on": {"record": "uid", "ref": "id"},
+                "add": {"uname": "name"}
+            }),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        assert!(
+            matches!(&err, CliError::InvalidTransform { name, message }
+                if name == "lookup" && message.contains("reading lookup jsonl")),
+            "got {err:?}"
+        );
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn lookup_jsonl_malformed_line_is_rejected_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.jsonl");
+        std::fs::write(&path, "{\"id\":\"1\"}\nnot json\n").unwrap();
+        let specs = vec![TransformSpec {
+            kind: "lookup".into(),
+            config: json!({
+                "jsonl": path.to_str().unwrap(),
+                "on": {"record": "uid", "ref": "id"},
+                "add": {"uname": "name"}
+            }),
+        }];
+        let err = compile_transforms(&specs).unwrap_err();
+        assert!(
+            matches!(&err, CliError::InvalidTransform { name, message }
+                if name == "lookup" && message.contains("line 2")),
+            "got {err:?}"
+        );
     }
 
     #[cfg(feature = "transforms")]
