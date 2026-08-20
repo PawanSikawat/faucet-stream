@@ -1050,6 +1050,27 @@ See the [Lineage cookbook](../cookbook/lineage.md) for the full field reference,
 transports (HTTP, file, Kafka), the column-lineage support matrix, schema-facet behavior, and
 the Prometheus metrics (`faucet_lineage_events_total`, etc.).
 
+## `metadata_columns`
+
+Optional (#510). Stamp `_faucet_*` run/lineage metadata columns onto every row
+via a connector-agnostic **sink decorator** (works for any sink). Off unless
+present.
+
+```yaml
+metadata_columns:
+  prefix: "_faucet"                       # column-name prefix (default)
+  columns: [extracted_at, loaded_at, run_id, source]   # or add `sequence`
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `true` | Master switch (toggle off without removing the block). |
+| `prefix` | `_faucet` | Column-name prefix (`{prefix}_{column}`). |
+| `columns` | `[extracted_at, loaded_at, run_id, source]` | Subset of `extracted_at` / `loaded_at` (write time), `run_id`, `source` (connector kind), `sequence` (monotonic per-run ordinal). |
+
+`extracted_at` is captured at sink-decorator time (≈ `loaded_at` in this model).
+Non-object records pass through unchanged.
+
 ## `catalog`
 
 Optional. When present, `faucet run` / `schedule` / `replicate` record every

@@ -335,3 +335,29 @@ creates the alias); a concrete index of that name is rejected at `begin`.
 - `delivery: exactly_once` — a full replace has no per-page watermark to resume from.
 - `schema.on_drift: evolve` — the staging target is a pre-run clone, so evolving the live target mid-run would leave the staged data a column short at swap time.
 - Scoped cleanup (`complete_for`) — cleanup requires `write_mode: upsert`; a full overwrite already removes source-deleted rows wholesale.
+
+## Scoped / windowed overwrite (#518)
+
+Replace only the destination rows in a **scope** (a date window) instead of the
+whole table — the declarative equivalent of "delete a rolling window, then
+re-insert" (period-report loads: QuickBooks / Xero / Zoho Books). Add a `scope:`
+block alongside `write_mode: overwrite`:
+
+```yaml
+sink:
+  type: bigquery            # or postgres
+  config:
+    write_mode: overwrite
+    scope:
+      window: { column: posting_date, from: "${now.month_start}", to: "${now.month_end}" }
+```
+
+At commit, the same begin→stage→swap machinery runs, but the swap is a single
+transaction of `DELETE FROM target WHERE <scope>; INSERT INTO target SELECT *
+FROM staging;` — only the in-window rows are replaced; everything outside the
+window is preserved. The window is half-open `[from, to)`.
+
+**Supported sinks (v1):** `postgres`, `bigquery` (`SCOPED_OVERWRITE_SINK_KINDS`).
+The other overwrite sinks still support **full** overwrite; scoped overwrite on
+them (and key-set scopes) is a follow-up. `scope` requires `write_mode:
+overwrite` and inherits the overwrite incompatibilities above.

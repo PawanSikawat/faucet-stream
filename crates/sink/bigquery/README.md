@@ -448,3 +448,8 @@ query API (not streaming `insertAll`), then swapped with a
 target's partitioning and clustering — only after the run succeeds, so a mid-run
 failure leaves the previous rows intact. No `key` is needed; the target table
 must already exist.
+
+**Scoped / windowed overwrite (#518):** add a `scope: { window: { column, from, to } }`
+to replace only the rows in a half-open `[from, to)` window — the swap becomes
+`BEGIN TRANSACTION; DELETE FROM target WHERE <window>; INSERT … SELECT; COMMIT`,
+leaving out-of-window rows intact (ideal for rolling-window / period-report loads).
