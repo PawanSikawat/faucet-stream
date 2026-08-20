@@ -176,6 +176,16 @@ pub struct RestStreamConfig {
     /// time (explicit values still win). See [`ODataConfig`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub odata: Option<ODataConfig>,
+
+    // ── Response-decode pipeline (#515) ─────────────────────────────────────────
+    /// Decode the response body before record extraction: a chain of
+    /// `extract` (JSONPath) / `base64` / `gunzip` / `unzip` / `parse`
+    /// (json|csv|xlsx|xml) steps. Lets a source consume base64/compressed/file
+    /// payloads (e.g. a base64 XLSX inside a SOAP body, or a gzipped-CSV export).
+    /// When set, it replaces the `response_format` body parsing, and pagination
+    /// must be `none`. See [`DecodeStep`](crate::decode::DecodeStep).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decode: Vec<crate::decode::DecodeStep>,
 }
 
 /// OData protocol version, which selects the paging-link key.
@@ -272,6 +282,7 @@ impl Default for RestStreamConfig {
             excel_header_row: 0,
             replication_bind: None,
             odata: None,
+            decode: Vec::new(),
         }
     }
 }
@@ -318,6 +329,22 @@ impl RestStreamConfig {
             return Err(faucet_core::FaucetError::Config(
                 "rest: `odata` speaks JSON — remove `response_format: csv|excel`".into(),
             ));
+        }
+        if !self.decode.is_empty() {
+            if !matches!(self.pagination, PaginationStyle::None) {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: a `decode:` pipeline consumes a single response body — set \
+                     `pagination: none`"
+                        .into(),
+                ));
+            }
+            if !matches!(self.response_format, ResponseFormat::Json) {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: `decode:` replaces `response_format` body parsing — remove \
+                     `response_format: csv|excel`"
+                        .into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -500,6 +527,12 @@ impl RestStreamConfig {
     /// sugar, and `$metadata` discovery from the block (#512).
     pub fn odata(mut self, odata: ODataConfig) -> Self {
         self.odata = Some(odata);
+        self
+    }
+
+    /// Set the response-decode pipeline (#515).
+    pub fn decode(mut self, steps: Vec<crate::decode::DecodeStep>) -> Self {
+        self.decode = steps;
         self
     }
 

@@ -47,7 +47,9 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 jsonpath-rust = "1"
-quick-xml = { workspace = true }  # OData $metadata (EDMX/CSDL) parsing (#512)
+quick-xml = { workspace = true }  # OData $metadata (EDMX/CSDL) parsing (#512); XML decode (#515)
+flate2 = { workspace = true }  # gunzip decode step (#515)
+zip = { workspace = true }  # unzip decode step (#515)
 csv-async = { workspace = true }
 calamine = { workspace = true, optional = true }
 tokio = { version = "1", features = ["time"] }

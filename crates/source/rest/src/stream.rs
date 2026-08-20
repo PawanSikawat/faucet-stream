@@ -1174,6 +1174,15 @@ impl RestStream {
         if bytes.iter().all(u8::is_ascii_whitespace) {
             return Ok((Value::Array(vec![]), resp_headers));
         }
+        // A `decode:` pipeline (#515) takes the raw body and produces records
+        // directly (extract → base64 → gunzip/unzip → parse). It replaces the
+        // `response_format` parsing; `validate()` guarantees pagination is
+        // `none`. The records land as an array the downstream
+        // (records_path-less) extraction passes straight through.
+        if !self.config.decode.is_empty() {
+            let records = crate::decode::run_decode(&bytes, &self.config.decode).await?;
+            return Ok((Value::Array(records), resp_headers));
+        }
         // For file response formats the whole body is a tabular file — parse it
         // into a record array here so the downstream (records_path-less)
         // extraction passes it straight through. `validate()` guarantees

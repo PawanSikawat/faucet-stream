@@ -7,6 +7,7 @@
 
 pub mod auth;
 pub mod config;
+pub mod decode;
 pub mod extract;
 pub mod format;
 pub mod odata;
@@ -24,5 +25,6 @@ pub use auth::oauth2::DEFAULT_EXPIRY_RATIO;
 pub use auth::token_endpoint::DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO;
 pub use auth::{Auth, ResponseValidator, fetch_oauth2_token, fetch_token_from_endpoint};
 pub use config::{ODataConfig, ODataVersion, ResponseFormat, RestStreamConfig, TlsClientConfig};
+pub use decode::{DecodeStep, ParseFormat, ParseSpec, SimpleStep, UnzipSpec};
 pub use pagination::PaginationStyle;
 pub use stream::RestStream;
