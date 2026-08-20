@@ -2173,3 +2173,13 @@ If this event is something the user would act on now, send a PushNotification. R
 <event>Coverage: FAIL</event>
 If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
 </task-notification>
+
+---
+
+<task-notification>
+<task-id>bod33o160</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/720710a6-74e3-4980-ac3f-04abbbc1c178/tasks/bod33o160.output</output-file>
+<status>completed</status>
+<summary>Background command "Merged coverage measurement (background)" completed (exit code 0)</summary>
+</task-notification>
