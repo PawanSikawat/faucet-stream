@@ -186,6 +186,14 @@ pub struct RestStreamConfig {
     /// must be `none`. See [`DecodeStep`](crate::decode::DecodeStep).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub decode: Vec<crate::decode::DecodeStep>,
+
+    // ── Async-job pattern (#514) ────────────────────────────────────────────────
+    /// Run a submit→poll→fetch job lifecycle instead of a single GET, for
+    /// bulk/export/report-run APIs (Salesforce Bulk, Stripe Reporting, …). The
+    /// fetched result flows through `decode:` / `response_format`. When set,
+    /// pagination must be `none`. See [`AsyncJobConfig`](crate::async_job::AsyncJobConfig).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub async_job: Option<crate::async_job::AsyncJobConfig>,
 }
 
 /// OData protocol version, which selects the paging-link key.
@@ -283,6 +291,7 @@ impl Default for RestStreamConfig {
             replication_bind: None,
             odata: None,
             decode: Vec::new(),
+            async_job: None,
         }
     }
 }
@@ -342,6 +351,16 @@ impl RestStreamConfig {
                 return Err(faucet_core::FaucetError::Config(
                     "rest: `decode:` replaces `response_format` body parsing — remove \
                      `response_format: csv|excel`"
+                        .into(),
+                ));
+            }
+        }
+        if let Some(job) = &self.async_job {
+            job.validate()?;
+            if !matches!(self.pagination, PaginationStyle::None) {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: an `async_job:` lifecycle fetches a single result — set \
+                     `pagination: none`"
                         .into(),
                 ));
             }
