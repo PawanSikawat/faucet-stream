@@ -413,6 +413,15 @@ mark {
 .content pre:not(.mermaid) > code {
   font-size: 0.86em;
 }
+/* Code panels contrast the page (header-ui.js forceContrastCode): a DARK panel
+   on a light page, a LIGHT panel on a dark page. On light pages the dark panel's
+   plain text is bumped to bright near-white so it never reads as faded (syntax
+   token colors keep their own hues); on dark pages the panel is light and keeps
+   its own dark text, so it's left alone. */
+.light .content pre code,
+.rust .content pre code {
+  color: #f5f6f7;
+}
 
 /* Tables: airy and rule-based (in the Pydantic / Material spirit) — no boxy
    grid of borders. A bold header underlined by a firm rule, light horizontal
