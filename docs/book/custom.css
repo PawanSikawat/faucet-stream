@@ -286,8 +286,18 @@ summary:focus-visible {
   background: color-mix(in srgb, var(--fs-green) 7%, transparent);
   border-radius: 0 6px 6px 0;
   margin-inline: 0;
-  padding: 0.6rem 1rem;
+  padding: 1rem 1.2rem;
   color: inherit;
+}
+/* Zero the leading/trailing margins of the callout's own paragraphs so the top
+   and bottom padding stay symmetric — otherwise the last paragraph's
+   margin-bottom stacks on the padding and leaves a big gap under the text while
+   the first line hugs the top edge. */
+.content blockquote > :first-child {
+  margin-top: 0;
+}
+.content blockquote > :last-child {
+  margin-bottom: 0;
 }
 
 /* ── Tables: clean, soft warm header ──────────────────────────────────────── */
