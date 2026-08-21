@@ -322,6 +322,35 @@ pub struct AuditFilter {
     pub limit: usize,
 }
 
+/// One persisted log line for a completed run (#529). Stored in
+/// `faucet_serve_run_logs` (SQL backends) or an in-memory map (memory backend),
+/// and surfaced by `GET /v1/runs/{id}/logs?format=jsonl|text` after the run's
+/// ephemeral SSE buffer has drained. `seq` is the run-scoped monotonic sequence
+/// (from the capture ring), and is the ordering + pagination key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunLogLine {
+    pub seq: u64,
+    /// RFC 3339 capture timestamp.
+    pub ts: String,
+    /// Log level (`INFO` / `WARN` / …).
+    pub level: String,
+    /// The redacted, formatted log line.
+    pub line: String,
+}
+
+/// A page of persisted run logs (#529), oldest-first. `truncated` is `true` when
+/// earlier lines for the run were dropped by the per-run cap
+/// (`--log-max-lines-per-run`), so the caller can flag the gap.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunLogPage {
+    pub lines: Vec<RunLogLine>,
+    pub truncated: bool,
+}
+
+/// Sentinel `seq` marking a per-run truncation record (the per-run cap was hit).
+/// Stored like a normal line but excluded from `lines`, setting `truncated`.
+pub const RUN_LOG_TRUNCATED_SEQ: u64 = u64::MAX;
+
 #[async_trait]
 pub trait RunHistory: Send + Sync {
     /// Atomically claim `key` for `run_id` (or report a replay/conflict). A prior
@@ -562,6 +591,46 @@ pub trait RunHistory: Send + Sync {
     async fn list_audit(&self, filter: &AuditFilter) -> Result<Vec<AuditEntry>, HistoryError> {
         let _ = filter;
         Ok(Vec::new())
+    }
+
+    // ── Persistent run logs (#529) ────────────────────────────────────────────
+    //
+    // Durable, fetch-anytime logs for a completed run, so `GET
+    // /v1/runs/{id}/logs?format=jsonl|text` works past the ephemeral SSE drain
+    // window. Defaulted to inert so third-party impls are unaffected; implemented
+    // by the memory + SQL backends and forwarded by the fallback wrapper. Purged
+    // on their own retention window (`--log-retention-secs`), independent of run
+    // records.
+
+    /// Append a batch of captured log lines for a run (already redacted). A line
+    /// with `seq == RUN_LOG_TRUNCATED_SEQ` marks a per-run cap truncation.
+    /// Best-effort: failures are logged, never fatal. Default: no-op.
+    async fn record_run_logs(
+        &self,
+        run_id: &str,
+        lines: &[RunLogLine],
+    ) -> Result<(), HistoryError> {
+        let _ = (run_id, lines);
+        Ok(())
+    }
+
+    /// A page of a run's persisted logs, oldest-first, `seq > after_seq`, capped
+    /// at `limit`. Default: empty.
+    async fn list_run_logs(
+        &self,
+        run_id: &str,
+        after_seq: Option<u64>,
+        limit: usize,
+    ) -> Result<RunLogPage, HistoryError> {
+        let _ = (run_id, after_seq, limit);
+        Ok(RunLogPage::default())
+    }
+
+    /// Drop persisted log lines older than `older_than`. Returns the number
+    /// removed. Independent of run-record retention. Default: nothing purged.
+    async fn purge_run_logs(&self, older_than: Duration) -> Result<usize, HistoryError> {
+        let _ = older_than;
+        Ok(0)
     }
 
     // ── Data Movement Catalog (#279) ─────────────────────────────────────────

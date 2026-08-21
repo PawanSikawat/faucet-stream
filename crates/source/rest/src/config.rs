@@ -194,6 +194,17 @@ pub struct RestStreamConfig {
     /// pagination must be `none`. See [`AsyncJobConfig`](crate::async_job::AsyncJobConfig).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub async_job: Option<crate::async_job::AsyncJobConfig>,
+
+    // ── In-run datetime window slicing (#527) ───────────────────────────────────
+    /// Bound each request to a rolling `[start, end)` window between the stored
+    /// bookmark and `now`, iterating the windows within one run (each `step`
+    /// wide) with per-window bookmark durability. For APIs that require — or cap —
+    /// a bounded date range (analytics/ads/reporting feeds). Parity with Airbyte's
+    /// `DatetimeBasedCursor`. Requires `replication_method: incremental` +
+    /// `replication_key`, and a start bookmark (from state, or
+    /// `start_replication_value`). See [`WindowSpec`](faucet_core::WindowSpec).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<faucet_core::WindowSpec>,
 }
 
 /// OData protocol version, which selects the paging-link key.
@@ -292,6 +303,7 @@ impl Default for RestStreamConfig {
             odata: None,
             decode: Vec::new(),
             async_job: None,
+            window: None,
         }
     }
 }
@@ -361,6 +373,27 @@ impl RestStreamConfig {
                 return Err(faucet_core::FaucetError::Config(
                     "rest: an `async_job:` lifecycle fetches a single result — set \
                      `pagination: none`"
+                        .into(),
+                ));
+            }
+        }
+        if let Some(window) = &self.window {
+            window.validate()?;
+            if !matches!(self.replication_method, ReplicationMethod::Incremental) {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: `window` slicing requires `replication_method: incremental`".into(),
+                ));
+            }
+            if self.replication_key.is_none() {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: `window` slicing requires `replication_key` (the datetime cursor field)"
+                        .into(),
+                ));
+            }
+            if self.async_job.is_some() {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: `window` slicing and `async_job` are mutually exclusive — the async-job \
+                     lifecycle fetches a single result and does not slice by window"
                         .into(),
                 ));
             }
@@ -539,6 +572,12 @@ impl RestStreamConfig {
     /// Bind the stored bookmark into the outgoing request (#513).
     pub fn replication_bind(mut self, bind: ReplicationBind) -> Self {
         self.replication_bind = Some(bind);
+        self
+    }
+
+    /// Slice the run into rolling `[start, end)` datetime windows (#527).
+    pub fn window(mut self, window: faucet_core::WindowSpec) -> Self {
+        self.window = Some(window);
         self
     }
 

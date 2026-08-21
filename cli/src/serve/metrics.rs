@@ -109,6 +109,11 @@ pub fn record_runs_reclaimed(requeued: usize, failed: usize) {
         .increment(failed as u64);
 }
 
+/// Count persisted run-log lines purged by the retention loop (#529).
+pub fn inc_run_logs_purged(n: usize) {
+    metrics::counter!("faucet_serve_run_logs_purged_total").increment(n as u64);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

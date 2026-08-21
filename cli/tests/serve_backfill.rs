@@ -22,6 +22,8 @@ fn test_config(listen: &str) -> ServeConfig {
         shutdown_grace_secs: 5,
         retain_terminal_runs_secs: 60,
         idempotency_retention_secs: 60,
+        log_retention_secs: 604_800,
+        log_max_lines_per_run: 100_000,
         lease_ttl_secs: 30,
         probe_timeout_secs: 5,
         env_file: None,

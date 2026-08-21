@@ -508,6 +508,16 @@ pub trait Sink: Send + Sync {
         false
     }
 
+    /// Whether this sink can bulk-load via an object-store stage — write the
+    /// page to S3/GCS/Azure, then pull it with the warehouse's native load
+    /// command (`COPY` / `COPY INTO` / `s3()` table function) (#528). Default
+    /// `false`; warehouse sinks that honour a [`StagingSpec`](crate::StagingSpec)
+    /// override it. Object-safe (no args, no generics) so `Box<dyn Sink>` is
+    /// unaffected.
+    fn supports_staged_load(&self) -> bool {
+        false
+    }
+
     /// Delete rows matching `scope` whose key is **not** in `seen`.
     ///
     /// Called at most once per invocation, only after the run completed

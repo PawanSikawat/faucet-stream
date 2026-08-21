@@ -44,14 +44,18 @@ pub mod retry;
 pub mod schema;
 pub mod shard;
 pub mod stage;
+pub mod staging;
 pub mod state;
 pub mod tls;
 pub mod topology;
 pub mod traits;
 pub mod transform;
 pub mod transforming_source;
+#[cfg(feature = "transform-tree-flatten")]
+pub mod tree;
 pub mod util;
 pub mod verify;
+pub mod window;
 pub mod write_mode;
 
 #[cfg(feature = "compression")]
@@ -112,7 +116,8 @@ pub use pipeline::{
     validate_batch_size,
 };
 pub use replication::{
-    BindFormat, BindTarget, ReplicationBind, ReplicationMethod, format_bookmark, json_gt,
+    BindFormat, BindTarget, ReplicationBind, ReplicationMethod, format_bookmark, format_instant,
+    json_gt, parse_instant,
 };
 pub use resilience::{
     BackoffKind, CircuitBreaker, CircuitBreakerConfig, PoisonAction, PoisonPolicy,
@@ -130,6 +135,10 @@ pub use stage::{ExplodeSpec, OnMissing};
 #[cfg(feature = "transform-filter")]
 pub use stage::{FilterOp, FilterSpec};
 pub use stage::{TransformStage, compile_stage};
+pub use staging::{
+    StagedFile, StagingCleanup, StagingCompression, StagingFormat, StagingLocation, StagingScheme,
+    StagingSpec, serialize_records,
+};
 pub use state::{FileStateStore, MemoryStateStore, StateStore};
 pub use tls::TlsClientConfig;
 pub use topology::{
@@ -151,8 +160,13 @@ pub use transform::{CastOnError, CastType};
 #[cfg(feature = "transform-hash")]
 pub use transform::{HashAlgorithm, HashEncoding};
 pub use transforming_source::TransformingSource;
+#[cfg(feature = "transform-tree-flatten")]
+pub use tree::{AncestorsSpec, ColumnsSpec, CompiledTreeFlatten, TreeFlattenSpec};
 pub use util::redact_uri_credentials;
 pub use verify::{IntegrityCheck, LengthCheck, VerifyingReader};
+pub use window::{
+    WINDOW_PLACEHOLDER, Window, WindowBind, WindowSpec, enumerate_windows, parse_step,
+};
 pub use write_mode::{
     DeleteMarker, KeyTuple, OverwriteScope, WriteMode, WritePlan, WriteSpec, key_to_doc_id,
     key_to_filter, plan_writes,

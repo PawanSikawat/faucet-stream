@@ -247,6 +247,27 @@ impl RunHistory for FallbackHistory {
         via!(self, p => p.list_audit(filter), f => f.list_audit(filter))
     }
 
+    // ── Persistent run logs (#529) ────────────────────────────────────────────
+
+    async fn record_run_logs(
+        &self,
+        run_id: &str,
+        lines: &[crate::serve::history::RunLogLine],
+    ) -> Result<(), HistoryError> {
+        via!(self, p => p.record_run_logs(run_id, lines), f => f.record_run_logs(run_id, lines))
+    }
+    async fn list_run_logs(
+        &self,
+        run_id: &str,
+        after_seq: Option<u64>,
+        limit: usize,
+    ) -> Result<crate::serve::history::RunLogPage, HistoryError> {
+        via!(self, p => p.list_run_logs(run_id, after_seq, limit), f => f.list_run_logs(run_id, after_seq, limit))
+    }
+    async fn purge_run_logs(&self, older_than: std::time::Duration) -> Result<usize, HistoryError> {
+        via!(self, p => p.purge_run_logs(older_than), f => f.purge_run_logs(older_than))
+    }
+
     // ── Data Movement Catalog (#279) ─────────────────────────────────────────
 
     async fn catalog_record(

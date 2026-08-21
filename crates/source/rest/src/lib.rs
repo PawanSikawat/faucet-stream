@@ -19,7 +19,8 @@ pub mod stream;
 
 // Re-export core types so users don't need a separate faucet-core dependency.
 pub use faucet_core::{
-    FaucetError, RecordTransform, ReplicationMethod, Sink, Source, replication, schema, transform,
+    FaucetError, RecordTransform, ReplicationMethod, Sink, Source, WindowBind, WindowSpec,
+    replication, schema, transform,
 };
 
 pub use async_job::{AsyncJobConfig, JobRequest, JobStatus, PollSpec};

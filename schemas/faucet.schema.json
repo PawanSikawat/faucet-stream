@@ -10412,6 +10412,17 @@
                         }
                       ],
                       "description": "Run a submit→poll→fetch job lifecycle instead of a single GET, for\nbulk/export/report-run APIs (Salesforce Bulk, Stripe Reporting, …). The\nfetched result flows through `decode:` / `response_format`. When set,\npagination must be `none`. See [`AsyncJobConfig`](crate::async_job::AsyncJobConfig)."
+                    },
+                    "window": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_rest__WindowSpec"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Bound each request to a rolling `[start, end)` window between the stored\nbookmark and `now`, iterating the windows within one run (each `step`\nwide) with per-window bookmark durability. For APIs that require — or cap —\na bounded date range (analytics/ads/reporting feeds). Parity with Airbyte's\n`DatetimeBasedCursor`. Requires `replication_method: incremental` +\n`replication_key`, and a start bookmark (from state, or\n`start_replication_value`). See [`WindowSpec`](faucet_core::WindowSpec)."
                     }
                   },
                   "title": "RestStreamConfig",
@@ -17409,6 +17420,11 @@
           "description": "Alias the projected value is exposed under: a `for_each` row references\nit as `${<row_id>.<as>}`. Must match `^[a-z0-9][a-z0-9_-]*$`.",
           "type": "string"
         },
+        "collect": {
+          "default": false,
+          "description": "**Collected (list-valued) dimension** (#531). When `true`, the whole\ndeduped value-set is published as a single list per upstream tuple rather\nthan as an independent cartesian axis — so a consuming row injects the\nentire list into one request (`${<id>.<as>}` renders it comma-joined,\ne.g. HubSpot's `?properties=a,b,c`). Required when a `discover:` row also\ndeclares `for_each:` (chained / two-level discovery), and only meaningful\non a discovery row.",
+          "type": "boolean"
+        },
         "select": {
           "description": "JSONPath projecting the dimension value from each discovered record\n(e.g. `$.id`). `$` selects the whole record. Null / missing values are\nskipped with a warning.",
           "type": "string"
@@ -17972,6 +17988,75 @@
             "string",
             "null"
           ]
+        }
+      },
+      "type": "object"
+    },
+    "source_rest__WindowSpec": {
+      "additionalProperties": true,
+      "description": "Declarative in-run datetime window slicing (#527).",
+      "properties": {
+        "granularity": {
+          "description": "Subtract this from each window's *rendered* upper bound so `[start, end]`\nis non-overlapping for inclusive-inclusive APIs (Airbyte\n`cursor_granularity`). Same grammar as `step`. The **persisted bookmark is\nalways the true half-open boundary**, so resume never gaps or overlaps —\nonly the value sent to the server is adjusted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lookback": {
+          "description": "Re-scan this much *before* the bookmark on the first window, to catch\nlate-arriving updates without a full replay. Same grammar as `step`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lower": {
+          "$ref": "#/$defs/source_rest__WindowBind",
+          "description": "Lower-bound bind, rendered with the window **start**."
+        },
+        "max_windows": {
+          "default": 10000,
+          "description": "Safety cap on the number of windows enumerated in one run. On overflow the\nsweep is truncated (logged, never silently), and the next run resumes from\nthe last window's end.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "step": {
+          "description": "Window size — `45s` / `30m` / `6h` / `30d`, or a bare integer (= seconds).\nAbsolute UTC durations (`d` = 24h); calendar/DST-correct windows are a\n[`faucet backfill`] concern, not the incremental cursor.",
+          "type": "string"
+        },
+        "upper": {
+          "$ref": "#/$defs/source_rest__WindowBind",
+          "description": "Upper-bound bind, rendered with the window **end**."
+        }
+      },
+      "type": "object"
+    },
+    "source_rest__WindowBind": {
+      "additionalProperties": true,
+      "description": "Injects a rendered window boundary into the outgoing request — the window\nanalogue of [`ReplicationBind`](crate::ReplicationBind). Reuses the same\n[`BindTarget`] placement and [`BindFormat`] formatting.",
+      "properties": {
+        "format": {
+          "$ref": "#/$defs/source_rest__BindFormat",
+          "default": "raw",
+          "description": "How to format the boundary before substitution."
+        },
+        "into": {
+          "$ref": "#/$defs/source_rest__BindTarget",
+          "default": "query",
+          "description": "Where to place the rendered boundary (query param / header / body field /\npath placeholder)."
+        },
+        "name": {
+          "description": "The parameter / header / body-field / path-placeholder name.",
+          "type": "string"
+        },
+        "template": {
+          "default": "${window}",
+          "description": "Template rendered with [`WINDOW_PLACEHOLDER`] (`${window}`) replaced by the\nformatted boundary. Defaults to the bare `${window}`; set e.g.\n`\"gte|${window}\"` or `\"[${window} TO *]\"`.",
+          "type": "string"
         }
       },
       "type": "object"

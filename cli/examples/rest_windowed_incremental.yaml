@@ -1,0 +1,38 @@
+# In-run datetime window slicing (#527): bound each request to a rolling
+# [start, end) window between the stored bookmark and `now`, iterating the
+# windows within one run — the shape needed for capped/bounded date-range APIs
+# (analytics / ads / reporting feeds that reject a span over 30/90 days).
+# Parity with Airbyte's DatetimeBasedCursor.
+#
+#   faucet validate cli/examples/rest_windowed_incremental.yaml
+#   faucet run      cli/examples/rest_windowed_incremental.yaml
+#
+# Each window issues `?start_date=<win.start>&end_date=<win.end>` (dates), pages
+# normally within the window, and persists the window's end as the bookmark — so
+# a mid-sweep crash resumes from the last completed window. `${window}` is
+# rendered by the connector (lower → window start, upper → window end).
+version: 1
+name: windowed_incremental
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: "https://api.example.com"
+      path: /reports/usage
+      auth: { type: bearer, config: { token: "${env:AUTH_TOKEN}" } }
+      records_path: "$.data[*]"
+      replication_method: incremental
+      replication_key: date
+      # Anchor the first window. On later runs the persisted bookmark wins.
+      start_replication_value: "2024-01-01"
+      window:
+        step: 30d          # 30-day windows; the API caps a range at ~90 days
+        lookback: 1d       # re-scan the last day each run for late-arriving rows
+        lower: { into: query, name: start_date, template: "${window}", format: date }
+        upper: { into: query, name: end_date,   template: "${window}", format: date }
+  sink:
+    type: jsonl
+    config: { path: ./out/usage.jsonl }
+  state:
+    type: file
+    config: { path: ./state/windowed.json }

@@ -172,6 +172,47 @@ replication_bind:
   format: iso8601
 ```
 
+#### Datetime window slicing (`window`)
+
+`replication_bind` pushes a single **lower** bound. Some APIs require **both** a
+lower and an upper bound and **cap the span** (analytics / ads / reporting feeds
+that reject a range over 30 or 90 days) — against those an unbounded incremental
+either errors or silently truncates. A `window` block bounds each request to a
+rolling `[start, end)` window between the stored bookmark and `now`, iterating the
+windows within one run (each `step` wide) and persisting the window's end as the
+bookmark — so a mid-sweep crash resumes from the last completed window. This is
+parity with Airbyte's `DatetimeBasedCursor`. Requires `replication_method:
+incremental` + `replication_key`, and a start bookmark (from a `state:` store or
+`start_replication_value`).
+
+Each boundary is rendered through a `WindowBind` (same placement/formatting as
+`replication_bind`, with the placeholder `${window}`): the `lower` bind renders
+the window start, the `upper` bind the window end.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `step` | string | — | Window size: `45s` / `30m` / `6h` / `30d` (absolute UTC; `d` = 24h), or a bare integer (= seconds). |
+| `lower` | `WindowBind` | — | Bind rendered with the window **start**. |
+| `upper` | `WindowBind` | — | Bind rendered with the window **end**. |
+| `granularity` | string / null | `null` | Subtract from each *rendered* upper bound so `[start, end]` is non-overlapping for inclusive-inclusive APIs (Airbyte `cursor_granularity`). The persisted bookmark stays the true half-open boundary. |
+| `lookback` | string / null | `null` | Re-scan this much *before* the bookmark on the first window, for late-arriving rows. |
+| `max_windows` | integer | `10000` | Safety cap; on overflow the sweep is truncated (logged) and the next run resumes. |
+
+A `WindowBind` has `into` (`query \| header \| body \| path`, default `query`),
+`name`, `template` (default `${window}`, e.g. `"[${window} TO *]"`), and `format`
+(`raw \| iso8601 \| epoch_s \| epoch_ms \| date`).
+
+```yaml
+replication_method: { type: incremental }
+replication_key: date
+start_replication_value: "2024-01-01"
+window:
+  step: 30d
+  lookback: 1d
+  lower: { into: query, name: start_date, template: "${window}", format: date }
+  upper: { into: query, name: end_date,   template: "${window}", format: date }
+```
+
 ### OData (`odata`)
 
 Speak the OData protocol natively — a single block derives `@odata.nextLink`

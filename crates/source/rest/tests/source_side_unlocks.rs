@@ -279,3 +279,306 @@ async fn replication_bind_pushes_bookmark_into_a_header() {
     let records = stream.fetch_all().await.unwrap();
     assert_eq!(records.len(), 1);
 }
+
+// ── #527 in-run datetime window slicing ─────────────────────────────────────────
+
+use faucet_source_rest::WindowSpec;
+
+/// Drain a windowed stream into (all records, last non-null bookmark).
+async fn drain_windowed(
+    stream: &RestStream,
+) -> (Vec<serde_json::Value>, Option<serde_json::Value>) {
+    use futures::StreamExt;
+    let ctx = std::collections::HashMap::new();
+    let mut records = Vec::new();
+    let mut bookmark = None;
+    let mut s = Source::stream_pages(stream, &ctx, 0);
+    while let Some(p) = s.next().await {
+        let p = p.unwrap();
+        records.extend(p.records);
+        if let Some(bm) = p.bookmark {
+            bookmark = Some(bm);
+        }
+    }
+    (records, bookmark)
+}
+
+fn window_query(name_lower: &str, name_upper: &str) -> WindowSpec {
+    serde_json::from_value(json!({
+        "step": "1d",
+        "lower": {"into": "query", "name": name_lower, "format": "date"},
+        "upper": {"into": "query", "name": name_upper, "format": "date"},
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn window_slices_span_into_bounded_requests_and_advances_to_now() {
+    let server = MockServer::start().await;
+    // Three 1-day windows over [2024-01-01, 2024-01-04); each request carries the
+    // window's start_date/end_date, and each window returns one record.
+    for (day, id) in [("2024-01-01", 1), ("2024-01-02", 2), ("2024-01-03", 3)] {
+        Mock::given(method("GET"))
+            .and(path("/report"))
+            .and(query_param("start_date", day))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": [ {"id": id, "updated_at": format!("{day}T12:00:00Z")} ],
+            })))
+            .mount(&server)
+            .await;
+    }
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/report")
+            .records_path("$.data[*]")
+            .replication_method(ReplicationMethod::Incremental)
+            .replication_key("updated_at")
+            .start_replication_value(json!("2024-01-01"))
+            .window(window_query("start_date", "end_date")),
+    )
+    .unwrap()
+    .with_now_override_rfc3339("2024-01-04T00:00:00Z");
+
+    let (records, bookmark) = drain_windowed(&stream).await;
+    assert_eq!(records.len(), 3, "one record per window");
+    let mut ids: Vec<i64> = records.iter().map(|r| r["id"].as_i64().unwrap()).collect();
+    ids.sort();
+    assert_eq!(ids, vec![1, 2, 3]);
+    // The persisted bookmark is the last window's end (== now), so the next run
+    // resumes from there with no gap and no overlap.
+    let bm = bookmark.expect("a window sweep persists its boundary");
+    assert!(
+        bm.as_str().unwrap().starts_with("2024-01-04T00:00:00"),
+        "bookmark should be the final window end (now), got {bm}"
+    );
+}
+
+#[tokio::test]
+async fn window_upper_bound_is_sent_on_each_request() {
+    let server = MockServer::start().await;
+    // A single window [2024-01-01, 2024-01-02): assert BOTH bounds land as query
+    // params (start_date AND end_date), proving the request is bounded on both
+    // sides — the whole point versus a single lower-bound `replication_bind`.
+    Mock::given(method("GET"))
+        .and(path("/report"))
+        .and(query_param("start_date", "2024-01-01"))
+        .and(query_param("end_date", "2024-01-02"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [ {"id": 1, "updated_at": "2024-01-01T09:00:00Z"} ],
+        })))
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/report")
+            .records_path("$.data[*]")
+            .replication_method(ReplicationMethod::Incremental)
+            .replication_key("updated_at")
+            .start_replication_value(json!("2024-01-01"))
+            .window(window_query("start_date", "end_date")),
+    )
+    .unwrap()
+    .with_now_override_rfc3339("2024-01-02T00:00:00Z");
+
+    let (records, _) = drain_windowed(&stream).await;
+    assert_eq!(records.len(), 1);
+}
+
+#[tokio::test]
+async fn window_lookback_extends_the_first_window_backwards() {
+    let server = MockServer::start().await;
+    // start=2024-01-02, lookback=1d → the first window starts 2024-01-01.
+    for day in ["2024-01-01", "2024-01-02"] {
+        Mock::given(method("GET"))
+            .and(path("/report"))
+            .and(query_param("start_date", day))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": [ {"id": 1, "updated_at": format!("{day}T00:00:00Z")} ],
+            })))
+            .mount(&server)
+            .await;
+    }
+    let spec: WindowSpec = serde_json::from_value(json!({
+        "step": "1d",
+        "lower": {"into": "query", "name": "start_date", "format": "date"},
+        "upper": {"into": "query", "name": "end_date", "format": "date"},
+        "lookback": "1d",
+    }))
+    .unwrap();
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/report")
+            .records_path("$.data[*]")
+            .replication_method(ReplicationMethod::Incremental)
+            .replication_key("updated_at")
+            .start_replication_value(json!("2024-01-02"))
+            .window(spec),
+    )
+    .unwrap()
+    .with_now_override_rfc3339("2024-01-03T00:00:00Z");
+
+    // Both the lookback window (start 2024-01-01) and the current window must be
+    // fetched — 2 records. If lookback were ignored, the 2024-01-01 mock would
+    // never be hit and we'd get only 1.
+    let (records, _) = drain_windowed(&stream).await;
+    assert_eq!(
+        records.len(),
+        2,
+        "lookback must fetch the day before the bookmark"
+    );
+}
+
+#[tokio::test]
+async fn window_granularity_makes_upper_inclusive_but_bookmark_is_true_boundary() {
+    let server = MockServer::start().await;
+    // step=1d, granularity=1d → for window [2024-01-01, 2024-01-02) the rendered
+    // upper is end - granularity = 2024-01-01 (inclusive-inclusive API), but the
+    // persisted bookmark stays the true half-open end 2024-01-02.
+    Mock::given(method("GET"))
+        .and(path("/report"))
+        .and(query_param("start_date", "2024-01-01"))
+        .and(query_param("end_date", "2024-01-01"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [ {"id": 1, "updated_at": "2024-01-01T06:00:00Z"} ],
+        })))
+        .mount(&server)
+        .await;
+    let spec: WindowSpec = serde_json::from_value(json!({
+        "step": "1d",
+        "granularity": "1d",
+        "lower": {"into": "query", "name": "start_date", "format": "date"},
+        "upper": {"into": "query", "name": "end_date", "format": "date"},
+    }))
+    .unwrap();
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/report")
+            .records_path("$.data[*]")
+            .replication_method(ReplicationMethod::Incremental)
+            .replication_key("updated_at")
+            .start_replication_value(json!("2024-01-01"))
+            .window(spec),
+    )
+    .unwrap()
+    .with_now_override_rfc3339("2024-01-02T00:00:00Z");
+
+    let (records, bookmark) = drain_windowed(&stream).await;
+    assert_eq!(records.len(), 1);
+    let bm = bookmark.unwrap();
+    assert!(
+        bm.as_str().unwrap().starts_with("2024-01-02T00:00:00"),
+        "bookmark must be the true half-open boundary, not the granularity-adjusted upper: {bm}"
+    );
+}
+
+#[tokio::test]
+async fn window_empty_when_bookmark_at_or_after_now() {
+    let server = MockServer::start().await;
+    // No mock mounted: if any request fired, wiremock would 404 and the run would
+    // error. Bookmark == now → zero windows → no requests → a clean no-op.
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/report")
+            .records_path("$.data[*]")
+            .replication_method(ReplicationMethod::Incremental)
+            .replication_key("updated_at")
+            .start_replication_value(json!("2024-01-04T00:00:00Z"))
+            .window(window_query("start_date", "end_date")),
+    )
+    .unwrap()
+    .with_now_override_rfc3339("2024-01-04T00:00:00Z");
+
+    let (records, bookmark) = drain_windowed(&stream).await;
+    assert!(records.is_empty());
+    assert!(bookmark.is_none(), "a no-op sweep persists no bookmark");
+}
+
+#[test]
+fn window_requires_incremental_and_replication_key() {
+    // Missing replication_key. `.map(|_| ())` drops the non-`Debug` `RestStream`
+    // so `unwrap_err` can format the `Ok` side.
+    let err = RestStream::new(
+        RestStreamConfig::new("https://x", "/r")
+            .records_path("$.data[*]")
+            .replication_method(ReplicationMethod::Incremental)
+            .window(window_query("start_date", "end_date")),
+    )
+    .map(|_| ())
+    .unwrap_err();
+    assert!(matches!(err, FaucetError::Config(m) if m.contains("replication_key")));
+
+    // Not incremental.
+    let err = RestStream::new(
+        RestStreamConfig::new("https://x", "/r")
+            .records_path("$.data[*]")
+            .replication_key("updated_at")
+            .window(window_query("start_date", "end_date")),
+    )
+    .map(|_| ())
+    .unwrap_err();
+    assert!(matches!(err, FaucetError::Config(m) if m.contains("incremental")));
+}
+
+#[tokio::test]
+async fn window_without_start_bookmark_errors() {
+    let server = MockServer::start().await;
+    // No start_replication_value and no state → the window sweep can't anchor.
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/report")
+            .records_path("$.data[*]")
+            .replication_method(ReplicationMethod::Incremental)
+            .replication_key("date")
+            .window(window_query("start_date", "end_date")),
+    )
+    .unwrap()
+    .with_now_override_rfc3339("2024-01-02T00:00:00Z");
+
+    use futures::StreamExt;
+    let ctx = std::collections::HashMap::new();
+    let mut s = Source::stream_pages(&stream, &ctx, 0);
+    let first = s.next().await.expect("a stream item");
+    let err = first.expect_err("window slicing without a start bookmark must error");
+    assert!(matches!(err, FaucetError::Config(m) if m.contains("start bookmark")));
+}
+
+#[tokio::test]
+async fn window_max_windows_truncates_the_sweep() {
+    let server = MockServer::start().await;
+    // A 3-day span at 1-day step would be 3 windows, but max_windows=1 truncates
+    // to the first — the next run resumes from that window's end.
+    Mock::given(method("GET"))
+        .and(path("/report"))
+        .and(query_param("start_date", "2024-01-01"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [ {"id": 1, "updated_at": "2024-01-01T00:00:00Z"} ],
+        })))
+        .mount(&server)
+        .await;
+    let spec: WindowSpec = serde_json::from_value(json!({
+        "step": "1d",
+        "max_windows": 1,
+        "lower": {"into": "query", "name": "start_date", "format": "date"},
+        "upper": {"into": "query", "name": "end_date", "format": "date"},
+    }))
+    .unwrap();
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/report")
+            .records_path("$.data[*]")
+            .replication_method(ReplicationMethod::Incremental)
+            .replication_key("updated_at")
+            .start_replication_value(json!("2024-01-01"))
+            .window(spec),
+    )
+    .unwrap()
+    .with_now_override_rfc3339("2024-01-04T00:00:00Z");
+
+    let (records, bookmark) = drain_windowed(&stream).await;
+    // Only the first window ran (no mock for 2024-01-02/03 → they'd 404 if hit).
+    assert_eq!(records.len(), 1);
+    // Bookmark is the first window's end, so the next run resumes there.
+    let bm = bookmark.unwrap();
+    assert!(
+        bm.as_str().unwrap().starts_with("2024-01-02T00:00:00"),
+        "got {bm}"
+    );
+}

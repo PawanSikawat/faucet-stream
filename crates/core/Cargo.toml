@@ -38,6 +38,8 @@ transform-json-encode = []
 transform-lookup = []
 # Wide/map → long reshape stage (#516).
 transform-unpivot = []
+# Recursive report-tree / matrix → leaf rows (#530).
+transform-tree-flatten = []
 transform-filter = []
 transform-explode = []
 transform-cdc-unwrap = []
@@ -60,6 +62,7 @@ transforms = [
     "transform-json-encode",
     "transform-lookup",
     "transform-unpivot",
+    "transform-tree-flatten",
     "transform-filter",
     "transform-explode",
     "transform-cdc-unwrap",
@@ -80,6 +83,10 @@ otel = [
     "tokio/rt",
 ]
 compression = ["dep:async-compression", "dep:flate2", "dep:zstd"]
+# Staged bulk load (#528): the object-store uploader for staging pages to
+# S3/GCS/Azure. Pulls `object_store`; the pure spec/serialization stay in the
+# default build so connector authors who don't stage aren't burdened.
+staging = ["dep:object_store", "compression"]
 quality = ["dep:regex"]
 quality-jsonschema = ["quality", "dep:jsonschema"]
 # Data contracts (`contract:` config block, issue #204): a versioned output
@@ -137,6 +144,8 @@ opentelemetry-otlp = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 metrics-exporter-opentelemetry = { workspace = true, optional = true }
 async-compression = { workspace = true, optional = true }
+# Staged bulk load (#528, feature `staging`): S3/GCS/Azure uploader.
+object_store = { workspace = true, optional = true, features = ["aws", "gcp", "azure"] }
 flate2 = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 chrono = { workspace = true }

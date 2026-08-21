@@ -94,6 +94,17 @@ pub const DDL: &[&str] = &[
         result TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS faucet_serve_audit_ts_idx \
         ON faucet_serve_audit (ts)",
+    // Persistent run logs (#529). `seq` is a zero-padded fixed-width string so it
+    // sorts lexically = numerically; purged on its own retention window (`ts`).
+    "CREATE TABLE IF NOT EXISTS faucet_serve_run_logs (\
+        run_id TEXT NOT NULL,\
+        seq TEXT NOT NULL,\
+        ts TEXT NOT NULL,\
+        level TEXT NOT NULL,\
+        line TEXT NOT NULL,\
+        PRIMARY KEY (run_id, seq))",
+    "CREATE INDEX IF NOT EXISTS faucet_serve_run_logs_ts_idx \
+        ON faucet_serve_run_logs (ts)",
     // Data Movement Catalog (#279). Accumulating cross-run state, deliberately
     // NOT covered by `purge_expired` (the history is the value). Same
     // TEXT-columns + JSON `body` convention as the run tables: the dedicated
@@ -282,6 +293,16 @@ pub struct Stmts {
     pub list_audit: String,
     /// Purge audit records older than a threshold (retention).
     pub purge_audit: String,
+    // ── Persistent run logs (#529) ────────────────────────────────────────────
+    /// Insert one run-log line. Params: run_id, seq, ts, level, line.
+    pub insert_run_log: String,
+    /// A run's log lines with `seq > after` (excluding the truncation sentinel),
+    /// oldest-first, capped. Param order: run_id, after_seq, limit.
+    pub list_run_logs: String,
+    /// Whether a run has a truncation sentinel row. Param: run_id.
+    pub run_log_truncated: String,
+    /// Purge run-log lines older than a threshold (retention).
+    pub purge_run_logs: String,
     // ── Data Movement Catalog (#279) ─────────────────────────────────────────
     /// One dataset body by id (the merge read + the detail head).
     pub catalog_select_dataset: String,
@@ -540,6 +561,18 @@ impl Stmts {
                 ORDER BY ts DESC, id DESC LIMIT $9"
                 .into(),
             purge_audit: "DELETE FROM faucet_serve_audit WHERE ts < $1".into(),
+            insert_run_log: "INSERT INTO faucet_serve_run_logs \
+                (run_id, seq, ts, level, line) VALUES ($1,$2,$3,$4,$5) \
+                ON CONFLICT (run_id, seq) DO NOTHING"
+                .into(),
+            list_run_logs: "SELECT seq, ts, level, line FROM faucet_serve_run_logs \
+                WHERE run_id = $1 AND seq <> $2 AND ($3::text IS NULL OR seq > $4::text) \
+                ORDER BY seq ASC LIMIT $5"
+                .into(),
+            run_log_truncated: "SELECT 1 FROM faucet_serve_run_logs \
+                WHERE run_id = $1 AND seq = $2 LIMIT 1"
+                .into(),
+            purge_run_logs: "DELETE FROM faucet_serve_run_logs WHERE ts < $1".into(),
             catalog_select_dataset: "SELECT body FROM faucet_catalog_datasets WHERE id=$1".into(),
             catalog_upsert_dataset: "INSERT INTO faucet_catalog_datasets \
                 (id, uri, kind, last_seen, body) VALUES ($1,$2,$3,$4,$5) \
@@ -802,6 +835,18 @@ impl Stmts {
                 ORDER BY ts DESC, id DESC LIMIT ?"
                 .into(),
             purge_audit: "DELETE FROM faucet_serve_audit WHERE ts < ?".into(),
+            insert_run_log: "INSERT INTO faucet_serve_run_logs \
+                (run_id, seq, ts, level, line) VALUES (?,?,?,?,?) \
+                ON CONFLICT (run_id, seq) DO NOTHING"
+                .into(),
+            list_run_logs: "SELECT seq, ts, level, line FROM faucet_serve_run_logs \
+                WHERE run_id = ? AND seq <> ? AND (? IS NULL OR seq > ?) \
+                ORDER BY seq ASC LIMIT ?"
+                .into(),
+            run_log_truncated: "SELECT 1 FROM faucet_serve_run_logs \
+                WHERE run_id = ? AND seq = ? LIMIT 1"
+                .into(),
+            purge_run_logs: "DELETE FROM faucet_serve_run_logs WHERE ts < ?".into(),
             catalog_select_dataset: "SELECT body FROM faucet_catalog_datasets WHERE id=?".into(),
             catalog_upsert_dataset: "INSERT INTO faucet_catalog_datasets \
                 (id, uri, kind, last_seen, body) VALUES (?,?,?,?,?) \
@@ -943,6 +988,17 @@ pub async fn retry_backoff(attempt: usize) {
 /// Fixed-width RFC3339 (nanoseconds + `Z`) — lexicographically sortable.
 pub fn fmt_ts(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+}
+
+/// Zero-pad a run-log sequence to a fixed 20 digits (the width of `u64::MAX`) so
+/// it sorts lexically = numerically as a TEXT column (#529).
+pub fn pad_seq(seq: u64) -> String {
+    format!("{seq:020}")
+}
+
+/// Inverse of [`pad_seq`]; a malformed value falls back to 0.
+pub fn unpad_seq(raw: &str) -> u64 {
+    raw.trim_start_matches('0').parse().unwrap_or(0)
 }
 
 /// Inverse of [`fmt_ts`]. An unparseable value falls back to *now* rather than
@@ -2135,6 +2191,97 @@ macro_rules! impl_sql_history {
                     });
                 }
                 Ok(out)
+            }
+
+            // ── Persistent run logs (#529) ────────────────────────────────────
+
+            async fn record_run_logs(
+                &self,
+                run_id: &str,
+                lines: &[$crate::serve::history::RunLogLine],
+            ) -> Result<(), $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                if lines.is_empty() {
+                    return Ok(());
+                }
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let mut tx = self.pool.begin().await.map_err(backend)?;
+                for l in lines {
+                    sqlx::query(&self.stmts.insert_run_log)
+                        .bind(run_id)
+                        .bind(sql::pad_seq(l.seq))
+                        .bind(&l.ts)
+                        .bind(&l.level)
+                        .bind(&l.line)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(backend)?;
+                }
+                tx.commit().await.map_err(backend)?;
+                Ok(())
+            }
+
+            async fn list_run_logs(
+                &self,
+                run_id: &str,
+                after_seq: Option<u64>,
+                limit: usize,
+            ) -> Result<
+                $crate::serve::history::RunLogPage,
+                $crate::serve::history::HistoryError,
+            > {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                use $crate::serve::history::{RunLogLine, RunLogPage, RUN_LOG_TRUNCATED_SEQ};
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let sentinel = sql::pad_seq(RUN_LOG_TRUNCATED_SEQ);
+                let after = after_seq.map(sql::pad_seq);
+                let limit = limit.max(1) as i64;
+                let rows = sqlx::query(&self.stmts.list_run_logs)
+                    .bind(run_id)
+                    .bind(&sentinel)
+                    .bind(after.as_deref())
+                    .bind(after.as_deref())
+                    .bind(limit)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                let mut out = Vec::with_capacity(rows.len());
+                for r in &rows {
+                    let seq: String = r.try_get("seq").map_err(backend)?;
+                    out.push(RunLogLine {
+                        seq: sql::unpad_seq(&seq),
+                        ts: r.try_get("ts").map_err(backend)?,
+                        level: r.try_get("level").map_err(backend)?,
+                        line: r.try_get("line").map_err(backend)?,
+                    });
+                }
+                let truncated = sqlx::query(&self.stmts.run_log_truncated)
+                    .bind(run_id)
+                    .bind(&sentinel)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(backend)?
+                    .is_some();
+                Ok(RunLogPage { lines: out, truncated })
+            }
+
+            async fn purge_run_logs(
+                &self,
+                older_than: std::time::Duration,
+            ) -> Result<usize, $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let cutoff = sql::threshold(chrono::Utc::now(), older_than);
+                let res = sqlx::query(&self.stmts.purge_run_logs)
+                    .bind(cutoff)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                Ok(res.rows_affected() as usize)
             }
 
             // ── Data Movement Catalog (#279) ─────────────────────────────────

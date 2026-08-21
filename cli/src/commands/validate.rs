@@ -410,7 +410,7 @@ fn row_line(node: &crate::expand::ExpandedNode) -> String {
         NodeRole::Discovery { as_alias, .. } => {
             format!("discovery (as={as_alias})")
         }
-        NodeRole::Product { dims } => {
+        NodeRole::Product { dims, .. } => {
             format!("product of [{}]", dims.join(", "))
         }
     };

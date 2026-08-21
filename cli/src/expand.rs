@@ -36,6 +36,7 @@ pub const RESERVED_IDS: &[&str] = &[
     "partition",
     "bookmark",
     "job_id",
+    "window",
 ];
 
 /// One fully-merged matrix row, ready for the executor.
@@ -129,11 +130,29 @@ pub enum NodeRole {
     },
     /// Discovery dimension (#501) — runs its source once, projects `select`,
     /// dedups, and publishes the value-set under `as_alias`. No sink.
-    Discovery { select: String, as_alias: String },
+    ///
+    /// **Chained / collected discovery (#531):** when `dims` is non-empty the
+    /// discovery is itself fanned out over the cartesian product of those
+    /// upstream discovery dimensions (its `for_each`), running once per tuple
+    /// with `${dim}` tokens resolved in its source config; with `collect: true`
+    /// each tuple's value-set is published as one list keyed by the tuple
+    /// (a [`CollectedDim`](crate::discovery_matrix::CollectedDim)) rather than as
+    /// a flat cartesian axis.
+    Discovery {
+        select: String,
+        as_alias: String,
+        collect: bool,
+        dims: Vec<String>,
+    },
     /// Discovery-driven fan-out (#501) — runs once per tuple of the cartesian
     /// product of the named discovery dimensions. `dims` are discovery row ids
     /// (also mirrored into `depends_on` for readiness/skip/cycle reuse).
-    Product { dims: Vec<String> },
+    /// `collected` (#531) names the collected discovery rows this row references
+    /// (`${id.alias}`), whose per-tuple lists are injected into each tuple ctx.
+    Product {
+        dims: Vec<String>,
+        collected: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -337,12 +356,30 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
         .filter(|(row, _)| row.discover.is_some())
         .map(|(_, id)| id.as_str())
         .collect();
+    // Collected (list-valued) discovery rows (#531) — referenced via `${id.alias}`
+    // (not via `for_each`), so a consuming row depends on them explicitly.
+    let collect_discovery_ids: HashSet<&str> = rows
+        .iter()
+        .zip(ids.iter())
+        .filter(|(row, _)| row.discover.as_ref().is_some_and(|d| d.collect))
+        .map(|(_, id)| id.as_str())
+        .collect();
     for (i, row) in rows.iter().enumerate() {
         let id = ids[i].as_str();
         if let Some(disc) = &row.discover {
-            if !row.for_each.is_empty() {
+            // Chained / two-level discovery (#531): a `discover:` row MAY also
+            // declare `for_each:` — it then runs once per upstream tuple and must
+            // `collect: true` (publish one list per tuple, not a cartesian axis).
+            if !row.for_each.is_empty() && !disc.collect {
                 return Err(CliError::Config(format!(
-                    "matrix row '{id}': a `discover:` row cannot also declare `for_each:`"
+                    "matrix row '{id}': a chained `discover:` row (with `for_each:`) must set \
+                     `collect: true` — it publishes one list per upstream tuple"
+                )));
+            }
+            if disc.collect && row.for_each.is_empty() {
+                return Err(CliError::Config(format!(
+                    "matrix row '{id}': `discover.collect: true` requires `for_each:` — it collects \
+                     one list per upstream discovery tuple"
                 )));
             }
             if row.parent.is_some() {
@@ -432,6 +469,10 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
     // above only walks single-parent chains, so a cycle routed through a
     // `depends_on` edge would otherwise deadlock the executor at run time.
     let mut deps_by_row: Vec<Vec<String>> = Vec::with_capacity(rows.len());
+    // Collected discovery rows (#531) each row references via `${id.alias}`, in
+    // referenced order (deduped). Consumed when building the `Product` role so
+    // each tuple ctx gets the collected list injected.
+    let mut collected_refs_by_row: Vec<Vec<String>> = Vec::with_capacity(rows.len());
     for (i, row) in rows.iter().enumerate() {
         let id = ids[i].as_str();
         let mut deps: Vec<String> = Vec::with_capacity(row.depends_on.len());
@@ -459,7 +500,41 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
                 deps.push(dim.clone());
             }
         }
+        // Collected-discovery references (#531): `${props.name}` in a row's
+        // config makes it depend on `props` (which is NOT one of its `for_each`
+        // dims), so `props` runs first and its per-tuple lists are available.
+        let mut collected_refs: Vec<String> = Vec::new();
+        let mut refs = Vec::new();
+        if let Some(p) = &row.source
+            && let Some(c) = &p.config
+        {
+            collect_deferred(c, &mut refs);
+        }
+        if let Some(p) = &row.sink
+            && let Some(c) = &p.config
+        {
+            collect_deferred(c, &mut refs);
+        }
+        if let Some(disc) = &row.discover
+            && let Some(c) = &disc.source.config
+        {
+            collect_deferred(c, &mut refs);
+        }
+        for r in &refs {
+            if r.referenced_id == id {
+                continue;
+            }
+            if collect_discovery_ids.contains(r.referenced_id.as_str()) {
+                if !deps.contains(&r.referenced_id) {
+                    deps.push(r.referenced_id.clone());
+                }
+                if !collected_refs.contains(&r.referenced_id) {
+                    collected_refs.push(r.referenced_id.clone());
+                }
+            }
+        }
         deps_by_row.push(deps);
+        collected_refs_by_row.push(collected_refs);
     }
     detect_combined_cycle(&ids, &parents, &deps_by_row)?;
 
@@ -475,6 +550,13 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
         }
         if let Some(p) = &row.sink
             && let Some(c) = &p.config
+        {
+            check_refs(c, &id_set, id)?;
+        }
+        // A chained `discover:` row's source config (#531) references its upstream
+        // dimension (`${types.name}`); validate those refs too.
+        if let Some(disc) = &row.discover
+            && let Some(c) = &disc.source.config
         {
             check_refs(c, &id_set, id)?;
         }
@@ -559,6 +641,8 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
                 role: NodeRole::Discovery {
                     select: disc.select.clone(),
                     as_alias: disc.as_alias.clone(),
+                    collect: disc.collect,
+                    dims: row.for_each.clone(),
                 },
                 // `sink` is a never-built placeholder (run_discovery ignores it).
                 sink: src.clone(),
@@ -599,8 +683,11 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
         let role = if !row.for_each.is_empty() {
             // Discovery-driven fan-out (#501): runs once per cartesian-product
             // tuple of the named dimensions (also mirrored into `depends_on`).
+            // `collected` (#531) names the collected discovery rows this row
+            // injects a per-tuple list from.
             NodeRole::Product {
                 dims: row.for_each.clone(),
+                collected: collected_refs_by_row[i].clone(),
             }
         } else {
             match &row.parent {
@@ -1350,6 +1437,7 @@ fn check_refs(value: &Value, id_set: &HashSet<&str>, owner: &str) -> CliResult<(
                 && id != "partition"
                 && id != "bookmark"
                 && id != "job_id"
+                && id != "window"
                 && !id_set.contains(id)
             {
                 return Err(CliError::UnknownInterpolationId {
@@ -1440,13 +1528,15 @@ fn collect_deferred(value: &Value, out: &mut Vec<DeferredRef>) {
                 // resolved at run time, not parent-record dependencies — skip
                 // them so the executor doesn't treat them as deferred
                 // parent-record refs. `bookmark` is consumed *inside* a source's
-                // `replication_bind.template` (#513) — the connector renders it,
-                // so the CLI must pass it through untouched.
+                // `replication_bind.template` (#513), `window` inside a source's
+                // `window.{lower,upper}.template` (#527) — the connector renders
+                // them, so the CLI must pass them through untouched.
                 if id == "now"
                     || id == "backfill"
                     || id == "partition"
                     || id == "bookmark"
                     || id == "job_id"
+                    || id == "window"
                 {
                     continue;
                 }
@@ -1671,6 +1761,31 @@ pipeline:
     }
 
     #[test]
+    fn window_token_is_reserved_and_passes_through() {
+        // `${window}` is consumed inside a source's `window.{lower,upper}.template`
+        // (#527); expand must treat it as a reserved deferred id, not a ref.
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source:
+    type: rest
+    config:
+      base_url: https://x
+      path: /report
+      replication_method: incremental
+      replication_key: updated_at
+      start_replication_value: "2024-01-01"
+      window:
+        step: 30d
+        lower: { into: query, name: start_date, template: "${window}", format: date }
+        upper: { into: query, name: end_date, template: "${window}", format: date }
+  sink: { type: jsonl, config: { path: ./o } }
+"#);
+        let nodes = expand(&c).unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
     fn errors_on_self_parent_cycle() {
         let c = cfg(r#"
 version: 1
@@ -1815,7 +1930,9 @@ matrix:
         let nodes = expand(&c).unwrap();
         let subs = nodes.iter().find(|n| n.id == "subs").unwrap();
         match &subs.role {
-            NodeRole::Discovery { select, as_alias } => {
+            NodeRole::Discovery {
+                select, as_alias, ..
+            } => {
                 assert_eq!(select, "$.id");
                 assert_eq!(as_alias, "subsidiary_id");
             }
@@ -1823,7 +1940,7 @@ matrix:
         }
         let report = nodes.iter().find(|n| n.id == "report").unwrap();
         match &report.role {
-            NodeRole::Product { dims } => assert_eq!(dims, &vec!["subs".to_string()]),
+            NodeRole::Product { dims, .. } => assert_eq!(dims, &vec!["subs".to_string()]),
             other => panic!("expected Product, got {other:?}"),
         }
         // The dim is folded into depends_on so readiness/skip/cycle reuse it.
@@ -1831,14 +1948,85 @@ matrix:
     }
 
     #[test]
-    fn discover_with_for_each_is_rejected() {
+    fn chained_discover_without_collect_is_rejected() {
+        // #531: a `discover:` row with `for_each:` must set `collect: true`.
         let c = cfg(&disc_cfg(
-            r#"  - id: a
-    discover: { source: { type: rest, config: {} }, select: "$.id", as: x }
-    for_each: [a]"#,
+            r#"  - id: types
+    discover: { source: { type: rest, config: {} }, select: "$.name", as: name }
+  - id: props
+    for_each: [types]
+    discover: { source: { type: rest, config: {} }, select: "$.name", as: name }"#,
         ));
         let err = expand(&c).unwrap_err().to_string();
-        assert!(err.contains("cannot also declare"), "{err}");
+        assert!(err.contains("collect: true"), "{err}");
+    }
+
+    #[test]
+    fn collect_without_for_each_is_rejected() {
+        // #531: `collect: true` is meaningless without an upstream `for_each:`.
+        let c = cfg(&disc_cfg(
+            r#"  - id: types
+    discover: { source: { type: rest, config: {} }, select: "$.name", as: name, collect: true }"#,
+        ));
+        let err = expand(&c).unwrap_err().to_string();
+        assert!(err.contains("requires `for_each:`"), "{err}");
+    }
+
+    #[test]
+    fn chained_discovery_roles_and_deps_are_wired() {
+        // #531: types → props (chained, collected) → records (product injecting props).
+        let c = cfg(&disc_cfg(
+            r#"  - id: types
+    discover: { source: { type: rest, config: {} }, select: "$.name", as: name }
+  - id: props
+    for_each: [types]
+    discover:
+      source: { type: rest, config: { path: "/props/${types.name}" } }
+      select: "$.name"
+      as: name
+      collect: true
+  - id: records
+    for_each: [types]
+    source: { type: rest, config: { path: "/obj/${types.name}", query_params: { properties: "${props.name}" } } }"#,
+        ));
+        let nodes = expand(&c).unwrap();
+        // props: a chained Discovery (collect) fanning out over [types].
+        let props = nodes.iter().find(|n| n.id == "props").unwrap();
+        match &props.role {
+            NodeRole::Discovery { collect, dims, .. } => {
+                assert!(*collect);
+                assert_eq!(dims, &vec!["types".to_string()]);
+            }
+            other => panic!("expected chained Discovery, got {other:?}"),
+        }
+        assert_eq!(props.depends_on, vec!["types".to_string()]);
+        // records: a Product over [types] that injects the collected `props`.
+        let records = nodes.iter().find(|n| n.id == "records").unwrap();
+        match &records.role {
+            NodeRole::Product { dims, collected } => {
+                assert_eq!(dims, &vec!["types".to_string()]);
+                assert_eq!(collected, &vec!["props".to_string()]);
+            }
+            other => panic!("expected Product, got {other:?}"),
+        }
+        // records depends on both the fan-out dim and the collected discovery.
+        assert!(records.depends_on.contains(&"types".to_string()));
+        assert!(records.depends_on.contains(&"props".to_string()));
+    }
+
+    #[test]
+    fn chained_discovery_cycle_is_rejected() {
+        // #531: two chained discoveries fanning out over each other form a cycle.
+        let c = cfg(&disc_cfg(
+            r#"  - id: a
+    for_each: [b]
+    discover: { source: { type: rest, config: {} }, select: "$.name", as: name, collect: true }
+  - id: b
+    for_each: [a]
+    discover: { source: { type: rest, config: {} }, select: "$.name", as: name, collect: true }"#,
+        ));
+        let err = expand(&c).unwrap_err().to_string();
+        assert!(err.to_lowercase().contains("cycle"), "{err}");
     }
 
     #[test]

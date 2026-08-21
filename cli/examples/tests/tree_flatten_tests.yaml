@@ -1,0 +1,43 @@
+# Fixture-based offline tests for the `tree_flatten` transform (#530) — run with:
+#
+#   faucet test cli/examples/tests/tree_flatten_tests.yaml
+#
+# `tree_flatten` walks a recursive report tree (QuickBooks/Xero-style nested
+# `Rows`) and emits one flat row per leaf, carrying the section labels and the
+# period columns. The input is one report record; the output is N leaf rows.
+version: 1
+tests:
+  - name: quickbooks P&L report flattens to leaf rows
+    pipeline:
+      transforms:
+        - type: tree_flatten
+          config:
+            root: "Rows.Row"
+            children: "Rows.Row"
+            columns:
+              from: "ColData"
+              header: "Columns.Column"
+              header_label: "ColTitle"
+              value: "value"
+            ancestors:
+              field: "Header.ColData[0].value"
+              as: ["section"]
+            path_as: "group_path"
+    input:
+      - Columns:
+          Column:
+            - { ColTitle: "" }
+            - { ColTitle: "Jan 2024" }
+            - { ColTitle: "Feb 2024" }
+        Rows:
+          Row:
+            - Header:
+                ColData: [ { value: "Income" } ]
+              Rows:
+                Row:
+                  - ColData: [ { value: "Sales" },    { value: "100" }, { value: "120" } ]
+                  - ColData: [ { value: "Services" }, { value: "50" },  { value: "60" } ]
+    expect:
+      records:
+        - { section: "Income", group_path: "Income", col_0: "Sales",    "Jan 2024": "100", "Feb 2024": "120" }
+        - { section: "Income", group_path: "Income", col_0: "Services", "Jan 2024": "50",  "Feb 2024": "60" }

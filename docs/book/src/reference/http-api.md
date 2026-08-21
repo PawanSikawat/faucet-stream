@@ -65,7 +65,7 @@ for the SQL backends; an in-memory ring otherwise) and expire with the
 | `GET` | `/v1/runs/{id}` | `200` | Get one run record |
 | `DELETE` | `/v1/runs/{id}` | `204` | Remove a terminal run from history |
 | `POST` | `/v1/runs/{id}/cancel` | `202` / `200` | Request cancel (202) or no-op if terminal (200) |
-| `GET` | `/v1/runs/{id}/logs` | `200` | Stream the run's logs as `text/event-stream` |
+| `GET` | `/v1/runs/{id}/logs` | `200` | Stream the run's logs (`text/event-stream`), or read persisted logs with `?format=jsonl\|text` |
 | `POST` | `/v1/backfill` | `202` | Submit a windowed backfill: one tracked run per window unit (operator) |
 | `GET` | `/v1/audit` | `200` | Read the audit log — **admin only** (RBAC). Filters: `principal`, `action`, `since`, `until`, `limit` |
 | `POST` | `/v1/reload` | `200` / `422` | Hot-reload the `--default-config` merge base — **admin only** (RBAC). No-op (`reloaded:false`) if no default-config; `422` (old config kept) if the new one is invalid |
@@ -176,14 +176,43 @@ streams the live tail. Event types:
   the centralized log sink for the full history.
 - `event: end` — the run reached a terminal state; the stream closes.
 
-Log buffers are **ephemeral**: they survive a short drain window after the run
-finishes (independent of run-record retention), then are dropped. A known run
+The SSE buffer is **ephemeral**: it survives a short drain window after the run
+finishes (independent of run-record retention), then is dropped. A known run
 whose buffer has expired yields a single `end`.
 
 ```bash
 curl -N -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:8080/v1/runs/0192…/logs
 ```
+
+#### Persisted logs — `?format=jsonl` / `?format=text` (#529)
+
+With a persistent `--history` backend and `--log-retention-secs > 0`, captured
+(redacted) log lines are also stored durably, so they can be fetched **any time
+after the run ends** — past the SSE drain window, and from any instance in a
+cluster. Add a `format` query parameter to switch the same endpoint from the SSE
+stream to a paginated read:
+
+- `?format=jsonl` → `application/x-ndjson`, one `{seq, ts, level, line}` object
+  per line, oldest-first. Paginate with `?after=<seq>&limit=<n>` (`limit`
+  defaults to 1000, max 10000). A trailing `{"truncated":true}` record means
+  earlier lines were dropped by the per-run cap.
+- `?format=text` → `text/plain`, the lines concatenated.
+
+```bash
+# First page of durable logs, as NDJSON:
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:8080/v1/runs/0192…/logs?format=jsonl&limit=500"
+# Next page: pass the last seq you saw.
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:8080/v1/runs/0192…/logs?format=jsonl&after=500"
+```
+
+Retention is governed by **`--log-retention-secs`** (default `604800` = 7 days),
+independent of run-record retention; `0` disables durable log persistence
+(ephemeral SSE only). **`--log-max-lines-per-run`** (default `100000`) caps how
+many lines are stored per run. The in-memory `--history` backend stays ephemeral
+(no durable persistence).
 
 ### `GET /v1/catalog/*` (Data Movement Catalog)
 

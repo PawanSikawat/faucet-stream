@@ -284,6 +284,28 @@ fn bookmark_instant(value: &Value) -> Result<DateTime<Utc>, FaucetError> {
     }
 }
 
+/// Parse a bookmark value into a UTC instant (public wrapper over the internal
+/// parser; see [`BindFormat`] for the accepted forms). Used by datetime window
+/// slicing (#527) to resolve the sweep's start bound from the stored bookmark.
+pub fn parse_instant(value: &Value) -> Result<DateTime<Utc>, FaucetError> {
+    bookmark_instant(value)
+}
+
+/// Format an already-resolved UTC instant per [`BindFormat`]. Unlike
+/// [`format_bookmark`] (which takes an arbitrary scalar and, for [`BindFormat::Raw`],
+/// echoes it verbatim), this always has a real instant, so `Raw` and `Iso8601`
+/// both emit an RFC 3339 UTC timestamp. Used to render window boundaries (#527).
+pub fn format_instant(dt: DateTime<Utc>, format: BindFormat) -> String {
+    match format {
+        BindFormat::Raw | BindFormat::Iso8601 => {
+            dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        }
+        BindFormat::Date => dt.format("%Y-%m-%d").to_string(),
+        BindFormat::EpochS => dt.timestamp().to_string(),
+        BindFormat::EpochMs => dt.timestamp_millis().to_string(),
+    }
+}
+
 /// Format a bookmark value per [`BindFormat`].
 pub fn format_bookmark(value: &Value, format: BindFormat) -> Result<String, FaucetError> {
     match format {

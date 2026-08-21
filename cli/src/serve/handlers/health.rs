@@ -88,6 +88,8 @@ mod tests {
             shutdown_grace: Duration::from_secs(60),
             retain_terminal_runs: Duration::from_secs(60),
             idempotency_retention: Duration::from_secs(60),
+            log_retention: std::time::Duration::from_secs(0),
+            log_max_lines_per_run: 100_000,
             lease_ttl: Duration::from_secs(30),
             probe_timeout: Duration::from_secs(10),
             env_file: None,

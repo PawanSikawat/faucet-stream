@@ -30,6 +30,7 @@ transform-split-join = ["faucet-core/transform-split-join"]
 transform-json-encode = ["faucet-core/transform-json-encode"]
 transform-lookup = ["faucet-core/transform-lookup"]
 transform-unpivot = ["faucet-core/transform-unpivot"]
+transform-tree-flatten = ["faucet-core/transform-tree-flatten"]
 transform-filter = ["faucet-core/transform-filter"]
 transform-explode = ["faucet-core/transform-explode"]
 transforms = ["faucet-core/transforms"]
@@ -52,6 +53,7 @@ flate2 = { workspace = true }  # gunzip decode step (#515)
 zip = { workspace = true }  # unzip decode step (#515)
 csv-async = { workspace = true }
 calamine = { workspace = true, optional = true }
+chrono = { workspace = true }  # datetime window slicing (#527): now-clock + RFC3339 boundaries
 tokio = { version = "1", features = ["time"] }
 base64 = "0.22"
 httpdate = "1"

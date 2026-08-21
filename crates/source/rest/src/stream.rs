@@ -42,6 +42,17 @@ pub struct RestStream {
     /// [`Source::apply_start_bookmark`](faucet_core::Source::apply_start_bookmark).
     /// Takes precedence over `config.start_replication_value` when set.
     runtime_start: Arc<AsyncMutex<Option<Value>>>,
+    /// Rendered lower/upper bounds for the current datetime window (#527),
+    /// applied to each request by [`execute_request_once`](Self::execute_request_once)
+    /// alongside any [`replication_bind`](RestStreamConfig::replication_bind). Set
+    /// by the window loop in `stream_pages_inner` before each window's pages;
+    /// empty when no `window:` block is configured. Each entry is
+    /// `(target, name, rendered-value)`.
+    window_binds: Arc<AsyncMutex<Vec<(BindTarget, String, String)>>>,
+    /// Test-only override for the "now" upper bound of datetime window slicing
+    /// (#527). `None` in production (uses `Utc::now()`); set by unit tests so the
+    /// window enumeration is deterministic.
+    now_override: Option<chrono::DateTime<chrono::Utc>>,
     /// Retry policy for transient request failures. Built in `new()` from the
     /// REST source's own `config.max_retries` / `config.retry_backoff`. Fed into
     /// the REST `retry::execute_with_retry` runner (which keeps its 429 /
@@ -211,6 +222,8 @@ impl RestStream {
             token_endpoint_cache: TokenEndpointCache::new(),
             auth_provider: None,
             runtime_start: Arc::new(AsyncMutex::new(None)),
+            window_binds: Arc::new(AsyncMutex::new(Vec::new())),
+            now_override: None,
             retry_policy,
         })
     }
@@ -223,6 +236,18 @@ impl RestStream {
     /// sources.
     pub fn with_auth_provider(mut self, provider: SharedAuthProvider) -> Self {
         self.auth_provider = Some(provider);
+        self
+    }
+
+    /// Test-only: pin the "now" upper bound used by datetime window slicing (#527)
+    /// to a fixed RFC 3339 instant, so the window enumeration is deterministic in
+    /// tests. No effect in production (which uses `Utc::now()`). Hidden from docs;
+    /// takes a string so callers need not depend on `chrono`.
+    #[doc(hidden)]
+    pub fn with_now_override_rfc3339(mut self, rfc3339: &str) -> Self {
+        self.now_override = chrono::DateTime::parse_from_rfc3339(rfc3339)
+            .ok()
+            .map(|d| d.with_timezone(&chrono::Utc));
         self
     }
 
@@ -423,11 +448,6 @@ impl RestStream {
                     .or_else(|| self.config.start_replication_value.clone())
             };
 
-            let mut state = PaginationState::default();
-            let mut pages_fetched = 0usize;
-            let mut running_max: Option<Value> = effective_start.clone();
-            let mut bookmark_emitted = false;
-
             // H13 (audit #146): combining `max_pages` with incremental
             // replication only makes safe forward progress when the API returns
             // rows ordered ascending by the replication key. On truncation we
@@ -449,62 +469,131 @@ impl RestStream {
                 );
             }
 
-            loop {
-                if let Some(max) = self.config.max_pages
-                    && pages_fetched >= max
-                {
-                    tracing::warn!("max pages ({max}) reached");
-                    break;
+            // #527: build the pass plan. Without a `window:` block this is a
+            // single "unbounded" pass with the classic record-derived bookmark.
+            // With one, each rolling `[start, end)` window is its own pass whose
+            // bookmark is the window's end boundary — so a mid-sweep crash resumes
+            // from the last completed window (per-window durability).
+            let windowed = self.config.window.is_some();
+            let passes: Vec<Option<faucet_core::Window>> = if let Some(win) = &self.config.window {
+                let start_val = effective_start.clone().ok_or_else(|| {
+                    FaucetError::Config(
+                        "rest: `window` slicing requires a start bookmark (from a `state:` store) \
+                         or `start_replication_value` to anchor the first window".into(),
+                    )
+                })?;
+                let start_instant = faucet_core::parse_instant(&start_val)?;
+                let now = self.now_override.unwrap_or_else(chrono::Utc::now);
+                let step = win.step_duration()?;
+                let lookback = win.lookback_duration()?;
+                let (windows, truncated) =
+                    faucet_core::enumerate_windows(start_instant, now, step, lookback, win.max_windows);
+                if truncated {
+                    tracing::warn!(
+                        max_windows = win.max_windows,
+                        "window slicing hit `max_windows`; this run's sweep is truncated — the next \
+                         run resumes from the last completed window"
+                    );
+                }
+                if windows.is_empty() {
+                    tracing::debug!(
+                        "window slicing: the bookmark is at or ahead of now; nothing to fetch"
+                    );
+                }
+                windows.into_iter().map(Some).collect()
+            } else {
+                vec![None]
+            };
+
+            for pass in passes {
+                // Set the window bounds applied to every request in this pass
+                // (an unbounded pass leaves `window_binds` empty).
+                // `execute_request_once` reads `self.window_binds`.
+                if let Some(w) = &pass {
+                    let win = self
+                        .config
+                        .window
+                        .as_ref()
+                        .expect("a window pass implies a `window:` block");
+                    let lower = (win.lower.into, win.lower.name.clone(), win.render_lower(w));
+                    let upper_rendered = win.render_upper(w)?;
+                    let upper = (win.upper.into, win.upper.name.clone(), upper_rendered);
+                    *self.window_binds.lock().await = vec![lower, upper];
                 }
 
-                let mut params = self.config.query_params.clone();
-                self.config.pagination.apply_params(&mut params, &state);
+                // The bookmark this pass persists on its final page: the window's
+                // end (a half-open boundary, so resume neither gaps nor overlaps)
+                // for a windowed pass, or the record-derived running max for the
+                // classic unbounded pass.
+                let window_bookmark: Option<Value> =
+                    pass.as_ref().map(|w| Value::String(w.end.to_rfc3339()));
 
-                let url_override = match &self.config.pagination {
-                    PaginationStyle::LinkHeader | PaginationStyle::NextLinkInBody { .. } => {
-                        state.next_link.clone()
+                let mut state = PaginationState::default();
+                let mut pages_fetched = 0usize;
+                let mut running_max: Option<Value> = effective_start.clone();
+                let mut bookmark_emitted = false;
+
+                loop {
+                    if let Some(max) = self.config.max_pages
+                        && pages_fetched >= max
+                    {
+                        tracing::warn!("max pages ({max}) reached");
+                        break;
                     }
-                    _ => None,
-                };
 
-                // POST-search (CursorInBody): the extracted cursor is injected
-                // into the request body for every page after the first.
-                let body_cursor: Option<(String, String)> = self
-                    .config
-                    .pagination
-                    .body_cursor(&state)
-                    .map(|(f, v)| (f.to_string(), v.to_string()));
+                    let mut params = self.config.query_params.clone();
+                    self.config.pagination.apply_params(&mut params, &state);
 
-                let params_clone = params.clone();
-                let ctx_ref = owned_context.as_ref();
-                let is_first_page = pages_fetched == 0;
-                let body_cursor_ref = body_cursor.as_ref().map(|(f, v)| (f.as_str(), v.as_str()));
-                let (body, resp_headers) = retry::execute_with_retry(
-                    // The REST runner takes retries-after-first; the policy holds
-                    // total attempts. Feed both knobs from the resolved policy so
-                    // an injected `resilience:` policy (when legacy fields are
-                    // untouched) governs the retry budget + base backoff while the
-                    // runner keeps its 429 / `Retry-After` handling.
-                    self.retry_policy.max_attempts.saturating_sub(1),
-                    self.retry_policy.base,
-                    || {
-                        self.execute_request(
-                            &params_clone,
-                            url_override.as_deref(),
-                            ctx_ref,
-                            is_first_page,
-                            body_cursor_ref,
-                        )
-                    },
-                )
-                .await?;
+                    let url_override = match &self.config.pagination {
+                        PaginationStyle::LinkHeader | PaginationStyle::NextLinkInBody { .. } => {
+                            state.next_link.clone()
+                        }
+                        _ => None,
+                    };
 
-                let raw_records =
-                    extract::extract_records(&body, self.config.records_path.as_deref())?;
-                let raw_count = raw_records.len();
+                    // POST-search (CursorInBody): the extracted cursor is injected
+                    // into the request body for every page after the first.
+                    let body_cursor: Option<(String, String)> = self
+                        .config
+                        .pagination
+                        .body_cursor(&state)
+                        .map(|(f, v)| (f.to_string(), v.to_string()));
 
-                let records =
-                    if self.config.replication_method == ReplicationMethod::Incremental {
+                    let params_clone = params.clone();
+                    let ctx_ref = owned_context.as_ref();
+                    let is_first_page = pages_fetched == 0;
+                    let body_cursor_ref =
+                        body_cursor.as_ref().map(|(f, v)| (f.as_str(), v.as_str()));
+                    let (body, resp_headers) = retry::execute_with_retry(
+                        // The REST runner takes retries-after-first; the policy holds
+                        // total attempts. Feed both knobs from the resolved policy so
+                        // an injected `resilience:` policy (when legacy fields are
+                        // untouched) governs the retry budget + base backoff while the
+                        // runner keeps its 429 / `Retry-After` handling.
+                        self.retry_policy.max_attempts.saturating_sub(1),
+                        self.retry_policy.base,
+                        || {
+                            self.execute_request(
+                                &params_clone,
+                                url_override.as_deref(),
+                                ctx_ref,
+                                is_first_page,
+                                body_cursor_ref,
+                            )
+                        },
+                    )
+                    .await?;
+
+                    let raw_records =
+                        extract::extract_records(&body, self.config.records_path.as_deref())?;
+                    let raw_count = raw_records.len();
+
+                    // Client-side incremental filter. Skipped for windowed passes:
+                    // the server already bounds each window, and filtering by the
+                    // overall start would drop `lookback` rows that fall before it.
+                    let records = if !windowed
+                        && self.config.replication_method == ReplicationMethod::Incremental
+                    {
                         if let (Some(key), Some(start)) =
                             (&self.config.replication_key, effective_start.as_ref())
                         {
@@ -516,84 +605,99 @@ impl RestStream {
                         raw_records
                     };
 
-                // Track the running max replication value across pages so the
-                // final page can carry the consolidated bookmark. When the
-                // replication bind declares `advance_from`, the next bookmark is
-                // read from that JSONPath in the **response body** (#513);
-                // otherwise it is `max(record[replication_key])`.
-                if self.config.replication_method == ReplicationMethod::Incremental {
-                    let page_max: Option<Value> = match self
-                        .config
-                        .replication_bind
-                        .as_ref()
-                        .and_then(|b| b.advance_from.as_deref())
+                    // Track the running max replication value across pages so the
+                    // final page of an unbounded pass can carry the consolidated
+                    // bookmark. When the replication bind declares `advance_from`,
+                    // the next bookmark is read from that JSONPath in the response
+                    // body (#513); otherwise it is `max(record[replication_key])`.
+                    // Windowed passes ignore this — their bookmark is the window end.
+                    if !windowed
+                        && self.config.replication_method == ReplicationMethod::Incremental
                     {
-                        Some(path) => faucet_core::util::extract_records(&body, Some(path))
-                            .ok()
-                            .and_then(|vs| vs.into_iter().next()),
-                        None => self
+                        let page_max: Option<Value> = match self
                             .config
-                            .replication_key
-                            .as_deref()
-                            .and_then(|key| max_replication_value(&records, key).cloned()),
-                    };
-                    if let Some(page_max) = page_max {
-                        running_max = Some(match running_max.take() {
-                            Some(prev) => max_value(prev, page_max),
-                            None => page_max,
-                        });
+                            .replication_bind
+                            .as_ref()
+                            .and_then(|b| b.advance_from.as_deref())
+                        {
+                            Some(path) => faucet_core::util::extract_records(&body, Some(path))
+                                .ok()
+                                .and_then(|vs| vs.into_iter().next()),
+                            None => self
+                                .config
+                                .replication_key
+                                .as_deref()
+                                .and_then(|key| max_replication_value(&records, key).cloned()),
+                        };
+                        if let Some(page_max) = page_max {
+                            running_max = Some(match running_max.take() {
+                                Some(prev) => max_value(prev, page_max),
+                                None => page_max,
+                            });
+                        }
+                    }
+
+                    // Advance pagination state to learn whether there is a next
+                    // page BEFORE yielding the current one. This way the bookmark
+                    // is only attached to pages where `has_next == false`, and we
+                    // never pre-fetch the next page just to classify the current
+                    // one as "final" (which would prevent early exit in callers
+                    // such as `fetch_partition` with `max_records`).
+                    let has_next = self
+                        .config
+                        .pagination
+                        .advance(&body, &resp_headers, &mut state, raw_count)?;
+                    pages_fetched += 1;
+
+                    if has_next {
+                        // Intermediate page — yield without bookmark so the
+                        // pipeline does not persist a partial checkpoint.
+                        yield faucet_core::StreamPage { records, bookmark: None };
+                    } else if state.current_page_is_duplicate {
+                        // The content-stagnation guard flagged this page as a
+                        // duplicate of the previous one — DROP it (do not emit the
+                        // repeated records to the sink) and stop. The trailing
+                        // bookmark checkpoint below still fires (#321 L1).
+                        break;
+                    } else {
+                        // Final page of this pass — attach the pass bookmark.
+                        let bookmark = if windowed {
+                            window_bookmark.clone()
+                        } else {
+                            running_max.clone()
+                        };
+                        bookmark_emitted = bookmark.is_some();
+                        yield faucet_core::StreamPage { records, bookmark };
+                        break;
+                    }
+
+                    if let Some(delay) = self.config.request_delay {
+                        tokio::time::sleep(delay).await;
                     }
                 }
 
-                // Advance pagination state to learn whether there is a next
-                // page BEFORE yielding the current one. This way the bookmark
-                // is only attached to pages where `has_next == false`, and we
-                // never pre-fetch the next page just to classify the current
-                // one as "final" (which would prevent early exit in callers
-                // such as `fetch_partition` with `max_records`).
-                let has_next = self
-                    .config
-                    .pagination
-                    .advance(&body, &resp_headers, &mut state, raw_count)?;
-                pages_fetched += 1;
-
-                if has_next {
-                    // Intermediate page — yield without bookmark so the
-                    // pipeline does not persist a partial checkpoint.
-                    yield faucet_core::StreamPage { records, bookmark: None };
-                } else if state.current_page_is_duplicate {
-                    // The content-stagnation guard flagged this page as a
-                    // duplicate of the previous one — DROP it (do not emit the
-                    // repeated records to the sink) and stop. The trailing
-                    // bookmark checkpoint below still fires (#321 L1).
-                    break;
+                // Trailing checkpoint: if the pass loop exited without carrying the
+                // bookmark on a real page (max_pages truncation, or a duplicate-page
+                // stop), emit one empty page carrying the pass bookmark so progress
+                // still persists and the next run resumes from here. (Safe forward
+                // progress under max_pages assumes ascending order by the
+                // replication key — see the warning emitted above, audit #146 H13.)
+                let pass_bookmark = if windowed {
+                    window_bookmark.clone()
                 } else {
-                    // Final page — attach the consolidated bookmark.
-                    bookmark_emitted = running_max.is_some();
+                    running_max.clone()
+                };
+                if !bookmark_emitted && pass_bookmark.is_some() {
                     yield faucet_core::StreamPage {
-                        records,
-                        bookmark: running_max.clone(),
+                        records: Vec::new(),
+                        bookmark: pass_bookmark,
                     };
-                    break;
-                }
-
-                if let Some(delay) = self.config.request_delay {
-                    tokio::time::sleep(delay).await;
                 }
             }
 
-            // Trailing checkpoint: if the loop exited without carrying the
-            // bookmark on a real page (e.g. via max_pages truncation, or with
-            // zero pages fetched and a seeded start bookmark), emit one empty
-            // page carrying the consolidated bookmark so the pipeline still
-            // persists incremental progress and the next run resumes from here.
-            // (Safe forward progress under max_pages assumes ascending order by
-            // the replication key — see the warning emitted above, audit #146 H13.)
-            if !bookmark_emitted && running_max.is_some() {
-                yield faucet_core::StreamPage {
-                    records: Vec::new(),
-                    bookmark: running_max,
-                };
+            // Clear the window bounds so a reused source instance starts clean.
+            if windowed {
+                self.window_binds.lock().await.clear();
             }
         })
     }
@@ -1027,9 +1131,14 @@ impl RestStream {
     ) -> Result<(Value, HeaderMap), FaucetError> {
         let use_override = url_override.is_some();
 
-        // #513 server-side push-down: resolve the bookmark binding for this run
-        // (`None` on the first run, before any bookmark exists).
-        let bind = self.resolved_bind().await?;
+        // #513 server-side push-down + #527 window slicing: the outgoing request
+        // carries the bookmark binding (0 or 1) plus the current window's rendered
+        // lower/upper bounds (0 or 2). They apply at the same four placement sites.
+        let mut binds: Vec<(BindTarget, String, String)> = Vec::new();
+        if let Some(b) = self.resolved_bind().await? {
+            binds.push(b);
+        }
+        binds.extend(self.window_binds.lock().await.iter().cloned());
 
         let query_btree: std::collections::BTreeMap<String, String> =
             params.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -1083,8 +1192,10 @@ impl RestStream {
                 format!("{}/{}", base_url, path.trim_start_matches('/'))
             }
         };
-        if let Some((BindTarget::Path, name, rendered)) = &bind {
-            url = url.replace(&format!("{{{name}}}"), rendered);
+        for (target, name, rendered) in &binds {
+            if *target == BindTarget::Path {
+                url = url.replace(&format!("{{{name}}}"), rendered);
+            }
         }
 
         // Resolve inline / signed credentials — unless a flow provider already
@@ -1180,9 +1291,11 @@ impl RestStream {
                 .join("; ");
             insert_header(&mut headers, "Cookie", &cookie)?;
         }
-        // #513 header-target binding.
-        if let Some((BindTarget::Header, name, rendered)) = &bind {
-            insert_header(&mut headers, name, rendered)?;
+        // #513/#527 header-target bindings.
+        for (target, name, rendered) in &binds {
+            if *target == BindTarget::Header {
+                insert_header(&mut headers, name, rendered)?;
+            }
         }
 
         let mut req = self
@@ -1211,9 +1324,11 @@ impl RestStream {
                 .collect();
             req = req.query(&pairs);
         }
-        // #513 query-target binding.
-        if let Some((BindTarget::Query, name, rendered)) = &bind {
-            req = req.query(&[(name.as_str(), rendered.as_str())]);
+        // #513/#527 query-target bindings.
+        for (target, name, rendered) in &binds {
+            if *target == BindTarget::Query {
+                req = req.query(&[(name.as_str(), rendered.as_str())]);
+            }
         }
 
         // ApiKeyQuery: inject the API key as a query parameter.
@@ -1265,17 +1380,19 @@ impl RestStream {
                 }
             }
         }
-        // #511 body-field placements + #513 body-target binding.
-        let body_bind = matches!(&bind, Some((BindTarget::Body, _, _)));
-        if !ra_body.is_empty() || body_bind {
+        // #511 body-field placements + #513/#527 body-target bindings.
+        let has_body_bind = binds.iter().any(|(t, _, _)| *t == BindTarget::Body);
+        if !ra_body.is_empty() || has_body_bind {
             let obj = body_value.get_or_insert_with(|| Value::Object(serde_json::Map::new()));
             match obj.as_object_mut() {
                 Some(map) => {
                     for (name, value) in &ra_body {
                         map.insert(name.clone(), Value::String(value.clone()));
                     }
-                    if let Some((BindTarget::Body, name, rendered)) = &bind {
-                        map.insert(name.clone(), Value::String(rendered.clone()));
+                    for (target, name, rendered) in &binds {
+                        if *target == BindTarget::Body {
+                            map.insert(name.clone(), Value::String(rendered.clone()));
+                        }
                     }
                 }
                 None => {
