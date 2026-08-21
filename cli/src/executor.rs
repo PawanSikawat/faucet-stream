@@ -2343,6 +2343,33 @@ mod tests {
     use crate::expand::expand;
     use serde_json::json;
 
+    #[tokio::test]
+    async fn resolve_product_dims_skips_unavailable_and_rejects_oversized() {
+        // An unavailable upstream dimension → `Ok(None)` (the row is skipped).
+        let empty: DiscoveredDims =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        let skipped = resolve_product_dims(&["missing".to_string()], &empty, "row")
+            .await
+            .unwrap();
+        assert!(skipped.is_none());
+
+        // A cross-product past `MAX_MATRIX_PRODUCT` (101 × 100 = 10_100) → `Err`.
+        let dim = |id: &str, n: i64| crate::discovery_matrix::Dim {
+            id: id.to_string(),
+            alias: id.to_string(),
+            values: (0..n).map(|i| json!(i)).collect(),
+        };
+        let dd: DiscoveredDims =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::from([
+                ("a".to_string(), dim("a", 101)),
+                ("b".to_string(), dim("b", 100)),
+            ])));
+        let err = resolve_product_dims(&["a".to_string(), "b".to_string()], &dd, "row")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CliError::Config(m) if m.contains("over the limit")));
+    }
+
     fn cfg_csv_to_jsonl(input: &Path, output: &Path) -> PipelineConfig {
         PipelineConfig {
             version: 1,
