@@ -906,8 +906,7 @@ pub fn sink_supports_scoped_overwrite(kind: &str) -> bool {
 
 /// Sink kinds that bulk-load via an object-store stage + native load command
 /// (staged bulk load, #528). These mirror each sink's
-/// [`Sink::supports_staged_load`](faucet_core::Sink::supports_staged_load)
-/// override. Redshift (`write_strategy: copy`), Snowflake (`bulk_load`), and
+/// `Sink::supports_staged_load` override. Redshift (`write_strategy: copy`), Snowflake (`bulk_load`), and
 /// BigQuery (`bulk_load`) load from S3 / an external stage / GCS respectively.
 /// ClickHouse (`s3()` table function) and MSSQL (`COPY INTO` / `BULK INSERT`)
 /// are tracked as a live-tested follow-up on #528 — their generated load

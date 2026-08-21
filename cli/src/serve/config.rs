@@ -291,6 +291,8 @@ mod tests {
             shutdown_grace_secs: 60,
             retain_terminal_runs_secs: 604_800,
             idempotency_retention_secs: 86_400,
+            log_retention_secs: 604_800,
+            log_max_lines_per_run: 100_000,
             lease_ttl_secs: 30,
             probe_timeout_secs: 10,
             env_file: None,

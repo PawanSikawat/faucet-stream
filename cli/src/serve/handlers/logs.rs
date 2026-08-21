@@ -34,7 +34,7 @@ pub struct LogQuery {
     /// Return only lines with `seq > after` (persisted read pagination).
     #[serde(default)]
     pub after: Option<u64>,
-    /// Max lines per page (persisted read), capped at [`MAX_LOG_LIMIT`].
+    /// Max lines per page (persisted read), capped at `MAX_LOG_LIMIT`.
     #[serde(default)]
     pub limit: Option<usize>,
 }

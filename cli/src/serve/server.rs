@@ -653,6 +653,7 @@ mod tests {
         let handle = tokio::spawn(maintenance_loop(
             history.clone(),
             Duration::ZERO,            // retain=0 → every terminal record is expired
+            Duration::ZERO,            // log_retain=0 → not exercised by this test
             Duration::from_millis(10), // fast tick for the test
             shutdown.clone(),
         ));
