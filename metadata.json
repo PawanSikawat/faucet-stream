@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0H7MR2NRW1QET8C8P8WRVCZ",
+  "strategy": "manual-commit",
+  "branch": "feat/parity-round3-bundle",
+  "checkpoints_count": 10,
+  "files_touched": [
+    "cli/src/executor.rs",
+    "cli/tests/discovery_matrix.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 4233,
+    "cache_creation_tokens": 6654786,
+    "cache_read_tokens": 1166063949,
+    "output_tokens": 1874292,
+    "api_call_count": 2119,
+    "subagent_tokens": {
+      "input_tokens": 0,
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 0,
+      "output_tokens": 0,
+      "api_call_count": 0
+    }
+  }
+}
