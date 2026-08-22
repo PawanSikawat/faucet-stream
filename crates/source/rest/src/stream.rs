@@ -378,8 +378,10 @@ impl RestStream {
     /// upstream API page. Use the trait method directly if you need
     /// per-page bookmarks for incremental replication.
     ///
-    /// Note: partitions are not supported by `stream_pages`. Use `fetch_all`
-    /// for multi-partition streams.
+    /// Note: this inherent convenience method does not fan out over
+    /// `partitions`. The `Source::stream_pages` trait impl (what the pipeline
+    /// drives) and [`fetch_all`](Self::fetch_all) do handle multi-partition
+    /// streams (#535).
     ///
     /// ```rust,no_run
     /// use faucet_source_rest::{RestStream, RestStreamConfig};
@@ -1315,6 +1317,31 @@ impl RestStream {
             } else {
                 req = req.query(params);
             }
+            // #536: repeated / array-valued query params, rendered as repeated
+            // keys (`?k=a&k=b`). reqwest's `.query()` appends, so this composes
+            // with the scalar params above.
+            if !self.config.query_params_multi.is_empty() {
+                let pairs: Vec<(String, String)> = self
+                    .config
+                    .query_params_multi
+                    .iter()
+                    .flat_map(|(k, vals)| {
+                        vals.iter().map(move |v| {
+                            let rendered = match path_context {
+                                Some(ctx) => faucet_core::util::substitute_context(v, ctx),
+                                None => v.clone(),
+                            };
+                            (k.clone(), rendered)
+                        })
+                    })
+                    .collect();
+                req = req.query(
+                    &pairs
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.as_str()))
+                        .collect::<Vec<_>>(),
+                );
+            }
         }
         // #511 query placements from the flow provider.
         if !ra_query.is_empty() {
@@ -1567,6 +1594,26 @@ fn parse_retry_after(headers: &HeaderMap) -> Duration {
     DEFAULT
 }
 
+/// Keep the larger of two bookmark values when consolidating per-partition
+/// bookmarks in [`Source::stream_pages`] (#535). Numbers compare numerically,
+/// strings lexicographically (the usual timestamp/id bookmark shapes); any
+/// other or heterogeneous pair prefers the newer value.
+fn value_max(current: Option<Value>, candidate: Value) -> Option<Value> {
+    match current {
+        None => Some(candidate),
+        Some(cur) => {
+            let take_candidate = match (&cur, &candidate) {
+                (Value::Number(a), Value::Number(b)) => {
+                    b.as_f64().unwrap_or(f64::MIN) > a.as_f64().unwrap_or(f64::MIN)
+                }
+                (Value::String(a), Value::String(b)) => b > a,
+                _ => true,
+            };
+            Some(if take_candidate { candidate } else { cur })
+        }
+    }
+}
+
 #[async_trait]
 impl faucet_core::Source for RestStream {
     async fn fetch_with_context(
@@ -1634,7 +1681,53 @@ impl faucet_core::Source for RestStream {
         // RestStream chunks by upstream-API page boundaries, not by an
         // in-memory `batch_size` knob. The arg is accepted for trait
         // conformance and reserved for a future `page_size` mapping.
-        self.stream_pages_inner(Some(context))
+        //
+        // Partition fan-out (#535): when `partitions` are configured the stream
+        // must run once per partition — mirroring `fetch_all` / `fetch_with_context`
+        // — or every partition's records are silently dropped under `faucet run`
+        // (the pipeline drives this method). Any parent `context` is merged into
+        // each partition context, exactly as `fetch_with_context` does.
+        if self.config.partitions.is_empty() {
+            return self.stream_pages_inner(Some(context));
+        }
+        let contexts: Vec<HashMap<String, Value>> = self
+            .config
+            .partitions
+            .iter()
+            .map(|p| {
+                let mut merged = context.clone();
+                merged.extend(p.iter().map(|(k, v)| (k.clone(), v.clone())));
+                merged
+            })
+            .collect();
+        Box::pin(async_stream::try_stream! {
+            // Per-partition streams each emit their own final bookmark; we
+            // suppress those and emit a single consolidated (max) bookmark after
+            // the last partition, so the persisted state is the global high-water
+            // mark rather than whichever partition happened to finish last.
+            let mut max_bookmark: Option<Value> = None;
+            for ctx in &contexts {
+                let mut inner = self.stream_pages_inner(Some(ctx));
+                loop {
+                    let page = std::future::poll_fn(|cx| inner.as_mut().poll_next(cx)).await;
+                    match page {
+                        Some(Ok(p)) => {
+                            if let Some(bm) = p.bookmark {
+                                max_bookmark = value_max(max_bookmark.take(), bm);
+                                yield faucet_core::StreamPage { records: p.records, bookmark: None };
+                            } else {
+                                yield p;
+                            }
+                        }
+                        Some(Err(e)) => Err(e)?,
+                        None => break,
+                    }
+                }
+            }
+            if max_bookmark.is_some() {
+                yield faucet_core::StreamPage { records: Vec::new(), bookmark: max_bookmark };
+            }
+        })
     }
 
     async fn apply_start_bookmark(&self, bookmark: Value) -> Result<(), FaucetError> {
@@ -1684,6 +1777,29 @@ impl faucet_core::Source for RestStream {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn value_max_consolidates_partition_bookmarks() {
+        // First value seeds the max.
+        assert_eq!(
+            value_max(None, json!("2026-01-01")),
+            Some(json!("2026-01-01"))
+        );
+        // Strings compare lexicographically (ISO timestamps sort correctly).
+        assert_eq!(
+            value_max(Some(json!("2026-01-01")), json!("2026-03-01")),
+            Some(json!("2026-03-01"))
+        );
+        assert_eq!(
+            value_max(Some(json!("2026-03-01")), json!("2026-01-01")),
+            Some(json!("2026-03-01"))
+        );
+        // Numbers compare numerically.
+        assert_eq!(value_max(Some(json!(5)), json!(10)), Some(json!(10)));
+        assert_eq!(value_max(Some(json!(10)), json!(5)), Some(json!(10)));
+        // Heterogeneous / other → prefer the latest candidate.
+        assert_eq!(value_max(Some(json!("a")), json!(3)), Some(json!(3)));
+    }
 
     #[test]
     fn injected_policy_applies_when_legacy_fields_at_defaults() {

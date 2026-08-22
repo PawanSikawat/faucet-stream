@@ -33,14 +33,20 @@ use crate::encode::{
 
 /// Microsoft SQL Server sink.
 pub struct MssqlSink {
-    config: MssqlSinkConfig,
+    pub(crate) config: MssqlSinkConfig,
     pool: MssqlPool,
-    table_quoted: String,
+    pub(crate) table_quoted: String,
     /// Pre-quoted staging table (`[schema].[table__faucet_ovw]`) used while a
     /// `write_mode: overwrite` run is in flight (#492).
     staging_table_quoted: String,
     /// Cached writable (non-IDENTITY) columns for `auto_columns` mode.
     columns_cache: Mutex<Option<Vec<String>>>,
+    /// Per-sink run id for staged-object keys (#528).
+    #[cfg(feature = "staging")]
+    pub(crate) stage_run_id: String,
+    /// Monotonic part counter for staged objects.
+    #[cfg(feature = "staging")]
+    pub(crate) stage_seq: std::sync::atomic::AtomicUsize,
 }
 
 impl MssqlSink {
@@ -72,6 +78,10 @@ impl MssqlSink {
             table_quoted,
             staging_table_quoted,
             columns_cache: Mutex::new(None),
+            #[cfg(feature = "staging")]
+            stage_run_id: crate::staged::new_stage_run_id(),
+            #[cfg(feature = "staging")]
+            stage_seq: std::sync::atomic::AtomicUsize::new(0),
         };
         sink.maybe_create_table().await?;
         Ok(sink)
@@ -109,7 +119,7 @@ impl MssqlSink {
         Ok(())
     }
 
-    async fn checkout(&self) -> Result<MssqlPooledConnection<'_>, FaucetError> {
+    pub(crate) async fn checkout(&self) -> Result<MssqlPooledConnection<'_>, FaucetError> {
         self.pool
             .get()
             .await
@@ -802,6 +812,20 @@ impl Sink for MssqlSink {
             return Ok(0);
         }
 
+        // Staged bulk load (#528): stage the page to Azure and `COPY INTO`.
+        #[cfg(feature = "staging")]
+        if let Some(staging) = &self.config.staging {
+            return self.write_batch_staged(records, staging).await;
+        }
+        #[cfg(not(feature = "staging"))]
+        if self.config.staging.is_some() {
+            return Err(FaucetError::Config(
+                "mssql: `staging:` is configured but this build lacks the `staging` feature — \
+                 rebuild with `--features staging` (CLI: `sink-mssql-staging`)"
+                    .into(),
+            ));
+        }
+
         // Upsert/delete modes: plan the writes and apply upserts + deletes
         // atomically. Append and overwrite are insert-shaped (overwrite lands in
         // the staging table via `effective_table_quoted`). (NOTE:
@@ -1259,6 +1283,12 @@ impl Sink for MssqlSink {
     fn config_schema(&self) -> Value {
         serde_json::to_value(faucet_core::schema_for!(MssqlSinkConfig))
             .expect("schema serialization")
+    }
+
+    /// Staged bulk load is active only with a `staging:` block and the
+    /// `staging` feature compiled in.
+    fn supports_staged_load(&self) -> bool {
+        cfg!(feature = "staging") && self.config.staging.is_some()
     }
 
     fn connector_name(&self) -> &'static str {

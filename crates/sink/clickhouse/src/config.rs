@@ -43,17 +43,63 @@ pub struct ClickHouseSinkConfig {
     /// `async_insert` is `false`.
     #[serde(default = "default_wait_for_async_insert")]
     pub wait_for_async_insert: bool,
+
+    /// Staged bulk load (#528): stage each page to S3/GCS and have the
+    /// ClickHouse server pull it with `s3()` / `gcs()` instead of an
+    /// `INSERT … FORMAT JSONEachRow` body. Absent ⇒ the ordinary insert path.
+    /// Requires the crate's `staging` feature at build time to execute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staging: Option<ClickHouseStagingConfig>,
+}
+
+/// Staged-load configuration for the ClickHouse sink (#528).
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClickHouseStagingConfig {
+    /// Shared object-store staging block (`location`, `format`, `compression`,
+    /// `cleanup`). `location` must be `s3://…` or `gs://…`.
+    #[serde(flatten)]
+    pub spec: faucet_core::staging::StagingSpec,
+    /// AWS region for the derived `s3()` URL (virtual-hosted). Ignored for `gs://`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// Explicit S3-compatible endpoint (`host[:port]`, path-style) — for MinIO /
+    /// non-AWS stores. Overrides `region`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// Access key the ClickHouse server uses to **read** the staged objects
+    /// (the `s3()`/`gcs()` credentials). Omit to rely on the server's own IAM /
+    /// configured access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_key: Option<String>,
+    /// Secret paired with [`access_key`](Self::access_key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<String>,
+}
+
+impl std::fmt::Debug for ClickHouseStagingConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClickHouseStagingConfig")
+            .field("spec", &self.spec)
+            .field("region", &self.region)
+            .field("endpoint", &self.endpoint)
+            // Never print the object-store credentials.
+            .field("access_key", &self.access_key.as_ref().map(|_| "***"))
+            .field("secret_key", &self.secret_key.as_ref().map(|_| "***"))
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for ClickHouseSinkConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ClickHouseSinkConfig")
-            .field("connection", &self.connection)
+        let mut ds = f.debug_struct("ClickHouseSinkConfig");
+        ds.field("connection", &self.connection)
             .field("table", &self.table)
             .field("batch_size", &self.batch_size)
             .field("async_insert", &self.async_insert)
-            .field("wait_for_async_insert", &self.wait_for_async_insert)
-            .finish()
+            .field("wait_for_async_insert", &self.wait_for_async_insert);
+        ds.field("staging", &self.staging);
+        ds.finish()
     }
 }
 
@@ -66,6 +112,7 @@ impl ClickHouseSinkConfig {
             batch_size: default_batch_size(),
             async_insert: false,
             wait_for_async_insert: default_wait_for_async_insert(),
+            staging: None,
         }
     }
 
@@ -98,6 +145,26 @@ impl ClickHouseSinkConfig {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn staging_debug_redacts_credentials() {
+        let staging: ClickHouseStagingConfig = serde_json::from_value(json!({
+            "location": "s3://bucket/stage",
+            "format": "jsonl",
+            "region": "us-east-1",
+            "access_key": "AKIAEXAMPLE",
+            "secret_key": "super-secret-value",
+        }))
+        .unwrap();
+        let dbg = format!("{staging:?}");
+        assert!(dbg.contains("***"), "creds should be masked: {dbg}");
+        assert!(!dbg.contains("AKIAEXAMPLE"), "access_key leaked: {dbg}");
+        assert!(
+            !dbg.contains("super-secret-value"),
+            "secret_key leaked: {dbg}"
+        );
+        assert!(dbg.contains("us-east-1"), "non-secret fields kept: {dbg}");
+    }
 
     #[test]
     fn config_flattens_connection_and_defaults() {

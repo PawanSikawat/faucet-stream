@@ -28,7 +28,7 @@ default = ["observability", "source", "sink", "state", "transforms", "compressio
 
 # Everything the default build ships, plus the long-running runtime modes:
 # `schedule` (cron scheduler) and `serve` (HTTP control plane).
-full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "transform-wasm", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "templates", "cli-dev", "encryption", "cli-tui", "mcp", "delta-s3", "delta-azure", "delta-gcs", "mtls", "oauth1", "source-rest-excel"]
+full = ["default", "otel", "schedule", "serve", "serve-ui", "serve-history-postgres", "serve-history-sqlite", "catalog", "lineage", "lineage-kafka", "notify", "transform-sql", "transform-wasm", "triggers", "triggers-object-store", "triggers-redis", "triggers-kafka", "templates", "cli-dev", "encryption", "cli-tui", "mcp", "delta-s3", "delta-azure", "delta-gcs", "mtls", "oauth1", "sink-clickhouse-staging", "sink-mssql-staging", "source-rest-excel"]
 
 # Data Movement Catalog (#279): the `catalog:` config block + post-run
 # recording (datasets, schema timelines, volume/freshness stats, lineage
@@ -180,6 +180,7 @@ sink-jsonl = ["dep:faucet-sink-jsonl"]
 sink-snowflake = ["dep:faucet-sink-snowflake"]
 sink-mysql = ["dep:faucet-sink-mysql"]
 sink-mssql = ["dep:faucet-sink-mssql"]
+sink-mssql-staging = ["sink-mssql", "faucet-sink-mssql/staging"]
 sink-sqlite = ["dep:faucet-sink-sqlite"]
 sink-duckdb = ["dep:faucet-sink-duckdb"]
 sink-sqs = ["dep:faucet-sink-sqs", "dep:faucet-common-sqs"]
@@ -201,6 +202,8 @@ sink-gcs = ["dep:faucet-sink-gcs"]
 sink-redshift = ["dep:faucet-sink-redshift"]
 sink-pubsub = ["dep:faucet-sink-pubsub"]
 sink-clickhouse = ["dep:faucet-sink-clickhouse"]
+# Staged bulk load for the ClickHouse sink (#528): stage to S3/GCS + server-side s3()/gcs() pull.
+sink-clickhouse-staging = ["sink-clickhouse", "faucet-sink-clickhouse/staging"]
 sink-azure-blob = ["dep:faucet-sink-azure-blob"]
 
 ## Delta Lake cloud object-store backends. Forwarded to whichever delta

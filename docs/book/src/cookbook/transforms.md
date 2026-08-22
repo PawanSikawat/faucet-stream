@@ -32,6 +32,7 @@ them are listed in `faucet list` and dispatchable as `type:` values.
 | `unpivot` | Reshape wide columns or a map field into long key/value rows (1→N) | `id_fields`, `key_name`, `value_name`, `columns?` \| `from?`, `drop_nulls?` |
 | `lookup` | Enrich records by joining an inline / JSONL reference table | `values` \| `jsonl`, `on: {record, ref}`, `add: {out: ref_col}`, `on_missing?` |
 | `tree_flatten` | Flatten a recursive report tree / matrix (nested `Rows`) into one row per leaf (1→N) | `children`, `columns: {from, header?, value}`, `root?`, `leaf?`, `ancestors?`, `path_as?` |
+| `cross_join` | Cartesian product of two or more sibling array fields → one row per combination (1→N) | `arrays`, `prefix?`, `keep_parent?`, `on_empty?`, `drop_arrays?`, `max_product?` |
 | `sql` | Run DuckDB SQL over the whole page; records are the `batch` relation | `query`, `relations?`, `memory_limit?`, `threads?` · page-level (sees the whole batch) · needs `transform-sql` feature · [cookbook](./sql-transform.md) |
 | `wasm` | Run a user-provided sandboxed `.wasm` module over each record | `module`, `function?`, `memory_limit_mb?`, `fuel_limit?`, `on_error?`, `reload_on_change?` · per-record · needs `transform-wasm` feature · [cookbook](./wasm-transforms.md) |
 
@@ -560,6 +561,31 @@ a malformed/cyclic tree is truncated at `max_depth` (logged) rather than
 overflowing the stack. It also flattens any generic `children` tree (org charts,
 category trees, BOM explosions). Column-lineage is opaque (structure-changing).
 Needs the `transform-tree-flatten` feature.
+
+## `cross_join` — cartesian product of sibling arrays (1→N)
+
+```yaml
+- type: cross_join
+  config:
+    arrays: [jobs, compensation, employment]  # ≥2 sibling array fields to cross
+    prefix: false        # prefix produced columns with the array name (jobs_title)
+    keep_parent: true    # carry the record's non-array scalars onto every row
+    on_empty: skip       # skip (CROSS JOIN) | one_row (LEFT JOIN … ON true)
+    drop_arrays: true    # remove the source array fields after expansion
+    max_product: 10000   # fail loudly if a record's product exceeds this
+```
+
+Expands one record into the **cartesian product of two or more of its sibling
+array fields**, emitting one flat row per combination — e.g. a HCM record's
+`jobs[] × compensation[] × employment[]`. Object elements spread their fields
+into the row (`prefix: true` name-prefixes them to avoid collisions); scalar
+elements land under the array's name. This is a different shape from `explode`
+(one array → N rows) and `unpivot` (wide → long), and the last per-record
+reshape that otherwise forced a connector (e.g. `ukg_pro`) onto the DuckDB SQL
+transform. An empty crossed array yields zero rows (`skip`) or a null-filled row
+(`one_row`); a record whose product would exceed `max_product` fails the run
+rather than risking OOM. Column-lineage is opaque (structure-changing). Needs the
+`transform-cross-join` feature.
 
 ## Ordering rules of thumb
 

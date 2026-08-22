@@ -40,6 +40,8 @@ transform-lookup = []
 transform-unpivot = []
 # Recursive report-tree / matrix → leaf rows (#530).
 transform-tree-flatten = []
+# Cartesian product of sibling array fields → one row per combination (#534).
+transform-cross-join = []
 transform-filter = []
 transform-explode = []
 transform-cdc-unwrap = []
@@ -63,6 +65,7 @@ transforms = [
     "transform-lookup",
     "transform-unpivot",
     "transform-tree-flatten",
+    "transform-cross-join",
     "transform-filter",
     "transform-explode",
     "transform-cdc-unwrap",

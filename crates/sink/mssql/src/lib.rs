@@ -29,6 +29,10 @@
 mod config;
 mod encode;
 mod sink;
+#[cfg(feature = "staging")]
+mod staged;
+#[cfg(feature = "staging")]
+mod staged_exec;
 
 pub use config::{MssqlColumnMapping, MssqlSinkConfig, OnUnknownField};
 pub use sink::MssqlSink;

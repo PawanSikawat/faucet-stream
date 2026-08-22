@@ -200,6 +200,34 @@ The pipeline streams pages from the source and calls `Sink::write_batch` once pe
 
 `batch_size: 0` is the "no batching" sentinel: the whole upstream page is handed to the sink as one logical write (still param-split internally into compliant statements). Bulk-copy (`BCP`) is out of scope.
 
+## Staged bulk load (`staging`)
+
+With the `staging` feature and a `staging:` block, each page is uploaded to Azure
+Blob / ADLS and SQL Server / Synapse pulls it with `COPY INTO … FROM '<url>'`
+instead of parameterized `INSERT`s — far faster for large batches.
+
+```yaml
+sink:
+  type: mssql
+  config:
+    connection_url: "..."
+    table: dbo.events
+    staging:
+      location: "az://my-container/mssql-stage/"  # Azure only (COPY INTO reads Azure Blob/ADLS)
+      format: csv                                  # COPY INTO file type; csv only
+      cleanup: always
+      storage_account: mystorageacct              # builds the COPY INTO https URL
+      # endpoint: azurite:10000/devacct           # Azurite / sovereign-cloud override
+      sas_token: "${env:MSSQL_STAGE_SAS}"          # SAS the server uses to READ the stage
+```
+
+Build with the crate's `staging` feature (CLI: `--features sink-mssql-staging`,
+in `full`). **Azure only** (`az://…`), **CSV only**. `COPY INTO` maps CSV columns
+by **position**, so the target table's column order must match the staged CSV —
+align the table (or stage a matching column subset). The load SQL/URL generation
+is unit-tested; the server-side `COPY INTO` requires a live SQL Server/Synapse +
+Azure storage and is not exercised in CI (same as the other staged-load sinks).
+
 ## Write modes (upsert / delete)
 
 In addition to the default append, the sink can **upsert** (insert-or-update by key) or **delete** by key. Both require `column_mapping: auto_columns` — the key columns must be real table columns, not buried inside a JSON column (using `json_column` with `upsert`/`delete` is rejected at construction). The key columns should have a `UNIQUE` / `PRIMARY KEY` constraint.

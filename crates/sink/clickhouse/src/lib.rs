@@ -30,6 +30,10 @@
 
 mod config;
 mod sink;
+#[cfg(feature = "staging")]
+mod staged;
+#[cfg(feature = "staging")]
+mod staged_exec;
 
 pub use config::ClickHouseSinkConfig;
 pub use sink::ClickHouseSink;

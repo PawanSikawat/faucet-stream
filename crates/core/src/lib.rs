@@ -22,6 +22,8 @@ pub mod columnar;
 pub mod config;
 #[cfg(feature = "contract")]
 pub mod contract;
+#[cfg(feature = "transform-cross-join")]
+pub mod cross_join;
 pub mod discover;
 pub mod dlq;
 pub mod drift;
@@ -75,6 +77,8 @@ pub use columnar::{
     ColumnarPage, infer_arrow_schema, record_batch_to_values, values_to_record_batch,
     values_to_record_batch_inferred,
 };
+#[cfg(feature = "transform-cross-join")]
+pub use cross_join::{CompiledCrossJoin, CrossJoinSpec, OnEmpty as CrossJoinOnEmpty};
 pub use discover::{DatasetDescriptor, columns_to_schema, nullable_type, sql_type_to_json_schema};
 pub use dlq::{
     DlqConfig, DlqReason, DlqStats, EnvelopeError, OnBatchError, UnwrappedEnvelope, build_envelope,
