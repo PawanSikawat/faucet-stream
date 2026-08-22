@@ -36,7 +36,10 @@ pub fn staged_https_url(
     endpoint: Option<&str>,
 ) -> Result<String, FaucetError> {
     if let Some(ep) = endpoint {
-        let ep = ep.trim_end_matches('/').trim_start_matches("https://").trim_start_matches("http://");
+        let ep = ep
+            .trim_end_matches('/')
+            .trim_start_matches("https://")
+            .trim_start_matches("http://");
         return Ok(format!("https://{ep}/{bucket}/{key}"));
     }
     match scheme {
@@ -92,8 +95,14 @@ mod tests {
 
     #[test]
     fn format_mapping() {
-        assert_eq!(clickhouse_format(StagingFormat::Jsonl).unwrap(), "JSONEachRow");
-        assert_eq!(clickhouse_format(StagingFormat::Csv).unwrap(), "CSVWithNames");
+        assert_eq!(
+            clickhouse_format(StagingFormat::Jsonl).unwrap(),
+            "JSONEachRow"
+        );
+        assert_eq!(
+            clickhouse_format(StagingFormat::Csv).unwrap(),
+            "CSVWithNames"
+        );
         assert!(clickhouse_format(StagingFormat::Parquet).is_err());
     }
 
@@ -120,7 +129,14 @@ mod tests {
     #[test]
     fn endpoint_override_is_path_style() {
         assert_eq!(
-            staged_https_url(StagingScheme::S3, "buk", "k", None, Some("https://minio.local:9000")).unwrap(),
+            staged_https_url(
+                StagingScheme::S3,
+                "buk",
+                "k",
+                None,
+                Some("https://minio.local:9000")
+            )
+            .unwrap(),
             "https://minio.local:9000/buk/k"
         );
     }

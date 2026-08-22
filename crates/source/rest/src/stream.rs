@@ -1335,7 +1335,12 @@ impl RestStream {
                         })
                     })
                     .collect();
-                req = req.query(&pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>());
+                req = req.query(
+                    &pairs
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.as_str()))
+                        .collect::<Vec<_>>(),
+                );
             }
         }
         // #511 query placements from the flow provider.
@@ -1776,7 +1781,10 @@ mod tests {
     #[test]
     fn value_max_consolidates_partition_bookmarks() {
         // First value seeds the max.
-        assert_eq!(value_max(None, json!("2026-01-01")), Some(json!("2026-01-01")));
+        assert_eq!(
+            value_max(None, json!("2026-01-01")),
+            Some(json!("2026-01-01"))
+        );
         // Strings compare lexicographically (ISO timestamps sort correctly).
         assert_eq!(
             value_max(Some(json!("2026-01-01")), json!("2026-03-01")),

@@ -118,7 +118,14 @@ impl ClickHouseSink {
         let uploader = StageUploader::from_location(loc.clone())?;
         let seq = self.stage_seq.fetch_add(1, Ordering::Relaxed);
         let staged = uploader
-            .stage_page(&staging.spec, &self.config.table, &self.stage_run_id, seq, records, None)
+            .stage_page(
+                &staging.spec,
+                &self.config.table,
+                &self.stage_run_id,
+                seq,
+                records,
+                None,
+            )
             .await?;
 
         let url = staged_https_url(

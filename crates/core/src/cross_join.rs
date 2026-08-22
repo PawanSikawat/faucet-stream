@@ -269,7 +269,14 @@ mod tests {
     #[test]
     fn skip_vs_one_row_on_empty() {
         let rec = json!({"id": 1, "jobs": [{"t": "a"}], "comp": []});
-        assert!(spec(&["jobs", "comp"]).compile().unwrap().apply(rec.clone()).unwrap().is_empty());
+        assert!(
+            spec(&["jobs", "comp"])
+                .compile()
+                .unwrap()
+                .apply(rec.clone())
+                .unwrap()
+                .is_empty()
+        );
         let mut s = spec(&["jobs", "comp"]);
         s.on_empty = OnEmpty::OneRow;
         let out = s.compile().unwrap().apply(rec).unwrap();
@@ -294,7 +301,11 @@ mod tests {
     #[test]
     fn scalar_elements_wrap_under_array_name() {
         let rec = json!({"id": 1, "tags": ["x", "y"], "vals": [10]});
-        let out = spec(&["tags", "vals"]).compile().unwrap().apply(rec).unwrap();
+        let out = spec(&["tags", "vals"])
+            .compile()
+            .unwrap()
+            .apply(rec)
+            .unwrap();
         assert_eq!(out.len(), 2);
         assert_eq!(out[0]["tags"], json!("x"));
         assert_eq!(out[0]["vals"], json!(10));
