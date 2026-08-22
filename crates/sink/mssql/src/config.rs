@@ -97,6 +97,48 @@ pub struct MssqlSinkConfig {
     /// columns must be real table columns, not buried inside a JSON column).
     #[serde(flatten)]
     pub write: faucet_core::WriteSpec,
+
+    /// Staged bulk load (#528): stage each page to Azure Blob / ADLS and have
+    /// SQL Server / Synapse pull it with `COPY INTO` instead of parameterized
+    /// `INSERT`s. Absent ⇒ the ordinary insert path. Requires the crate's
+    /// `staging` feature at build time to execute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staging: Option<MssqlStagingConfig>,
+}
+
+/// Staged-load configuration for the MSSQL sink (#528). `COPY INTO` reads Azure
+/// Blob / ADLS Gen2 only, so `location` must be `az://…` and `format: csv`.
+#[derive(Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MssqlStagingConfig {
+    /// Shared object-store staging block (`location`, `format`, `compression`,
+    /// `cleanup`). `location` must be `az://container/prefix`; `format: csv`.
+    #[serde(flatten)]
+    pub spec: faucet_core::staging::StagingSpec,
+    /// Azure storage account (the `az://` URI does not carry it) used to build
+    /// the `COPY INTO` HTTPS URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_account: Option<String>,
+    /// Explicit blob endpoint base (`host[/account]`, path-style) — for Azurite
+    /// / sovereign clouds. Overrides `storage_account`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// Shared Access Signature token SQL Server uses to **read** the staged
+    /// objects. Omit to rely on the server's managed identity / configured access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sas_token: Option<String>,
+}
+
+impl std::fmt::Debug for MssqlStagingConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MssqlStagingConfig")
+            .field("spec", &self.spec)
+            .field("storage_account", &self.storage_account)
+            .field("endpoint", &self.endpoint)
+            // Never print the SAS token — it is a bearer credential.
+            .field("sas_token", &self.sas_token.as_ref().map(|_| "***"))
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for MssqlSinkConfig {
@@ -112,6 +154,7 @@ impl std::fmt::Debug for MssqlSinkConfig {
             .field("statement_timeout_secs", &self.statement_timeout_secs)
             .field("create_table", &self.create_table)
             .field("write", &self.write)
+            .field("staging", &self.staging)
             .finish()
     }
 }
@@ -133,6 +176,7 @@ impl MssqlSinkConfig {
             statement_timeout_secs: default_statement_timeout_secs(),
             create_table: false,
             write: faucet_core::WriteSpec::default(),
+            staging: None,
         }
     }
 
@@ -160,6 +204,21 @@ impl MssqlSinkConfig {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn staging_debug_redacts_sas_token() {
+        let staging: MssqlStagingConfig = serde_json::from_value(json!({
+            "location": "az://container/stage",
+            "format": "csv",
+            "storage_account": "acct",
+            "sas_token": "sv=2022&sig=super-secret",
+        }))
+        .unwrap();
+        let dbg = format!("{staging:?}");
+        assert!(dbg.contains("***"), "sas_token should be masked: {dbg}");
+        assert!(!dbg.contains("super-secret"), "sas_token leaked: {dbg}");
+        assert!(dbg.contains("acct"), "non-secret fields kept: {dbg}");
+    }
 
     #[test]
     fn json_column_is_default() {

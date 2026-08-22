@@ -907,12 +907,14 @@ pub fn sink_supports_scoped_overwrite(kind: &str) -> bool {
 /// Sink kinds that bulk-load via an object-store stage + native load command
 /// (staged bulk load, #528). These mirror each sink's
 /// `Sink::supports_staged_load` override. Redshift (`write_strategy: copy`), Snowflake (`bulk_load`), and
-/// BigQuery (`bulk_load`) load from S3 / an external stage / GCS respectively.
-/// ClickHouse (`s3()` table function) and MSSQL (`COPY INTO` / `BULK INSERT`)
-/// are tracked as a live-tested follow-up on #528 — their generated load
-/// commands can't be verified end-to-end in CI, and shipping them unverified
-/// would risk silently loading wrong data.
-pub const STAGED_LOAD_SINK_KINDS: &[&str] = &["redshift", "snowflake", "bigquery"];
+/// BigQuery (`bulk_load`) load from S3 / an external stage / GCS respectively;
+/// ClickHouse pulls a staged S3/GCS object with the `s3()` / `gcs()` table
+/// function, and MSSQL/Synapse pulls a staged Azure Blob object with `COPY INTO`
+/// (`staging:` blocks, #528). The load SQL/URL generators are unit-tested; the
+/// server-side execution is not exercised in CI (no live warehouse + object
+/// store), same as Redshift/Snowflake/BigQuery.
+pub const STAGED_LOAD_SINK_KINDS: &[&str] =
+    &["redshift", "snowflake", "bigquery", "clickhouse", "mssql"];
 
 /// Whether a sink kind supports staged bulk load. See [`STAGED_LOAD_SINK_KINDS`].
 pub fn sink_supports_staged_load(kind: &str) -> bool {
@@ -1482,14 +1484,13 @@ mod tests {
 
     #[test]
     fn staged_load_allowlist_matches_capable_sinks() {
-        for k in ["redshift", "snowflake", "bigquery"] {
+        for k in ["redshift", "snowflake", "bigquery", "clickhouse", "mssql"] {
             assert!(
                 sink_supports_staged_load(k),
                 "{k} should support staged load"
             );
         }
-        // clickhouse/mssql are a live-tested follow-up on #528.
-        for k in ["jsonl", "clickhouse", "mssql", "postgres", "stdout"] {
+        for k in ["jsonl", "postgres", "sqlite", "stdout"] {
             assert!(
                 !sink_supports_staged_load(k),
                 "{k} should not (yet) support staged load"

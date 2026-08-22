@@ -730,6 +730,87 @@ async fn test_partitions_fetch_each_context() {
     assert_eq!(records[1]["org"], "beta");
 }
 
+// Regression for #535: `Source::stream_pages` (the path `faucet run` / the
+// pipeline drives) must fan out over `partitions` too — previously it ignored
+// them and silently dropped every partition's records.
+#[tokio::test]
+async fn test_stream_pages_fans_out_over_partitions() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/orgs/acme/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "users": [{"id": 1, "org": "acme"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/orgs/beta/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "users": [{"id": 2, "org": "beta"}, {"id": 3, "org": "beta"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let mut p1 = HashMap::new();
+    p1.insert("org_id".to_string(), json!("acme"));
+    let mut p2 = HashMap::new();
+    p2.insert("org_id".to_string(), json!("beta"));
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/orgs/{org_id}/users")
+            .records_path("$.users[*]")
+            .add_partition(p1)
+            .add_partition(p2),
+    )
+    .unwrap();
+
+    // Drive the trait method exactly as the pipeline does (empty parent context).
+    let ctx: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut pages = Source::stream_pages(&stream, &ctx, 1000);
+    let mut all = Vec::new();
+    while let Some(page) = pages.next().await {
+        all.extend(page.unwrap().records);
+    }
+
+    assert_eq!(all.len(), 3, "both partitions' records must be streamed");
+    let orgs: Vec<&str> = all.iter().map(|r| r["org"].as_str().unwrap()).collect();
+    assert!(orgs.contains(&"acme") && orgs.contains(&"beta"));
+}
+
+// #536: repeated / array-valued query params must be sent as repeated keys.
+#[tokio::test]
+async fn test_query_params_multi_repeats_keys() {
+    let server = MockServer::start().await;
+
+    // Only matches when BOTH group_by[] values are present (wiremock parses the
+    // query as a multimap), so a passing fetch proves the key was repeated.
+    Mock::given(method("GET"))
+        .and(path("/api/usage"))
+        .and(query_param("group_by[]", "api_key_id"))
+        .and(query_param("group_by[]", "model"))
+        .and(query_param("bucket", "1d"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": 1}]
+        })))
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/usage")
+            .records_path("$.data[*]")
+            .query("bucket", "1d")
+            .add_query_param_multi(
+                "group_by[]",
+                vec!["api_key_id".to_string(), "model".to_string()],
+            ),
+    )
+    .unwrap();
+
+    let records = stream.fetch_all().await.unwrap();
+    assert_eq!(records.len(), 1, "repeated group_by[] params must be sent");
+}
+
 // ── HTTP 429 / Retry-After ────────────────────────────────────────────────────
 
 #[tokio::test]

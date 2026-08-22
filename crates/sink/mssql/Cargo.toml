@@ -10,6 +10,13 @@ readme = "README.md"
 keywords = ["mssql", "sqlserver", "sql", "sink", "pipeline"]
 categories.workspace = true
 
+[features]
+default = []
+# Staged bulk load (#528): stage each page to Azure Blob / ADLS and have SQL
+# Server / Synapse pull it with `COPY INTO`. Pulls `object_store` via
+# `faucet-core/staging`.
+staging = ["faucet-core/staging"]
+
 [dependencies]
 faucet-core.workspace = true
 faucet-common-mssql.workspace = true
@@ -28,6 +35,7 @@ tokio.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 serde_json.workspace = true
+object_store.workspace = true
 faucet-conformance.workspace = true
 schemars.workspace = true
 testcontainers = "0.27"

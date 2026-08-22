@@ -83,6 +83,7 @@ faucet run pipeline.yaml
 | `auth` | `Auth` / `{ ref }` | `none` | Inline `{ type, config }` auth, or a `{ ref: <name> }` pointer to a shared provider. See [Authentication](#authentication). |
 | `headers` | map | empty | Extra HTTP headers sent on every request (library/`header()` only; not serialized in YAML/JSON). |
 | `query_params` | map<string,string> | empty | Query parameters added to every request. |
+| `query_params_multi` | map<string,list<string>> | empty | Repeated / array-valued query params, rendered as repeated keys — e.g. `{ "group_by[]": ["api_key_id", "model"] }` → `?group_by[]=api_key_id&group_by[]=model`. Applied alongside `query_params`. |
 | `body` | JSON / null | `null` | JSON request body (sent with `Content-Type: application/json`). |
 
 ### Pagination

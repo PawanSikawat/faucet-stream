@@ -48,6 +48,37 @@ default) so the request is only acknowledged once the batch is durably accepted,
 preserving faucet's at-least-once contract (the bookmark advances only after the
 write is confirmed).
 
+## Staged bulk load (`staging`)
+
+With the `staging` feature and a `staging:` block, each page is uploaded to an
+object store and the ClickHouse **server** pulls it with the `s3()` / `gcs()`
+table function — `INSERT INTO t SELECT * FROM s3('<https-url>', …, '<Format>')`
+— instead of streaming rows in the request body. Far more efficient for large
+batches, and the server does the fetching.
+
+```yaml
+sink:
+  type: clickhouse
+  config:
+    url: "http://clickhouse:8123"
+    table: events
+    staging:
+      location: "s3://my-bucket/clickhouse-stage/"  # s3:// or gs://
+      format: jsonl                                  # jsonl | csv
+      compression: none
+      cleanup: always
+      region: us-east-1        # for the derived s3() URL (omit for gs://)
+      # endpoint: minio:9000   # S3-compatible override (path-style)
+      access_key: "${env:CH_STAGE_KEY}"   # creds the server uses to READ the stage
+      secret_key: "${env:CH_STAGE_SECRET}"
+```
+
+Build with the crate's `staging` feature (CLI: `--features sink-clickhouse-staging`,
+included in `full`). The load SQL/URL generation is unit-tested; the server-side
+`s3()`/`gcs()` fetch itself requires a live ClickHouse + object store and is not
+exercised in CI (same as the other staged-load sinks). Azure staging is not
+supported by this path — stage to `s3://` or `gs://`.
+
 ## Write modes
 
 The sink is **append-only**. ClickHouse upsert semantics are engine-dependent —

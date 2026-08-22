@@ -7,8 +7,8 @@ use crate::config::TransformSpec;
 use crate::error::{CliError, CliResult};
 #[cfg(feature = "transforms")]
 use faucet_core::{
-    CastOnError, CastType, HashAlgorithm, HashEncoding, JsonParseOnError, KeyCaseMode,
-    LookupOnMissing, TreeFlattenSpec, UnpivotSpec, ValueCaseMode,
+    CastOnError, CastType, CrossJoinSpec, HashAlgorithm, HashEncoding, JsonParseOnError,
+    KeyCaseMode, LookupOnMissing, TreeFlattenSpec, UnpivotSpec, ValueCaseMode,
 };
 #[cfg(any(feature = "transforms", feature = "transform-cdc-unwrap"))]
 use faucet_core::{JsonSchema, schema_for};
@@ -626,6 +626,21 @@ fn registry() -> Vec<TransformDef> {
                 },
             },
             TransformDef {
+                kind: "cross_join",
+                description: "Expand a record into the cartesian product of two or more of its sibling array fields.",
+                schema_fn: || schema::<CrossJoinSpec>(),
+                compile_fn: |kind, config| {
+                    // `cross_join` is 1→N and fails loudly on product overflow,
+                    // so it compiles to a fallible `TransformStage::PageFn`.
+                    // `into_stage` validates the spec at load time.
+                    let spec = decode::<CrossJoinSpec>(kind, config)?;
+                    spec.into_stage().map_err(|e| CliError::InvalidTransform {
+                        name: kind.to_owned(),
+                        message: e.to_string(),
+                    })
+                },
+            },
+            TransformDef {
                 kind: "lookup",
                 description: "Enrich records by joining against an inline/JSONL reference table.",
                 schema_fn: || schema::<LookupConfig>(),
@@ -1193,6 +1208,28 @@ mod tests {
         ];
         let out = compile_transforms(&specs).unwrap();
         assert_eq!(out.len(), 3);
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn compiles_cross_join() {
+        let specs = vec![TransformSpec {
+            kind: "cross_join".into(),
+            config: json!({"arrays": ["jobs", "compensation"], "prefix": true}),
+        }];
+        let out = compile_transforms(&specs).unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], TransformStage::PageFn(_)));
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn cross_join_single_array_rejected_at_load() {
+        let specs = vec![TransformSpec {
+            kind: "cross_join".into(),
+            config: json!({"arrays": ["only"]}),
+        }];
+        assert!(compile_transforms(&specs).is_err());
     }
 
     #[cfg(feature = "transforms")]

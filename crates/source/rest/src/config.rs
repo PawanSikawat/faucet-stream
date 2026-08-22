@@ -53,6 +53,14 @@ pub struct RestStreamConfig {
     #[serde(skip, default)]
     pub headers: HeaderMap,
     pub query_params: HashMap<String, String>,
+    /// Repeated / array-valued query params (#536), rendered as repeated keys —
+    /// e.g. `{ "group_by[]": ["api_key_id", "model"] }` → `?group_by[]=api_key_id&group_by[]=model`.
+    /// Applied alongside (in addition to) [`query_params`](Self::query_params);
+    /// use this for APIs that need a key to appear more than once (`group_by[]`,
+    /// repeated `expand`/`fields`). Values honor `{placeholder}` context
+    /// substitution for child sources, like `query_params`. Empty by default.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub query_params_multi: HashMap<String, Vec<String>>,
     pub body: Option<Value>,
 
     // ── Pagination ────────────────────────────────────────────────────────────
@@ -274,6 +282,7 @@ impl Default for RestStreamConfig {
             auth: AuthSpec::Inline(Auth::None),
             headers: HeaderMap::new(),
             query_params: HashMap::new(),
+            query_params_multi: HashMap::new(),
             body: None,
             pagination: PaginationStyle::None,
             records_path: None,
@@ -626,6 +635,13 @@ impl RestStreamConfig {
     /// substituting `{key}` placeholders in `path` with values from the context.
     pub fn add_partition(mut self, ctx: HashMap<String, Value>) -> Self {
         self.partitions.push(ctx);
+        self
+    }
+
+    /// Add a repeated / array-valued query parameter (#536): `key` is emitted
+    /// once per value (`?key=v0&key=v1`). Chainable.
+    pub fn add_query_param_multi(mut self, key: &str, values: Vec<String>) -> Self {
+        self.query_params_multi.insert(key.to_string(), values);
         self
     }
 

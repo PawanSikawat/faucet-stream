@@ -39,3 +39,12 @@ ignore:
   # two files are the untestable transport/I/O.
   - "crates/source/bigquery/src/storage_read.rs"
   - "crates/sink/bigquery/src/load.rs"
+  # Staged bulk load (#528) execution shims: they upload a page to the object
+  # store and issue `INSERT … SELECT FROM s3()` / `COPY INTO` over the wire,
+  # needing a live warehouse that can itself reach a live bucket (and MSSQL's
+  # sink cannot be constructed without a reachable server). Provably-uncoverable
+  # in CI, exactly like the GCS/BigQuery data-plane above. Their pure logic
+  # (SQL/URL generation and the upload-and-build step, tested against an
+  # in-memory object store) stays in the denominator.
+  - "crates/sink/clickhouse/src/staged_exec.rs"
+  - "crates/sink/mssql/src/staged_exec.rs"
