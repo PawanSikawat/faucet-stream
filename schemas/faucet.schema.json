@@ -4287,27 +4287,15 @@
       "oneOf": [
         {
           "description": "Page-number pagination with a query parameter.",
-          "type": "object",
           "properties": {
-            "param_name": {
-              "type": "string"
-            },
-            "start_page": {
-              "type": [
-                "integer",
-                "string"
-              ],
-              "format": "uint",
-              "minimum": 0
-            },
             "page_size": {
+              "format": "uint",
+              "minimum": 0,
               "type": [
                 "integer",
                 "null",
                 "string"
-              ],
-              "format": "uint",
-              "minimum": 0
+              ]
             },
             "page_size_param": {
               "type": [
@@ -4315,35 +4303,65 @@
                 "null"
               ]
             },
+            "param_name": {
+              "type": "string"
+            },
+            "start_page": {
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
             "type": {
-              "type": "string",
-              "const": "PageNumber"
+              "const": "PageNumber",
+              "type": "string"
             }
-          }
+          },
+          "type": "object"
         },
         {
           "description": "Offset/limit pagination.",
-          "type": "object",
           "properties": {
-            "offset_param": {
-              "type": "string"
+            "limit": {
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "string"
+              ]
             },
             "limit_param": {
               "type": "string"
             },
-            "limit": {
-              "type": [
-                "integer",
-                "string"
-              ],
-              "format": "uint",
-              "minimum": 0
+            "offset_param": {
+              "type": "string"
             },
             "type": {
-              "type": "string",
-              "const": "Offset"
+              "const": "Offset",
+              "type": "string"
             }
-          }
+          },
+          "type": "object"
+        },
+        {
+          "description": "Body-cursor pagination (#544): read a continuation token from the\nresponse via a dot-path (namespace-insensitive, trailing-match), and on\neach subsequent request replace the request body with `next_body` (with\n`${next_token}` substituted). Stops when the token is absent/empty or\nrepeats (loop guard), honouring `max_pages`. For stateful XML/SOAP APIs\nthat page with a `readMore`/`resultId` handle (e.g. Sage Intacct).",
+          "properties": {
+            "next_body": {
+              "description": "Request-body template for pages after the first; `${next_token}` is\nsubstituted with the captured token.",
+              "type": "string"
+            },
+            "next_token_path": {
+              "description": "Dot-path to the continuation-token element in the response.",
+              "type": "string"
+            },
+            "type": {
+              "const": "BodyCursor",
+              "type": "string"
+            }
+          },
+          "type": "object"
         }
       ]
     },
@@ -10165,6 +10183,17 @@
                 {
                   "description": "Configuration for a RestStream.",
                   "properties": {
+                    "async_job": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_rest__AsyncJobConfig"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Run a submit→poll→fetch job lifecycle instead of a single GET, for\nbulk/export/report-run APIs (Salesforce Bulk, Stripe Reporting, …). The\nfetched result flows through `decode:` / `response_format`. When set,\npagination must be `none`. See [`AsyncJobConfig`](crate::async_job::AsyncJobConfig)."
+                    },
                     "auth": {
                       "$ref": "#/$defs/source_rest__AuthSpec",
                       "description": "Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`\npointer to a shared provider in the CLI's top-level `auth:` catalog."
@@ -10192,6 +10221,13 @@
                         "string"
                       ]
                     },
+                    "decode": {
+                      "description": "Decode the response body before record extraction: a chain of\n`extract` (JSONPath) / `base64` / `gunzip` / `unzip` / `parse`\n(json|csv|xlsx|xml) steps. Lets a source consume base64/compressed/file\npayloads (e.g. a base64 XLSX inside a SOAP body, or a gzipped-CSV export).\nWhen set, it replaces the `response_format` body parsing, and pagination\nmust be `none`. See [`DecodeStep`](crate::decode::DecodeStep).",
+                      "items": {
+                        "$ref": "#/$defs/source_rest__DecodeStep"
+                      },
+                      "type": "array"
+                    },
                     "excel_header_row": {
                       "default": 0,
                       "description": "0-based index of the Excel header row (default `0`). Rows above it are\nskipped; the header row supplies field names. `response_format: excel` only.",
@@ -10209,6 +10245,13 @@
                         "string",
                         "null"
                       ]
+                    },
+                    "headers": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Static request headers sent on **every** request (data pages, async-job\nsubmit/poll/fetch requests, and OData `$metadata` discovery probes).\nApplied *before* the auth provider's header placements, so an auth\nheader of the same name always wins on a clash. Values honor\n`${env:}` / `${param.*}` load-time interpolation and pass through the\nsecrets/redaction boundary like other config strings. Invalid header\nnames/values are rejected at config load\n([`FaucetError::Config`](faucet_core::FaucetError::Config)), never a\nmid-run panic.\n\n```yaml\nheaders:\n  Prefer: transient\n  Accept: application/json\n```",
+                      "type": "object"
                     },
                     "max_pages": {
                       "format": "uint",
@@ -10237,6 +10280,17 @@
                         "string",
                         "null"
                       ]
+                    },
+                    "odata": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_rest__ODataConfig"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Speak the OData protocol: `@odata.nextLink` paging, the `$.value`\nenvelope, `$select`/`$filter`/`$expand`/`$orderby` sugar, and\n`$metadata` (EDMX) → schema discovery. When set, it derives the\npagination, `records_path`, query params, and `Prefer` header at load\ntime (explicit values still win). See [`ODataConfig`]."
                     },
                     "pagination": {
                       "$ref": "#/$defs/source_rest__PaginationStyle"
@@ -10291,6 +10345,17 @@
                         "string",
                         "null"
                       ]
+                    },
+                    "replication_bind": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_rest__ReplicationBind"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Bind the stored bookmark into the outgoing request (query param / header /\nbody field / path) so the server returns only new rows. Composes with the\nexisting `replication_key` client-side filter, which stays active as a\nsafety net. Requires `replication_method: incremental` + `replication_key`."
                     },
                     "replication_key": {
                       "description": "Field name (not a JSONPath) used for incremental replication bookmarking.",
@@ -10382,46 +10447,6 @@
                         ]
                       },
                       "type": "array"
-                    },
-                    "odata": {
-                      "anyOf": [
-                        {
-                          "$ref": "#/$defs/source_rest__ODataConfig"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "description": "Speak the OData protocol: `@odata.nextLink` paging, the `$.value`\nenvelope, `$select`/`$filter`/`$expand`/`$orderby` sugar, and\n`$metadata` (EDMX) → schema discovery. When set, it derives the\npagination, `records_path`, query params, and `Prefer` header at load\ntime (explicit values still win). See [`ODataConfig`]."
-                    },
-                    "replication_bind": {
-                      "anyOf": [
-                        {
-                          "$ref": "#/$defs/source_rest__ReplicationBind"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "description": "Bind the stored bookmark into the outgoing request (query param / header /\nbody field / path) so the server returns only new rows. Composes with the\nexisting `replication_key` client-side filter, which stays active as a\nsafety net. Requires `replication_method: incremental` + `replication_key`."
-                    },
-                    "decode": {
-                      "description": "Decode the response body before record extraction: a chain of\n`extract` (JSONPath) / `base64` / `gunzip` / `unzip` / `parse`\n(json|csv|xlsx|xml) steps. Lets a source consume base64/compressed/file\npayloads (e.g. a base64 XLSX inside a SOAP body, or a gzipped-CSV export).\nWhen set, it replaces the `response_format` body parsing, and pagination\nmust be `none`. See [`DecodeStep`](crate::decode::DecodeStep).",
-                      "items": {
-                        "$ref": "#/$defs/source_rest__DecodeStep"
-                      },
-                      "type": "array"
-                    },
-                    "async_job": {
-                      "anyOf": [
-                        {
-                          "$ref": "#/$defs/source_rest__AsyncJobConfig"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "description": "Run a submit→poll→fetch job lifecycle instead of a single GET, for\nbulk/export/report-run APIs (Salesforce Bulk, Stripe Reporting, …). The\nfetched result flows through `decode:` / `response_format`. When set,\npagination must be `none`. See [`AsyncJobConfig`](crate::async_job::AsyncJobConfig)."
                     },
                     "window": {
                       "anyOf": [
@@ -10560,31 +10585,30 @@
           "additionalProperties": false
         },
         {
-          "type": "object",
-          "title": "xml",
+          "additionalProperties": false,
           "properties": {
-            "type": {
-              "const": "xml"
-            },
             "config": {
               "anyOf": [
                 {
+                  "description": "Configuration for the XML source.",
                   "properties": {
+                    "auth": {
+                      "$ref": "#/$defs/source_xml__AuthSpec",
+                      "description": "Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`\npointer to a shared provider in the CLI's top-level `auth:` catalog."
+                    },
                     "base_url": {
                       "description": "Base URL of the API.",
                       "type": "string"
                     },
-                    "path": {
-                      "description": "Request path (appended to base_url).",
-                      "type": "string"
-                    },
-                    "method": {
-                      "description": "HTTP method (GET or POST for SOAP).",
-                      "type": "string"
-                    },
-                    "auth": {
-                      "description": "Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`\npointer to a shared provider in the CLI's top-level `auth:` catalog.",
-                      "$ref": "#/$defs/source_xml__AuthSpec"
+                    "batch_size": {
+                      "default": 1000,
+                      "description": "Records per emitted [`StreamPage`](faucet_core::StreamPage). The\nevent-driven XML parser accumulates matched subtrees into a buffer\nand yields whenever the buffer reaches this size. Defaults to\n[`DEFAULT_BATCH_SIZE`].\n\n`batch_size = 0` is the \"no batching\" sentinel: the document is\ndrained end-to-end and the entire result set is emitted in a single\npage. Useful for small lookup payloads or for sinks (e.g. SQL `COPY`,\nBigQuery load jobs) that prefer one large request to many small ones.",
+                      "format": "uint",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "string"
+                      ]
                     },
                     "body": {
                       "description": "Optional request body (e.g. a raw SOAP envelope). Mutually exclusive\nwith [`SoapConfig::body_inner`] when a [`soap`](Self::soap) block is set.",
@@ -10593,17 +10617,48 @@
                         "null"
                       ]
                     },
-                    "soap": {
-                      "description": "Optional first-class SOAP ergonomics block. When present, the source\nassembles the SOAP envelope, injects the version-appropriate headers,\nand (by default) resolves `records_element_path` relative to\n`Envelope.Body`. Sugar over the raw `body` path — see [`SoapConfig`].",
+                    "decode": {
+                      "description": "Response-decode pipeline (#540): a declarative chain applied to the raw\nresponse body before record extraction (`extract` an element's text →\n`base64`/`gunzip`/`unzip` → `parse` csv/xlsx/xml/json). When non-empty,\nrecords come from the decoded output instead of `records_element_path`.",
+                      "items": {
+                        "$ref": "#/$defs/source_xml__DecodeStep"
+                      },
+                      "type": "array"
+                    },
+                    "max_pages": {
+                      "description": "Maximum number of pages to fetch.",
+                      "format": "uint",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ]
+                    },
+                    "method": {
+                      "description": "HTTP method (GET or POST for SOAP).",
+                      "type": "string"
+                    },
+                    "pagination": {
                       "anyOf": [
                         {
-                          "$ref": "#/$defs/source_xml__SoapConfig"
+                          "$ref": "#/$defs/source_xml__XmlPagination"
                         },
                         {
                           "type": "null"
                         }
                       ],
-                      "default": null
+                      "description": "Pagination configuration."
+                    },
+                    "path": {
+                      "description": "Request path (appended to base_url).",
+                      "type": "string"
+                    },
+                    "query_params": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Query parameters to include in every request.",
+                      "type": "object"
                     },
                     "records_element_path": {
                       "description": "Dot-separated path to the repeating element in the XML response\n(e.g. `\"Envelope.Body.GetUsersResponse.Users.User\"`).",
@@ -10612,43 +10667,17 @@
                         "null"
                       ]
                     },
-                    "pagination": {
-                      "description": "Pagination configuration.",
+                    "soap": {
                       "anyOf": [
                         {
-                          "$ref": "#/$defs/source_xml__XmlPagination"
+                          "$ref": "#/$defs/source_xml__SoapConfig"
                         },
                         {
                           "type": "null"
                         }
-                      ]
-                    },
-                    "max_pages": {
-                      "description": "Maximum number of pages to fetch.",
-                      "type": [
-                        "integer",
-                        "null",
-                        "string"
                       ],
-                      "format": "uint",
-                      "minimum": 0
-                    },
-                    "query_params": {
-                      "description": "Query parameters to include in every request.",
-                      "type": "object",
-                      "additionalProperties": {
-                        "type": "string"
-                      }
-                    },
-                    "batch_size": {
-                      "description": "Records per emitted [`StreamPage`](faucet_core::StreamPage). The\nevent-driven XML parser accumulates matched subtrees into a buffer\nand yields whenever the buffer reaches this size. Defaults to\n[`DEFAULT_BATCH_SIZE`].\n\n`batch_size = 0` is the \"no batching\" sentinel: the document is\ndrained end-to-end and the entire result set is emitted in a single\npage. Useful for small lookup payloads or for sinks (e.g. SQL `COPY`,\nBigQuery load jobs) that prefer one large request to many small ones.",
-                      "type": [
-                        "integer",
-                        "string"
-                      ],
-                      "format": "uint",
-                      "minimum": 0,
-                      "default": 1000
+                      "default": null,
+                      "description": "Optional first-class SOAP ergonomics block. When present, the source\nassembles the SOAP envelope, injects the version-appropriate headers,\nand (by default) resolves `records_element_path` relative to\n`Envelope.Body`. Sugar over the raw `body` path — see [`SoapConfig`]."
                     },
                     "tls": {
                       "anyOf": [
@@ -10664,11 +10693,13 @@
                     }
                   },
                   "title": "XmlStreamConfig",
-                  "description": "Configuration for the XML source.",
                   "type": "object"
                 },
                 true
               ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
             },
             "transforms": {
               "type": [
@@ -10676,14 +10707,15 @@
                 "null"
               ]
             },
-            "inherit_transforms": {
-              "type": "boolean"
+            "type": {
+              "const": "xml"
             }
           },
           "required": [
             "type"
           ],
-          "additionalProperties": false
+          "title": "xml",
+          "type": "object"
         },
         {
           "type": "object",
@@ -17835,8 +17867,18 @@
           "type": "object"
         },
         "url": {
-          "description": "URL — absolute, or a `base_url`-relative path. `${job_id}` is substituted.",
-          "type": "string"
+          "description": "URL — absolute, or a `base_url`-relative path. `${job_id}` is substituted.\n\nRequired for `submit`. For `fetch`, set **exactly one** of `url` (a fixed\ntemplate) or [`url_from`](Self::url_from) (a JSONPath into the poll body).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url_from": {
+          "description": "`fetch` only (#543): resolve the download URL from the **last poll\nresponse body** via JSONPath, instead of rendering [`url`](Self::url).\nFor APIs that return a one-time signed download link in the poll body\n(e.g. a Stripe report run's `result.url`) rather than at a deterministic\n`/{job_id}` path. The matched value must be a string; an absolute URL is\nused verbatim, a relative one is resolved against `base_url`. Mutually\nexclusive with [`url`](Self::url).",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -18327,6 +18369,153 @@
           "type": "string"
         }
       ]
+    },
+    "source_xml__DecodeStep": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/source_xml__SimpleStep",
+          "description": "Parameterless byte step (`base64` / `gunzip`)."
+        },
+        {
+          "description": "Pull a (string) field out of a JSON body first.",
+          "properties": {
+            "extract": {
+              "description": "JSONPath to a string field whose value becomes the buffer.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        {
+          "description": "Select a member from a zip archive.",
+          "properties": {
+            "unzip": {
+              "$ref": "#/$defs/source_xml__UnzipSpec",
+              "description": "Member selector."
+            }
+          },
+          "type": "object"
+        },
+        {
+          "description": "Terminal parse into records.",
+          "properties": {
+            "parse": {
+              "$ref": "#/$defs/source_xml__ParseSpec",
+              "description": "Parse options."
+            }
+          },
+          "type": "object"
+        }
+      ],
+      "description": "One step of the decode chain."
+    },
+    "source_xml__ParseFormat": {
+      "description": "Final-parse format for a decode chain.",
+      "oneOf": [
+        {
+          "const": "json",
+          "description": "JSON (default).",
+          "type": "string"
+        },
+        {
+          "const": "csv",
+          "description": "Delimited text.",
+          "type": "string"
+        },
+        {
+          "const": "xlsx",
+          "description": "Excel workbook (requires the crate's `excel` feature).",
+          "type": "string"
+        },
+        {
+          "const": "xml",
+          "description": "XML → JSON.",
+          "type": "string"
+        }
+      ]
+    },
+    "source_xml__ParseSpec": {
+      "additionalProperties": true,
+      "description": "Parse the decoded bytes into records.",
+      "properties": {
+        "delimiter": {
+          "description": "CSV delimiter byte (default `,`).",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null",
+            "string"
+          ]
+        },
+        "format": {
+          "$ref": "#/$defs/source_xml__ParseFormat",
+          "description": "Output format."
+        },
+        "has_headers": {
+          "default": true,
+          "description": "Whether the first CSV row is a header (default `true`).",
+          "type": [
+            "boolean",
+            "string"
+          ]
+        },
+        "header_row": {
+          "default": 0,
+          "description": "0-based Excel header row (default `0`).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "records_path": {
+          "description": "JSONPath selecting the record array (json/xml). When omitted, an array\nbody becomes the records and an object becomes a single record.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sheet": {
+          "description": "Excel worksheet name / index-as-string (default: first).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "source_xml__SimpleStep": {
+      "description": "A byte-chain step with no parameters (`- base64`, `- gunzip`).",
+      "oneOf": [
+        {
+          "const": "base64",
+          "description": "Base64-decode the (UTF-8 text) buffer into bytes.",
+          "type": "string"
+        },
+        {
+          "const": "gunzip",
+          "description": "Gzip-decompress the buffer.",
+          "type": "string"
+        }
+      ]
+    },
+    "source_xml__UnzipSpec": {
+      "additionalProperties": true,
+      "description": "Select a member of a zip archive.",
+      "properties": {
+        "member": {
+          "description": "Glob (`*.csv`, `prefix*`, `*mid*`, or an exact name) selecting the member.\nWhen omitted, the first file entry is used.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     }
   }
 }

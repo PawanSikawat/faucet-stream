@@ -5996,9 +5996,14 @@ version = "1.4.0"
 dependencies = [
  "async-stream",
  "async-trait",
+ "base64 0.22.1",
+ "calamine",
+ "csv-async",
  "faucet-conformance",
  "faucet-core",
+ "flate2",
  "futures",
+ "jsonpath-rust",
  "quick-xml 0.37.5",
  "reqwest 0.13.3",
  "schemars 1.2.1",
@@ -6008,6 +6013,7 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
+ "zip 2.4.2",
 ]
 
 [[package]]
