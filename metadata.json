@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0KN1162B3XWRPQJJ8SJE4VW",
+  "strategy": "manual-commit",
+  "branch": "feat/staged-load-crossjoin-partitions-qparams",
+  "checkpoints_count": 12,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 4579,
+    "cache_creation_tokens": 8003894,
+    "cache_read_tokens": 1283728807,
+    "output_tokens": 2081812,
+    "api_call_count": 2294
+  }
+}

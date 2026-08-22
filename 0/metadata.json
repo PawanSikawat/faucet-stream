@@ -1,0 +1,59 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0KN1162B3XWRPQJJ8SJE4VW",
+  "session_id": "55398c64-7c65-40db-9b68-886111a86d7f",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-22T02:33:11.205838Z",
+  "branch": "feat/staged-load-crossjoin-partitions-qparams",
+  "checkpoints_count": 12,
+  "save_step_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8",
+  "turn_id": "77abd9a68b2d",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 4579,
+    "cache_creation_tokens": 8003894,
+    "cache_read_tokens": 1283728807,
+    "output_tokens": 2081812,
+    "api_call_count": 2294
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_017ZfRgSytScg56gq1T9UQPE",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "artifact-design"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "77abd9a68b2d",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 7917,
+        "end": 7918,
+        "entry_ids": [
+          "77fc9a79-96ea-4356-a27c-a75ba0299ea3"
+        ],
+        "tool_use_id": "toolu_017ZfRgSytScg56gq1T9UQPE"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_017ZfRgSytScg56gq1T9UQPE"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: artifact-design",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 109
+  }
+}
