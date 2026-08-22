@@ -379,7 +379,7 @@ impl RestStream {
     /// per-page bookmarks for incremental replication.
     ///
     /// Note: this inherent convenience method does not fan out over
-    /// `partitions`. The [`Source::stream_pages`] trait impl (what the pipeline
+    /// `partitions`. The `Source::stream_pages` trait impl (what the pipeline
     /// drives) and [`fetch_all`](Self::fetch_all) do handle multi-partition
     /// streams (#535).
     ///
