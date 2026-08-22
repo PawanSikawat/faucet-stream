@@ -41,6 +41,12 @@ pub struct MssqlSink {
     staging_table_quoted: String,
     /// Cached writable (non-IDENTITY) columns for `auto_columns` mode.
     columns_cache: Mutex<Option<Vec<String>>>,
+    /// Per-sink run id for staged-object keys (#528).
+    #[cfg(feature = "staging")]
+    stage_run_id: String,
+    /// Monotonic part counter for staged objects.
+    #[cfg(feature = "staging")]
+    stage_seq: std::sync::atomic::AtomicUsize,
 }
 
 impl MssqlSink {
@@ -72,9 +78,82 @@ impl MssqlSink {
             table_quoted,
             staging_table_quoted,
             columns_cache: Mutex::new(None),
+            #[cfg(feature = "staging")]
+            stage_run_id: format!(
+                "run-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ),
+            #[cfg(feature = "staging")]
+            stage_seq: std::sync::atomic::AtomicUsize::new(0),
         };
         sink.maybe_create_table().await?;
         Ok(sink)
+    }
+
+    /// Staged bulk load (#528): upload the page to Azure and `COPY INTO`.
+    #[cfg(feature = "staging")]
+    async fn write_batch_staged(
+        &self,
+        records: &[Value],
+        staging: &crate::config::MssqlStagingConfig,
+    ) -> Result<usize, FaucetError> {
+        use crate::staged::{mssql_copy_into_sql, staged_azure_url};
+        use faucet_core::staging::{StageUploader, StagingFormat, StagingScheme};
+        use std::sync::atomic::Ordering;
+
+        // `COPY INTO` reads Azure Blob / ADLS and CSV only.
+        let loc = staging
+            .spec
+            .validate(&[StagingScheme::Azure], &[StagingFormat::Csv])?;
+        let uploader = StageUploader::from_location(loc.clone())?;
+        let seq = self.stage_seq.fetch_add(1, Ordering::Relaxed);
+        let staged = uploader
+            .stage_page(
+                &staging.spec,
+                &self.config.table,
+                &self.stage_run_id,
+                seq,
+                records,
+                None,
+            )
+            .await?;
+
+        let url = staged_azure_url(
+            loc.scheme,
+            &loc.bucket,
+            &staged.key,
+            staging.storage_account.as_deref(),
+            staging.endpoint.as_deref(),
+        )?;
+        // The staged CSV carries a header row → skip it with FIRSTROW = 2.
+        let sql = mssql_copy_into_sql(
+            &self.table_quoted,
+            &url,
+            staging.spec.format,
+            staging.sas_token.as_deref(),
+            2,
+        )?;
+
+        let run = async {
+            let mut conn = self.checkout().await?;
+            conn.simple_query(sql.as_str())
+                .await
+                .map_err(|e| FaucetError::Sink(format!("MSSQL COPY INTO failed: {e}")))?
+                .into_results()
+                .await
+                .map_err(|e| FaucetError::Sink(format!("MSSQL COPY INTO failed: {e}")))?;
+            Ok::<(), FaucetError>(())
+        }
+        .await;
+        uploader
+            .cleanup(&[staged], staging.spec.cleanup, run.is_ok())
+            .await;
+        run?;
+        tracing::debug!(records = records.len(), "MSSQL staged load written");
+        Ok(records.len())
     }
 
     fn timeout(&self) -> Option<Duration> {
@@ -802,6 +881,20 @@ impl Sink for MssqlSink {
             return Ok(0);
         }
 
+        // Staged bulk load (#528): stage the page to Azure and `COPY INTO`.
+        #[cfg(feature = "staging")]
+        if let Some(staging) = &self.config.staging {
+            return self.write_batch_staged(records, staging).await;
+        }
+        #[cfg(not(feature = "staging"))]
+        if self.config.staging.is_some() {
+            return Err(FaucetError::Config(
+                "mssql: `staging:` is configured but this build lacks the `staging` feature — \
+                 rebuild with `--features staging` (CLI: `sink-mssql-staging`)"
+                    .into(),
+            ));
+        }
+
         // Upsert/delete modes: plan the writes and apply upserts + deletes
         // atomically. Append and overwrite are insert-shaped (overwrite lands in
         // the staging table via `effective_table_quoted`). (NOTE:
@@ -1259,6 +1352,12 @@ impl Sink for MssqlSink {
     fn config_schema(&self) -> Value {
         serde_json::to_value(faucet_core::schema_for!(MssqlSinkConfig))
             .expect("schema serialization")
+    }
+
+    /// Staged bulk load is active only with a `staging:` block and the
+    /// `staging` feature compiled in.
+    fn supports_staged_load(&self) -> bool {
+        cfg!(feature = "staging") && self.config.staging.is_some()
     }
 
     fn connector_name(&self) -> &'static str {

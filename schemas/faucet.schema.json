@@ -14751,6 +14751,17 @@
                         }
                       ],
                       "description": "Scoped/windowed overwrite (#518): with `write_mode: overwrite`, replace\nonly the rows matching this scope (e.g. a date window) instead of\ntruncating the whole table. The prior out-of-scope rows are preserved."
+                    },
+                    "staging": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/sink_mssql__MssqlStagingConfig"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Staged bulk load (#528): stage each page to Azure Blob / ADLS and have\nSQL Server / Synapse pull it with `COPY INTO` instead of parameterized\n`INSERT`s. Absent ⇒ the ordinary insert path. Requires the crate's\n`staging` feature at build time to execute."
                     }
                   },
                   "title": "PostgresSinkConfig",
@@ -14988,6 +14999,17 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "staging": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/sink_mssql__MssqlStagingConfig"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Staged bulk load (#528): stage each page to Azure Blob / ADLS and have\nSQL Server / Synapse pull it with `COPY INTO` instead of parameterized\n`INSERT`s. Absent ⇒ the ordinary insert path. Requires the crate's\n`staging` feature at build time to execute."
                     }
                   },
                   "title": "MysqlSinkConfig",
@@ -15124,6 +15146,17 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "staging": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/sink_mssql__MssqlStagingConfig"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Staged bulk load (#528): stage each page to Azure Blob / ADLS and have\nSQL Server / Synapse pull it with `COPY INTO` instead of parameterized\n`INSERT`s. Absent ⇒ the ordinary insert path. Requires the crate's\n`staging` feature at build time to execute."
                     }
                   },
                   "title": "MssqlSinkConfig",
@@ -15205,6 +15238,17 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "staging": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/sink_mssql__MssqlStagingConfig"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Staged bulk load (#528): stage each page to Azure Blob / ADLS and have\nSQL Server / Synapse pull it with `COPY INTO` instead of parameterized\n`INSERT`s. Absent ⇒ the ordinary insert path. Requires the crate's\n`staging` feature at build time to execute."
                     }
                   },
                   "title": "SqliteSinkConfig",
@@ -15257,6 +15301,17 @@
                       "format": "uint",
                       "minimum": 0,
                       "default": 1000
+                    },
+                    "staging": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/sink_mssql__MssqlStagingConfig"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Staged bulk load (#528): stage each page to Azure Blob / ADLS and have\nSQL Server / Synapse pull it with `COPY INTO` instead of parameterized\n`INSERT`s. Absent ⇒ the ordinary insert path. Requires the crate's\n`staging` feature at build time to execute."
                     }
                   },
                   "title": "DuckdbSinkConfig",
@@ -18194,6 +18249,120 @@
       ]
     },
     "sink_clickhouse__StagingFormat": {
+      "description": "Physical file format written to the stage.",
+      "oneOf": [
+        {
+          "const": "jsonl",
+          "description": "One JSON object per line. The default — every warehouse can load it and\nit maps by column name (no positional column list needed).",
+          "type": "string"
+        },
+        {
+          "const": "csv",
+          "description": "Comma-separated values with a header row.",
+          "type": "string"
+        },
+        {
+          "const": "parquet",
+          "description": "Apache Parquet. Columnar + compressed; the fastest to load where the\nwarehouse supports it. Written by the sink (needs Arrow), not by this\nmodule's byte serializers.",
+          "type": "string"
+        }
+      ]
+    },
+    "sink_mssql__MssqlStagingConfig": {
+      "additionalProperties": true,
+      "description": "Staged-load configuration for the MSSQL sink (#528). `COPY INTO` reads Azure\nBlob / ADLS Gen2 only, so `location` must be `az://…` and `format: csv`.",
+      "properties": {
+        "cleanup": {
+          "$ref": "#/$defs/sink_mssql__StagingCleanup",
+          "default": "always",
+          "description": "When staged objects are deleted. Default `always`."
+        },
+        "compression": {
+          "$ref": "#/$defs/sink_mssql__StagingCompression",
+          "default": "none",
+          "description": "Outer compression for `csv`/`jsonl` (ignored for `parquet`). Default `none`."
+        },
+        "copy_options": {
+          "description": "Extra options appended verbatim to the warehouse's native load command\n(e.g. Redshift `\"TIMEFORMAT 'auto' STATUPDATE ON\"`). Passed through\nunquoted — the operator owns its correctness.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endpoint": {
+          "description": "Explicit blob endpoint base (`host[/account]`, path-style) — for Azurite\n/ sovereign clouds. Overrides `storage_account`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "format": {
+          "$ref": "#/$defs/sink_mssql__StagingFormat",
+          "default": "parquet",
+          "description": "File format written to the stage. Default `parquet`."
+        },
+        "location": {
+          "description": "Object-store location to stage files under, e.g.\n`s3://my-bucket/faucet-stage/`. Scheme selects the backend\n(`s3://` / `gs://` / `az://`).",
+          "type": "string"
+        },
+        "sas_token": {
+          "description": "Shared Access Signature token SQL Server uses to **read** the staged\nobjects. Omit to rely on the server's managed identity / configured access.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "storage_account": {
+          "description": "Azure storage account (the `az://` URI does not carry it) used to build\nthe `COPY INTO` HTTPS URL.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "sink_mssql__StagingCleanup": {
+      "description": "When staged objects are deleted after a load.",
+      "oneOf": [
+        {
+          "const": "always",
+          "description": "Delete staged objects whether the load succeeded or failed (the default —\nkeeps the stage tidy).",
+          "type": "string"
+        },
+        {
+          "const": "on_success",
+          "description": "Delete only after a successful load; leave them on failure for inspection.",
+          "type": "string"
+        },
+        {
+          "const": "never",
+          "description": "Never delete — the caller/operator manages the stage lifecycle.",
+          "type": "string"
+        }
+      ]
+    },
+    "sink_mssql__StagingCompression": {
+      "description": "Outer compression for text staging formats.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "No compression (the default).",
+          "type": "string"
+        },
+        {
+          "const": "gzip",
+          "description": "gzip (`.gz`).",
+          "type": "string"
+        },
+        {
+          "const": "zstd",
+          "description": "zstd (`.zst`).",
+          "type": "string"
+        }
+      ]
+    },
+    "sink_mssql__StagingFormat": {
       "description": "Physical file format written to the stage.",
       "oneOf": [
         {

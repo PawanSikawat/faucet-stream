@@ -168,7 +168,7 @@ transform-wasm = ["dep:faucet-transform-wasm"]
 ## syntax, so this flag never pulls the connector itself).
 encryption = ["faucet-core/encryption", "faucet-sink-jsonl?/encryption"]
 ## Every connector and state backend.
-full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "arrow", "quality", "quality-jsonschema", "contract", "masking", "lineage", "lineage-kafka", "transform-sql", "transform-wasm", "transform-cdc-unwrap", "encryption", "delta-s3", "delta-azure", "delta-gcs", "mtls", "oauth1", "source-rest-excel", "sink-clickhouse-staging"]
+full = ["source", "sink", "state", "auth", "kafka-schema-registry", "compression", "arrow", "quality", "quality-jsonschema", "contract", "masking", "lineage", "lineage-kafka", "transform-sql", "transform-wasm", "transform-cdc-unwrap", "encryption", "delta-s3", "delta-azure", "delta-gcs", "mtls", "oauth1", "source-rest-excel", "sink-clickhouse-staging", "sink-mssql-staging"]
 
 ## Individual source connectors.
 source-rest = ["dep:faucet-source-rest"]
@@ -223,6 +223,7 @@ sink-jsonl = ["dep:faucet-sink-jsonl"]
 sink-snowflake = ["dep:faucet-sink-snowflake"]
 sink-mysql = ["dep:faucet-sink-mysql"]
 sink-mssql = ["dep:faucet-sink-mssql"]
+sink-mssql-staging = ["sink-mssql", "faucet-sink-mssql/staging"]
 sink-sqlite = ["dep:faucet-sink-sqlite"]
 sink-duckdb = ["dep:faucet-sink-duckdb"]
 sink-sqs = ["dep:faucet-sink-sqs", "dep:faucet-common-sqs"]
