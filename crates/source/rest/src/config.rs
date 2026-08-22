@@ -50,8 +50,24 @@ pub struct RestStreamConfig {
     /// Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`
     /// pointer to a shared provider in the CLI's top-level `auth:` catalog.
     pub auth: AuthSpec<Auth>,
-    #[serde(skip, default)]
-    pub headers: HeaderMap,
+    /// Static request headers sent on **every** request (data pages, async-job
+    /// submit/poll/fetch requests, and OData `$metadata` discovery probes).
+    /// Applied *before* the auth provider's header placements, so an auth
+    /// header of the same name always wins on a clash. Values honor
+    /// `${env:}` / `${param.*}` load-time interpolation and pass through the
+    /// secrets/redaction boundary like other config strings. Invalid header
+    /// names/values are rejected at config load
+    /// ([`FaucetError::Config`](faucet_core::FaucetError::Config)), never a
+    /// mid-run panic.
+    ///
+    /// ```yaml
+    /// headers:
+    ///   Prefer: transient
+    ///   Accept: application/json
+    /// ```
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[schemars(with = "std::collections::HashMap<String, String>")]
+    pub headers: HashMap<String, String>,
     pub query_params: HashMap<String, String>,
     /// Repeated / array-valued query params (#536), rendered as repeated keys —
     /// e.g. `{ "group_by[]": ["api_key_id", "model"] }` → `?group_by[]=api_key_id&group_by[]=model`.
@@ -273,6 +289,31 @@ pub struct ODataConfig {
 
 pub use faucet_core::TlsClientConfig;
 
+/// Build a validated [`HeaderMap`] from the static `headers` string map.
+///
+/// Invalid header names/values become a typed
+/// [`FaucetError::Config`](faucet_core::FaucetError::Config) so a malformed
+/// header fails at config load rather than panicking mid-run. Used both by
+/// [`RestStreamConfig::validate`] (to fail loudly at load) and by the request
+/// path (which reuses the already-validated map).
+pub(crate) fn build_header_map(
+    headers: &HashMap<String, String>,
+) -> Result<HeaderMap, faucet_core::FaucetError> {
+    let mut map = HeaderMap::with_capacity(headers.len());
+    for (name, value) in headers {
+        let hn = HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
+            faucet_core::FaucetError::Config(format!("rest: invalid header name '{name}': {e}"))
+        })?;
+        let hv = HeaderValue::from_str(value).map_err(|e| {
+            faucet_core::FaucetError::Config(format!(
+                "rest: invalid value for header '{name}': {e}"
+            ))
+        })?;
+        map.insert(hn, hv);
+    }
+    Ok(map)
+}
+
 impl Default for RestStreamConfig {
     fn default() -> Self {
         Self {
@@ -280,7 +321,7 @@ impl Default for RestStreamConfig {
             path: String::new(),
             method: Method::GET,
             auth: AuthSpec::Inline(Auth::None),
-            headers: HeaderMap::new(),
+            headers: HashMap::new(),
             query_params: HashMap::new(),
             query_params_multi: HashMap::new(),
             body: None,
@@ -324,6 +365,9 @@ impl RestStreamConfig {
     /// parse the whole body, so paginated / JSONPath-extracted requests are
     /// rejected rather than silently ignored.
     pub fn validate(&self) -> Result<(), faucet_core::FaucetError> {
+        // Static custom headers: reject an invalid header name/value at load
+        // time rather than panicking on the first request (#539).
+        build_header_map(&self.headers)?;
         if !matches!(self.response_format, ResponseFormat::Json) {
             if !matches!(self.pagination, PaginationStyle::None) {
                 return Err(faucet_core::FaucetError::Config(
@@ -450,12 +494,16 @@ impl RestStreamConfig {
         if let Some(orderby) = &odata.orderby {
             set_param("$orderby", orderby.clone());
         }
-        // Server page size via the `Prefer` header.
+        // Server page size via the `Prefer` header (case-insensitive check so a
+        // user-set `Prefer:` is not double-inserted).
         if let Some(n) = odata.page_size
-            && !self.headers.contains_key("prefer")
-            && let Ok(val) = HeaderValue::from_str(&format!("odata.maxpagesize={n}"))
+            && !self
+                .headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("prefer"))
         {
-            self.headers.insert(HeaderName::from_static("prefer"), val);
+            self.headers
+                .insert("prefer".to_owned(), format!("odata.maxpagesize={n}"));
         }
     }
 
@@ -479,11 +527,13 @@ impl RestStreamConfig {
         self
     }
 
+    /// Add a static request header. Validation is deferred to
+    /// [`RestStream::new`](crate::RestStream::new) (via [`validate`](Self::validate)),
+    /// so an invalid name/value surfaces as a typed
+    /// [`FaucetError::Config`](faucet_core::FaucetError::Config) rather than
+    /// panicking here.
     pub fn header(mut self, k: &str, v: &str) -> Self {
-        self.headers.insert(
-            HeaderName::from_bytes(k.as_bytes()).expect("invalid header name"),
-            HeaderValue::from_str(v).expect("invalid header value"),
-        );
+        self.headers.insert(k.to_string(), v.to_string());
         self
     }
 
@@ -723,7 +773,10 @@ mod tests {
         assert_eq!(c.query_params.get("$expand").unwrap(), "Lines");
         assert_eq!(c.query_params.get("$filter").unwrap(), "A gt 1");
         assert_eq!(c.query_params.get("$orderby").unwrap(), "A desc");
-        assert_eq!(c.headers.get("prefer").unwrap(), "odata.maxpagesize=250");
+        assert_eq!(
+            c.headers.get("prefer").map(String::as_str),
+            Some("odata.maxpagesize=250")
+        );
         // v2 uses the un-prefixed next-link key.
         assert!(matches!(
             c.pagination,
@@ -733,6 +786,52 @@ mod tests {
         // Idempotent: a second application doesn't clobber explicit values.
         c.apply_odata_defaults();
         assert_eq!(c.query_params.get("$select").unwrap(), "A,B");
+    }
+
+    #[test]
+    fn headers_serde_round_trip_as_string_map() {
+        let mut c = RestStreamConfig::new("https://x", "/y");
+        c.headers
+            .insert("Prefer".to_owned(), "transient".to_owned());
+        c.headers
+            .insert("Accept".to_owned(), "application/json".to_owned());
+        // Serializes as a plain JSON string map (schema-visible field).
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v["headers"]["Prefer"], "transient");
+        assert_eq!(v["headers"]["Accept"], "application/json");
+        // And round-trips back into the string map.
+        let back: RestStreamConfig = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            back.headers.get("Prefer").map(String::as_str),
+            Some("transient")
+        );
+        assert!(back.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_header_name() {
+        let mut c = RestStreamConfig::new("https://x", "/y");
+        c.headers
+            .insert("Invalid Header".to_owned(), "v".to_owned());
+        let err = c.validate().unwrap_err();
+        assert!(
+            matches!(err, faucet_core::FaucetError::Config(_)),
+            "expected Config error, got {err:?}"
+        );
+        assert!(err.to_string().contains("invalid header name"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_invalid_header_value() {
+        let mut c = RestStreamConfig::new("https://x", "/y");
+        // A newline is not a legal header value byte.
+        c.headers
+            .insert("X-Bad".to_owned(), "line\nbreak".to_owned());
+        let err = c.validate().unwrap_err();
+        assert!(
+            matches!(err, faucet_core::FaucetError::Config(_)),
+            "{err:?}"
+        );
     }
 
     #[test]
