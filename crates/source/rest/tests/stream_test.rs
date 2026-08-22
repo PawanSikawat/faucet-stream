@@ -730,6 +730,54 @@ async fn test_partitions_fetch_each_context() {
     assert_eq!(records[1]["org"], "beta");
 }
 
+// Regression for #535: `Source::stream_pages` (the path `faucet run` / the
+// pipeline drives) must fan out over `partitions` too — previously it ignored
+// them and silently dropped every partition's records.
+#[tokio::test]
+async fn test_stream_pages_fans_out_over_partitions() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/orgs/acme/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "users": [{"id": 1, "org": "acme"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/orgs/beta/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "users": [{"id": 2, "org": "beta"}, {"id": 3, "org": "beta"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let mut p1 = HashMap::new();
+    p1.insert("org_id".to_string(), json!("acme"));
+    let mut p2 = HashMap::new();
+    p2.insert("org_id".to_string(), json!("beta"));
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/orgs/{org_id}/users")
+            .records_path("$.users[*]")
+            .add_partition(p1)
+            .add_partition(p2),
+    )
+    .unwrap();
+
+    // Drive the trait method exactly as the pipeline does (empty parent context).
+    let ctx: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut pages = Source::stream_pages(&stream, &ctx, 1000);
+    let mut all = Vec::new();
+    while let Some(page) = pages.next().await {
+        all.extend(page.unwrap().records);
+    }
+
+    assert_eq!(all.len(), 3, "both partitions' records must be streamed");
+    let orgs: Vec<&str> = all.iter().map(|r| r["org"].as_str().unwrap()).collect();
+    assert!(orgs.contains(&"acme") && orgs.contains(&"beta"));
+}
+
 // ── HTTP 429 / Retry-After ────────────────────────────────────────────────────
 
 #[tokio::test]
