@@ -16,6 +16,12 @@ pub struct ClickHouseSink {
     client: reqwest::Client,
     /// Resolved once in [`ClickHouseSink::new`] so the hot path never re-parses.
     base_url: String,
+    /// Per-sink run id for staged-object keys (avoids cross-run collisions).
+    #[cfg(feature = "staging")]
+    stage_run_id: String,
+    /// Monotonic part counter for staged objects within this sink.
+    #[cfg(feature = "staging")]
+    stage_seq: std::sync::atomic::AtomicUsize,
 }
 
 /// Quote a (possibly schema-qualified) table name. Each `.`-separated segment
@@ -67,7 +73,80 @@ impl ClickHouseSink {
             config,
             client,
             base_url,
+            #[cfg(feature = "staging")]
+            stage_run_id: format!(
+                "run-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ),
+            #[cfg(feature = "staging")]
+            stage_seq: std::sync::atomic::AtomicUsize::new(0),
         })
+    }
+
+    /// Send a bare SQL statement (no row body) over the HTTP interface — used by
+    /// the staged-load path's `INSERT … SELECT FROM s3(…)`.
+    #[cfg(feature = "staging")]
+    async fn send_query(&self, statement: &str) -> Result<(), FaucetError> {
+        let params = query_params(&self.config.connection.database, &[("query", statement)]);
+        let req = self.client.post(&self.base_url).query(&params);
+        let req = apply_auth(req, &self.config.connection);
+        let resp = req.send().await?;
+        check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
+        Ok(())
+    }
+
+    /// Staged bulk load (#528): upload the page to the object store, then have
+    /// the ClickHouse server pull it with `s3()` / `gcs()`.
+    #[cfg(feature = "staging")]
+    async fn write_batch_staged(
+        &self,
+        records: &[Value],
+        staging: &crate::config::ClickHouseStagingConfig,
+    ) -> Result<usize, FaucetError> {
+        use crate::staged::{clickhouse_stage_insert_sql, staged_https_url};
+        use faucet_core::staging::{StageUploader, StagingFormat, StagingScheme};
+        use std::sync::atomic::Ordering;
+
+        // Restrict to what the s3()/gcs() path supports.
+        let loc = staging.spec.validate(
+            &[StagingScheme::S3, StagingScheme::Gcs],
+            &[StagingFormat::Jsonl, StagingFormat::Csv],
+        )?;
+        let uploader = StageUploader::from_location(loc.clone())?;
+        let seq = self.stage_seq.fetch_add(1, Ordering::Relaxed);
+        let staged = uploader
+            .stage_page(&staging.spec, &self.config.table, &self.stage_run_id, seq, records, None)
+            .await?;
+
+        let url = staged_https_url(
+            loc.scheme,
+            &loc.bucket,
+            &staged.key,
+            staging.region.as_deref(),
+            staging.endpoint.as_deref(),
+        )?;
+        let creds = staging
+            .access_key
+            .as_deref()
+            .zip(staging.secret_key.as_deref());
+        let sql = clickhouse_stage_insert_sql(
+            &quote_table(&self.config.table),
+            loc.scheme,
+            &url,
+            creds,
+            staging.spec.format,
+        )?;
+
+        let result = self.send_query(&sql).await;
+        uploader
+            .cleanup(&[staged], staging.spec.cleanup, result.is_ok())
+            .await;
+        result?;
+        tracing::debug!(records = records.len(), "ClickHouse staged load written");
+        Ok(records.len())
     }
 
     /// Send one `INSERT … FORMAT JSONEachRow` request for a slice of records.
@@ -100,6 +179,21 @@ impl Sink for ClickHouseSink {
             return Ok(0);
         }
 
+        // Staged bulk load (#528): stage the whole page and let the server pull
+        // it — no row body, no `batch_size` re-chunking.
+        #[cfg(feature = "staging")]
+        if let Some(staging) = &self.config.staging {
+            return self.write_batch_staged(records, staging).await;
+        }
+        #[cfg(not(feature = "staging"))]
+        if self.config.staging.is_some() {
+            return Err(FaucetError::Config(
+                "clickhouse: `staging:` is configured but this build lacks the `staging` \
+                 feature — rebuild with `--features staging` (CLI: `sink-clickhouse-staging`)"
+                    .into(),
+            ));
+        }
+
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
             vec![records]
         } else {
@@ -122,6 +216,12 @@ impl Sink for ClickHouseSink {
 
     fn connector_name(&self) -> &'static str {
         "clickhouse"
+    }
+
+    /// Staged bulk load is active only when a `staging:` block is configured
+    /// and the `staging` feature is compiled in.
+    fn supports_staged_load(&self) -> bool {
+        cfg!(feature = "staging") && self.config.staging.is_some()
     }
 
     fn dataset_uri(&self) -> String {

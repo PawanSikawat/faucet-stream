@@ -10,6 +10,13 @@ readme = "README.md"
 keywords = ["clickhouse", "olap", "sink", "pipeline", "connector"]
 categories.workspace = true
 
+[features]
+default = []
+# Staged bulk load (#528): stage each page to S3/GCS and have the ClickHouse
+# server pull it with the `s3()` / `gcs()` table function. Pulls `object_store`
+# via `faucet-core/staging`.
+staging = ["faucet-core/staging"]
+
 [dependencies]
 faucet-core.workspace = true
 faucet-common-clickhouse.workspace = true
