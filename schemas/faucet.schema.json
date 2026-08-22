@@ -14741,17 +14741,6 @@
                         }
                       ],
                       "description": "Scoped/windowed overwrite (#518): with `write_mode: overwrite`, replace\nonly the rows matching this scope (e.g. a date window) instead of\ntruncating the whole table. The prior out-of-scope rows are preserved."
-                    },
-                    "staging": {
-                      "anyOf": [
-                        {
-                          "$ref": "#/$defs/sink_mssql__MssqlStagingConfig"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "description": "Staged bulk load (#528): stage each page to Azure Blob / ADLS and have\nSQL Server / Synapse pull it with `COPY INTO` instead of parameterized\n`INSERT`s. Absent ⇒ the ordinary insert path. Requires the crate's\n`staging` feature at build time to execute."
                     }
                   },
                   "title": "PostgresSinkConfig",
@@ -14989,17 +14978,6 @@
                           "type": "null"
                         }
                       ]
-                    },
-                    "staging": {
-                      "anyOf": [
-                        {
-                          "$ref": "#/$defs/sink_mssql__MssqlStagingConfig"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "description": "Staged bulk load (#528): stage each page to Azure Blob / ADLS and have\nSQL Server / Synapse pull it with `COPY INTO` instead of parameterized\n`INSERT`s. Absent ⇒ the ordinary insert path. Requires the crate's\n`staging` feature at build time to execute."
                     }
                   },
                   "title": "MysqlSinkConfig",
@@ -15228,17 +15206,6 @@
                           "type": "null"
                         }
                       ]
-                    },
-                    "staging": {
-                      "anyOf": [
-                        {
-                          "$ref": "#/$defs/sink_mssql__MssqlStagingConfig"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "description": "Staged bulk load (#528): stage each page to Azure Blob / ADLS and have\nSQL Server / Synapse pull it with `COPY INTO` instead of parameterized\n`INSERT`s. Absent ⇒ the ordinary insert path. Requires the crate's\n`staging` feature at build time to execute."
                     }
                   },
                   "title": "SqliteSinkConfig",
@@ -15291,17 +15258,6 @@
                       "format": "uint",
                       "minimum": 0,
                       "default": 1000
-                    },
-                    "staging": {
-                      "anyOf": [
-                        {
-                          "$ref": "#/$defs/sink_mssql__MssqlStagingConfig"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "description": "Staged bulk load (#528): stage each page to Azure Blob / ADLS and have\nSQL Server / Synapse pull it with `COPY INTO` instead of parameterized\n`INSERT`s. Absent ⇒ the ordinary insert path. Requires the crate's\n`staging` feature at build time to execute."
                     }
                   },
                   "title": "DuckdbSinkConfig",
