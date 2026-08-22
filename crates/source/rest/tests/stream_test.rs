@@ -778,6 +778,39 @@ async fn test_stream_pages_fans_out_over_partitions() {
     assert!(orgs.contains(&"acme") && orgs.contains(&"beta"));
 }
 
+// #536: repeated / array-valued query params must be sent as repeated keys.
+#[tokio::test]
+async fn test_query_params_multi_repeats_keys() {
+    let server = MockServer::start().await;
+
+    // Only matches when BOTH group_by[] values are present (wiremock parses the
+    // query as a multimap), so a passing fetch proves the key was repeated.
+    Mock::given(method("GET"))
+        .and(path("/api/usage"))
+        .and(query_param("group_by[]", "api_key_id"))
+        .and(query_param("group_by[]", "model"))
+        .and(query_param("bucket", "1d"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": 1}]
+        })))
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/api/usage")
+            .records_path("$.data[*]")
+            .query("bucket", "1d")
+            .add_query_param_multi(
+                "group_by[]",
+                vec!["api_key_id".to_string(), "model".to_string()],
+            ),
+    )
+    .unwrap();
+
+    let records = stream.fetch_all().await.unwrap();
+    assert_eq!(records.len(), 1, "repeated group_by[] params must be sent");
+}
+
 // ── HTTP 429 / Retry-After ────────────────────────────────────────────────────
 
 #[tokio::test]

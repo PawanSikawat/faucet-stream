@@ -10276,6 +10276,16 @@
                       },
                       "type": "object"
                     },
+                    "query_params_multi": {
+                      "additionalProperties": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "description": "Repeated / array-valued query params (#536), rendered as repeated keys —\ne.g. `{ \"group_by[]\": [\"api_key_id\", \"model\"] }` → `?group_by[]=api_key_id&group_by[]=model`.\nApplied alongside (in addition to) [`query_params`](Self::query_params);\nuse this for APIs that need a key to appear more than once (`group_by[]`,\nrepeated `expand`/`fields`). Values honor `{placeholder}` context\nsubstitution for child sources, like `query_params`. Empty by default.",
+                      "type": "object"
+                    },
                     "records_path": {
                       "type": [
                         "string",
@@ -10629,6 +10639,16 @@
                       "additionalProperties": {
                         "type": "string"
                       }
+                    },
+                    "query_params_multi": {
+                      "additionalProperties": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "description": "Repeated / array-valued query params (#536), rendered as repeated keys —\ne.g. `{ \"group_by[]\": [\"api_key_id\", \"model\"] }` → `?group_by[]=api_key_id&group_by[]=model`.\nApplied alongside (in addition to) [`query_params`](Self::query_params);\nuse this for APIs that need a key to appear more than once (`group_by[]`,\nrepeated `expand`/`fields`). Values honor `{placeholder}` context\nsubstitution for child sources, like `query_params`. Empty by default.",
+                      "type": "object"
                     },
                     "batch_size": {
                       "description": "Records per emitted [`StreamPage`](faucet_core::StreamPage). The\nevent-driven XML parser accumulates matched subtrees into a buffer\nand yields whenever the buffer reaches this size. Defaults to\n[`DEFAULT_BATCH_SIZE`].\n\n`batch_size = 0` is the \"no batching\" sentinel: the document is\ndrained end-to-end and the entire result set is emitted in a single\npage. Useful for small lookup payloads or for sinks (e.g. SQL `COPY`,\nBigQuery load jobs) that prefer one large request to many small ones.",

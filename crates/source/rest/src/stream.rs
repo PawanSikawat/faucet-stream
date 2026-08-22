@@ -1317,6 +1317,26 @@ impl RestStream {
             } else {
                 req = req.query(params);
             }
+            // #536: repeated / array-valued query params, rendered as repeated
+            // keys (`?k=a&k=b`). reqwest's `.query()` appends, so this composes
+            // with the scalar params above.
+            if !self.config.query_params_multi.is_empty() {
+                let pairs: Vec<(String, String)> = self
+                    .config
+                    .query_params_multi
+                    .iter()
+                    .flat_map(|(k, vals)| {
+                        vals.iter().map(move |v| {
+                            let rendered = match path_context {
+                                Some(ctx) => faucet_core::util::substitute_context(v, ctx),
+                                None => v.clone(),
+                            };
+                            (k.clone(), rendered)
+                        })
+                    })
+                    .collect();
+                req = req.query(&pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>());
+            }
         }
         // #511 query placements from the flow provider.
         if !ra_query.is_empty() {
