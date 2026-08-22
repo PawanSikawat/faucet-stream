@@ -3141,3 +3141,23 @@ Meanwhile, can you check if any of the blocked upstream tasks are now unblocked 
 <status>completed</status>
 <summary>Background command "Final Coverage/merge monitor for PR 537" completed (exit code 0)</summary>
 </task-notification>
+
+---
+
+<task-notification>
+<task-type>artifact-watch-lifecycle</task-type>
+<summary>Stopped watching Artifact: https://claude.ai/code/artifact/8af1e9fd-2eb6-497d-a7ad-5a3b16fa004d (connection lost)</summary>
+<event>Watch on https://claude.ai/code/artifact/8af1e9fd-2eb6-497d-a7ad-5a3b16fa004d ended — the live connection kept failing and reconnecting has stopped. This session will no longer hear when it is republished; watch it again if you still need that.</event>
+</task-notification>
+
+---
+
+now?
+
+---
+
+try now
+
+---
+
+can u do a git pull on main and form the meltano taps compatibility again?

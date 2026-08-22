@@ -3,28 +3,21 @@
   "checkpoint_id": "01M0KMHG0NTQQ8C95GWW2BGDHM",
   "session_id": "55398c64-7c65-40db-9b68-886111a86d7f",
   "strategy": "manual-commit",
-  "created_at": "2026-08-22T10:53:58.457466Z",
+  "created_at": "2026-08-22T10:58:28.871562Z",
   "branch": "main",
   "checkpoints_count": 6,
-  "save_step_count": 7,
+  "save_step_count": 1,
   "files_touched": [],
   "agent": "Claude Code",
   "model": "claude-opus-4-8",
   "turn_id": "971ce3612010",
   "compact_transcript_start": 0,
   "token_usage": {
-    "input_tokens": 5312,
-    "cache_creation_tokens": 8911952,
-    "cache_read_tokens": 1511385725,
-    "output_tokens": 2443585,
-    "api_call_count": 2661,
-    "subagent_tokens": {
-      "input_tokens": 0,
-      "cache_creation_tokens": 0,
-      "cache_read_tokens": 0,
-      "output_tokens": 0,
-      "api_call_count": 0
-    }
+    "input_tokens": 5318,
+    "cache_creation_tokens": 8918915,
+    "cache_read_tokens": 1512321071,
+    "output_tokens": 2447970,
+    "api_call_count": 2664
   },
   "skill_events_version": 1,
   "skill_events": [
@@ -62,74 +55,5 @@
   ],
   "session_metrics": {
     "turn_count": 136
-  },
-  "prompt_attributions": [
-    {
-      "checkpoint_number": 2,
-      "user_lines_added": 0,
-      "user_lines_removed": 0,
-      "agent_lines_added": 0,
-      "agent_lines_removed": 0
-    },
-    {
-      "checkpoint_number": 3,
-      "user_lines_added": 1,
-      "user_lines_removed": 0,
-      "agent_lines_added": 0,
-      "agent_lines_removed": 0,
-      "user_added_per_file": {
-        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
-      }
-    },
-    {
-      "checkpoint_number": 4,
-      "user_lines_added": 1,
-      "user_lines_removed": 0,
-      "agent_lines_added": 0,
-      "agent_lines_removed": 0,
-      "user_added_per_file": {
-        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
-      }
-    },
-    {
-      "checkpoint_number": 5,
-      "user_lines_added": 1,
-      "user_lines_removed": 0,
-      "agent_lines_added": 0,
-      "agent_lines_removed": 0,
-      "user_added_per_file": {
-        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
-      }
-    },
-    {
-      "checkpoint_number": 6,
-      "user_lines_added": 1,
-      "user_lines_removed": 0,
-      "agent_lines_added": 0,
-      "agent_lines_removed": 0,
-      "user_added_per_file": {
-        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
-      }
-    },
-    {
-      "checkpoint_number": 7,
-      "user_lines_added": 1,
-      "user_lines_removed": 0,
-      "agent_lines_added": 0,
-      "agent_lines_removed": 0,
-      "user_added_per_file": {
-        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
-      }
-    },
-    {
-      "checkpoint_number": 8,
-      "user_lines_added": 1,
-      "user_lines_removed": 0,
-      "agent_lines_added": 0,
-      "agent_lines_removed": 0,
-      "user_added_per_file": {
-        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
-      }
-    }
-  ]
+  }
 }
