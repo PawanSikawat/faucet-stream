@@ -51,6 +51,8 @@ pub mod topology;
 pub mod traits;
 pub mod transform;
 pub mod transforming_source;
+#[cfg(feature = "transform-cross-join")]
+pub mod cross_join;
 #[cfg(feature = "transform-tree-flatten")]
 pub mod tree;
 pub mod util;
@@ -160,6 +162,8 @@ pub use transform::{CastOnError, CastType};
 #[cfg(feature = "transform-hash")]
 pub use transform::{HashAlgorithm, HashEncoding};
 pub use transforming_source::TransformingSource;
+#[cfg(feature = "transform-cross-join")]
+pub use cross_join::{CompiledCrossJoin, CrossJoinSpec, OnEmpty as CrossJoinOnEmpty};
 #[cfg(feature = "transform-tree-flatten")]
 pub use tree::{AncestorsSpec, ColumnsSpec, CompiledTreeFlatten, TreeFlattenSpec};
 pub use util::redact_uri_credentials;

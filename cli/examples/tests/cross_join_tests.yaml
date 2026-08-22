@@ -1,0 +1,46 @@
+# Fixture-based offline tests for the `cross_join` transform (#534) — run with:
+#
+#   faucet test cli/examples/tests/cross_join_tests.yaml
+#
+# `cross_join` expands one record into the cartesian product of two or more of
+# its sibling array fields, emitting one flat row per combination — the shape
+# ukg_pro needs (job × compensation × employment). Input is one record; output
+# is N rows.
+version: 1
+tests:
+  - name: crosses jobs x compensation into one row per pair
+    pipeline:
+      transforms:
+        - type: cross_join
+          config:
+            arrays: [jobs, compensation]
+    input:
+      - employee_id: 1
+        jobs:
+          - { title: "Engineer" }
+          - { title: "Manager" }
+        compensation:
+          - { amount: 100 }
+          - { amount: 200 }
+    expect:
+      # 2 jobs × 2 compensation = 4 rows; parent scalar carried, arrays dropped.
+      records_written: 4
+      match: subset
+      unordered: true
+      records:
+        - { employee_id: 1, title: "Engineer", amount: 100 }
+        - { employee_id: 1, title: "Engineer", amount: 200 }
+        - { employee_id: 1, title: "Manager",  amount: 100 }
+        - { employee_id: 1, title: "Manager",  amount: 200 }
+
+  - name: empty crossed array skips the record (CROSS JOIN semantics)
+    pipeline:
+      transforms:
+        - type: cross_join
+          config:
+            arrays: [jobs, compensation]
+            on_empty: skip
+    input:
+      - { employee_id: 2, jobs: [ { title: "Analyst" } ], compensation: [] }
+    expect:
+      records_written: 0
