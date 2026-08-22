@@ -4,9 +4,7 @@
   "strategy": "manual-commit",
   "branch": "feat/staged-load-crossjoin-partitions-qparams",
   "checkpoints_count": 6,
-  "files_touched": [
-    ".gitignore"
-  ],
+  "files_touched": null,
   "sessions": [
     {
       "metadata": "/0/metadata.json",
@@ -17,17 +15,10 @@
     }
   ],
   "token_usage": {
-    "input_tokens": 5194,
-    "cache_creation_tokens": 8575767,
-    "cache_read_tokens": 1495990538,
-    "output_tokens": 2391198,
-    "api_call_count": 2602,
-    "subagent_tokens": {
-      "input_tokens": 0,
-      "cache_creation_tokens": 0,
-      "cache_read_tokens": 0,
-      "output_tokens": 0,
-      "api_call_count": 0
-    }
+    "input_tokens": 5224,
+    "cache_creation_tokens": 8596237,
+    "cache_read_tokens": 1499555569,
+    "output_tokens": 2403313,
+    "api_call_count": 2617
   }
 }
