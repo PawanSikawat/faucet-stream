@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0NA8GT3KFJV9703JEZDQZ93",
+  "strategy": "manual-commit",
+  "branch": "feat/config-driven-parity-539-544",
+  "checkpoints_count": 31,
+  "files_touched": [
+    "crates/source/rest/README.md",
+    "crates/source/rest/src/async_job.rs",
+    "crates/source/rest/src/config.rs",
+    "crates/source/rest/src/stream.rs",
+    "crates/source/rest/tests/async_job_test.rs",
+    "crates/source/rest/tests/headers_test.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 5736,
+    "cache_creation_tokens": 10052615,
+    "cache_read_tokens": 1634998955,
+    "output_tokens": 2750424,
+    "api_call_count": 2876
+  }
+}
