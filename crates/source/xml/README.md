@@ -298,8 +298,57 @@ pipeline:
 |----------------|--------|------------|
 | `PageNumber` | `param_name`, `start_page`, `page_size` *(optional)*, `page_size_param` *(optional)* | A page returns zero records, or fewer records than `page_size`. |
 | `Offset` | `offset_param`, `limit_param`, `limit` | A page returns fewer records than `limit`, or a loop is detected. |
+| `BodyCursor` | `next_token_path`, `next_body` | The continuation token is absent/empty, or repeats (loop guard). |
 
-`max_pages` caps the total number of pages for both styles. With no `pagination` block, exactly one request is made.
+`max_pages` caps the total number of pages for all styles. With no `pagination` block, exactly one request is made.
+
+### Body-cursor pagination (`BodyCursor`, #544)
+
+For stateful XML/SOAP APIs that page with a `readMore`/`resultId` handle carried in the request **body** (e.g. Sage Intacct). Each response's continuation token is read via a dot-path (`next_token_path`), and the next request's body is replaced with `next_body` (with `${next_token}` substituted):
+
+```yaml
+source:
+  type: xml
+  config:
+    method: POST
+    base_url: https://api.intacct.com
+    path: /ia/xml/xmlgw.phtml
+    body: "<readByQuery><object>GLDETAIL</object><pagesize>1000</pagesize></readByQuery>"
+    records_element_path: response.operation.result.data.gldetail
+    pagination:
+      type: BodyCursor
+      next_token_path: response.operation.result.resultId
+      next_body: "<readMore><resultId>${next_token}</resultId></readMore>"
+```
+
+## Response decode pipeline (`decode:`, #540)
+
+A declarative chain applied to the raw response body **before** record extraction, so the source can consume payloads that aren't plain XML records — including a file embedded in a SOAP envelope. Steps compose left-to-right; the terminal `parse` step turns the bytes into records (when `decode:` is set, records come from it instead of `records_element_path`).
+
+| Step | Effect |
+|---|---|
+| `extract: "<dot.path>"` | Element text at the dot-path (namespace-insensitive, trailing-match) becomes the buffer. |
+| `base64` / `gunzip` | Decode base64 text / gzip-decompress the buffer. |
+| `unzip: { member: "*.csv" }` | Select a member from a zip archive. |
+| `parse: { format: csv\|xlsx\|xml\|json, header_row, delimiter, has_headers, sheet, records_path }` | Parse the bytes into records. |
+
+Example — Oracle Fusion's SOAP `runReport` returns a base64-encoded XLSX inside `<reportBytes>`:
+
+```yaml
+source:
+  type: xml
+  config:
+    method: POST
+    base_url: https://fusion.example.com
+    path: /xmlpserver/services/v2/ReportService
+    soap: { version: "1.1", action: runReport, body_inner: "<v2:runReport>…</v2:runReport>" }
+    decode:
+      - extract: "runReportResponse.runReportReturn.reportBytes"
+      - base64
+      - parse: { format: xlsx, header_row: 4 }
+```
+
+XLSX parsing requires the crate's **`excel`** feature (CLI: `--features source-xml-excel`); CSV/gzip/zip/base64 are always available.
 
 ## Streaming & batching
 

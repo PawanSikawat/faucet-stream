@@ -64,11 +64,72 @@ single biggest source-side unlock for session-cookie / multi-step ERP APIs
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `steps` | array | `[]` | Login/pre-flight chain. Each: `request: { method, url, headers, query, form \| json }` + `capture: { name: <JSONPath> }`. Later steps and `apply` see captured values via `${name}`. |
+| `steps` | array | `[]` | Login/pre-flight chain. Each: `request: { method, url, headers, query, form \| json, sign }` + `capture: { name: <source> }`. Later steps and `apply` see captured values via `${name}`. |
 | `apply` | array | `[]` | Per-request placements: `{ into: header\|query\|cookie\|body, name, value: "${captured}" }`, or a signer `{ sign: { alg: hmac_sha256, key, template, encoding: hex\|base64, into: { header, format: "${sig}" } } }`. |
 | `base_url_from` | string / null | `null` | Template (over captured values) yielding a per-session base-URL that overrides the connector's configured one. |
 | `ttl_secs` | int / null | `null` | Re-run the login chain after this many seconds. |
 | `reauth_on` | array<int> | `[]` | HTTP statuses that trigger a re-login + one retry (honored by the REST source). |
+
+#### Signing a login step (#541)
+
+A login/pre-flight `request` can carry its **own** `sign:` block — the same
+`SignSpec` shape used in `apply`. It's computed with a fresh `${ts}`/`${nonce}`
+clock per step and attached as a header, so APIs whose *login* call is itself
+HMAC-signed (e.g. SkySlope) are expressible from config. On the **first** step
+nothing has been captured yet, so its `template` may reference only
+`${param.*}` / `${env:*}` / `${ts}` / `${nonce}` (later steps also see values
+captured by earlier steps).
+
+```yaml
+auth:
+  skyslope:
+    type: flow
+    config:
+      steps:
+        - request:
+            method: POST
+            url: "${param.base_url}/auth/login"
+            json: { clientId: "${param.client_id}" }
+            sign:                                   # sign the login step itself
+              alg: hmac_sha256
+              key: "${param.secret_key}"
+              template: "${param.client_id}:${param.client_secret}:${ts}"
+              encoding: base64
+              into: { header: "Authorization", format: "SS ${param.access_key}:${sig}" }
+          capture: { session: "$.session.token" }
+      apply:
+        - { sign: { alg: hmac_sha256, key: "${param.secret_key}", template: "${param.client_id}:${param.client_secret}:${ts}", encoding: base64, into: { header: Authorization, format: "SS ${param.access_key}:${sig}" } } }
+        - { into: header, name: "Session", value: "${session}" }
+```
+
+#### Capture sources (#542)
+
+By default a `capture` entry is a JSONPath **string** into the JSON response
+body (`{ session: "$.session.token" }` — unchanged, back-compatible). It can
+also be a `{ from, … }` struct to capture from other parts of the response:
+
+| `from` | Selector | Captures |
+|--------|----------|----------|
+| `json` *(default)* | `path: "$.jsonpath"` | JSONPath into the JSON body (same as the bare-string form). |
+| `xml` | `path: "a.b.c"` | Dot-path into an XML body, by element local name (namespace prefixes are ignored). |
+| `header` | `name: "Location"` | A response header value (case-insensitive). |
+| `set_cookie` | `name: "ASP.NET_SessionId"` | A specific `Set-Cookie` value, selected by cookie name. |
+
+```yaml
+steps:
+  - request: { method: POST, url: "${param.base_url}/entity/auth/login",
+               json: { name: "${param.user}", password: "${secret:pw}" } }
+    capture:
+      session_cookie: { from: set_cookie, name: "ASP.NET_SessionId" }   # Acumatica: Set-Cookie + 204 empty body
+      sess_id:        { from: xml, path: "response.operation.result.data.api.sessionid" }  # Sage Intacct: XML session id
+      loc:            { from: header, name: "Location" }                # any response header
+apply:
+  - { into: cookie, name: "ASP.NET_SessionId", value: "${session_cookie}" }
+```
+
+> A shared **cookie jar** (auto-forwarding login cookies to data requests
+> without an explicit capture) is future work; the `from: set_cookie` →
+> `into: cookie` path covers the same case today.
 
 ```yaml
 auth:

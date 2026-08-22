@@ -1,5 +1,6 @@
 //! XML source configuration.
 
+use crate::decode::DecodeStep;
 use faucet_core::{AuthSpec, DEFAULT_BATCH_SIZE, FaucetError, TlsClientConfig};
 use reqwest::header::HeaderMap;
 use schemars::JsonSchema;
@@ -169,6 +170,19 @@ pub enum XmlPagination {
         limit_param: String,
         limit: usize,
     },
+    /// Body-cursor pagination (#544): read a continuation token from the
+    /// response via a dot-path (namespace-insensitive, trailing-match), and on
+    /// each subsequent request replace the request body with `next_body` (with
+    /// `${next_token}` substituted). Stops when the token is absent/empty or
+    /// repeats (loop guard), honouring `max_pages`. For stateful XML/SOAP APIs
+    /// that page with a `readMore`/`resultId` handle (e.g. Sage Intacct).
+    BodyCursor {
+        /// Dot-path to the continuation-token element in the response.
+        next_token_path: String,
+        /// Request-body template for pages after the first; `${next_token}` is
+        /// substituted with the captured token.
+        next_body: String,
+    },
 }
 
 /// Configuration for the XML source.
@@ -206,6 +220,12 @@ pub struct XmlStreamConfig {
     pub max_pages: Option<usize>,
     /// Query parameters to include in every request.
     pub query_params: std::collections::HashMap<String, String>,
+    /// Response-decode pipeline (#540): a declarative chain applied to the raw
+    /// response body before record extraction (`extract` an element's text →
+    /// `base64`/`gunzip`/`unzip` → `parse` csv/xlsx/xml/json). When non-empty,
+    /// records come from the decoded output instead of `records_element_path`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decode: Vec<DecodeStep>,
     /// Records per emitted [`StreamPage`](faucet_core::StreamPage). The
     /// event-driven XML parser accumulates matched subtrees into a buffer
     /// and yields whenever the buffer reaches this size. Defaults to
@@ -243,9 +263,16 @@ impl XmlStreamConfig {
             pagination: None,
             max_pages: None,
             query_params: std::collections::HashMap::new(),
+            decode: Vec::new(),
             batch_size: DEFAULT_BATCH_SIZE,
             tls: None,
         }
+    }
+
+    /// Set the response-decode pipeline (#540).
+    pub fn decode(mut self, steps: Vec<DecodeStep>) -> Self {
+        self.decode = steps;
+        self
     }
 
     /// Attach a mutual-TLS client identity (requires the `mtls` feature at build

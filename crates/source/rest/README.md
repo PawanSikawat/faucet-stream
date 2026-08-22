@@ -81,10 +81,35 @@ faucet run pipeline.yaml
 | `path` | string | `""` | URL path relative to `base_url`. Supports `{key}` placeholders for partition substitution (e.g. `/orgs/{org_id}/users`). |
 | `method` | string | `GET` | HTTP method for the request. |
 | `auth` | `Auth` / `{ ref }` | `none` | Inline `{ type, config }` auth, or a `{ ref: <name> }` pointer to a shared provider. See [Authentication](#authentication). |
-| `headers` | map | empty | Extra HTTP headers sent on every request (library/`header()` only; not serialized in YAML/JSON). |
+| `headers` | map<string,string> | empty | Static HTTP headers sent on **every** request (data pages, async-job requests, and OData `$metadata` probes). Applied *before* auth, so an auth header of the same name wins on a clash. Values honor `${env:}` / `${param.*}` interpolation and pass through the secrets/redaction boundary. An invalid header name/value is rejected at config load. See [Custom request headers](#custom-request-headers). |
 | `query_params` | map<string,string> | empty | Query parameters added to every request. |
 | `query_params_multi` | map<string,list<string>> | empty | Repeated / array-valued query params, rendered as repeated keys — e.g. `{ "group_by[]": ["api_key_id", "model"] }` → `?group_by[]=api_key_id&group_by[]=model`. Applied alongside `query_params`. |
 | `body` | JSON / null | `null` | JSON request body (sent with `Content-Type: application/json`). |
+
+#### Custom request headers
+
+Set arbitrary static headers on every request via the `headers:` map — useful for
+APIs that require a fixed non-auth header (e.g. NetSuite SuiteQL's `Prefer:
+transient`, Stripe's `Stripe-Version`, Plaid's `Plaid-Version`, or a custom
+`Accept`/tenant/feature-flag header):
+
+```yaml
+source:
+  type: rest
+  config:
+    base_url: https://api.example.com
+    path: /v1/records
+    headers:
+      Prefer: transient
+      Accept: application/json
+      X-Tenant: ${env:TENANT_ID}      # ${env:} / ${param.*} interpolation
+```
+
+Precedence: config headers are applied **first**, then the auth provider's header
+placements — so an auth header (e.g. `Authorization`) always wins over a
+same-named config header. Header names/values are validated at config load
+(invalid → a typed config error, never a mid-run panic), and values pass through
+the secrets/redaction boundary like any other config string.
 
 ### Pagination
 
@@ -273,7 +298,7 @@ job → poll a status endpoint until terminal → fetch the result → hand it t
 | `job_id` | JSONPath to the job id in the submit response. |
 | `poll` | `{ url, method, interval_secs (5), timeout_secs (1800) }` — `${job_id}` substituted. |
 | `status` | `{ path, success: [...], failure: [...] }` — classify the poll response. |
-| `fetch` | `{ method, url }` — result download; body flows through `decode:`. |
+| `fetch` | `{ method, url \| url_from, headers, query, json }` — result download; body flows through `decode:`. Set **exactly one** of `url` (a `${job_id}`-templated path) or `url_from` (a JSONPath into the last poll body — see below). |
 
 ```yaml
 async_job:
@@ -282,6 +307,30 @@ async_job:
   poll:   { url: "/jobs/${job_id}", interval_secs: 5, timeout_secs: 1800 }
   status: { path: "$.state", success: [JobComplete], failure: [Failed, Aborted] }
   fetch:  { url: "/jobs/${job_id}/result" }
+decode:
+  - parse: { format: csv }
+```
+
+#### Resolving the download URL from the poll body (`fetch.url_from`)
+
+Some APIs return the download URL **in the poll response body** rather than at a
+deterministic `/{job_id}` path. Set `fetch.url_from` to a JSONPath into the last
+(successful) poll response instead of `fetch.url`. Exactly one of `url` /
+`url_from` must be set (enforced at config load). The matched value must be a
+string; an absolute URL is used verbatim, a relative one is resolved against
+`base_url`. Because such links are often one-time/expiring, the URL is fetched
+immediately after resolution.
+
+Stripe report runs are the canonical case — poll until `status: succeeded`, then
+download the signed CSV link at `result.url`:
+
+```yaml
+async_job:
+  submit: { method: POST, url: "/v1/reporting/report_runs", json: { report_type: "..." } }
+  job_id: "$.id"
+  poll:   { url: "/v1/reporting/report_runs/${job_id}", interval_secs: 5, timeout_secs: 1800 }
+  status: { path: "$.status", success: [succeeded], failure: [failed] }
+  fetch:  { url_from: "$.result.url" }   # download URL comes from the poll body
 decode:
   - parse: { format: csv }
 ```

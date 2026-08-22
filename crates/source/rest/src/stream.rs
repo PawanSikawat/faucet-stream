@@ -61,6 +61,11 @@ pub struct RestStream {
     /// own legacy `max_retries` / `retry_backoff` fields take precedence when the
     /// user has set them away from their defaults.
     retry_policy: faucet_core::RetryPolicy,
+    /// Static request headers (from `config.headers`, #539), validated once in
+    /// [`new`](Self::new) into a [`HeaderMap`] and merged into **every** request
+    /// (data pages, async-job requests, `$metadata` probes) *before* the auth
+    /// provider's placements — so an auth header of the same name wins.
+    static_headers: HeaderMap,
 }
 
 /// Default value of [`RestStreamConfig::max_retries`]. When the user leaves this
@@ -215,6 +220,9 @@ impl RestStream {
             base: config.retry_backoff,
             ..faucet_core::RetryPolicy::default()
         };
+        // Static custom headers (#539): validated once here (also validated in
+        // `config.validate()` above, so this cannot fail) and reused per request.
+        let static_headers = crate::config::build_header_map(&config.headers)?;
         Ok(Self {
             config,
             client: builder.build()?,
@@ -225,6 +233,7 @@ impl RestStream {
             window_binds: Arc::new(AsyncMutex::new(Vec::new())),
             now_override: None,
             retry_policy,
+            static_headers,
         })
     }
 
@@ -884,7 +893,9 @@ impl RestStream {
         let m = reqwest::Method::from_bytes(method.to_uppercase().as_bytes()).map_err(|_| {
             FaucetError::Config(format!("async_job: invalid HTTP method '{method}'"))
         })?;
-        let mut hdrs = self.config.headers.clone();
+        // Precedence: static config headers (base) < auth < this request's own
+        // headers — so an auth header always wins over a same-named config one.
+        let mut hdrs = self.static_headers.clone();
         for (k, v) in self.metadata_headers(url).await?.iter() {
             hdrs.insert(k.clone(), v.clone());
         }
@@ -944,7 +955,7 @@ impl RestStream {
         let base = &self.config.base_url;
 
         // 1) Submit → capture the job id.
-        let submit_url = resolve_url(base, &job.submit.url);
+        let submit_url = resolve_url(base, job.submit.url.as_deref().unwrap_or_default());
         let submit_body = self
             .job_request_json(
                 &job.submit.method,
@@ -965,7 +976,9 @@ impl RestStream {
         let poll_url = resolve_url(base, &substitute_job_id(&job.poll.url, &job_id));
         let deadline =
             tokio::time::Instant::now() + std::time::Duration::from_secs(job.poll.timeout_secs);
-        loop {
+        // Retain the last poll response so `fetch.url_from` (#543) can source the
+        // download URL from the terminal (success) poll body.
+        let last_poll_body: Value = loop {
             let body = self
                 .job_request_json(
                     &job.poll.method,
@@ -977,7 +990,7 @@ impl RestStream {
                 .await?;
             let status = jsonpath_first_string(&body, &job.status.path).unwrap_or_default();
             match job.status.classify(&status) {
-                JobOutcome::Success => break,
+                JobOutcome::Success => break body,
                 JobOutcome::Failure => {
                     return Err(FaucetError::Source(format!(
                         "async_job: job failed with status '{status}'"
@@ -994,10 +1007,28 @@ impl RestStream {
                         .await;
                 }
             }
-        }
+        };
 
-        // 3) Fetch the result and decode it.
-        let fetch_url = resolve_url(base, &substitute_job_id(&job.fetch.url, &job_id));
+        // 3) Resolve the fetch URL (#543): from the poll body via `url_from`, or
+        // by rendering the templated `url`. Exactly one is set (validated).
+        let fetch_url = match (&job.fetch.url_from, &job.fetch.url) {
+            (Some(path), _) => {
+                let resolved = jsonpath_first_string(&last_poll_body, path).ok_or_else(|| {
+                    FaucetError::Source(format!(
+                        "async_job: fetch.url_from '{path}' matched no string in the poll response"
+                    ))
+                })?;
+                resolve_url(base, &resolved)
+            }
+            (None, Some(url)) => resolve_url(base, &substitute_job_id(url, &job_id)),
+            (None, None) => {
+                return Err(FaucetError::Config(
+                    "async_job: `fetch` requires exactly one of `url` or `url_from`".into(),
+                ));
+            }
+        };
+
+        // 4) Fetch the result and decode it.
         let bytes = self
             .job_request_bytes(
                 &job.fetch.method,
@@ -1277,7 +1308,9 @@ impl RestStream {
             }
         };
 
-        let mut headers = self.config.headers.clone();
+        // Static config headers form the base; auth (inline or provider) is
+        // applied on top so an auth header of the same name wins (#539).
+        let mut headers = self.static_headers.clone();
         if let Some(auth) = &resolved_auth {
             auth.apply(&mut headers)?;
         }
@@ -1749,7 +1782,11 @@ impl faucet_core::Source for RestStream {
             ));
         }
         let url = format!("{}/$metadata", self.config.base_url.trim_end_matches('/'));
-        let headers = self.metadata_headers(&url).await?;
+        // Static config headers (#539) form the base; auth is applied on top.
+        let mut headers = self.static_headers.clone();
+        for (k, v) in self.metadata_headers(&url).await?.iter() {
+            headers.insert(k.clone(), v.clone());
+        }
         let resp = self
             .client
             .get(&url)
