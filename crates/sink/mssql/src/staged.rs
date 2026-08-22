@@ -12,7 +12,45 @@
 //! subset accordingly.
 
 use faucet_core::FaucetError;
-use faucet_core::staging::{StagingFormat, StagingScheme};
+use faucet_core::staging::{StageUploader, StagedFile, StagingFormat, StagingScheme};
+use serde_json::Value;
+
+/// Stage one page to `uploader`'s object store and build the `COPY INTO`
+/// statement for it. The upload + URL derivation + SQL build are all here (and
+/// unit-tested against an in-memory store); the caller runs the returned SQL
+/// over the tiberius pool. `table_quoted` is the bracket-quoted target;
+/// `scope`/`run_id`/`seq` shape the staged object key.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn build_staged_copy_sql(
+    uploader: &StageUploader,
+    table_quoted: &str,
+    scope: &str,
+    run_id: &str,
+    seq: usize,
+    records: &[Value],
+    staging: &crate::config::MssqlStagingConfig,
+) -> Result<(StagedFile, String), FaucetError> {
+    let loc = uploader.location().clone();
+    let staged = uploader
+        .stage_page(&staging.spec, scope, run_id, seq, records, None)
+        .await?;
+    let url = staged_azure_url(
+        loc.scheme,
+        &loc.bucket,
+        &staged.key,
+        staging.storage_account.as_deref(),
+        staging.endpoint.as_deref(),
+    )?;
+    // The staged CSV carries a header row → skip it with FIRSTROW = 2.
+    let sql = mssql_copy_into_sql(
+        table_quoted,
+        &url,
+        staging.spec.format,
+        staging.sas_token.as_deref(),
+        2,
+    )?;
+    Ok((staged, sql))
+}
 
 /// Map a staging file format to the `COPY INTO` `FILE_TYPE`. Only CSV is
 /// produced by the shared serializer (Parquet needs Arrow).
@@ -98,9 +136,29 @@ fn sql_quote(s: &str) -> String {
     s.replace('\'', "''")
 }
 
+/// Per-sink run id for staged-object keys, so parts from different runs never
+/// collide in the staging prefix. Nanosecond wall-clock is unique enough per
+/// process; a monotonic sequence disambiguates within a run.
+pub(crate) fn new_stage_run_id() -> String {
+    format!(
+        "run-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stage_run_id_is_prefixed_and_unique() {
+        let a = new_stage_run_id();
+        assert!(a.starts_with("run-"));
+        assert!(a.len() > 4);
+    }
 
     #[test]
     fn file_type_mapping() {
@@ -184,5 +242,46 @@ mod tests {
     #[test]
     fn copy_into_rejects_non_csv() {
         assert!(mssql_copy_into_sql("[t]", "u", StagingFormat::Jsonl, None, 2).is_err());
+    }
+
+    // Covers the staged upload + Azure URL + COPY INTO build against an
+    // in-memory object store (only the tiberius execution stays untested).
+    #[tokio::test]
+    async fn build_staged_copy_sql_uploads_and_builds() {
+        use faucet_core::staging::{StageUploader, StagingLocation};
+        use std::sync::Arc;
+
+        let store = Arc::new(object_store::memory::InMemory::new());
+        let loc = StagingLocation::parse("az://container/stage").unwrap();
+        let uploader = StageUploader::new(store, loc);
+        let staging: crate::config::MssqlStagingConfig =
+            serde_json::from_value(serde_json::json!({
+                "location": "az://container/stage",
+                "format": "csv",
+                "storage_account": "acct",
+                "sas_token": "sv=2022&sig=abc",
+            }))
+            .unwrap();
+        let recs = vec![serde_json::json!({"id": 1}), serde_json::json!({"id": 2})];
+
+        let (staged, sql) = build_staged_copy_sql(
+            &uploader,
+            "[dbo].[events]",
+            "dbo.events",
+            "run-1",
+            0,
+            &recs,
+            &staging,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(staged.rows, 2);
+        assert!(sql.starts_with(
+            "COPY INTO [dbo].[events] FROM 'https://acct.blob.core.windows.net/container/"
+        ));
+        assert!(sql.contains("FILE_TYPE = 'CSV'"));
+        assert!(sql.contains("FIRSTROW = 2"));
+        assert!(sql.contains("Shared Access Signature"));
     }
 }

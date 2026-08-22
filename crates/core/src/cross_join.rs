@@ -160,9 +160,9 @@ impl CompiledCrossJoin {
             }
         }
 
-        // Product-size guard (fail loud, never OOM).
-        let size: usize = sets
-            .iter()
+        // Product-size guard (fail loud, never OOM). After `on_empty` every set
+        // has len >= 1, so the product is always >= 1 (no zero-size case).
+        sets.iter()
             .try_fold(1usize, |acc, (_, e)| acc.checked_mul(e.len()))
             .filter(|n| *n <= self.spec.max_product)
             .ok_or_else(|| {
@@ -172,9 +172,6 @@ impl CompiledCrossJoin {
                     self.spec.arrays, self.spec.max_product
                 ))
             })?;
-        if size == 0 {
-            return Ok(Vec::new());
-        }
 
         // Parent scalars carried onto every row.
         let mut parent = Map::new();
@@ -342,5 +339,74 @@ mod tests {
     fn into_stage_is_pagefn_and_flat_maps() {
         let stage = spec(&["a", "b"]).into_stage().unwrap();
         assert!(matches!(stage, TransformStage::PageFn(_)));
+    }
+
+    #[test]
+    fn into_stage_pagefn_runs_over_a_page() {
+        // Exercise the PageFn closure body (flat-map over a real page).
+        let TransformStage::PageFn(f) = spec(&["jobs", "comp"]).into_stage().unwrap() else {
+            panic!("expected PageFn");
+        };
+        let page = vec![
+            json!({"id": 1, "jobs": [{"t": "a"}], "comp": [{"c": 1}, {"c": 2}]}),
+            json!({"id": 2, "jobs": [{"t": "b"}, {"t": "c"}], "comp": [{"c": 9}]}),
+        ];
+        let out = f(page).unwrap();
+        assert_eq!(out.len(), 2 + 2); // (1×2) + (2×1)
+        assert_eq!(out[0]["id"], json!(1));
+    }
+
+    #[test]
+    fn into_stage_pagefn_propagates_overflow_error() {
+        let mut s = spec(&["a", "b"]);
+        s.max_product = 1;
+        let TransformStage::PageFn(f) = s.into_stage().unwrap() else {
+            panic!("expected PageFn");
+        };
+        assert!(f(vec![json!({"a": [1, 2], "b": [1, 2]})]).is_err());
+    }
+
+    #[test]
+    fn keep_parent_false_drops_scalars() {
+        let mut s = spec(&["a", "b"]);
+        s.keep_parent = false;
+        let out = s
+            .compile()
+            .unwrap()
+            .apply(json!({"id": 7, "a": [{"x": 1}], "b": [{"y": 2}]}))
+            .unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(out[0].get("id").is_none()); // parent scalar dropped
+        assert_eq!(out[0]["x"], json!(1));
+    }
+
+    #[test]
+    fn keep_parent_false_keep_arrays_when_not_dropping() {
+        let mut s = spec(&["a", "b"]);
+        s.keep_parent = false;
+        s.drop_arrays = false;
+        let out = s
+            .compile()
+            .unwrap()
+            .apply(json!({"id": 7, "a": [{"x": 1}], "b": [{"y": 2}]}))
+            .unwrap();
+        assert_eq!(out.len(), 1);
+        // raw arrays carried (not dropped), parent scalar still dropped
+        assert_eq!(out[0]["a"], json!([{"x": 1}]));
+        assert!(out[0].get("id").is_none());
+    }
+
+    #[test]
+    fn keep_parent_true_no_drop_keeps_arrays_and_scalars() {
+        let mut s = spec(&["a", "b"]);
+        s.drop_arrays = false;
+        let out = s
+            .compile()
+            .unwrap()
+            .apply(json!({"id": 7, "a": [{"x": 1}], "b": [{"y": 2}]}))
+            .unwrap();
+        assert_eq!(out[0]["id"], json!(7));
+        assert_eq!(out[0]["a"], json!([{"x": 1}])); // array retained
+        assert_eq!(out[0]["x"], json!(1)); // and exploded
     }
 }

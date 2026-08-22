@@ -69,3 +69,6 @@ faucet-local-demo/
 # One-off scratch working logs / proposals — must never be committed
 /*_LOG.md
 /SCOPE_PROPOSAL.md
+
+# Local Meltano→faucet migration templates (not for commit)
+/drivetrain/

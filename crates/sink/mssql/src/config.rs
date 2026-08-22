@@ -108,7 +108,7 @@ pub struct MssqlSinkConfig {
 
 /// Staged-load configuration for the MSSQL sink (#528). `COPY INTO` reads Azure
 /// Blob / ADLS Gen2 only, so `location` must be `az://…` and `format: csv`.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MssqlStagingConfig {
     /// Shared object-store staging block (`location`, `format`, `compression`,
@@ -127,6 +127,18 @@ pub struct MssqlStagingConfig {
     /// objects. Omit to rely on the server's managed identity / configured access.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sas_token: Option<String>,
+}
+
+impl std::fmt::Debug for MssqlStagingConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MssqlStagingConfig")
+            .field("spec", &self.spec)
+            .field("storage_account", &self.storage_account)
+            .field("endpoint", &self.endpoint)
+            // Never print the SAS token — it is a bearer credential.
+            .field("sas_token", &self.sas_token.as_ref().map(|_| "***"))
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for MssqlSinkConfig {
@@ -192,6 +204,21 @@ impl MssqlSinkConfig {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn staging_debug_redacts_sas_token() {
+        let staging: MssqlStagingConfig = serde_json::from_value(json!({
+            "location": "az://container/stage",
+            "format": "csv",
+            "storage_account": "acct",
+            "sas_token": "sv=2022&sig=super-secret",
+        }))
+        .unwrap();
+        let dbg = format!("{staging:?}");
+        assert!(dbg.contains("***"), "sas_token should be masked: {dbg}");
+        assert!(!dbg.contains("super-secret"), "sas_token leaked: {dbg}");
+        assert!(dbg.contains("acct"), "non-secret fields kept: {dbg}");
+    }
 
     #[test]
     fn json_column_is_default() {

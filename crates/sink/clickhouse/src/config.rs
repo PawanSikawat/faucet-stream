@@ -53,7 +53,7 @@ pub struct ClickHouseSinkConfig {
 }
 
 /// Staged-load configuration for the ClickHouse sink (#528).
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClickHouseStagingConfig {
     /// Shared object-store staging block (`location`, `format`, `compression`,
@@ -75,6 +75,19 @@ pub struct ClickHouseStagingConfig {
     /// Secret paired with [`access_key`](Self::access_key).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_key: Option<String>,
+}
+
+impl std::fmt::Debug for ClickHouseStagingConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClickHouseStagingConfig")
+            .field("spec", &self.spec)
+            .field("region", &self.region)
+            .field("endpoint", &self.endpoint)
+            // Never print the object-store credentials.
+            .field("access_key", &self.access_key.as_ref().map(|_| "***"))
+            .field("secret_key", &self.secret_key.as_ref().map(|_| "***"))
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for ClickHouseSinkConfig {
@@ -132,6 +145,26 @@ impl ClickHouseSinkConfig {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn staging_debug_redacts_credentials() {
+        let staging: ClickHouseStagingConfig = serde_json::from_value(json!({
+            "location": "s3://bucket/stage",
+            "format": "jsonl",
+            "region": "us-east-1",
+            "access_key": "AKIAEXAMPLE",
+            "secret_key": "super-secret-value",
+        }))
+        .unwrap();
+        let dbg = format!("{staging:?}");
+        assert!(dbg.contains("***"), "creds should be masked: {dbg}");
+        assert!(!dbg.contains("AKIAEXAMPLE"), "access_key leaked: {dbg}");
+        assert!(
+            !dbg.contains("super-secret-value"),
+            "secret_key leaked: {dbg}"
+        );
+        assert!(dbg.contains("us-east-1"), "non-secret fields kept: {dbg}");
+    }
 
     #[test]
     fn config_flattens_connection_and_defaults() {

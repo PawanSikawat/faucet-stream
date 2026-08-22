@@ -89,9 +89,26 @@ fn sql_quote(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
+/// Per-sink run id for staged-object keys, so parts from different runs never
+/// collide in the staging prefix.
+pub(crate) fn new_stage_run_id() -> String {
+    format!(
+        "run-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stage_run_id_is_prefixed() {
+        assert!(new_stage_run_id().starts_with("run-"));
+    }
 
     #[test]
     fn format_mapping() {

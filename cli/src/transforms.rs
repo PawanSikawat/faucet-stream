@@ -1212,6 +1212,28 @@ mod tests {
 
     #[cfg(feature = "transforms")]
     #[test]
+    fn compiles_cross_join() {
+        let specs = vec![TransformSpec {
+            kind: "cross_join".into(),
+            config: json!({"arrays": ["jobs", "compensation"], "prefix": true}),
+        }];
+        let out = compile_transforms(&specs).unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], TransformStage::PageFn(_)));
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
+    fn cross_join_single_array_rejected_at_load() {
+        let specs = vec![TransformSpec {
+            kind: "cross_join".into(),
+            config: json!({"arrays": ["only"]}),
+        }];
+        assert!(compile_transforms(&specs).is_err());
+    }
+
+    #[cfg(feature = "transforms")]
+    #[test]
     fn unpivot_empty_key_name_rejected_at_load() {
         let specs = vec![TransformSpec {
             kind: "unpivot".into(),

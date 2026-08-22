@@ -12,10 +12,10 @@ use crate::config::ClickHouseSinkConfig;
 
 /// ClickHouse sink (HTTP interface, `INSERT … FORMAT JSONEachRow`).
 pub struct ClickHouseSink {
-    config: ClickHouseSinkConfig,
-    client: reqwest::Client,
+    pub(crate) config: ClickHouseSinkConfig,
+    pub(crate) client: reqwest::Client,
     /// Resolved once in [`ClickHouseSink::new`] so the hot path never re-parses.
-    base_url: String,
+    pub(crate) base_url: String,
     /// Per-sink run id for staged-object keys (avoids cross-run collisions).
     #[cfg(feature = "staging")]
     stage_run_id: String,
@@ -74,48 +74,27 @@ impl ClickHouseSink {
             client,
             base_url,
             #[cfg(feature = "staging")]
-            stage_run_id: format!(
-                "run-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0)
-            ),
+            stage_run_id: crate::staged::new_stage_run_id(),
             #[cfg(feature = "staging")]
             stage_seq: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
-    /// Send a bare SQL statement (no row body) over the HTTP interface — used by
-    /// the staged-load path's `INSERT … SELECT FROM s3(…)`.
+    /// Stage the page to `uploader`'s store and build the `INSERT … SELECT FROM
+    /// s3()/gcs()` statement. Split out from [`Self::write_batch_staged`] so it
+    /// can be tested against an in-memory object store (the network execution is
+    /// the only untested part).
     #[cfg(feature = "staging")]
-    async fn send_query(&self, statement: &str) -> Result<(), FaucetError> {
-        let params = query_params(&self.config.connection.database, &[("query", statement)]);
-        let req = self.client.post(&self.base_url).query(&params);
-        let req = apply_auth(req, &self.config.connection);
-        let resp = req.send().await?;
-        check_http_response(resp, DEFAULT_ERROR_BODY_MAX_LEN).await?;
-        Ok(())
-    }
-
-    /// Staged bulk load (#528): upload the page to the object store, then have
-    /// the ClickHouse server pull it with `s3()` / `gcs()`.
-    #[cfg(feature = "staging")]
-    async fn write_batch_staged(
+    pub(crate) async fn stage_and_build_sql(
         &self,
+        uploader: &faucet_core::staging::StageUploader,
         records: &[Value],
         staging: &crate::config::ClickHouseStagingConfig,
-    ) -> Result<usize, FaucetError> {
+    ) -> Result<(faucet_core::staging::StagedFile, String), FaucetError> {
         use crate::staged::{clickhouse_stage_insert_sql, staged_https_url};
-        use faucet_core::staging::{StageUploader, StagingFormat, StagingScheme};
         use std::sync::atomic::Ordering;
 
-        // Restrict to what the s3()/gcs() path supports.
-        let loc = staging.spec.validate(
-            &[StagingScheme::S3, StagingScheme::Gcs],
-            &[StagingFormat::Jsonl, StagingFormat::Csv],
-        )?;
-        let uploader = StageUploader::from_location(loc.clone())?;
+        let loc = uploader.location().clone();
         let seq = self.stage_seq.fetch_add(1, Ordering::Relaxed);
         let staged = uploader
             .stage_page(
@@ -146,14 +125,7 @@ impl ClickHouseSink {
             creds,
             staging.spec.format,
         )?;
-
-        let result = self.send_query(&sql).await;
-        uploader
-            .cleanup(&[staged], staging.spec.cleanup, result.is_ok())
-            .await;
-        result?;
-        tracing::debug!(records = records.len(), "ClickHouse staged load written");
-        Ok(records.len())
+        Ok((staged, sql))
     }
 
     /// Send one `INSERT … FORMAT JSONEachRow` request for a slice of records.
@@ -261,6 +233,68 @@ impl Sink for ClickHouseSink {
             Err(_) => Probe::fail_hint("connect", started.elapsed(), "timed out", hint),
         };
         Ok(CheckReport::single(probe))
+    }
+}
+
+#[cfg(all(test, feature = "staging"))]
+mod staging_tests {
+    use super::*;
+    use crate::config::ClickHouseStagingConfig;
+    use faucet_core::staging::{StageUploader, StagingLocation};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    fn staging(location: &str) -> ClickHouseStagingConfig {
+        ClickHouseStagingConfig {
+            spec: serde_json::from_value(json!({
+                "location": location,
+                "format": "jsonl",
+            }))
+            .unwrap(),
+            region: Some("us-east-1".into()),
+            endpoint: None,
+            access_key: Some("AKIA".into()),
+            secret_key: Some("secret".into()),
+        }
+    }
+
+    // Covers the staged upload + URL derivation + INSERT…SELECT FROM s3() build
+    // against an in-memory object store (only the network send stays untested).
+    #[tokio::test]
+    async fn stage_and_build_sql_uploads_and_builds_s3_insert() {
+        let sink = ClickHouseSink::new(ClickHouseSinkConfig::new(
+            "http://db.example.com:8123",
+            "db.events",
+        ))
+        .unwrap();
+        let store = Arc::new(object_store::memory::InMemory::new());
+        let loc = StagingLocation::parse("s3://bucket/stage").unwrap();
+        let uploader = StageUploader::new(store, loc);
+        let cfg = staging("s3://bucket/stage");
+
+        let records = vec![json!({"id": 1}), json!({"id": 2})];
+        let (staged, sql) = sink
+            .stage_and_build_sql(&uploader, &records, &cfg)
+            .await
+            .unwrap();
+
+        assert_eq!(staged.rows, 2);
+        assert!(sql.starts_with("INSERT INTO \"db\".\"events\" SELECT * FROM s3("));
+        assert!(sql.contains("s3.us-east-1.amazonaws.com"));
+        assert!(sql.contains("'AKIA', 'secret'"));
+        assert!(sql.contains("'JSONEachRow'"));
+    }
+
+    #[test]
+    fn supports_staged_load_reflects_config() {
+        let mut c = ClickHouseSinkConfig::new("http://h:8123", "t");
+        assert!(
+            !ClickHouseSink::new(c.clone())
+                .unwrap()
+                .supports_staged_load()
+        );
+        c.staging = Some(staging("s3://b/p"));
+        assert!(ClickHouseSink::new(c).unwrap().supports_staged_load());
     }
 }
 

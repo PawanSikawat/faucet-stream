@@ -584,7 +584,7 @@ jobs:
           # gRPC-compatible GCS emulator; integration tests are #[ignore]d, #220)
           # so they are excluded here and in codecov.yml (kept in sync).
           cargo llvm-cov report --lcov --output-path lcov.info \
-            --ignore-filename-regex '(/tests?/|/examples?/|/benches?/|build\.rs$|crates/source/gcs/src/stream\.rs$|crates/sink/gcs/src/sink\.rs$)'
+            --ignore-filename-regex '(/tests?/|/examples?/|/benches?/|build\.rs$|crates/source/gcs/src/stream\.rs$|crates/sink/gcs/src/sink\.rs$|crates/sink/clickhouse/src/staged_exec\.rs$|crates/sink/mssql/src/staged_exec\.rs$)'
       - name: Enforce >=90% patch coverage
         # The project standard is >=90% coverage of changed lines. `codecov/patch`
         # reports the same number but posts unreliably — of the eight PRs merged
