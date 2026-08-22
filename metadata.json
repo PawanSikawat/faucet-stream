@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0NA9QKEAEEYR2QQENBCNPP4",
+  "strategy": "manual-commit",
+  "branch": "feat/config-driven-parity-539-544",
+  "checkpoints_count": 31,
+  "files_touched": [
+    "Cargo.lock"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 5738,
+    "cache_creation_tokens": 10054195,
+    "cache_read_tokens": 1635799661,
+    "output_tokens": 2751171,
+    "api_call_count": 2877
+  }
+}
