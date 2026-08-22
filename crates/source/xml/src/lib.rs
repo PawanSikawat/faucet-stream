@@ -7,10 +7,13 @@
 
 pub mod config;
 pub mod convert;
+pub mod decode;
+mod format;
 pub mod serde_helpers;
 pub mod stream;
 
 pub use faucet_core::{FaucetError, Source, TlsClientConfig};
 
 pub use config::{SoapConfig, SoapVersion, XmlAuth, XmlPagination, XmlStreamConfig};
+pub use decode::{DecodeStep, ParseFormat, ParseSpec, run_decode};
 pub use stream::XmlStream;

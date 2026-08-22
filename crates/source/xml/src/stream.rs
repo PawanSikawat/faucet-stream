@@ -258,6 +258,11 @@ impl XmlStream {
         let mut page_number = None;
         let mut prev_fingerprint: Option<u64> = None;
         let mut fault_logged = false;
+        // Body-cursor pagination (#544): the request body for pages after the
+        // first (the rendered `next_body`), and the last-seen token for the
+        // loop guard. `None` on the first page → use the configured body/soap.
+        let mut body_override: Option<String> = None;
+        let mut prev_token: Option<String> = None;
 
         // Initialize pagination state.
         if let Some(XmlPagination::PageNumber { start_page, .. }) = &self.config.pagination {
@@ -275,8 +280,17 @@ impl XmlStream {
             let mut params = self.config.query_params.clone();
             self.apply_pagination_params(&mut params, page_number, offset);
 
-            let xml_text = self.execute_request(&params, context).await?;
-            let records = self.extract_records_eager(&xml_text, &mut fault_logged)?;
+            let xml_text = self
+                .execute_request(&params, context, body_override.as_deref())
+                .await?;
+            // #540: when a decode pipeline is configured, records come from the
+            // decoded output (extract → base64/gunzip/unzip → parse) rather than
+            // navigating `records_element_path` over the raw XML.
+            let records = if self.config.decode.is_empty() {
+                self.extract_records_eager(&xml_text, &mut fault_logged)?
+            } else {
+                crate::decode::run_decode(xml_text.as_bytes(), &self.config.decode).await?
+            };
 
             let record_count = records.len();
             let fingerprint = page_fingerprint(&records);
@@ -315,6 +329,23 @@ impl XmlStream {
                         break;
                     }
                     offset += record_count;
+                }
+                Some(XmlPagination::BodyCursor {
+                    next_token_path,
+                    next_body,
+                }) => {
+                    // Read the continuation token from THIS page's response.
+                    match crate::decode::xml_extract_text(xml_text.as_bytes(), next_token_path) {
+                        // Absent/empty token → done. Repeated token → loop guard.
+                        Some(t)
+                            if !t.trim().is_empty()
+                                && prev_token.as_deref() != Some(t.as_str()) =>
+                        {
+                            body_override = Some(next_body.replace("${next_token}", &t));
+                            prev_token = Some(t);
+                        }
+                        _ => break,
+                    }
                 }
                 None => break,
             }
@@ -356,6 +387,9 @@ impl XmlStream {
                 params.insert(offset_param.clone(), offset.to_string());
                 params.insert(limit_param.clone(), limit.to_string());
             }
+            // Body-cursor paging carries its token in the request body, not the
+            // query string — nothing to add here.
+            Some(XmlPagination::BodyCursor { .. }) => {}
             None => {}
         }
     }
@@ -364,6 +398,7 @@ impl XmlStream {
         &self,
         params: &HashMap<String, String>,
         context: &HashMap<String, serde_json::Value>,
+        body_override: Option<&str>,
     ) -> Result<String, FaucetError> {
         let path = if context.is_empty() {
             self.config.path.clone()
@@ -439,7 +474,19 @@ impl XmlStream {
         // These headers are set here regardless of the `auth` variant, so real
         // bearer / basic auth (applied above) is left untouched. Otherwise the
         // legacy raw-`body` path is used verbatim (byte-for-byte unchanged).
-        if let Some(soap) = &self.config.soap {
+        if let Some(ob) = body_override {
+            // #544 body-cursor: a rendered `next_body` replaces the request body
+            // for pages after the first (e.g. Intacct `readMore`). Takes
+            // precedence over the configured soap/raw body.
+            let resolved = if context.is_empty() {
+                ob.to_string()
+            } else {
+                faucet_core::util::substitute_context(ob, context)
+            };
+            req = req
+                .header("Content-Type", "text/xml; charset=utf-8")
+                .body(resolved);
+        } else if let Some(soap) = &self.config.soap {
             let inner = soap.body_inner.as_deref().unwrap_or("");
             let resolved_inner = if context.is_empty() {
                 inner.to_string()
@@ -524,6 +571,20 @@ impl faucet_core::Source for XmlStream {
         Box::pin(async_stream::try_stream! {
             self.config.validate()?;
 
+            // A decode pipeline (#540) and body-cursor paging (#544) both buffer
+            // the whole payload, so they can't use the event-driven streaming
+            // parser — fall back to the eager fetch and emit it in chunks.
+            if !self.config.decode.is_empty()
+                || matches!(self.config.pagination, Some(XmlPagination::BodyCursor { .. }))
+            {
+                let records = self.fetch_all_with_context(&owned_context).await?;
+                let chunk = if batch_size == 0 { usize::MAX } else { batch_size };
+                for c in records.chunks(chunk) {
+                    yield StreamPage { records: c.to_vec(), bookmark: None };
+                }
+                return;
+            }
+
             let chunk = if batch_size == 0 { usize::MAX } else { batch_size };
             let initial_capacity = if batch_size == 0 { 1024 } else { batch_size };
             let mut buffer: Vec<Value> = Vec::with_capacity(initial_capacity);
@@ -551,7 +612,7 @@ impl faucet_core::Source for XmlStream {
                 let mut params = self.config.query_params.clone();
                 self.apply_pagination_params(&mut params, page_number, offset);
 
-                let xml_text = self.execute_request(&params, &owned_context).await?;
+                let xml_text = self.execute_request(&params, &owned_context, None).await?;
 
                 // Event-driven extraction: only the matched subtree is
                 // ever materialised. The closure pushes into the local
@@ -622,6 +683,9 @@ impl faucet_core::Source for XmlStream {
                         }
                         offset += record_count;
                     }
+                    // Handled by the buffered fallback above (this streaming
+                    // path is never entered for body-cursor paging).
+                    Some(XmlPagination::BodyCursor { .. }) => break,
                     None => break,
                 }
             }
