@@ -12,7 +12,7 @@ Reach for it when you need to filter, reshape, aggregate, or join your in-flight
 ## Feature highlights
 
 - **Full DuckDB SQL** — `SELECT`, `WHERE`, `GROUP BY`, window functions, CTEs, `json_extract`, casts, string/date functions — the page is just a table named `batch`.
-- **Reference relations** — pre-load static lookup data from CSV, JSONL, or inline `values` and `JOIN` against it by name. Optional `reload_on_change` re-reads a file when its mtime changes.
+- **Reference relations** — pre-load static lookup data from CSV, JSONL, inline `values`, or a small REST endpoint (`http`) and `JOIN` against it by name. Optional `reload_on_change` re-reads a file when its mtime changes; `http` is fetched once and cached for the whole run.
 - **Vectorized JSON ↔ Arrow shovel** — records are moved into and out of DuckDB through Arrow batches (`arrow` / `arrow-json`), not row-by-row, so throughput stays high.
 - **Compile-time query validation** — the query is parse/bind-checked inside DuckDB and missing relation files are caught at `faucet validate` / start of `faucet run`, never mid-stream.
 - **Embedded engine** — DuckDB is bundled (`bundled` feature), so there are no system dependencies and the connection is built once per transform and reused for every page.
@@ -79,7 +79,7 @@ Wire shape: `{ type: sql, config: { query, relations?, memory_limit?, threads? }
 |---|---|---|---|
 | `name` | string | — *(required)* | Relation name as referenced in the query. Must be a safe SQL identifier and must not be `batch` (reserved for the page). |
 | `source` | [`RelationSource`](#relation-source-types) | — *(required)* | Where the relation's data comes from. |
-| `reload_on_change` | bool | `false` | Re-stat the file's mtime before each page; rebuild and atomically swap the relation if it changed. Ignored for `values`. |
+| `reload_on_change` | bool | `false` | Re-stat the file's mtime before each page; rebuild and atomically swap the relation if it changed. Ignored for `values` and `http` (both loaded once for the whole run). |
 
 ### Relation source types (`source.type`)
 
@@ -88,10 +88,11 @@ Wire shape: `{ type: sql, config: { query, relations?, memory_limit?, threads? }
 | `csv` | `path` (string, required), `has_header` (bool, default `true`) | Delimited file loaded via DuckDB `read_csv_auto`. |
 | `jsonl` | `path` (string, required) | Newline-delimited JSON loaded via DuckDB `read_json_auto`. |
 | `values` | `columns` (list of strings, required), `rows` (list of lists, required) | Inline rows materialized into a table; no file I/O. Each inner row must have the same length as `columns`. |
+| `http` | `url` (string, required), `method` (`GET`\|`POST`, default `GET`), `headers` (map of string→string, optional), `records_path` (JSONPath string, optional) | Rows fetched from a small REST endpoint **once** at compile time and cached for the whole run. `records_path` selects the row array in the response body (e.g. `$.items[*]`); if omitted the whole body must be a JSON array. Every selected element must be a JSON object (one table row). |
 
 ## Reference relations
 
-Pre-load static lookup data (CSV, JSONL, or inline `values`) that your query can `JOIN` against. Relations are loaded **once at compile time** (when `faucet validate` / `faucet run` first reads the config) and remain resident for the lifetime of the transform.
+Pre-load static lookup data (CSV, JSONL, inline `values`, or an `http` endpoint) that your query can `JOIN` against. Relations are loaded **once at compile time** (when `faucet validate` / `faucet run` first reads the config) and remain resident for the lifetime of the transform.
 
 ```yaml
 - type: sql
@@ -122,6 +123,22 @@ relations:
         - [3, bronze]
 ```
 
+An `http` relation fetches its rows from a small REST endpoint **once** at compile time and caches them for the whole run (every page joins against the same in-memory table — the endpoint is never re-hit):
+
+```yaml
+relations:
+  - name: named_lists
+    source:
+      type: http
+      url: https://api.example.com/v1/company/named-lists
+      method: GET                 # default GET; POST also supported
+      headers:                    # optional static headers
+        Authorization: "Bearer ${env:HIBOB_TOKEN}"
+      records_path: "$.items[*]"  # JSONPath to the row array; omit if the body is already an array
+```
+
+`records_path` is a JSONPath selecting the row array in the response body; each selected element must be a JSON object (one table row). If `records_path` is omitted, the whole response body must be a JSON array. A non-array body without a `records_path`, or a path that selects non-object values, is a clear compile-time configuration error. Keep auth simple: pass a bearer token via a static `headers` entry (interpolated at the CLI layer with `${env:...}` / `${vault:...}`); the shared `auth:` catalog is not wired here.
+
 ### `reload_on_change`
 
 ```yaml
@@ -133,7 +150,7 @@ relations:
     reload_on_change: true   # re-read when the file's mtime changes
 ```
 
-When `true`, faucet stats the file before each page and rebuilds the relation atomically if the mtime changed. Defaults to `false`. Ignored for `values`.
+When `true`, faucet stats the file before each page and rebuilds the relation atomically if the mtime changed. Defaults to `false`. Ignored for `values` and `http` (both loaded once for the whole run).
 
 The name `batch` is reserved for the page relation. Using it as a relation name is a compile-time error.
 
@@ -187,6 +204,7 @@ aggregation is per-page — set batch_size: 0 for global aggregation
 
 - The query is parse/bind-checked inside DuckDB. Syntax errors report line and column number.
 - Reference-relation files that do not exist cause an immediate error (before any page is processed).
+- An `http` relation is fetched here: a request failure, a non-2xx status, an undecodable body, a non-array body without a `records_path`, or a path selecting non-object rows all cause an immediate error (before any page is processed).
 - A relation named `batch` is rejected.
 
 **At runtime** (per page):

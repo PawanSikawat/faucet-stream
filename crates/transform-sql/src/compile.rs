@@ -1,7 +1,8 @@
 //! Connection setup, reference-relation loading, and query validation.
 
 use crate::config::{RelationSource, RelationSpec, SqlTransformConfig};
-use crate::shovel::values_to_record_batch;
+use crate::http::fetch_http_rows;
+use crate::shovel::{records_to_record_batch, values_to_record_batch};
 use duckdb::Connection;
 use duckdb::vtab::arrow::{ArrowVTab, arrow_recordbatch_to_query_params};
 use faucet_core::FaucetError;
@@ -113,6 +114,36 @@ fn load_relation(conn: &Connection, rel: &RelationSpec) -> Result<(), FaucetErro
             .map_err(|e| cfg_err(format!("load values relation '{}': {e}", rel.name)))?;
             Ok(())
         }
+        RelationSource::Http {
+            url,
+            method,
+            headers,
+            records_path,
+        } => {
+            // Fetch exactly once, here at compile time. The resulting DuckDB
+            // table persists for the whole run (Http is never a Reloadable), so
+            // no page re-hits the endpoint.
+            let rows = fetch_http_rows(&rel.name, url, *method, headers, records_path.as_deref())?;
+            if rows.is_empty() {
+                return Err(cfg_err(format!(
+                    "http relation '{}' fetched zero rows; a reference relation must have \
+                     at least one row so its columns can be inferred",
+                    rel.name
+                )));
+            }
+            let batch = records_to_record_batch(&rows)
+                .map_err(|e| cfg_err(format!("http relation '{}': {e}", rel.name)))?;
+            let params = arrow_recordbatch_to_query_params(batch);
+            conn.execute(
+                &format!(
+                    "CREATE OR REPLACE TABLE \"{}\" AS SELECT * FROM arrow(?, ?)",
+                    rel.name
+                ),
+                params,
+            )
+            .map_err(|e| cfg_err(format!("load http relation '{}': {e}", rel.name)))?;
+            Ok(())
+        }
     }
 }
 
@@ -120,7 +151,9 @@ fn reloadable_for(rel: &RelationSpec) -> Result<Option<Reloadable>, FaucetError>
     let (path, has_header, is_csv) = match &rel.source {
         RelationSource::Csv { path, has_header } => (path.clone(), *has_header, true),
         RelationSource::Jsonl { path } => (path.clone(), false, false),
-        RelationSource::Values { .. } => return Ok(None),
+        // Inline and HTTP relations are loaded once for the whole run; there is
+        // no file to re-stat, so they are never reloadable.
+        RelationSource::Values { .. } | RelationSource::Http { .. } => return Ok(None),
     };
     let last_mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
     Ok(Some(Reloadable {

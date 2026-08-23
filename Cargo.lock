@@ -6150,12 +6150,14 @@ dependencies = [
  "faucet-core",
  "futures",
  "parquet",
+ "reqwest 0.13.3",
  "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]
@@ -11848,6 +11850,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2 0.4.14",

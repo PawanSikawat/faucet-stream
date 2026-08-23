@@ -21,6 +21,10 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 schemars.workspace = true
 tracing.workspace = true
+# HTTP-sourced reference relations (#558): fetched once at compile time via a
+# blocking client on a dedicated thread. `blocking` is enabled on top of the
+# workspace features so the sync compile path can drive it without a runtime.
+reqwest = { workspace = true, features = ["blocking"] }
 
 [dev-dependencies]
 criterion.workspace = true
@@ -33,6 +37,9 @@ bytes.workspace = true
 # source → sql → columnar sink and assert the columnar path is taken.
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 futures.workspace = true
+# HTTP reference-relation integration test (#558): mock the REST endpoint and
+# assert it is fetched exactly once across multiple pages.
+wiremock = "0.6"
 
 [[bench]]
 name = "sql_transform"

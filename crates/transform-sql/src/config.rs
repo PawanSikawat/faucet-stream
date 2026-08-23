@@ -3,6 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 /// Configuration for the `sql` transform.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -31,9 +32,22 @@ pub struct RelationSpec {
     /// Where the relation's data comes from.
     pub source: RelationSource,
     /// Re-stat the file's mtime before each page; rebuild + atomic swap if it
-    /// changed. Default false. Ignored for `values`.
+    /// changed. Default false. Ignored for `values` and `http` (both loaded
+    /// once for the whole run).
     #[serde(default)]
     pub reload_on_change: bool,
+}
+
+/// HTTP method used to fetch an `http` reference relation. Only the two verbs a
+/// small read-only list endpoint needs are supported; `GET` is the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum HttpMethod {
+    /// `GET` — the default.
+    #[default]
+    Get,
+    /// `POST` — for POST-search list endpoints (no request body is sent).
+    Post,
 }
 
 // serde `default = "..."` needs a function, not a literal.
@@ -64,6 +78,25 @@ pub enum RelationSource {
         columns: Vec<String>,
         /// Rows of cell values; each inner row must have the same length as `columns`.
         rows: Vec<Vec<Value>>,
+    },
+    /// Rows fetched from a small REST endpoint **once** at compile/first-use and
+    /// cached for the whole run (never re-fetched per page). The response is
+    /// materialized into a DuckDB table joinable by the relation's `name`.
+    Http {
+        /// Endpoint URL to fetch the rows from.
+        url: String,
+        /// HTTP method. Default: `GET`.
+        #[serde(default)]
+        method: HttpMethod,
+        /// Static request headers sent with the fetch (e.g. a bearer token
+        /// injected via `${...}` at the CLI layer). Optional.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        headers: BTreeMap<String, String>,
+        /// JSONPath selecting the row array in the response body (e.g.
+        /// `$.items[*]`). If omitted, the whole body is used and must be a JSON
+        /// array. Every selected element must be a JSON object (one table row).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        records_path: Option<String>,
     },
 }
 

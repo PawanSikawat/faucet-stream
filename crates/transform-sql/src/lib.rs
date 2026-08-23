@@ -9,8 +9,9 @@
 
 mod compile;
 mod config;
+mod http;
 mod runtime;
 mod shovel;
 
-pub use config::{RelationSource, RelationSpec, SqlTransformConfig};
+pub use config::{HttpMethod, RelationSource, RelationSpec, SqlTransformConfig};
 pub use runtime::SqlTransform;
