@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0PGF6PJR7WRS9HKFNT2HBR1",
+  "strategy": "manual-commit",
+  "branch": "agent/sql-558",
+  "checkpoints_count": 24,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 6007,
+    "cache_creation_tokens": 11273622,
+    "cache_read_tokens": 1727073571,
+    "output_tokens": 2942618,
+    "api_call_count": 3015
+  }
+}
