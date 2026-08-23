@@ -115,31 +115,37 @@ kbd {
 }
 .chapter li.chapter-item > a,
 .chapter li.chapter-item > div {
-  border-radius: 7px;
-  padding: 0.32rem 0.55rem;
-  transition: background 0.13s ease, color 0.13s ease;
+  border-radius: 6px;
+  padding: 0.3rem 0.5rem;
+  transition: color 0.13s ease;
 }
 .chapter li.chapter-item > a:hover {
   background: color-mix(in srgb, var(--sidebar-fg) 10%, transparent);
   color: var(--sidebar-fg);
 }
-/* Active item = a solid teal pill with white text. Broad selector + !important so
-   the pill reliably renders behind mdBook's runtime-added `.active` link (which
-   otherwise only gets white `--sidebar-active` text → invisible on the pale
-   sidebar). */
+/* Active item = teal text, no pill/background/border (same treatment at every
+   level). Broad selector + !important overrides mdBook's runtime `--sidebar-active`
+   white which would be invisible on the pale sidebar. */
 .chapter li.chapter-item > a.active,
 .sidebar .chapter a.active {
-  background: var(--fs-green) !important;
-  color: #fff !important;
+  background: transparent !important;
+  color: var(--fs-green-deep) !important;
   font-weight: 600;
-  border-radius: 7px;
+}
+.navy .chapter li.chapter-item > a.active,
+.coal .chapter li.chapter-item > a.active,
+.ayu .chapter li.chapter-item > a.active,
+.navy .sidebar .chapter a.active,
+.coal .sidebar .chapter a.active,
+.ayu .sidebar .chapter a.active {
+  color: var(--fs-green-bright) !important;
 }
 /* Nested sub-sections of the active page (mdBook's <ol class="section">): replace
    the chunky default rail with a soft, thin guide rail, indented so it doesn't
    collide with the active pill's corner. Sub-items sit quietly; the current one
    picks up teal text (no pill). */
 .sidebar .chapter .section {
-  border-inline-start: 2px solid color-mix(in srgb, var(--fs-green) 26%, transparent) !important;
+  border-inline-start: 0 !important;
   margin-inline-start: 0.9rem;
   padding-inline-start: 0.5rem;
 }
