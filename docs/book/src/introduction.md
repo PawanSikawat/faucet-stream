@@ -1,5 +1,15 @@
 <div class="fs-hero">
-  <img src="assets/wordmark.svg" alt="faucet-stream" />
+  <svg class="fs-wordmark" viewBox="0 0 500 128" role="img" aria-label="faucet-stream">
+    <g class="wm-mark" fill="none" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M55 40 V24" /><path d="M43 24 H67" /><path d="M32 40 H78 a15 15 0 0 1 15 15 V66" />
+    </g>
+    <g class="wm-dots">
+      <circle cx="93" cy="82" r="6" /><circle cx="93" cy="99" r="5" opacity="0.7" /><circle cx="93" cy="112" r="4" opacity="0.45" />
+    </g>
+    <text x="150" y="78" font-size="52" letter-spacing="-1">
+      <tspan class="wm-faucet" font-weight="700">faucet</tspan><tspan class="wm-stream" font-weight="400">stream</tspan>
+    </text>
+  </svg>
   <p class="fs-tagline">The fast, config-driven way to <strong>move data in Rust</strong>.</p>
   <div class="fs-cta">
     <a class="primary" href="getting-started/installation.html">Get started →</a>
