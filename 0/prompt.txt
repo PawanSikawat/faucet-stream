@@ -4530,3 +4530,40 @@ so all 46 are genuinely complete? then what are their issues for? is it for more
 ---
 
 okay shoyld I close all those issues first and then u take another go at it?
+
+---
+
+by close i mean implement them
+
+---
+
+lets complete 547-558 all in 1 pr itself
+
+---
+
+<task-notification>
+<task-id>af80b63710a6905eb</task-id>
+<tool-use-id>toolu_01Grk1ZuQDaGWvQUirLpK9U7</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/48528653-2f52-407c-8b61-943ebb969681/tasks/af80b63710a6905eb.output</output-file>
+<status>failed</status>
+<summary>Agent "Implement oauth2 refresh scope+rotation #556" failed: Agent stalled: no progress for 600s (stream watchdog did not recover)</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All three (test/clippy/fmt) are green. Let me verify the final refresh form block formatting and then commit.</result>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>aa4b5b9299080e547</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/48528653-2f52-407c-8b61-943ebb969681/tasks/aa4b5b9299080e547.output</output-file>
+<status>failed</status>
+<summary>Agent "Implement graphql offset pagination #550" failed: Agent terminated early due to an API error: API Error: Your computer went to sleep mid-response. The response above may be incomplete.</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Now add unit tests for `offset_should_continue` in stream.rs tests module:</result>
+<worktree><worktreePath>/Users/c-sikawats/Documents/GitHub/Personal/faucet-stream/.claude/worktrees/agent-aa4b5b9299080e547</worktreePath><worktreeBranch>worktree-agent-aa4b5b9299080e547</worktreeBranch></worktree>
+</task-notification>
+
+---
+
+try nmow
