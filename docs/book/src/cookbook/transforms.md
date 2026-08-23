@@ -33,6 +33,7 @@ them are listed in `faucet list` and dispatchable as `type:` values.
 | `lookup` | Enrich records by joining an inline / JSONL reference table | `values` \| `jsonl`, `on: {record, ref}`, `add: {out: ref_col}`, `on_missing?` |
 | `tree_flatten` | Flatten a recursive report tree / matrix (nested `Rows`) into one row per leaf (1→N) | `children`, `columns: {from, header?, value}`, `root?`, `leaf?`, `ancestors?`, `path_as?` |
 | `cross_join` | Cartesian product of two or more sibling array fields → one row per combination (1→N) | `arrays`, `prefix?`, `keep_parent?`, `on_empty?`, `drop_arrays?`, `max_product?` |
+| `zip_columns` | Zip a columnar payload (`{columns, rows}`) into one object per row (1→N) | `columns_path`, `rows_path` |
 | `sql` | Run DuckDB SQL over the whole page; records are the `batch` relation | `query`, `relations?`, `memory_limit?`, `threads?` · page-level (sees the whole batch) · needs `transform-sql` feature · [cookbook](./sql-transform.md) |
 | `wasm` | Run a user-provided sandboxed `.wasm` module over each record | `module`, `function?`, `memory_limit_mb?`, `fuel_limit?`, `on_error?`, `reload_on_change?` · per-record · needs `transform-wasm` feature · [cookbook](./wasm-transforms.md) |
 
@@ -662,6 +663,26 @@ transforms:
 | `{id: 1, user: {name: A, items: [{x: 1}]}}` | `explode { path: $.user.items }` | `{id: 1, user: {name: A, items_x: 1}}` |
 
 **Collisions** (a prefixed element key would overwrite a sibling) fail loudly with `FaucetError::Transform("explode produced duplicate key 'X'")` — mirroring `flatten` / `keys_case`.
+
+**Carry parent fields down (`carry`).** When the exploded array is nested and the child rows need a parent key to stay joinable, `carry` copies named fields from the parent record onto every child (`{ dest_field: "source.dot.path" }`):
+
+```yaml
+- type: explode
+  config: { path: values, prefix: "", carry: { employee_id: id } }
+```
+
+`{id: 7, values: [{v: a}, {v: b}]}` → `{v: a, employee_id: 7}`, `{v: b, employee_id: 7}`.
+
+## `zip_columns` — columnar payload → one object per row (1→N)
+
+Analytics / report APIs (e.g. Shopify ShopifyQL `tableData`) return results *positionally*: a list of column descriptors plus a list of value-arrays. `zip_columns` zips each row against the column names.
+
+```yaml
+- type: zip_columns
+  config: { columns_path: "columns[*].name", rows_path: "rows" }
+```
+
+`{columns: [{name: day}, {name: sessions}], rows: [["2026-01-01", 12]]}` → `{day: "2026-01-01", sessions: 12}`. A row whose width differs from the column count fails loudly rather than misaligning fields. Gated on the `transform-zip-columns` feature (in `transforms` / `full`).
 
 ### Ordering: explode early, filter late (usually)
 
