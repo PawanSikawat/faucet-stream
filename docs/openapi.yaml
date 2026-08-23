@@ -1287,6 +1287,20 @@ components:
           description: >
             Launch the newly registered version immediately, making it `stable`.
             Off by default: registering a build must never move existing callers.
+      example:
+        id: orders_to_warehouse
+        config_format: yaml
+        config: |
+          version: 1
+          pipeline:
+            source:
+              type: postgres
+              config: { connection_url: ${env:PG_URL}, query: SELECT * FROM orders }
+            sink:
+              type: bigquery
+              config: { dataset: analytics, table: orders }
+        description: Orders → BigQuery
+        launch: true
     TriggerTemplateRequest:
       type: object
       description: >
@@ -1312,6 +1326,14 @@ components:
         doctor_first: { type: boolean, default: false }
         idempotency_key: { type: string }
         clock: { type: string, description: "RFC3339 or YYYY-MM-DD override for `${now.*}`." }
+      example:
+        params:
+          region: us-east-1
+          since: "2026-01-01"
+        env:
+          PG_URL: postgres://user:pass@db:5432/app
+        version: stable
+        idempotency_key: 2026-01-01-orders
     TriggerTemplateResponse:
       type: object
       required: [run_id, status, submitted_at, template_id, template_version, params]
