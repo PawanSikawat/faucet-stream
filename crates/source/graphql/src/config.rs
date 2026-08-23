@@ -54,6 +54,70 @@ impl Default for GraphqlPagination {
     }
 }
 
+/// Discriminator for [`GraphqlOffsetPagination`]; serializes as `"Offset"`.
+///
+/// A dedicated single-variant enum (rather than a bare `String`) so the
+/// `type: Offset` marker is validated at config-load time and gives the
+/// untagged [`GraphqlPaginationSpec`] a reliable way to route an offset block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum OffsetPaginationKind {
+    /// The offset pagination style.
+    Offset,
+}
+
+/// Offset-into-query-variable pagination (ShopifyQL and similar).
+///
+/// Increments an integer offset injected into a GraphQL variable and
+/// terminates on a **short page** (fewer than `page_size` records) — unlike
+/// cursor pagination, which follows a `pageInfo` boolean. Suited to APIs whose
+/// query language embeds `LIMIT … OFFSET …` (e.g. ShopifyQL): bake the limit
+/// into the query string and parameterize only the offset with `${…}`.
+///
+/// The offset starts at `0`, is sent as a JSON number in the `variables` map on
+/// every request, and advances by `page_size` after each page.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GraphqlOffsetPagination {
+    /// Discriminator — must be `Offset`.
+    pub r#type: OffsetPaginationKind,
+    /// Name of the GraphQL variable that receives the current offset. It is
+    /// injected as a JSON number (starting at `0`, incremented by `page_size`
+    /// after each page). Reference it from the query string or as a variable
+    /// (e.g. `${q_offset}` for ShopifyQL).
+    pub offset_variable: String,
+    /// Records requested per page. Used both to advance the offset
+    /// (`offset += page_size`) and, with `stop_when_short`, to detect the final
+    /// page. Must be greater than `0`. This value is **not** injected into the
+    /// request — bake the limit into your query (`LIMIT 250 OFFSET ${q_offset}`).
+    pub page_size: usize,
+    /// Terminate when a page yields fewer than `page_size` records (default
+    /// `true`). When `false`, pagination continues until a fully empty page (or
+    /// `max_pages`) is reached.
+    #[serde(default = "default_true")]
+    pub stop_when_short: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Pagination style for the GraphQL source.
+///
+/// Deserialized **untagged** so the legacy cursor block (which carries no
+/// `type:` discriminator) keeps working unchanged, while the offset block is
+/// selected by its required `type: Offset` field. The two field sets are
+/// disjoint (cursor requires `cursor_path` / `has_next_page_path`; offset
+/// requires `type` / `offset_variable` / `page_size`), so serde routes each
+/// config to exactly one variant. The cursor variant is tried first.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum GraphqlPaginationSpec {
+    /// Relay-style cursor pagination (the original, `type`-less shape).
+    Cursor(GraphqlPagination),
+    /// Offset-into-variable pagination — selected by `type: Offset`.
+    Offset(GraphqlOffsetPagination),
+}
+
 /// Configuration for the GraphQL source.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GraphqlStreamConfig {
@@ -71,8 +135,10 @@ pub struct GraphqlStreamConfig {
     pub headers: HeaderMap,
     /// JSONPath expression to extract records from the response.
     pub records_path: Option<String>,
-    /// Pagination configuration. `None` for single-page queries.
-    pub pagination: Option<GraphqlPagination>,
+    /// Pagination configuration. `None` for single-page queries. Accepts either
+    /// the Relay cursor block (no `type:`) or an offset block (`type: Offset`) —
+    /// see [`GraphqlPaginationSpec`].
+    pub pagination: Option<GraphqlPaginationSpec>,
     /// Maximum number of pages to fetch.
     pub max_pages: Option<usize>,
     /// Records per emitted [`StreamPage`](faucet_core::StreamPage), and the
@@ -147,9 +213,15 @@ impl GraphqlStreamConfig {
         self
     }
 
-    /// Enable cursor-based pagination with the given configuration.
+    /// Enable cursor-based (Relay) pagination with the given configuration.
     pub fn pagination(mut self, pagination: GraphqlPagination) -> Self {
-        self.pagination = Some(pagination);
+        self.pagination = Some(GraphqlPaginationSpec::Cursor(pagination));
+        self
+    }
+
+    /// Enable offset-into-variable pagination (ShopifyQL and similar).
+    pub fn offset_pagination(mut self, pagination: GraphqlOffsetPagination) -> Self {
+        self.pagination = Some(GraphqlPaginationSpec::Offset(pagination));
         self
     }
 
@@ -186,6 +258,15 @@ impl GraphqlStreamConfig {
             ));
         }
         validate_batch_size(self.batch_size)?;
+        if let Some(GraphqlPaginationSpec::Offset(off)) = &self.pagination
+            && off.page_size == 0
+        {
+            return Err(FaucetError::Config(
+                "GraphQL offset pagination requires `page_size` > 0 \
+                 (a zero page size never advances the offset)"
+                    .into(),
+            ));
+        }
         if let Some(tls) = &self.tls {
             tls.validate()?;
         }
@@ -306,5 +387,132 @@ mod tests {
             GraphqlStreamConfig::new("https://api.example.com/graphql", "").validate(),
             Err(FaucetError::Config(_))
         ));
+    }
+
+    // ── Offset pagination ───────────────────────────────────────────────────
+
+    #[test]
+    fn offset_pagination_deserializes_with_type_tag() {
+        let json = r#"{
+            "type": "Offset",
+            "offset_variable": "q_offset",
+            "page_size": 250,
+            "stop_when_short": true
+        }"#;
+        let spec: GraphqlPaginationSpec = serde_json::from_str(json).unwrap();
+        match spec {
+            GraphqlPaginationSpec::Offset(off) => {
+                assert_eq!(off.r#type, OffsetPaginationKind::Offset);
+                assert_eq!(off.offset_variable, "q_offset");
+                assert_eq!(off.page_size, 250);
+                assert!(off.stop_when_short);
+            }
+            other => panic!("expected Offset variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn offset_pagination_stop_when_short_defaults_true() {
+        let json = r#"{ "type": "Offset", "offset_variable": "q_offset", "page_size": 100 }"#;
+        let spec: GraphqlPaginationSpec = serde_json::from_str(json).unwrap();
+        match spec {
+            GraphqlPaginationSpec::Offset(off) => assert!(
+                off.stop_when_short,
+                "stop_when_short must default to true when omitted"
+            ),
+            other => panic!("expected Offset variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cursor_pagination_still_deserializes_without_type_tag() {
+        // Backward compatibility: the legacy cursor block has no `type:` field
+        // and must route to the Cursor variant untouched.
+        let json = r#"{
+            "has_next_page_path": "$.data.users.pageInfo.hasNextPage",
+            "cursor_path": "$.data.users.pageInfo.endCursor",
+            "cursor_variable": "after",
+            "page_size_variable": "first"
+        }"#;
+        let spec: GraphqlPaginationSpec = serde_json::from_str(json).unwrap();
+        match spec {
+            GraphqlPaginationSpec::Cursor(pag) => {
+                assert_eq!(pag.cursor_variable, "after");
+                assert_eq!(pag.page_size_variable, "first");
+            }
+            other => panic!("expected Cursor variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn full_config_with_offset_pagination_deserializes() {
+        let json = r#"{
+            "endpoint": "https://api.example.com/graphql",
+            "query": "{ orders(first: 250, offset: $q_offset) { id } }",
+            "variables": {},
+            "auth": {"type": "none"},
+            "records_path": "$.data.orders[*]",
+            "pagination": { "type": "Offset", "offset_variable": "q_offset", "page_size": 250 },
+            "max_pages": null,
+            "batch_size": 250
+        }"#;
+        let config: GraphqlStreamConfig = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            config.pagination,
+            Some(GraphqlPaginationSpec::Offset(_))
+        ));
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn offset_pagination_rejects_unknown_field() {
+        let json = r#"{
+            "type": "Offset",
+            "offset_variable": "q_offset",
+            "page_size": 250,
+            "bogus": true
+        }"#;
+        // `deny_unknown_fields` on the offset struct means an unknown field can't
+        // silently be ignored; the untagged enum then matches no variant.
+        assert!(serde_json::from_str::<GraphqlPaginationSpec>(json).is_err());
+    }
+
+    #[test]
+    fn offset_pagination_builder_wraps_offset_variant() {
+        let config = GraphqlStreamConfig::new("https://api.example.com/graphql", "query { x }")
+            .offset_pagination(GraphqlOffsetPagination {
+                r#type: OffsetPaginationKind::Offset,
+                offset_variable: "q_offset".into(),
+                page_size: 250,
+                stop_when_short: true,
+            });
+        assert!(matches!(
+            config.pagination,
+            Some(GraphqlPaginationSpec::Offset(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_zero_page_size_offset() {
+        let config = GraphqlStreamConfig::new("https://api.example.com/graphql", "query { x }")
+            .offset_pagination(GraphqlOffsetPagination {
+                r#type: OffsetPaginationKind::Offset,
+                offset_variable: "q_offset".into(),
+                page_size: 0,
+                stop_when_short: true,
+            });
+        assert!(matches!(config.validate(), Err(FaucetError::Config(_))));
+    }
+
+    #[test]
+    fn validate_accepts_nonzero_page_size_offset() {
+        let config = GraphqlStreamConfig::new("https://api.example.com/graphql", "query { x }")
+            .offset_pagination(GraphqlOffsetPagination {
+                r#type: OffsetPaginationKind::Offset,
+                offset_variable: "q_offset".into(),
+                page_size: 1,
+                stop_when_short: false,
+            });
+        assert!(config.validate().is_ok());
     }
 }

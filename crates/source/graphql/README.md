@@ -13,6 +13,7 @@ Reach for it when you want to pull a paginated GraphQL collection (users, reposi
 
 - **Native streaming** — overrides `Source::stream_pages`: every upstream GraphQL response is emitted as one `StreamPage` and written to the sink immediately, so a million-row collection never buffers client-side.
 - **Relay cursor pagination** — follows `pageInfo { hasNextPage, endCursor }`, injecting the `endCursor` back into the query's `after:` variable on each request. Stops cleanly when `hasNextPage` is false, the cursor is absent, the same cursor repeats (loop guard), or `max_pages` is reached. If `has_next_page_path` can't be resolved to a boolean on a page, the signal is treated as "unknown" and pagination **defers to cursor presence** (and warns once) rather than silently stopping — so a missing has-next field never drops the remaining pages.
+- **Offset pagination** — for query languages that page with `LIMIT … OFFSET …` (ShopifyQL and similar). Injects an integer offset into a GraphQL variable (starting at `0`, advancing by `page_size` after each page) and terminates on a **short page** — fewer than `page_size` records — rather than a `pageInfo` boolean. Set `stop_when_short: false` to keep paginating until a fully empty page instead. See [Offset pagination](#offset-pagination).
 - **Variable injection** — static `variables` from config, plus per-request cursor / page-size variables, plus parent-record context values (`${parent.path}` matrix fan-out) merged into the GraphQL variables map at runtime.
 - **JSONPath record extraction** — `records_path` plucks the record array out of any response shape (`$.data.users.edges[*].node`). When unset, the whole `data` object is returned as a single record.
 - **Pluggable authentication** — inline Bearer or custom-header auth, or a `{ ref: <name> }` pointer to a shared `auth:` provider so many sources share one token with single-flight refresh.
@@ -83,14 +84,29 @@ faucet run pipeline.yaml
 
 ### Pagination
 
+`pagination` accepts one of two shapes, distinguished by the presence of a `type:` field. Omit the block entirely for a single-page query. `max_pages` caps either style.
+
+#### Cursor pagination (Relay, the default shape — no `type:`)
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `pagination` | `GraphqlPagination` | *(unset)* | Cursor-pagination config. Omit for a single-page query. |
 | `pagination.has_next_page_path` | string | `$.data.*.pageInfo.hasNextPage` | JSONPath to the `hasNextPage` boolean. |
 | `pagination.cursor_path` | string | `$.data.*.pageInfo.endCursor` | JSONPath to the `endCursor` string. |
 | `pagination.cursor_variable` | string | `after` | GraphQL variable the `endCursor` is injected into on the next request. |
 | `pagination.page_size_variable` | string | `first` | GraphQL variable the `batch_size` value is injected into. |
-| `max_pages` | int | *(unbounded)* | Hard cap on pages fetched per run. |
+
+#### Offset pagination (`type: Offset`)
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `pagination.type` | `"Offset"` | — *(required)* | Selects the offset style. |
+| `pagination.offset_variable` | string | — *(required)* | GraphQL variable that receives the current offset (a JSON number, starting at `0`, advancing by `page_size` after each page). Reference it in the query (e.g. `${q_offset}`). |
+| `pagination.page_size` | int | — *(required, > 0)* | Records per page. Used to advance the offset and (with `stop_when_short`) to detect the final page. **Not injected** into the request — bake the limit into your query (`LIMIT 250 OFFSET ${q_offset}`). |
+| `pagination.stop_when_short` | bool | `true` | Terminate when a page yields fewer than `page_size` records. When `false`, pagination runs until a fully empty page (or `max_pages`). |
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_pages` | int | *(unbounded)* | Hard cap on pages fetched per run (both styles). |
 
 ### Batching
 
@@ -243,6 +259,36 @@ source:
     # no `pagination:` block → one request, one page
 ```
 
+### Offset pagination (ShopifyQL)
+
+For APIs whose query language pages with `LIMIT … OFFSET …`, bake the limit into
+the query and parameterize only the offset. Pagination stops on the first page
+shorter than `page_size`.
+
+```yaml
+source:
+  type: graphql
+  config:
+    endpoint: https://shop.example.com/admin/api/2024-10/graphql.json
+    query: |
+      query($q_offset: Int!) {
+        shopifyqlQuery(query: "FROM orders SHOW total_sales LIMIT 250 OFFSET $q_offset") {
+          ... on TableResponse { tableData { rowData } }
+        }
+      }
+    auth:
+      type: custom
+      config:
+        headers:
+          X-Shopify-Access-Token: ${env:SHOPIFY_TOKEN}
+    records_path: $.data.shopifyqlQuery.tableData.rowData[*]
+    pagination:
+      type: Offset
+      offset_variable: q_offset
+      page_size: 250
+      stop_when_short: true
+```
+
 ## Streaming & batching
 
 `GraphqlStream` overrides `Source::stream_pages`: each upstream GraphQL response becomes one `StreamPage`, written to the sink as it arrives rather than buffering the entire result set.
@@ -309,7 +355,7 @@ To share one token across many sources, build a provider and inject it with `Gra
 2. Each request merges static `variables`, the current cursor (into `cursor_variable`), the page-size value (into `page_size_variable`, unless `batch_size = 0`), and any parent-record context values into the GraphQL variables map.
 3. The POST is retried up to 3 times with exponential backoff + jitter (500 ms base) on retriable HTTP failures. When driven by the CLI, a pipeline-level [`resilience:`](https://faucet-hq.github.io/faucet-stream/cookbook/resilience.html) block replaces these built-in retry defaults with one shared policy — GraphQL honors the policy's `max_attempts`, `base`, `max`, `jitter`, and `retry_on` in full.
 4. `records_path` extracts the record array via JSONPath; the page is yielded immediately.
-5. Pagination advances by reading `hasNextPage` / `endCursor`, stopping on a false flag, an absent or repeated cursor (loop guard), or `max_pages`.
+5. **Cursor** pagination advances by reading `hasNextPage` / `endCursor`, stopping on a false flag, an absent or repeated cursor (loop guard), or `max_pages`. **Offset** pagination advances an integer offset variable by `page_size` each page, stopping on a short page (`stop_when_short`, default), a fully empty page, or `max_pages`.
 
 ## Lineage dataset URI
 
