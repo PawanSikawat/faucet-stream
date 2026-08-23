@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.2.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-transform-sql-v1.1.4...faucet-transform-sql-v1.2.0) - 2026-08-23
+
+### Features
+
+- Meltano-migration connector gaps — REST pagination/records, graphql/sql/auth/transform features, overwrite fan-out fix (#547–#558) ([#563](https://github.com/faucet-hq/faucet-stream/pull/563))
+
 ## [1.1.4](https://github.com/faucet-hq/faucet-stream/compare/faucet-transform-sql-v1.1.3...faucet-transform-sql-v1.1.4) - 2026-08-16
 
 ### Miscellaneous
