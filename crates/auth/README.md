@@ -181,6 +181,7 @@ A fixed credential. Exactly one of the three shapes below must be present.
 | `client_id` | string | — *(required)* | OAuth2 client ID. |
 | `client_secret` | string | — *(required)* | OAuth2 client secret. |
 | `refresh_token` | string | — *(required)* | Initial (seed) refresh token. A rotated token in the response is captured in place for the next refresh. |
+| `scope` | string | *(none)* | Optional `scope` sent on the refresh grant. Some IdPs require it on refresh (e.g. Microsoft Graph needs `https://graph.microsoft.com/.default offline_access`). Omitted entirely when unset, so the refresh inherits the original grant's scope (RFC 6749 §6). |
 | `expiry_ratio` | number | `0.9` | Refresh after `expires_in × expiry_ratio` seconds. Must be a finite number in `(0, 1]`. |
 | `persist` | object | *(none)* | Durably persist the rotated `refresh_token` so a **later** run authenticates after the token rotates (providers like Microsoft / Rippling rotate on every refresh; without this the second scheduled run 401s). `persist.path` is a file-backed state-store directory; the rotated token is written after each refresh and re-read on startup in preference to the config seed. Optional `persist.key` overrides the auto-derived (stable, identity-scoped) storage key. |
 
@@ -195,6 +196,7 @@ auth:
       client_id: "${secret:graph_client_id}"
       client_secret: "${secret:graph_client_secret}"
       refresh_token: "${secret:graph_seed_refresh_token}"   # seed; used only until the first rotation
+      scope: "https://graph.microsoft.com/.default offline_access"  # Graph requires scope on refresh
       persist:
         path: "./state/auth"        # rotated refresh_token survives across runs
 ```
