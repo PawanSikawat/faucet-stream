@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.10.0",
+  "checkpoint_id": "01M0PRV7KDKRR88DA2MNTQZDRF",
+  "strategy": "manual-commit",
+  "branch": "feat/meltano-gaps-547-558",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 6259,
+    "cache_creation_tokens": 11897255,
+    "cache_read_tokens": 1777249292,
+    "output_tokens": 3089076,
+    "api_call_count": 3142,
+    "subagent_tokens": {
+      "input_tokens": 314,
+      "cache_creation_tokens": 2029460,
+      "cache_read_tokens": 29019959,
+      "output_tokens": 143464,
+      "api_call_count": 159
+    }
+  }
+}
