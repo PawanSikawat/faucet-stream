@@ -180,13 +180,20 @@ summary:focus-visible {
 /* The relocated search wrapper fills the bar's center. */
 .menu-bar.fs-has-search #mdbook-search-wrapper {
   display: flex !important; /* beats mdBook's `.hidden { display:none !important }` */
-  flex: 1 1 auto;
   justify-content: center;
-  position: relative; /* anchor for the results dropdown */
-  margin: 0 1rem;
+  /* Absolutely center on the (sticky) menu-bar so the pill lines up with the
+     content column, instead of centering in the asymmetric flex gap between the
+     left hamburger and the right icon group. */
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(44rem, calc(100% - 14rem)); /* leave room for the side buttons */
+  margin: 0;
   max-height: none;
   border-bottom: none;
   padding: 0;
+  z-index: 5;
 }
 .menu-bar.fs-has-search #mdbook-searchbar-outer {
   width: 100%;
