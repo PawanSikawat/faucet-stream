@@ -229,6 +229,69 @@ pub struct RestStreamConfig {
     /// `start_replication_value`). See [`WindowSpec`](faucet_core::WindowSpec).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<faucet_core::WindowSpec>,
+
+    // ── Envelope-ancestor lifting (#549) ────────────────────────────────────────
+    /// When `records_path` selects a **nested** array element (e.g.
+    /// `$.data[*].data.object`), copy fields from the enclosing `[*]`
+    /// array-element ancestor onto each emitted record. The map is
+    /// `dest_field: ancestor_relative_path` — for each matched leaf, the source
+    /// walks up to the array-element ancestor and copies the named path onto the
+    /// record under `dest_field`. Absent ⇒ records are emitted unchanged.
+    ///
+    /// ```yaml
+    /// records_path: "$.data[*].data.object"
+    /// record_ancestors: { event_id: "id", event_created: "created" }
+    /// ```
+    ///
+    /// Requires `records_path` to contain an array wildcard `[*]`; mutually
+    /// exclusive with [`records_multi`](Self::records_multi).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_ancestors: Option<HashMap<String, String>>,
+
+    // ── Multi-array fan-out (#548) ──────────────────────────────────────────────
+    /// Emit several record arrays from one response in a single page (sharing one
+    /// pagination advance), each stamped with a user-defined op marker under
+    /// [`op_field`](Self::op_field). Composes with a downstream
+    /// `write_mode: upsert` + `delete_marker` so added/modified/removed feeds
+    /// route correctly. Mutually exclusive with `records_path` /
+    /// `record_ancestors`, and requires `response_format: json` with no
+    /// `decode:` pipeline.
+    ///
+    /// ```yaml
+    /// records_multi:
+    ///   - { path: "$.added[*]",    op: upsert }
+    ///   - { path: "$.modified[*]", op: upsert }
+    ///   - { path: "$.removed[*]",  op: delete }
+    /// op_field: _op
+    /// ```
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub records_multi: Vec<RecordsMultiSpec>,
+    /// Field name each [`records_multi`](Self::records_multi) record is stamped
+    /// with its spec's `op` value. Defaults to `_op` when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op_field: Option<String>,
+
+    // ── Resumable cursor (#547) ─────────────────────────────────────────────────
+    /// Persist the terminal pagination cursor as this run's bookmark (riding the
+    /// existing `StreamPage.bookmark` / `StateStore` path — no core trait change)
+    /// and, on resume, seed the stored bookmark back into the first request
+    /// (query param for `cursor`, request body field for `cursor_in_body`) before
+    /// paging. Only meaningful with `pagination: cursor` / `cursor_in_body`;
+    /// mutually exclusive with `window` slicing. Default `false`.
+    #[serde(default)]
+    pub persist_cursor: bool,
+}
+
+/// One entry in a [`RestStreamConfig::records_multi`] fan-out (#548): a JSONPath
+/// selecting an array of records, plus the op marker each is stamped with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecordsMultiSpec {
+    /// JSONPath selecting an array of records (e.g. `"$.added[*]"`).
+    pub path: String,
+    /// Op marker stamped onto each record from `path` under
+    /// [`RestStreamConfig::op_field`] (e.g. `upsert` / `delete`, or `u` / `d`).
+    pub op: String,
 }
 
 /// OData protocol version, which selects the paging-link key.
@@ -354,6 +417,10 @@ impl Default for RestStreamConfig {
             decode: Vec::new(),
             async_job: None,
             window: None,
+            record_ancestors: None,
+            records_multi: Vec::new(),
+            op_field: None,
+            persist_cursor: false,
         }
     }
 }
@@ -448,6 +515,104 @@ impl RestStreamConfig {
                     "rest: `window` slicing and `async_job` are mutually exclusive — the async-job \
                      lifecycle fetches a single result and does not slice by window"
                         .into(),
+                ));
+            }
+        }
+        // #548: multi-array fan-out is its own extraction mode.
+        if !self.records_multi.is_empty() {
+            if self.records_path.is_some() {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: `records_multi` and `records_path` are mutually exclusive — \
+                     `records_multi` names the arrays itself"
+                        .into(),
+                ));
+            }
+            if self.record_ancestors.is_some() {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: `records_multi` and `record_ancestors` are mutually exclusive".into(),
+                ));
+            }
+            if !matches!(self.response_format, ResponseFormat::Json) {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: `records_multi` extracts JSON arrays — remove `response_format: csv|excel`"
+                        .into(),
+                ));
+            }
+            if !self.decode.is_empty() {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: `records_multi` and a `decode:` pipeline are mutually exclusive".into(),
+                ));
+            }
+            for spec in &self.records_multi {
+                if spec.path.trim().is_empty() {
+                    return Err(faucet_core::FaucetError::Config(
+                        "rest: each `records_multi[].path` must not be empty".into(),
+                    ));
+                }
+                if spec.op.trim().is_empty() {
+                    return Err(faucet_core::FaucetError::Config(
+                        "rest: each `records_multi[].op` must not be empty".into(),
+                    ));
+                }
+            }
+            if let Some(f) = &self.op_field
+                && f.trim().is_empty()
+            {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: `op_field` must not be empty".into(),
+                ));
+            }
+        } else if self.op_field.is_some() {
+            return Err(faucet_core::FaucetError::Config(
+                "rest: `op_field` only applies to `records_multi`".into(),
+            ));
+        }
+        // #549: envelope-ancestor lifting requires a nested array records_path.
+        if let Some(anc) = &self.record_ancestors
+            && !anc.is_empty()
+        {
+            match &self.records_path {
+                Some(rp) if rp.contains("[*]") => {}
+                Some(_) => {
+                    return Err(faucet_core::FaucetError::Config(
+                        "rest: `record_ancestors` requires `records_path` to select a nested array \
+                         element (a path containing `[*]`, e.g. `$.data[*].data.object`)"
+                            .into(),
+                    ));
+                }
+                None => {
+                    return Err(faucet_core::FaucetError::Config(
+                        "rest: `record_ancestors` requires `records_path`".into(),
+                    ));
+                }
+            }
+            for (dest, rel) in anc {
+                if dest.trim().is_empty() {
+                    return Err(faucet_core::FaucetError::Config(
+                        "rest: `record_ancestors` destination field names must not be empty".into(),
+                    ));
+                }
+                if rel.trim().is_empty() {
+                    return Err(faucet_core::FaucetError::Config(
+                        "rest: `record_ancestors` ancestor paths must not be empty".into(),
+                    ));
+                }
+            }
+        }
+        // #547: resumable cursor is only meaningful for cursor pagination.
+        if self.persist_cursor {
+            if !matches!(
+                self.pagination,
+                PaginationStyle::Cursor { .. } | PaginationStyle::CursorInBody { .. }
+            ) {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: `persist_cursor` requires `pagination: cursor` or `cursor_in_body`"
+                        .into(),
+                ));
+            }
+            if self.window.is_some() {
+                return Err(faucet_core::FaucetError::Config(
+                    "rest: `persist_cursor` and `window` slicing are mutually exclusive".into(),
                 ));
             }
         }
@@ -701,6 +866,34 @@ impl RestStreamConfig {
         self.partition_concurrency = concurrency;
         self
     }
+
+    // ── Extraction / cursor extras ──────────────────────────────────────────────
+
+    /// Copy enclosing `[*]` ancestor fields onto each nested record (#549).
+    pub fn record_ancestors(mut self, map: HashMap<String, String>) -> Self {
+        self.record_ancestors = Some(map);
+        self
+    }
+
+    /// Emit several op-stamped record arrays from one response in one page (#548).
+    pub fn records_multi(mut self, specs: Vec<RecordsMultiSpec>) -> Self {
+        self.records_multi = specs;
+        self
+    }
+
+    /// Field name each [`records_multi`](Self::records_multi) record is stamped
+    /// with its op value (default `_op`).
+    pub fn op_field(mut self, field: &str) -> Self {
+        self.op_field = Some(field.into());
+        self
+    }
+
+    /// Persist the terminal pagination cursor as the run's bookmark and seed it
+    /// on resume (#547).
+    pub fn persist_cursor(mut self, enabled: bool) -> Self {
+        self.persist_cursor = enabled;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -838,5 +1031,110 @@ mod tests {
     fn odata_version_next_link_paths() {
         assert_eq!(ODataVersion::V4.next_link_path(), "$['@odata.nextLink']");
         assert_eq!(ODataVersion::V2.next_link_path(), "$['odata.nextLink']");
+    }
+
+    // ── #548 records_multi validation ───────────────────────────────────────────
+
+    fn multi() -> Vec<RecordsMultiSpec> {
+        vec![
+            RecordsMultiSpec {
+                path: "$.added[*]".into(),
+                op: "upsert".into(),
+            },
+            RecordsMultiSpec {
+                path: "$.removed[*]".into(),
+                op: "delete".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn records_multi_ok_and_rejects_conflicts() {
+        // Bare records_multi validates.
+        let c = RestStreamConfig::new("https://x", "/y").records_multi(multi());
+        assert!(c.validate().is_ok());
+
+        // records_multi + records_path → error.
+        let mut both = c.clone();
+        both.records_path = Some("$.data[*]".into());
+        assert!(both.validate().is_err());
+
+        // records_multi + record_ancestors → error.
+        let mut anc = c.clone();
+        anc.record_ancestors = Some(HashMap::from([("x".into(), "y".into())]));
+        assert!(anc.validate().is_err());
+
+        // records_multi with a non-JSON response format → error.
+        let mut csv = c.clone();
+        csv.response_format = ResponseFormat::Csv;
+        assert!(csv.validate().is_err());
+
+        // Empty path / op → error.
+        let mut empty = c.clone();
+        empty.records_multi[0].path = "  ".into();
+        assert!(empty.validate().is_err());
+        let mut empty_op = c.clone();
+        empty_op.records_multi[0].op = String::new();
+        assert!(empty_op.validate().is_err());
+    }
+
+    #[test]
+    fn op_field_requires_records_multi() {
+        let mut c = RestStreamConfig::new("https://x", "/y");
+        c.op_field = Some("_op".into());
+        assert!(c.validate().is_err());
+
+        c.records_multi = multi();
+        assert!(c.validate().is_ok());
+
+        c.op_field = Some(" ".into());
+        assert!(c.validate().is_err());
+    }
+
+    // ── #549 record_ancestors validation ────────────────────────────────────────
+
+    #[test]
+    fn record_ancestors_requires_nested_array_path() {
+        let anc = HashMap::from([("event_id".to_owned(), "id".to_owned())]);
+
+        // No records_path → error.
+        let mut c = RestStreamConfig::new("https://x", "/y").record_ancestors(anc.clone());
+        assert!(c.validate().is_err());
+
+        // records_path without `[*]` → error.
+        c.records_path = Some("$.data".into());
+        assert!(c.validate().is_err());
+
+        // Nested array path → ok.
+        c.records_path = Some("$.data[*].data.object".into());
+        assert!(c.validate().is_ok());
+
+        // Empty dest/rel → error.
+        let mut bad = c.clone();
+        bad.record_ancestors = Some(HashMap::from([(String::new(), "id".to_owned())]));
+        assert!(bad.validate().is_err());
+    }
+
+    // ── #547 persist_cursor validation ──────────────────────────────────────────
+
+    #[test]
+    fn persist_cursor_requires_cursor_pagination() {
+        // Default pagination (None) → error.
+        let mut c = RestStreamConfig::new("https://x", "/y").persist_cursor(true);
+        assert!(c.validate().is_err());
+
+        // Cursor → ok.
+        c.pagination = PaginationStyle::Cursor {
+            next_token_path: "$.next".into(),
+            param_name: "cursor".into(),
+        };
+        assert!(c.validate().is_ok());
+
+        // CursorInBody → ok.
+        c.pagination = PaginationStyle::CursorInBody {
+            next_token_path: "$.paging.next".into(),
+            body_cursor_field: "after".into(),
+        };
+        assert!(c.validate().is_ok());
     }
 }
