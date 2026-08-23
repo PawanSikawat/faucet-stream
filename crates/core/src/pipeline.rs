@@ -141,6 +141,14 @@ pub struct Pipeline<'a, So: Source + ?Sized, Si: Sink + ?Sized> {
     resilience: Option<crate::resilience::ResiliencePolicy>,
     schema_drift: Option<crate::drift::SchemaDriftPolicy>,
     cleanup: Option<std::sync::Arc<crate::cleanup::CleanupPolicy>>,
+    /// When `true`, `run()` skips the overwrite begin/commit/abort lifecycle
+    /// even for an overwrite-configured sink — an external caller (the CLI
+    /// executor) owns that lifecycle so it can run it **once per destination
+    /// across a whole fan-out group** instead of once per invocation (#552).
+    /// Writes still land in the sink's staging target (the sink routes there
+    /// off its own `is_overwrite()` config, independent of this flag). Default
+    /// `false`: a standalone `Pipeline::run` manages its own overwrite.
+    suppress_overwrite_lifecycle: bool,
 }
 
 impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
@@ -166,7 +174,21 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             resilience: None,
             schema_drift: None,
             cleanup: None,
+            suppress_overwrite_lifecycle: false,
         }
+    }
+
+    /// Suppress the overwrite begin/commit/abort lifecycle inside `run()` so an
+    /// external orchestrator can drive it **once per destination across a whole
+    /// fan-out group** rather than once per invocation (#552). Only meaningful
+    /// with a `write_mode: overwrite` sink; a no-op otherwise. The sink still
+    /// writes into its staging target (it routes there off its own config), so
+    /// the orchestrator must call `begin_overwrite` before, and
+    /// `commit_overwrite`/`abort_overwrite` after, all the suppressed
+    /// invocations that share the destination.
+    pub fn with_suppress_overwrite(mut self, suppress: bool) -> Self {
+        self.suppress_overwrite_lifecycle = suppress;
+        self
     }
 
     /// Attach a [`StateStore`] for persistent incremental-replication bookmarks.
@@ -532,7 +554,11 @@ impl<'a, So: Source + ?Sized, Si: Sink + ?Sized> Pipeline<'a, So, Si> {
             // Stage before the first write, swap only after a fully successful
             // uncancelled run, and abort (best-effort) otherwise — so a mid-run
             // failure or cancel never destroys the existing destination.
-            let overwriting = wrapped_sink.is_overwrite();
+            // #552: when the lifecycle is suppressed, an external orchestrator
+            // (the CLI executor) owns begin/commit/abort across the fan-out
+            // group, so a per-invocation begin here would re-create (wipe) the
+            // shared staging table each parent — the silent data-loss bug.
+            let overwriting = wrapped_sink.is_overwrite() && !self.suppress_overwrite_lifecycle;
             if overwriting {
                 wrapped_sink.begin_overwrite().await?;
             }
@@ -2341,6 +2367,31 @@ mod tests {
             "a non-overwrite sink must never see the overwrite lifecycle: {log:?}"
         );
         assert!(log.contains(&"write:1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn suppressed_overwrite_writes_but_skips_the_lifecycle() {
+        // #552: with the lifecycle suppressed, an overwrite sink still receives
+        // writes (they land in staging via the sink's own config) but the
+        // pipeline must NOT call begin/commit/abort — the external orchestrator
+        // owns those once per fan-out group.
+        let source = MockSource(vec![json!({"id": 1}), json!({"id": 2})]);
+        let (sink, events) = OverwriteRecordingSink::new(true, false);
+        let result = Pipeline::new(&source, &sink)
+            .with_suppress_overwrite(true)
+            .run()
+            .await;
+        assert!(result.is_ok());
+        let log = events.lock().unwrap().clone();
+        assert!(
+            log.contains(&"write:2".to_string()),
+            "suppressed overwrite must still write: {log:?}"
+        );
+        assert!(
+            !log.iter()
+                .any(|e| e == "begin" || e == "commit" || e == "abort"),
+            "suppressed overwrite must not drive the lifecycle: {log:?}"
+        );
     }
 
     #[tokio::test]

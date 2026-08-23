@@ -533,6 +533,38 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
         }
         drop(level_records);
 
+        // #552: overwrite fan-out groups. A `write_mode: overwrite` node that
+        // fans out over N parent records (or discovery tuples) into ONE shared
+        // destination must truncate+swap that destination exactly ONCE across
+        // the whole group — not once per invocation, which would leave only the
+        // last parent's rows (silent data loss). Group the level's units by
+        // their *resolved* sink destination: units sharing a destination form a
+        // group whose lifecycle the executor owns (begin here, commit/abort
+        // after the join); units with per-parent destinations (`${parent.*}` in
+        // the table) each land in their own single-member group, exactly as
+        // before. `dry_run` uses counting sinks with no real destination, so it
+        // is skipped entirely.
+        let (overwrite_groups, overwrite_task_group) = if opts.dry_run {
+            (Vec::new(), HashMap::new())
+        } else {
+            plan_overwrite_groups(&units, opts.as_ref())?
+        };
+        for group in &overwrite_groups {
+            // Build a short-lived sink just for begin, then drop it (closing its
+            // pool) before the invocations run — so it never contends with the
+            // per-invocation sinks on a single-writer backend.
+            let sink = build_sink(&group.kind, group.cfg.clone(), &opts.auth).await?;
+            sink.begin_overwrite().await.map_err(|e| {
+                CliError::Internal(format!(
+                    "overwrite: preparing destination '{}': {e}",
+                    group.dest
+                ))
+            })?;
+        }
+        // Group indices whose fan-out had at least one failed invocation: the
+        // whole group must abort (a full-refresh must never commit partial data).
+        let mut failed_overwrite_groups: HashSet<usize> = HashSet::new();
+
         let mut had_level_failure = false;
         let mut nodes_with_any_failure: HashSet<String> = HashSet::new();
 
@@ -561,6 +593,10 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
             let collected = Arc::clone(&collected);
             let capture = projections.get(&unit.node.id).cloned();
             let meta = (unit.node.id.clone(), unit.parent_record_key.clone());
+            // #552: a unit whose destination is part of an executor-managed
+            // overwrite group runs with its per-invocation begin/commit/abort
+            // suppressed — the group's single lifecycle is driven here instead.
+            let suppress_overwrite = overwrite_task_group.contains_key(&meta);
             let unit_cancel = level_cancel.clone();
             let handle = joinset.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore not closed");
@@ -572,6 +608,7 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                     &collected,
                     &opts2,
                     unit_cancel,
+                    suppress_overwrite,
                 )
                 .await
             });
@@ -633,6 +670,13 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                 tracing::error!(row = %outcome.row_id, error = %err, "pipeline invocation failed");
                 had_level_failure = true;
                 nodes_with_any_failure.insert(outcome.row_id.clone());
+                // #552: fail the invocation's overwrite group so it aborts
+                // (discards staging) rather than committing a partial refresh.
+                if let Some(gi) = overwrite_task_group
+                    .get(&(outcome.row_id.clone(), outcome.parent_record_key.clone()))
+                {
+                    failed_overwrite_groups.insert(*gi);
+                }
                 if matches!(on_error, OnError::Stop) && !stop_triggered {
                     stop_triggered = true;
                     tracing::error!(
@@ -653,6 +697,34 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                 );
             }
             outcomes.push(outcome);
+        }
+
+        // #552: finalize each overwrite group's single truncate/swap. Commit
+        // only a group with no failed invocation on a level that was not
+        // cancelled/stopped — otherwise abort (best-effort), leaving the prior
+        // destination exactly as it was. This runs once per shared destination
+        // across the whole fan-out, so every parent's rows are swapped in
+        // together, atomically.
+        let level_cancelled = level_cancel.is_cancelled() || cancel.is_cancelled();
+        for (gi, group) in overwrite_groups.iter().enumerate() {
+            let must_abort = level_cancelled || failed_overwrite_groups.contains(&gi);
+            let sink = build_sink(&group.kind, group.cfg.clone(), &opts.auth).await?;
+            if must_abort {
+                if let Err(e) = sink.abort_overwrite().await {
+                    tracing::warn!(
+                        error = %e, dest = %group.dest,
+                        "overwrite: discarding staging after a failed/cancelled fan-out failed; \
+                         the destination is unchanged"
+                    );
+                }
+            } else {
+                sink.commit_overwrite().await.map_err(|e| {
+                    CliError::Internal(format!(
+                        "overwrite: swapping destination '{}' into place: {e}",
+                        group.dest
+                    ))
+                })?;
+            }
         }
 
         // Mark ready nodes done (some may have produced both successes and
@@ -736,6 +808,118 @@ async fn resolve_product_dims(
     Ok(Some(resolved))
 }
 
+/// A group of overwrite fan-out invocations sharing one physical destination
+/// (#552). The executor drives `begin_overwrite` once before the group runs and
+/// `commit_overwrite`/`abort_overwrite` once after — so the destination is
+/// truncated and swapped exactly once, retaining every parent's rows rather
+/// than only the last invocation's.
+struct OverwriteGroup {
+    /// Human-readable destination (sink kind + a short config hint) for logs.
+    dest: String,
+    /// The group's sink kind + resolved destination config. A short-lived
+    /// lifecycle sink is built from these for `begin` (before the group runs)
+    /// and again for `commit`/`abort` (after) — never held open across the
+    /// invocations, so it can't contend with the per-invocation sinks on a
+    /// single-writer backend like SQLite. begin/commit/abort address the same
+    /// deterministic staging target the per-invocation sinks write into.
+    kind: String,
+    cfg: Value,
+}
+
+/// Whether a node's sink is configured for `write_mode: overwrite`. The write
+/// mode is `#[serde(flatten)]`'d into the sink config, so it reads off the top
+/// level — mirroring the `write_mode` gate in `expand.rs`.
+fn node_sink_is_overwrite(node: &ExpandedNode) -> bool {
+    node.sink.config.get("write_mode").and_then(Value::as_str) == Some("overwrite")
+}
+
+/// A short destination hint for logs (e.g. `postgres:public.orders`).
+fn describe_sink_dest(kind: &str, cfg: &Value) -> String {
+    for field in [
+        "table",
+        "table_id",
+        "collection",
+        "index",
+        "dataset",
+        "path",
+    ] {
+        if let Some(v) = cfg.get(field).and_then(Value::as_str) {
+            return format!("{kind}:{v}");
+        }
+    }
+    kind.to_string()
+}
+
+/// Resolve a unit's sink destination the same way [`run_one_invocation`] does —
+/// `${now.*}` then the fan-out `${parent.*}` / `${dim.*}` context — so units are
+/// grouped by their *actual* destination (a `${parent.*}`-templated table yields
+/// a distinct destination per parent, and stays a single-member group).
+fn resolved_sink_destination(unit: &Unit, opts: &ExecuteOptions) -> CliResult<Value> {
+    let mut sink_cfg = unit.node.sink.config.clone();
+    resolve_now_inplace(&mut sink_cfg, opts.clock)?;
+    let mut ctx: HashMap<String, Value> = HashMap::new();
+    if let (Some(record), NodeRole::Child { parent_id, .. }) =
+        (unit.parent_record.as_deref(), &unit.node.role)
+    {
+        ctx.insert(parent_id.clone(), record.clone());
+    }
+    if let Some(pc) = unit.product_ctx.as_ref() {
+        for (k, v) in pc {
+            ctx.insert(k.clone(), v.clone());
+        }
+    }
+    if !ctx.is_empty() {
+        resolve_inplace(&mut sink_cfg, &ctx)?;
+    }
+    Ok(sink_cfg)
+}
+
+/// Plan the level's overwrite fan-out groups (#552). Units whose sink is
+/// `write_mode: overwrite` are grouped by their resolved destination; one
+/// lifecycle sink is built per distinct destination. Returns the groups plus a
+/// map from each grouped invocation's `(row_id, parent_key)` to its group index
+/// — used to suppress the per-invocation lifecycle and to attribute a failed
+/// invocation to its group.
+fn plan_overwrite_groups(
+    units: &[Unit],
+    opts: &ExecuteOptions,
+) -> CliResult<(
+    Vec<OverwriteGroup>,
+    HashMap<(String, Option<String>), usize>,
+)> {
+    let mut groups: Vec<OverwriteGroup> = Vec::new();
+    let mut task_group: HashMap<(String, Option<String>), usize> = HashMap::new();
+    let mut index_by_key: HashMap<String, usize> = HashMap::new();
+    for unit in units {
+        if !node_sink_is_overwrite(&unit.node) {
+            continue;
+        }
+        let kind = unit.node.sink.kind.clone();
+        let cfg = resolved_sink_destination(unit, opts)?;
+        // Same sink source-object + key-preserving resolution ⇒ stable
+        // serialization, so equal destinations collapse to one group.
+        let key = format!(
+            "{kind}\u{0}{}",
+            serde_json::to_string(&cfg).unwrap_or_default()
+        );
+        let gi = match index_by_key.get(&key) {
+            Some(gi) => *gi,
+            None => {
+                let gi = groups.len();
+                groups.push(OverwriteGroup {
+                    dest: describe_sink_dest(&kind, &cfg),
+                    kind: kind.clone(),
+                    cfg,
+                });
+                index_by_key.insert(key, gi);
+                gi
+            }
+        };
+        task_group.insert((unit.node.id.clone(), unit.parent_record_key.clone()), gi);
+    }
+    Ok((groups, task_group))
+}
+
 async fn run_unit(
     unit: &Unit,
     capture: Option<Arc<Projection>>,
@@ -744,6 +928,7 @@ async fn run_unit(
     collected: &CollectedDims,
     opts: &ExecuteOptions,
     cancel: CancellationToken,
+    suppress_overwrite: bool,
 ) -> InvocationOutcome {
     // A discovery row (#501) enumerates a value-set instead of running a
     // source→sink pipeline: build its source, drain it, project + dedup, and
@@ -780,6 +965,7 @@ async fn run_unit(
         capture,
         opts,
         cancel,
+        suppress_overwrite,
     )
     .await;
     let duration_ms = started.elapsed().as_millis() as u64;
@@ -1120,6 +1306,7 @@ async fn build_pipeline<'a>(
     row_id: &str,
     run_id: &str,
     cleanup_scope: Option<Value>,
+    suppress_overwrite: bool,
 ) -> CliResult<Pipeline<'a, dyn Source + 'a, dyn Sink + 'a>> {
     let mut pipeline = Pipeline::new(source, sink)
         .with_name(pipeline_name.to_owned())
@@ -1246,6 +1433,11 @@ async fn build_pipeline<'a>(
         node.delivery
     };
     pipeline = pipeline.with_delivery(effective_delivery);
+    // #552: when this invocation is one of several fanning out into a shared
+    // `write_mode: overwrite` destination, the executor owns the truncate/swap
+    // lifecycle across the whole group — the pipeline must not begin/commit it
+    // per invocation (which would leave only the last parent's rows).
+    pipeline = pipeline.with_suppress_overwrite(suppress_overwrite);
     Ok(pipeline)
 }
 
@@ -1257,6 +1449,7 @@ async fn run_one_invocation(
     capture: Option<Arc<Projection>>,
     opts: &ExecuteOptions,
     cancel: CancellationToken,
+    suppress_overwrite: bool,
 ) -> CliResult<(Vec<Value>, PipelineStats)> {
     // Observability identity for this invocation — built once, reused by both
     // the Pipeline builder and the transform instrumentation.
@@ -1564,6 +1757,7 @@ async fn run_one_invocation(
         &row_id,
         &run_id,
         cleanup_scope,
+        suppress_overwrite,
     )
     .await?;
     // ── Lineage: START + heartbeat + terminal ────────────────────────────────
@@ -2476,6 +2670,131 @@ mod tests {
         assert!(!summary.had_failures());
         let body = std::fs::read_to_string(&output).unwrap();
         assert_eq!(body.lines().count(), 2);
+    }
+
+    // ── #552: child fan-out into write_mode: overwrite ──────────────────────
+    // These exercise the executor-owned overwrite lifecycle end to end against
+    // a real sqlite sink (the only in-process overwrite sink). Before the fix,
+    // each per-parent invocation ran its own begin→commit, so the destination
+    // ended with only the LAST parent's rows (silent data loss).
+
+    fn exec_opts(name: &str) -> ExecuteOptions {
+        ExecuteOptions {
+            pipeline_name: name.into(),
+            run_id: None,
+            execution: None,
+            dry_run: false,
+            limit: None,
+            state_path_override: None,
+            shard: None,
+            auth: Default::default(),
+            clock: chrono::Utc::now().fixed_offset(),
+            cancel: None,
+            resilience: None,
+            sla: None,
+            reconcile: None,
+            #[cfg(feature = "lineage")]
+            lineage: None,
+            #[cfg(feature = "lineage")]
+            lineage_cfg: None,
+            #[cfg(feature = "notify")]
+            notifier: None,
+            #[cfg(feature = "catalog")]
+            catalog: None,
+        }
+    }
+
+    async fn run_yaml(yaml: &str, path: &Path) -> RunSummary {
+        let cfg = PipelineConfig::from_text(yaml, path).expect("config parses");
+        let nodes = expand(&cfg).expect("config expands");
+        run_expanded(nodes, exec_opts("ow")).await.expect("run ok")
+    }
+
+    // Pre-create table `t` with a seed row (99, OLD). sqlite `auto_map` requires
+    // the table to already exist (overwrite replaces an *existing* table), so we
+    // create it directly — mirroring a real destination. The seed row also lets
+    // the abort test prove the prior data survives a failed refresh.
+    async fn seed_table(db_url: &str) {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect(&format!("{db_url}?mode=rwc"))
+            .await
+            .expect("open sqlite");
+        sqlx::query("CREATE TABLE t (id TEXT, v TEXT)")
+            .execute(&pool)
+            .await
+            .expect("create table");
+        sqlx::query("INSERT INTO t (id, v) VALUES ('99', 'OLD')")
+            .execute(&pool)
+            .await
+            .expect("seed row");
+        pool.close().await;
+    }
+
+    /// Read the `v` column of every row of table `t`, sorted, via a fresh
+    /// connection opened after the run (so the sink's pool has been dropped and
+    /// its WAL checkpointed).
+    async fn read_table_vs(db_url: &str) -> Vec<String> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect(db_url)
+            .await
+            .expect("open sqlite");
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT v FROM t ORDER BY v")
+            .fetch_all(&pool)
+            .await
+            .expect("read back");
+        pool.close().await;
+        rows.into_iter().map(|(v,)| v).collect()
+    }
+
+    fn overwrite_fanout_yaml(dir: &Path, db_url: &str) -> String {
+        // execution.max_concurrent: 1 keeps the two child invocations
+        // sequential — sqlite is single-writer, so this avoids SQLITE_BUSY
+        // flakiness while still proving begin-once / commit-once.
+        format!(
+            "version: 1\nname: ow\nexecution:\n  max_concurrent: 1\npipeline:\n  sources:\n    parents:\n      type: csv\n      config: {{ path: \"{parents}\" }}\n    child:\n      type: csv\n      config: {{ path: \"{child}\" }}\n  sinks:\n    trash:\n      type: jsonl\n      config: {{ path: \"{trash}\", append: false }}\n    t:\n      type: sqlite\n      config:\n        database_url: \"{db_url}\"\n        table_name: t\n        column_mapping: auto_map\n        write_mode: overwrite\nmatrix:\n  - id: p\n    source: {{ ref: parents }}\n    sink: {{ ref: trash }}\n  - id: c\n    parent: p\n    parent_key: id\n    source: {{ ref: child }}\n    sink: {{ ref: t }}\n",
+            parents = dir.join("parents.csv").display(),
+            child = dir.join("child_${p.id}.csv").display(),
+            trash = dir.join("trash.jsonl").display(),
+        )
+    }
+
+    #[tokio::test]
+    async fn child_fanout_overwrite_retains_all_parents() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = format!("sqlite:{}", dir.path().join("ow.db").display());
+        seed_table(&db_url).await;
+        // Two parents (id 1, 2), each with its own child rows.
+        std::fs::write(dir.path().join("parents.csv"), "id\n1\n2\n").unwrap();
+        std::fs::write(dir.path().join("child_1.csv"), "id,v\n1,A\n").unwrap();
+        std::fs::write(dir.path().join("child_2.csv"), "id,v\n2,B\n").unwrap();
+
+        let yaml = overwrite_fanout_yaml(dir.path(), &db_url);
+        let summary = run_yaml(&yaml, &dir.path().join("ow.yaml")).await;
+        assert!(!summary.had_failures(), "run should succeed: {summary:?}");
+
+        // The destination must hold BOTH parents' rows (and NOT the seed row) —
+        // proving one truncate + one swap across the whole fan-out.
+        let vs = read_table_vs(&db_url).await;
+        assert_eq!(vs, vec!["A".to_string(), "B".to_string()], "table t: {vs:?}");
+    }
+
+    #[tokio::test]
+    async fn child_fanout_overwrite_aborts_on_failure_leaving_destination_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = format!("sqlite:{}", dir.path().join("ow.db").display());
+        seed_table(&db_url).await;
+        std::fs::write(dir.path().join("parents.csv"), "id\n1\n2\n").unwrap();
+        std::fs::write(dir.path().join("child_1.csv"), "id,v\n1,A\n").unwrap();
+        // child_2.csv is intentionally absent → the parent-2 child invocation
+        // fails, so the whole overwrite group must abort (never commit partial).
+
+        let yaml = overwrite_fanout_yaml(dir.path(), &db_url);
+        let summary = run_yaml(&yaml, &dir.path().join("ow.yaml")).await;
+        assert!(summary.had_failures(), "a missing child source must fail a unit");
+
+        // The prior destination is untouched: still exactly the seed row.
+        let vs = read_table_vs(&db_url).await;
+        assert_eq!(vs, vec!["OLD".to_string()], "destination must be unchanged: {vs:?}");
     }
 
     #[tokio::test]
