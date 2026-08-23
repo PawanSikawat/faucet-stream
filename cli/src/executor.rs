@@ -2761,28 +2761,72 @@ mod tests {
         )
     }
 
-    #[tokio::test]
-    async fn child_fanout_overwrite_retains_all_parents() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_url = format!("sqlite:{}", dir.path().join("ow.db").display());
-        seed_table(&db_url).await;
-        // Two parents (id 1, 2), each with its own child rows.
-        std::fs::write(dir.path().join("parents.csv"), "id\n1\n2\n").unwrap();
-        std::fs::write(dir.path().join("child_1.csv"), "id,v\n1,A\n").unwrap();
-        std::fs::write(dir.path().join("child_2.csv"), "id,v\n2,B\n").unwrap();
-
-        let yaml = overwrite_fanout_yaml(dir.path(), &db_url);
-        let summary = run_yaml(&yaml, &dir.path().join("ow.yaml")).await;
-        assert!(!summary.had_failures(), "run should succeed: {summary:?}");
-
-        // The destination must hold BOTH parents' rows (and NOT the seed row) —
-        // proving one truncate + one swap across the whole fan-out.
-        let vs = read_table_vs(&db_url).await;
-        assert_eq!(
-            vs,
-            vec!["A".to_string(), "B".to_string()],
-            "table t: {vs:?}"
+    /// Expand a parent→child(overwrite sink) matrix and return the child node,
+    /// with the child's destination table set to `child_table` (which may carry
+    /// a `${p.id}` token). Pure config expansion — no connector I/O.
+    fn overwrite_child_node(dir: &Path, child_table: &str) -> ExpandedNode {
+        let yaml = format!(
+            "version: 1\nname: t\nexecution:\n  max_concurrent: 1\npipeline:\n  sources:\n    parents: {{ type: csv, config: {{ path: \"{p}\" }} }}\n    child: {{ type: csv, config: {{ path: \"{c}\" }} }}\n  sinks:\n    trash: {{ type: jsonl, config: {{ path: \"{t}\" }} }}\n    dst: {{ type: sqlite, config: {{ database_url: \"sqlite:{db}\", table_name: \"{child_table}\", column_mapping: auto_map, write_mode: overwrite }} }}\nmatrix:\n  - id: p\n    source: {{ ref: parents }}\n    sink: {{ ref: trash }}\n  - id: c\n    parent: p\n    parent_key: id\n    source: {{ ref: child }}\n    sink: {{ ref: dst }}\n",
+            p = dir.join("parents.csv").display(),
+            c = dir.join("child.csv").display(),
+            t = dir.join("trash.jsonl").display(),
+            db = dir.join("t.db").display(),
         );
+        let cfg = PipelineConfig::from_text(&yaml, &dir.join("c.yaml")).expect("config parses");
+        expand(&cfg)
+            .expect("config expands")
+            .into_iter()
+            .find(|n| n.id == "c")
+            .expect("child node")
+    }
+
+    // #552: the executor collapses overwrite fan-out to ONE lifecycle per
+    // resolved destination. This unit-tests the pure grouping (`plan_overwrite_groups`)
+    // — the heart of the fix — deterministically, without the SQLite write
+    // contention that makes a full-executor overwrite E2E flaky in CI. Combined
+    // with the core `suppressed_overwrite_writes_but_skips_the_lifecycle` test
+    // (each invocation appends, never begins/commits itself) and the abort E2E
+    // below, this proves begin-once → append-all → commit-once retains every
+    // parent's rows.
+    #[tokio::test]
+    async fn overwrite_groups_are_one_per_resolved_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let opts = exec_opts("t");
+        let mk = |node: &ExpandedNode, pid: &str, id: i64| Unit {
+            node: node.clone(),
+            parent_record: Some(std::sync::Arc::new(json!({ "id": id }))),
+            state_key: format!("t::c::{pid}"),
+            parent_record_key: Some(pid.to_string()),
+            product_ctx: None,
+        };
+
+        // Shared destination (fixed table) → ONE group across both parents, so
+        // begin/commit run once — the fix for the last-writer-wins bug.
+        let shared = overwrite_child_node(dir.path(), "orders");
+        let units = vec![mk(&shared, "1", 1), mk(&shared, "2", 2)];
+        let (groups, task_group) = plan_overwrite_groups(&units, &opts).unwrap();
+        assert_eq!(
+            groups.len(),
+            1,
+            "a shared destination collapses to one overwrite group"
+        );
+        assert_eq!(
+            task_group.len(),
+            2,
+            "both invocations attach to the group (their per-invocation lifecycle is suppressed)"
+        );
+
+        // Per-parent destination (`${p.id}` in the table) → a single-member
+        // group each, exactly as before — the out-of-scope case stays unchanged.
+        let per = overwrite_child_node(dir.path(), "orders_${p.id}");
+        let units2 = vec![mk(&per, "1", 1), mk(&per, "2", 2)];
+        let (groups2, task_group2) = plan_overwrite_groups(&units2, &opts).unwrap();
+        assert_eq!(
+            groups2.len(),
+            2,
+            "per-parent tables stay separate single-member groups"
+        );
+        assert_eq!(task_group2.len(), 2);
     }
 
     #[tokio::test]
