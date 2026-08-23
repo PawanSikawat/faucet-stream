@@ -40,7 +40,20 @@ pub struct JobRequest {
     #[serde(default = "default_get")]
     pub method: String,
     /// URL — absolute, or a `base_url`-relative path. `${job_id}` is substituted.
-    pub url: String,
+    ///
+    /// Required for `submit`. For `fetch`, set **exactly one** of `url` (a fixed
+    /// template) or [`url_from`](Self::url_from) (a JSONPath into the poll body).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// `fetch` only (#543): resolve the download URL from the **last poll
+    /// response body** via JSONPath, instead of rendering [`url`](Self::url).
+    /// For APIs that return a one-time signed download link in the poll body
+    /// (e.g. a Stripe report run's `result.url`) rather than at a deterministic
+    /// `/{job_id}` path. The matched value must be a string; an absolute URL is
+    /// used verbatim, a relative one is resolved against `base_url`. Mutually
+    /// exclusive with [`url`](Self::url).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_from: Option<String>,
     /// Extra headers.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub headers: HashMap<String, String>,
@@ -131,10 +144,48 @@ pub struct AsyncJobConfig {
 impl AsyncJobConfig {
     /// Validate the block at config-load time.
     pub fn validate(&self) -> Result<(), faucet_core::FaucetError> {
-        if self.submit.url.trim().is_empty() || self.fetch.url.trim().is_empty() {
+        // `submit` needs a fixed `url`; `url_from` is meaningless there (no poll
+        // body exists yet).
+        if self.submit.url_from.is_some() {
             return Err(faucet_core::FaucetError::Config(
-                "async_job: `submit.url` and `fetch.url` must not be empty".into(),
+                "async_job: `submit.url_from` is not supported — `submit` needs a fixed `url`"
+                    .into(),
             ));
+        }
+        if self.submit.url.as_deref().unwrap_or("").trim().is_empty() {
+            return Err(faucet_core::FaucetError::Config(
+                "async_job: `submit.url` must not be empty".into(),
+            ));
+        }
+        // `fetch` needs exactly one of `url` (templated) or `url_from` (JSONPath
+        // into the poll body, #543).
+        let fetch_url = self
+            .fetch
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let fetch_url_from = self
+            .fetch
+            .url_from
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        match (fetch_url, fetch_url_from) {
+            (Some(_), Some(_)) => {
+                return Err(faucet_core::FaucetError::Config(
+                    "async_job: set exactly one of `fetch.url` or `fetch.url_from`, not both"
+                        .into(),
+                ));
+            }
+            (None, None) => {
+                return Err(faucet_core::FaucetError::Config(
+                    "async_job: `fetch` requires exactly one of `url` (templated) or `url_from` \
+                     (a JSONPath into the poll response body)"
+                        .into(),
+                ));
+            }
+            _ => {}
         }
         if self.job_id.trim().is_empty() {
             return Err(faucet_core::FaucetError::Config(
@@ -221,6 +272,63 @@ mod tests {
         let mut empty_id = base.clone();
         empty_id.job_id = " ".into();
         assert!(empty_id.validate().is_err());
+    }
+
+    #[test]
+    fn validate_fetch_url_xor_url_from() {
+        let make = |fetch: Value| -> AsyncJobConfig {
+            serde_json::from_value(json!({
+                "submit": { "method": "POST", "url": "/jobs" },
+                "job_id": "$.id",
+                "poll": { "url": "/jobs/${job_id}" },
+                "status": { "path": "$.state", "success": ["Done"] },
+                "fetch": fetch
+            }))
+            .unwrap()
+        };
+
+        // Exactly one → ok.
+        assert!(
+            make(json!({ "url": "/jobs/${job_id}/result" }))
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            make(json!({ "url_from": "$.result.url" }))
+                .validate()
+                .is_ok()
+        );
+
+        // Both → error.
+        let both = make(json!({ "url": "/r", "url_from": "$.result.url" }));
+        let err = both.validate().unwrap_err();
+        assert!(
+            matches!(err, faucet_core::FaucetError::Config(_)),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("exactly one"), "{err}");
+
+        // Neither → error.
+        let neither = make(json!({}));
+        assert!(neither.validate().is_err());
+
+        // Empty strings count as unset → neither → error.
+        let empty = make(json!({ "url": "  " }));
+        assert!(empty.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_url_from_on_submit() {
+        let cfg: AsyncJobConfig = serde_json::from_value(json!({
+            "submit": { "method": "POST", "url": "/jobs", "url_from": "$.x" },
+            "job_id": "$.id",
+            "poll": { "url": "/jobs/${job_id}" },
+            "status": { "path": "$.state", "success": ["Done"] },
+            "fetch": { "url_from": "$.result.url" }
+        }))
+        .unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("submit.url_from"), "{err}");
     }
 
     #[test]

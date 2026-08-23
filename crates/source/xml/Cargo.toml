@@ -14,6 +14,9 @@ categories.workspace = true
 # Mutual-TLS client-certificate auth (#495): enables the `tls:` config block by
 # turning on reqwest's native-tls identity APIs. Opt-in — off by default.
 mtls = ["reqwest/native-tls"]
+# Excel (XLSX) parsing in the response-decode pipeline (#540). Pulls `calamine`.
+# CSV/gzip/zip/base64 decode are always available; only XLSX needs this feature.
+excel = ["dep:calamine"]
 
 [dependencies]
 faucet-core.workspace = true
@@ -27,6 +30,13 @@ tracing.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
 quick-xml.workspace = true
+# Response-decode pipeline (#540): base64 → gunzip/unzip → parse csv/xlsx.
+base64 = "0.22"
+jsonpath-rust = "1"           # `parse` step's records_path selection (#540)
+flate2 = { workspace = true }
+zip = { workspace = true }
+csv-async = { workspace = true }
+calamine = { workspace = true, optional = true }
 
 [dev-dependencies]
 faucet-conformance.workspace = true
