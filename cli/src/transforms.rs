@@ -13,6 +13,8 @@ use faucet_core::{
 #[cfg(any(feature = "transforms", feature = "transform-cdc-unwrap"))]
 use faucet_core::{JsonSchema, schema_for};
 use faucet_core::{RecordTransform, TransformStage};
+#[cfg(feature = "transform-zip-columns")]
+use faucet_core::ZipColumnsSpec;
 #[cfg(any(feature = "transforms", feature = "transform-cdc-unwrap"))]
 use serde::Deserialize;
 use serde_json::Value;
@@ -226,11 +228,31 @@ struct ExplodeConfig {
     /// non-empty array.
     #[serde(default)]
     on_missing: faucet_core::OnMissing,
+    /// Copy named fields from the parent record onto every exploded child
+    /// (#555): `{ dest_field: "source.dot.path" }`. The source is a dot path
+    /// into the *parent* record (a leading `$.`/`$` is accepted). Useful when
+    /// the exploded array is nested and the child rows need a parent key (e.g.
+    /// `employee_id: "id"`) to stay joinable. Absent ⇒ standard explode.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    carry: HashMap<String, String>,
 }
 
 #[cfg(feature = "transform-explode")]
 fn default_explode_separator_cli() -> String {
     "_".to_owned()
+}
+
+/// Resolve a dot path (`id`, `a.b.c`, a leading `$.`/`$` accepted) against a
+/// record for `explode`'s `carry` (#555). Returns `None` if any segment is
+/// missing.
+#[cfg(feature = "transform-explode")]
+fn get_dot_path(rec: &Value, path: &str) -> Option<Value> {
+    let p = path.trim().trim_start_matches('$').trim_start_matches('.');
+    let mut cur = rec;
+    for seg in p.split('.').filter(|s| !s.is_empty()) {
+        cur = cur.get(seg)?;
+    }
+    Some(cur.clone())
 }
 
 #[cfg(feature = "transform-cdc-unwrap")]
@@ -640,6 +662,22 @@ fn registry() -> Vec<TransformDef> {
                     })
                 },
             },
+            #[cfg(feature = "transform-zip-columns")]
+            TransformDef {
+                kind: "zip_columns",
+                description: "Zip a columnar payload ({columns, rows}) into one object per row.",
+                schema_fn: || schema::<ZipColumnsSpec>(),
+                compile_fn: |kind, config| {
+                    // `zip_columns` is 1→N and fails loudly on a row/column
+                    // width mismatch, so it compiles to a fallible
+                    // `TransformStage::PageFn`. `into_stage` validates the spec.
+                    let spec = decode::<ZipColumnsSpec>(kind, config)?;
+                    spec.into_stage().map_err(|e| CliError::InvalidTransform {
+                        name: kind.to_owned(),
+                        message: e.to_string(),
+                    })
+                },
+            },
             TransformDef {
                 kind: "lookup",
                 description: "Enrich records by joining against an inline/JSONL reference table.",
@@ -692,23 +730,61 @@ fn registry() -> Vec<TransformDef> {
                 schema_fn: || schema::<ExplodeConfig>(),
                 compile_fn: |kind, config| {
                     let cfg = decode::<ExplodeConfig>(kind, config)?;
+                    let carry = cfg.carry.clone();
                     let stage = TransformStage::Explode(faucet_core::ExplodeSpec {
                         path: cfg.path,
                         prefix: cfg.prefix,
                         separator: cfg.separator,
                         on_missing: cfg.on_missing,
                     });
-                    faucet_core::compile_stage(&stage).map_err(|e| match e {
-                        faucet_core::FaucetError::Transform(msg) => CliError::InvalidTransform {
-                            name: kind.to_owned(),
-                            message: msg,
+                    let compiled =
+                        faucet_core::compile_stage(&stage).map_err(|e| match e {
+                            faucet_core::FaucetError::Transform(msg) => {
+                                CliError::InvalidTransform {
+                                    name: kind.to_owned(),
+                                    message: msg,
+                                }
+                            }
+                            other => CliError::InvalidTransform {
+                                name: kind.to_owned(),
+                                message: format!("{other}"),
+                            },
+                        })?;
+                    if carry.is_empty() {
+                        return Ok(stage);
+                    }
+                    // #555: carry named parent fields onto every child. Reuse the
+                    // core explode (`apply_stages`) then inject the carried
+                    // values, resolved from the ORIGINAL parent record. A
+                    // page-level fallible stage so an explode error still
+                    // propagates.
+                    let carry: Vec<(String, String)> = carry.into_iter().collect();
+                    Ok(TransformStage::PageFn(std::sync::Arc::new(
+                        move |page: Vec<Value>| {
+                            let mut out = Vec::with_capacity(page.len());
+                            for rec in page {
+                                let carried: Vec<(String, Value)> = carry
+                                    .iter()
+                                    .filter_map(|(dest, src)| {
+                                        get_dot_path(&rec, src).map(|v| (dest.clone(), v))
+                                    })
+                                    .collect();
+                                let children = faucet_core::apply_stages(
+                                    rec,
+                                    std::slice::from_ref(&compiled),
+                                )?;
+                                for mut child in children {
+                                    if let Value::Object(map) = &mut child {
+                                        for (dest, val) in &carried {
+                                            map.insert(dest.clone(), val.clone());
+                                        }
+                                    }
+                                    out.push(child);
+                                }
+                            }
+                            Ok(out)
                         },
-                        other => CliError::InvalidTransform {
-                            name: kind.to_owned(),
-                            message: format!("{other}"),
-                        },
-                    })?;
-                    Ok(stage)
+                    )))
                 },
             },
         ]);
@@ -1230,6 +1306,68 @@ mod tests {
             config: json!({"arrays": ["only"]}),
         }];
         assert!(compile_transforms(&specs).is_err());
+    }
+
+    #[cfg(feature = "transform-zip-columns")]
+    #[test]
+    fn zip_columns_compiles_and_zips() {
+        let specs = vec![TransformSpec {
+            kind: "zip_columns".into(),
+            config: json!({"columns_path": "columns[*].name", "rows_path": "rows"}),
+        }];
+        let out = compile_transforms(&specs).unwrap();
+        let TransformStage::PageFn(f) = &out[0] else {
+            panic!("expected PageFn");
+        };
+        let page = vec![json!({
+            "columns": [{"name": "day"}, {"name": "n"}],
+            "rows": [["2026-01-01", 3], ["2026-01-02", 5]],
+        })];
+        let got = f(page).unwrap();
+        assert_eq!(
+            got,
+            vec![
+                json!({"day": "2026-01-01", "n": 3}),
+                json!({"day": "2026-01-02", "n": 5}),
+            ]
+        );
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_carry_copies_parent_field_onto_children() {
+        let specs = vec![TransformSpec {
+            kind: "explode".into(),
+            config: json!({
+                "path": "values",
+                "prefix": "",
+                "carry": {"employee_id": "id"},
+            }),
+        }];
+        let out = compile_transforms(&specs).unwrap();
+        // With `carry`, explode compiles to a page-level stage.
+        let TransformStage::PageFn(f) = &out[0] else {
+            panic!("expected PageFn for explode+carry");
+        };
+        let page = vec![json!({"id": 7, "values": [{"v": "a"}, {"v": "b"}]})];
+        let got = f(page).unwrap();
+        assert_eq!(got.len(), 2);
+        // Each child keeps the exploded element AND the carried parent id.
+        assert_eq!(got[0]["v"], json!("a"));
+        assert_eq!(got[0]["employee_id"], json!(7));
+        assert_eq!(got[1]["v"], json!("b"));
+        assert_eq!(got[1]["employee_id"], json!(7));
+    }
+
+    #[cfg(feature = "transform-explode")]
+    #[test]
+    fn explode_without_carry_stays_a_plain_explode_stage() {
+        let specs = vec![TransformSpec {
+            kind: "explode".into(),
+            config: json!({"path": "values"}),
+        }];
+        let out = compile_transforms(&specs).unwrap();
+        assert!(matches!(out[0], TransformStage::Explode(_)));
     }
 
     #[cfg(feature = "transforms")]

@@ -321,6 +321,7 @@ transforms = [
     "faucet-source-rest?/transforms",
     "transform-filter",
     "transform-explode",
+    "transform-zip-columns",
     "transform-cdc-unwrap",
 ]
 
@@ -329,6 +330,7 @@ transforms = [
 # asked for. The `transforms` aggregate above enables every transform at once.
 transform-filter = ["faucet-core/transform-filter"]
 transform-explode = ["faucet-core/transform-explode"]
+transform-zip-columns = ["faucet-core/transform-zip-columns"]
 transform-cdc-unwrap = ["faucet-core/transform-cdc-unwrap"]
 transform-sql = ["dep:faucet-transform-sql"]
 transform-wasm = ["dep:faucet-transform-wasm"]

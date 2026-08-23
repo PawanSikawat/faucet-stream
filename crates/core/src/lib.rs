@@ -24,6 +24,8 @@ pub mod config;
 pub mod contract;
 #[cfg(feature = "transform-cross-join")]
 pub mod cross_join;
+#[cfg(feature = "transform-zip-columns")]
+pub mod zip_columns;
 pub mod discover;
 pub mod dlq;
 pub mod drift;
@@ -79,6 +81,8 @@ pub use columnar::{
 };
 #[cfg(feature = "transform-cross-join")]
 pub use cross_join::{CompiledCrossJoin, CrossJoinSpec, OnEmpty as CrossJoinOnEmpty};
+#[cfg(feature = "transform-zip-columns")]
+pub use zip_columns::{CompiledZipColumns, ZipColumnsSpec};
 pub use discover::{DatasetDescriptor, columns_to_schema, nullable_type, sql_type_to_json_schema};
 pub use dlq::{
     DlqConfig, DlqReason, DlqStats, EnvelopeError, OnBatchError, UnwrappedEnvelope, build_envelope,
@@ -138,7 +142,7 @@ pub use stage::{CompiledUnpivot, UnpivotSpec};
 pub use stage::{ExplodeSpec, OnMissing};
 #[cfg(feature = "transform-filter")]
 pub use stage::{FilterOp, FilterSpec};
-pub use stage::{TransformStage, compile_stage};
+pub use stage::{TransformStage, apply_stages, compile_stage};
 pub use staging::{
     StagedFile, StagingCleanup, StagingCompression, StagingFormat, StagingLocation, StagingScheme,
     StagingSpec, serialize_records,
