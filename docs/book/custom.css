@@ -66,7 +66,7 @@ kbd {
   --sidebar-bg: #f4f8f7; /* site surface-2 — gentle separation from the paper */
   --sidebar-fg: var(--fs-ink);
   --sidebar-non-existant: #94a3b8;
-  --sidebar-active: #ffffff;
+  --sidebar-active: var(--fs-green);
   --sidebar-spacer: rgba(15, 23, 42, 0.1);
   --scrollbar: rgba(15, 23, 42, 0.28);
   --sidebar-header-border-color: var(--fs-green);
@@ -91,7 +91,7 @@ kbd {
   --sidebar-bg: #071915;
   --sidebar-fg: #dbeee9;
   --sidebar-non-existant: #6f958c;
-  --sidebar-active: #ffffff;
+  --sidebar-active: var(--fs-green-bright);
   --sidebar-spacer: rgba(255, 255, 255, 0.08);
   --scrollbar: rgba(255, 255, 255, 0.24);
   --sidebar-header-border-color: var(--fs-green-bright);
@@ -123,10 +123,16 @@ kbd {
   background: color-mix(in srgb, var(--sidebar-fg) 10%, transparent);
   color: var(--sidebar-fg);
 }
-.chapter li.chapter-item > a.active {
-  background: var(--fs-green);
-  color: #fff;
+/* Active item = a solid teal pill with white text. Broad selector + !important so
+   the pill reliably renders behind mdBook's runtime-added `.active` link (which
+   otherwise only gets white `--sidebar-active` text → invisible on the pale
+   sidebar). */
+.chapter li.chapter-item > a.active,
+.sidebar .chapter a.active {
+  background: var(--fs-green) !important;
+  color: #fff !important;
   font-weight: 600;
+  border-radius: 7px;
 }
 .chapter .part-title {
   color: var(--sidebar-fg);
