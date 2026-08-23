@@ -134,6 +134,28 @@ kbd {
   font-weight: 600;
   border-radius: 7px;
 }
+/* Nested sub-sections of the active page (mdBook's <ol class="section">): replace
+   the chunky default rail with a soft, thin guide rail, indented so it doesn't
+   collide with the active pill's corner. Sub-items sit quietly; the current one
+   picks up teal text (no pill). */
+.sidebar .chapter .section {
+  border-inline-start: 2px solid color-mix(in srgb, var(--fs-green) 26%, transparent) !important;
+  margin-inline-start: 0.9rem;
+  padding-inline-start: 0.5rem;
+}
+.sidebar .chapter .section li.chapter-item > a {
+  color: color-mix(in srgb, var(--sidebar-fg) 82%, transparent);
+  padding-block: 0.28rem;
+}
+.sidebar .chapter .section li.chapter-item > a.active {
+  background: transparent !important;
+  color: var(--fs-green-deep) !important;
+}
+.navy .sidebar .chapter .section li.chapter-item > a.active,
+.coal .sidebar .chapter .section li.chapter-item > a.active,
+.ayu .sidebar .chapter .section li.chapter-item > a.active {
+  color: var(--fs-green-bright) !important;
+}
 .chapter .part-title {
   color: var(--sidebar-fg);
   opacity: 0.62;
