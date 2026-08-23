@@ -1019,6 +1019,15 @@ components:
             Terminal statuses to fire on. Empty (default) = all of them. A
             callback subscribed only to `completed` will never fire for a
             cancelled or failed run.
+      example:
+        url: https://example.com/faucet
+        method: example
+        headers:
+          key: value
+        extra_fields:
+          key: value
+        'on':
+        - pending
     SubmitResponse:
       type: object
       required: [run_id, status, submitted_at]
@@ -1026,6 +1035,10 @@ components:
         run_id: { type: string }
         status: { $ref: "#/components/schemas/RunStatus" }
         submitted_at: { type: string, format: date-time }
+      example:
+        run_id: run_01HZY8K3QK7
+        status: pending
+        submitted_at: '2026-01-01T00:00:00Z'
     InvocationRecord:
       type: object
       properties:
@@ -1033,6 +1046,11 @@ components:
         parent_record_key: { type: string, nullable: true }
         records_written: { type: integer }
         error: { type: string, nullable: true }
+      example:
+        row_id: orders_to_warehouse
+        parent_record_key: example
+        records_written: 1
+        error: example
     RunRecord:
       type: object
       required: [run_id, status, submitted_at, records_written, invocations, labels]
@@ -1053,6 +1071,35 @@ components:
         idempotency_key: { type: string, nullable: true }
         doctor_report: { type: object, nullable: true }
         callback: { $ref: "#/components/schemas/CallbackSpec" }
+      example:
+        run_id: run_01HZY8K3QK7
+        name: orders_to_warehouse
+        labels:
+          key: value
+        status: pending
+        submitted_at: '2026-01-01T00:00:00Z'
+        started_at: '2026-01-01T00:00:00Z'
+        finished_at: '2026-01-01T00:00:00Z'
+        elapsed_secs: 1.0
+        records_written: 1
+        invocations:
+        - row_id: orders_to_warehouse
+          parent_record_key: example
+          records_written: 1
+          error: example
+        error: example
+        idempotency_key: example
+        doctor_report:
+          key: value
+        callback:
+          url: https://example.com/faucet
+          method: example
+          headers:
+            key: value
+          extra_fields:
+            key: value
+          'on':
+          - {}
     ListResponse:
       type: object
       required: [runs]
@@ -1061,6 +1108,26 @@ components:
           type: array
           items: { $ref: "#/components/schemas/RunRecord" }
         next_cursor: { type: string, nullable: true }
+      example:
+        runs:
+        - run_id: run_01HZY8K3QK7
+          name: orders_to_warehouse
+          labels:
+            key: value
+          status: {}
+          submitted_at: '2026-01-01T00:00:00Z'
+          started_at: '2026-01-01T00:00:00Z'
+          finished_at: '2026-01-01T00:00:00Z'
+          elapsed_secs: 1.0
+          records_written: 1
+          invocations:
+          - {}
+          error: example
+          idempotency_key: example
+          doctor_report:
+            key: value
+          callback: {}
+        next_cursor: example
     AuditEntry:
       type: object
       required: [id, timestamp, principal, role, action, result]
@@ -1074,6 +1141,16 @@ components:
         config_fingerprint: { type: string, nullable: true, description: "sha256 of the merged config (submit actions)." }
         source_ip: { type: string, nullable: true }
         result: { type: string, enum: [ok, denied] }
+      example:
+        id: orders_to_warehouse
+        timestamp: '2026-01-01T00:00:00Z'
+        principal: example
+        role: viewer
+        action: example
+        run_id: run_01HZY8K3QK7
+        config_fingerprint: example
+        source_ip: example
+        result: ok
     CatalogDataset:
       type: object
       required: [id, uri, kind, roles, first_seen, last_seen, last_success, last_run_id, pipeline, last_records, total_records, runs, schema_versions]
@@ -1093,6 +1170,24 @@ components:
         schema_versions: { type: integer }
         current_schema: { type: object, nullable: true, description: "Latest observed record schema (infer_schema shape)." }
         current_schema_hash: { type: string, nullable: true }
+      example:
+        id: orders_to_warehouse
+        uri: example
+        kind: postgres
+        roles:
+        - source
+        first_seen: '2026-01-01T00:00:00Z'
+        last_seen: '2026-01-01T00:00:00Z'
+        last_success: '2026-01-01T00:00:00Z'
+        last_run_id: run_01HZY8K3QK7
+        pipeline: example
+        last_records: 1
+        total_records: 42
+        runs: 1
+        schema_versions: 3
+        current_schema:
+          key: value
+        current_schema_hash: example
     CatalogSchemaVersion:
       type: object
       required: [dataset_id, version, recorded_at, run_id, schema, schema_hash]
@@ -1104,6 +1199,16 @@ components:
         schema: { type: object }
         schema_hash: { type: string }
         diff: { type: object, nullable: true, description: "Diff vs the previous version ({added, widened, changed, removed}); absent for version 1." }
+      example:
+        dataset_id: orders_to_warehouse
+        version: 3
+        recorded_at: '2026-01-01T00:00:00Z'
+        run_id: run_01HZY8K3QK7
+        schema:
+          key: value
+        schema_hash: example
+        diff:
+          key: value
     CatalogStatsPoint:
       type: object
       required: [recorded_at, run_id, records]
@@ -1111,6 +1216,10 @@ components:
         recorded_at: { type: string, format: date-time }
         run_id: { type: string }
         records: { type: integer }
+      example:
+        recorded_at: '2026-01-01T00:00:00Z'
+        run_id: run_01HZY8K3QK7
+        records: 1
     CatalogLineageEdge:
       type: object
       required: [src_id, dst_id, src_uri, dst_uri, pipeline, row, first_seen, last_seen, last_run_id, runs, last_records]
@@ -1127,6 +1236,20 @@ components:
         runs: { type: integer }
         last_records: { type: integer }
         column_lineage: { type: object, nullable: true, description: "Column-lineage facet from the most recent run ({fields: {out: [in, …]}})." }
+      example:
+        src_id: orders_to_warehouse
+        dst_id: orders_to_warehouse
+        src_uri: example
+        dst_uri: example
+        pipeline: example
+        row: example
+        first_seen: '2026-01-01T00:00:00Z'
+        last_seen: '2026-01-01T00:00:00Z'
+        last_run_id: run_01HZY8K3QK7
+        runs: 1
+        last_records: 1
+        column_lineage:
+          key: value
     CatalogDatasetDetail:
       allOf:
         - { $ref: "#/components/schemas/CatalogDataset" }
@@ -1159,6 +1282,12 @@ components:
         default: { description: "Value used when the caller supplies none. Resolved like any other config scalar, so `${env:X}` works." }
         secret: { type: boolean, default: false, description: "Registered for log/response redaction the moment it is bound; never persisted." }
         description: { type: string }
+      example:
+        type: string
+        required: false
+        default: example
+        secret: false
+        description: Orders -> BigQuery, hourly
     TemplateSummary:
       type: object
       description: Body-free view of one registered template version.
@@ -1176,6 +1305,16 @@ components:
         state:
           allOf: [{ $ref: "#/components/schemas/TemplateState" }]
           description: "Release state of the template as a whole. Present on the read paths."
+      example:
+        id: orders_to_warehouse
+        version: 3
+        name: orders_to_warehouse
+        description: Orders -> BigQuery, hourly
+        params:
+          key: value
+        created_at: '2026-01-01T00:00:00Z'
+        created_by: example
+        state: example
     TemplateStatus:
       type: string
       description: >
@@ -1206,6 +1345,16 @@ components:
         deprecation:
           allOf: [{ $ref: "#/components/schemas/DeprecationRecord" }]
           description: "Present only when `status` is `deprecated`."
+      example:
+        status: draft
+        versions:
+        - 1
+        stable: 1
+        previous: 1
+        newest: 1
+        tags:
+          key: value
+        deprecation: example
     DeprecationRecord:
       type: object
       required: [deprecated_at]
@@ -1213,6 +1362,10 @@ components:
         deprecated_at: { type: string, format: date-time }
         deprecated_by: { type: string, nullable: true }
         reason: { type: string, nullable: true }
+      example:
+        deprecated_at: '2026-01-01T00:00:00Z'
+        deprecated_by: example
+        reason: example
     LaunchRecord:
       type: object
       description: One entry of the append-only launch log — who blessed which build, and when.
@@ -1222,6 +1375,11 @@ components:
         version: { type: integer }
         launched_at: { type: string, format: date-time }
         launched_by: { type: string, nullable: true, description: "Principal that launched it; null for a CLI launch." }
+      example:
+        seq: 1
+        version: 3
+        launched_at: '2026-01-01T00:00:00Z'
+        launched_by: example
     VersionChannel:
       type: string
       description: >
@@ -1269,6 +1427,12 @@ components:
         replaced: { type: integer, description: "The version it replaced — the new `previous`. Absent on a first launch." }
         already_launched: { type: boolean, description: "True when the version was already live, so nothing changed." }
         status: { $ref: "#/components/schemas/TemplateStatus" }
+      example:
+        id: orders_to_warehouse
+        version: 3
+        replaced: 1
+        already_launched: false
+        status: draft
     RegisterTemplateRequest:
       type: object
       required: [config]
@@ -1353,6 +1517,15 @@ components:
             Present only when the template is deprecated — the run still started,
             but the caller should migrate. Carries the retirement reason when one
             was given.
+      example:
+        run_id: run_01HZY8K3QK7
+        status: queued
+        submitted_at: '2026-01-01T00:00:00Z'
+        template_id: orders_to_warehouse
+        template_version: 3
+        params:
+          key: value
+        deprecated: example
     ApiError:
       type: object
       required: [error]
@@ -1364,3 +1537,10 @@ components:
             code: { type: string }
             message: { type: string }
             details: { type: object, nullable: true }
+
+      example:
+        error:
+          code: invalid_config
+          message: 'config failed validation: missing sink'
+          details:
+            key: value
