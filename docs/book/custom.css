@@ -66,7 +66,7 @@ kbd {
   --sidebar-bg: #f4f8f7; /* site surface-2 — gentle separation from the paper */
   --sidebar-fg: var(--fs-ink);
   --sidebar-non-existant: #94a3b8;
-  --sidebar-active: #ffffff;
+  --sidebar-active: var(--fs-green);
   --sidebar-spacer: rgba(15, 23, 42, 0.1);
   --scrollbar: rgba(15, 23, 42, 0.28);
   --sidebar-header-border-color: var(--fs-green);
@@ -91,7 +91,7 @@ kbd {
   --sidebar-bg: #071915;
   --sidebar-fg: #dbeee9;
   --sidebar-non-existant: #6f958c;
-  --sidebar-active: #ffffff;
+  --sidebar-active: var(--fs-green-bright);
   --sidebar-spacer: rgba(255, 255, 255, 0.08);
   --scrollbar: rgba(255, 255, 255, 0.24);
   --sidebar-header-border-color: var(--fs-green-bright);
@@ -123,10 +123,16 @@ kbd {
   background: color-mix(in srgb, var(--sidebar-fg) 10%, transparent);
   color: var(--sidebar-fg);
 }
-.chapter li.chapter-item > a.active {
-  background: var(--fs-green);
-  color: #fff;
+/* Active item = a solid teal pill with white text. Broad selector + !important so
+   the pill reliably renders behind mdBook's runtime-added `.active` link (which
+   otherwise only gets white `--sidebar-active` text → invisible on the pale
+   sidebar). */
+.chapter li.chapter-item > a.active,
+.sidebar .chapter a.active {
+  background: var(--fs-green) !important;
+  color: #fff !important;
   font-weight: 600;
+  border-radius: 7px;
 }
 .chapter .part-title {
   color: var(--sidebar-fg);
@@ -174,13 +180,20 @@ summary:focus-visible {
 /* The relocated search wrapper fills the bar's center. */
 .menu-bar.fs-has-search #mdbook-search-wrapper {
   display: flex !important; /* beats mdBook's `.hidden { display:none !important }` */
-  flex: 1 1 auto;
   justify-content: center;
-  position: relative; /* anchor for the results dropdown */
-  margin: 0 1rem;
+  /* Absolutely center on the (sticky) menu-bar so the pill lines up with the
+     content column, instead of centering in the asymmetric flex gap between the
+     left hamburger and the right icon group. */
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(44rem, calc(100% - 14rem)); /* leave room for the side buttons */
+  margin: 0;
   max-height: none;
   border-bottom: none;
   padding: 0;
+  z-index: 5;
 }
 .menu-bar.fs-has-search #mdbook-searchbar-outer {
   width: 100%;
