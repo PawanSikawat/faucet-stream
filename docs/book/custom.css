@@ -704,10 +704,44 @@ mark {
   text-align: center;
   padding: 2rem 1rem 0.5rem;
 }
-.fs-hero img {
+.fs-hero img,
+.fs-hero .fs-wordmark {
   max-width: 420px;
   width: 70%;
   height: auto;
+  display: block;
+  margin: 0 auto;
+}
+/* Inline, theme-aware wordmark: "faucet" follows the page text color so it stays
+   legible on every theme (invisible dark-on-dark is the bug this fixes); "stream"
+   and the mark are the brand teal, brightened on dark grounds. */
+.fs-wordmark text {
+  font-family: var(--fs-sans);
+}
+.fs-wordmark .wm-mark {
+  stroke: var(--fs-green);
+}
+.fs-wordmark .wm-dots {
+  fill: var(--fs-green);
+}
+.fs-wordmark .wm-faucet {
+  fill: var(--fg);
+}
+.fs-wordmark .wm-stream {
+  fill: var(--fs-green);
+}
+.navy .fs-wordmark .wm-mark,
+.coal .fs-wordmark .wm-mark,
+.ayu .fs-wordmark .wm-mark {
+  stroke: var(--fs-green-bright);
+}
+.navy .fs-wordmark .wm-dots,
+.coal .fs-wordmark .wm-dots,
+.ayu .fs-wordmark .wm-dots,
+.navy .fs-wordmark .wm-stream,
+.coal .fs-wordmark .wm-stream,
+.ayu .fs-wordmark .wm-stream {
+  fill: var(--fs-green-bright);
 }
 .fs-hero .fs-tagline {
   font-size: 1.3rem;
