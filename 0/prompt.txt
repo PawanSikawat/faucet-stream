@@ -4567,3 +4567,20 @@ lets complete 547-558 all in 1 pr itself
 ---
 
 try nmow
+
+---
+
+<task-notification>
+<task-id>aca98a3092b55ea7c</task-id>
+<tool-use-id>toolu_01LM1xcPu5qoXw2NKgsMn9SM</tool-use-id>
+<output-file>/private/tmp/claude-502/-Users-c-sikawats-Documents-GitHub-Personal-faucet-stream/48528653-2f52-407c-8b61-943ebb969681/tasks/aca98a3092b55ea7c.output</output-file>
+<status>failed</status>
+<summary>Agent "Implement REST source batch" failed: Agent terminated early due to an API error: You've hit your org's monthly spend limit · run /usage-credits to ask your admin for a higher limit</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Let me verify how the core `Pipeline` applies stored bookmarks (needed for the #547 resume test) and re-export the new public types.</result>
+<worktree><worktreePath>/Users/c-sikawats/Documents/GitHub/Personal/faucet-stream/.claude/worktrees/agent-aca98a3092b55ea7c</worktreePath><worktreeBranch>worktree-agent-aca98a3092b55ea7c</worktreeBranch></worktree>
+</task-notification>
+
+---
+
+continue
