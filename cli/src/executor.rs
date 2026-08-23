@@ -880,9 +880,12 @@ fn resolved_sink_destination(unit: &Unit, opts: &ExecuteOptions) -> CliResult<Va
 /// map from each grouped invocation's `(row_id, parent_key)` to its group index
 /// — used to suppress the per-invocation lifecycle and to attribute a failed
 /// invocation to its group.
-/// (#552) The planned overwrite groups plus a map from each grouped
-/// invocation's `(row_id, parent_key)` to its group index.
-type OverwritePlan = (Vec<OverwriteGroup>, HashMap<(String, Option<String>), usize>);
+/// Maps a grouped invocation's `(row_id, parent_key)` to its overwrite-group
+/// index (#552).
+type OverwriteTaskGroup = HashMap<(String, Option<String>), usize>;
+
+/// (#552) The planned overwrite groups plus the invocation → group-index map.
+type OverwritePlan = (Vec<OverwriteGroup>, OverwriteTaskGroup);
 
 fn plan_overwrite_groups(units: &[Unit], opts: &ExecuteOptions) -> CliResult<OverwritePlan> {
     let mut groups: Vec<OverwriteGroup> = Vec::new();
