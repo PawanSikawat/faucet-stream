@@ -5,6 +5,8 @@
 
 use crate::config::TransformSpec;
 use crate::error::{CliError, CliResult};
+#[cfg(feature = "transform-zip-columns")]
+use faucet_core::ZipColumnsSpec;
 #[cfg(feature = "transforms")]
 use faucet_core::{
     CastOnError, CastType, CrossJoinSpec, HashAlgorithm, HashEncoding, JsonParseOnError,
@@ -13,8 +15,6 @@ use faucet_core::{
 #[cfg(any(feature = "transforms", feature = "transform-cdc-unwrap"))]
 use faucet_core::{JsonSchema, schema_for};
 use faucet_core::{RecordTransform, TransformStage};
-#[cfg(feature = "transform-zip-columns")]
-use faucet_core::ZipColumnsSpec;
 #[cfg(any(feature = "transforms", feature = "transform-cdc-unwrap"))]
 use serde::Deserialize;
 use serde_json::Value;

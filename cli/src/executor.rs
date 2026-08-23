@@ -880,13 +880,11 @@ fn resolved_sink_destination(unit: &Unit, opts: &ExecuteOptions) -> CliResult<Va
 /// map from each grouped invocation's `(row_id, parent_key)` to its group index
 /// — used to suppress the per-invocation lifecycle and to attribute a failed
 /// invocation to its group.
-fn plan_overwrite_groups(
-    units: &[Unit],
-    opts: &ExecuteOptions,
-) -> CliResult<(
-    Vec<OverwriteGroup>,
-    HashMap<(String, Option<String>), usize>,
-)> {
+/// (#552) The planned overwrite groups plus a map from each grouped
+/// invocation's `(row_id, parent_key)` to its group index.
+type OverwritePlan = (Vec<OverwriteGroup>, HashMap<(String, Option<String>), usize>);
+
+fn plan_overwrite_groups(units: &[Unit], opts: &ExecuteOptions) -> CliResult<OverwritePlan> {
     let mut groups: Vec<OverwriteGroup> = Vec::new();
     let mut task_group: HashMap<(String, Option<String>), usize> = HashMap::new();
     let mut index_by_key: HashMap<String, usize> = HashMap::new();
@@ -920,6 +918,7 @@ fn plan_overwrite_groups(
     Ok((groups, task_group))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_unit(
     unit: &Unit,
     capture: Option<Arc<Projection>>,
@@ -1441,6 +1440,7 @@ async fn build_pipeline<'a>(
     Ok(pipeline)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_one_invocation(
     node: &ExpandedNode,
     parent_record: Option<&Value>,
@@ -2775,7 +2775,11 @@ mod tests {
         // The destination must hold BOTH parents' rows (and NOT the seed row) —
         // proving one truncate + one swap across the whole fan-out.
         let vs = read_table_vs(&db_url).await;
-        assert_eq!(vs, vec!["A".to_string(), "B".to_string()], "table t: {vs:?}");
+        assert_eq!(
+            vs,
+            vec!["A".to_string(), "B".to_string()],
+            "table t: {vs:?}"
+        );
     }
 
     #[tokio::test]
@@ -2790,11 +2794,18 @@ mod tests {
 
         let yaml = overwrite_fanout_yaml(dir.path(), &db_url);
         let summary = run_yaml(&yaml, &dir.path().join("ow.yaml")).await;
-        assert!(summary.had_failures(), "a missing child source must fail a unit");
+        assert!(
+            summary.had_failures(),
+            "a missing child source must fail a unit"
+        );
 
         // The prior destination is untouched: still exactly the seed row.
         let vs = read_table_vs(&db_url).await;
-        assert_eq!(vs, vec!["OLD".to_string()], "destination must be unchanged: {vs:?}");
+        assert_eq!(
+            vs,
+            vec!["OLD".to_string()],
+            "destination must be unchanged: {vs:?}"
+        );
     }
 
     #[tokio::test]

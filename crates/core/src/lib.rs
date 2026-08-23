@@ -24,8 +24,6 @@ pub mod config;
 pub mod contract;
 #[cfg(feature = "transform-cross-join")]
 pub mod cross_join;
-#[cfg(feature = "transform-zip-columns")]
-pub mod zip_columns;
 pub mod discover;
 pub mod dlq;
 pub mod drift;
@@ -61,6 +59,8 @@ pub mod util;
 pub mod verify;
 pub mod window;
 pub mod write_mode;
+#[cfg(feature = "transform-zip-columns")]
+pub mod zip_columns;
 
 #[cfg(feature = "compression")]
 pub mod compression;
@@ -81,8 +81,6 @@ pub use columnar::{
 };
 #[cfg(feature = "transform-cross-join")]
 pub use cross_join::{CompiledCrossJoin, CrossJoinSpec, OnEmpty as CrossJoinOnEmpty};
-#[cfg(feature = "transform-zip-columns")]
-pub use zip_columns::{CompiledZipColumns, ZipColumnsSpec};
 pub use discover::{DatasetDescriptor, columns_to_schema, nullable_type, sql_type_to_json_schema};
 pub use dlq::{
     DlqConfig, DlqReason, DlqStats, EnvelopeError, OnBatchError, UnwrappedEnvelope, build_envelope,
@@ -179,6 +177,8 @@ pub use write_mode::{
     DeleteMarker, KeyTuple, OverwriteScope, WriteMode, WritePlan, WriteSpec, key_to_doc_id,
     key_to_filter, plan_writes,
 };
+#[cfg(feature = "transform-zip-columns")]
+pub use zip_columns::{CompiledZipColumns, ZipColumnsSpec};
 
 // Re-export dependencies that connector authors need, so they only depend on
 // `faucet-core` instead of adding `async-trait` and `serde_json` themselves.
