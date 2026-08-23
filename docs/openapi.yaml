@@ -961,6 +961,25 @@ components:
         idempotency_key: { type: string, nullable: true }
         clock: { type: string, format: date-time, description: "Override the ${now.*} clock (backfills)." }
         callback: { $ref: "#/components/schemas/CallbackSpec" }
+      example:
+        name: orders_to_warehouse
+        config_format: yaml
+        config: |
+          version: 1
+          pipeline:
+            source:
+              type: postgres
+              config:
+                connection_url: ${env:PG_URL}
+                query: SELECT * FROM orders
+            sink:
+              type: bigquery
+              config:
+                dataset: analytics
+                table: orders
+                write_mode: upsert
+                primary_key: [id]
+        doctor_first: false
     CallbackSpec:
       type: object
       required: [url]
