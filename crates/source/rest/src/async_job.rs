@@ -63,6 +63,25 @@ pub struct JobRequest {
     /// JSON request body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub json: Option<Value>,
+    /// `fetch` only (#557): result-set continuation. Response header carrying a
+    /// pagination locator (e.g. Salesforce Bulk `Sforce-Locator`). While present
+    /// (and not empty / `"null"`), the fetch is repeated with the locator sent as
+    /// [`locator_param`](Self::locator_param), appending records across pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator_header: Option<String>,
+    /// `fetch` only (#557): JSONPath into the fetch response **body** for the
+    /// continuation locator, when it rides the body rather than a header.
+    /// Alternative to [`locator_header`](Self::locator_header).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator_body: Option<String>,
+    /// `fetch` only (#557): query-param name the locator is sent as on each
+    /// continuation request. Required when a locator source is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator_param: Option<String>,
+    /// `fetch` only (#557): JSONPath for extracting records from each fetch page,
+    /// overriding the source-level `records_path`. Applies to a JSON result body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub records_path: Option<String>,
 }
 
 /// The poll request + cadence.
@@ -202,6 +221,42 @@ impl AsyncJobConfig {
                 "async_job: `poll.timeout_secs` must be > 0".into(),
             ));
         }
+        // #557: result-set continuation (locator paging) is a `fetch`-only
+        // feature and needs a `locator_param` to request the next page.
+        if self.submit.locator_header.is_some()
+            || self.submit.locator_body.is_some()
+            || self.submit.locator_param.is_some()
+            || self.submit.records_path.is_some()
+        {
+            return Err(faucet_core::FaucetError::Config(
+                "async_job: locator/`records_path` fields are `fetch`-only, not valid on `submit`"
+                    .into(),
+            ));
+        }
+        let has_locator_source =
+            self.fetch.locator_header.is_some() || self.fetch.locator_body.is_some();
+        if has_locator_source
+            && self
+                .fetch
+                .locator_param
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+        {
+            return Err(faucet_core::FaucetError::Config(
+                "async_job: `fetch.locator_param` is required when a `locator_header` or \
+                 `locator_body` is configured (it names the query param the locator is sent as)"
+                    .into(),
+            ));
+        }
+        if self.fetch.locator_param.is_some() && !has_locator_source {
+            return Err(faucet_core::FaucetError::Config(
+                "async_job: `fetch.locator_param` needs a `locator_header` or `locator_body` to \
+                 read the locator from"
+                    .into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -329,6 +384,69 @@ mod tests {
         .unwrap();
         let err = cfg.validate().unwrap_err();
         assert!(err.to_string().contains("submit.url_from"), "{err}");
+    }
+
+    #[test]
+    fn validate_locator_continuation_fields() {
+        let make = |fetch: Value| -> AsyncJobConfig {
+            serde_json::from_value(json!({
+                "submit": { "method": "POST", "url": "/jobs" },
+                "job_id": "$.id",
+                "poll": { "url": "/jobs/${job_id}" },
+                "status": { "path": "$.state", "success": ["Done"] },
+                "fetch": fetch
+            }))
+            .unwrap()
+        };
+
+        // Header locator + param → ok.
+        assert!(
+            make(json!({
+                "url": "/jobs/${job_id}/results",
+                "locator_header": "Sforce-Locator",
+                "locator_param": "locator",
+                "records_path": "$.records[*]"
+            }))
+            .validate()
+            .is_ok()
+        );
+        // Body locator + param → ok.
+        assert!(
+            make(json!({
+                "url_from": "$.result.url",
+                "locator_body": "$.next_locator",
+                "locator_param": "locator"
+            }))
+            .validate()
+            .is_ok()
+        );
+        // Locator source without param → error.
+        let err = make(json!({
+            "url": "/r",
+            "locator_header": "Sforce-Locator"
+        }))
+        .validate()
+        .unwrap_err();
+        assert!(err.to_string().contains("locator_param"), "{err}");
+        // Param without a source → error.
+        assert!(
+            make(json!({ "url": "/r", "locator_param": "locator" }))
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn validate_rejects_locator_on_submit() {
+        let cfg: AsyncJobConfig = serde_json::from_value(json!({
+            "submit": { "method": "POST", "url": "/jobs", "locator_header": "X" },
+            "job_id": "$.id",
+            "poll": { "url": "/jobs/${job_id}" },
+            "status": { "path": "$.state", "success": ["Done"] },
+            "fetch": { "url": "/r" }
+        }))
+        .unwrap();
+        assert!(cfg.validate().is_err());
     }
 
     #[test]

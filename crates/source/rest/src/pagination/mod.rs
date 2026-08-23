@@ -13,6 +13,34 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+fn default_true() -> bool {
+    true
+}
+
+/// Where a [`PaginationStyle::RecordFieldCursor`] keyset value is injected on the
+/// next request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordCursorTarget {
+    /// Inject the cursor as a query parameter (default).
+    #[default]
+    Query,
+    /// Inject the cursor into the JSON request body.
+    Body,
+}
+
+/// How a [`PaginationStyle::RecordFieldCursor`] aggregates the cursor field over
+/// a page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordCursorAgg {
+    /// The maximum value seen so far (ascending keyset, the default).
+    #[default]
+    Max,
+    /// The minimum value seen so far (descending keyset).
+    Min,
+}
+
 /// Supported pagination strategies.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
@@ -55,6 +83,44 @@ pub enum PaginationStyle {
         limit: usize,
         total_path: Option<String>,
     },
+    /// Offset/limit pagination that writes the offset and limit into the JSON
+    /// **request body** (POST-query APIs), rather than the query string
+    /// ([`Offset`](Self::Offset)) or a cursor token
+    /// ([`CursorInBody`](Self::CursorInBody)). Each request sends
+    /// `body[offset_field] = <offset>` and `body[limit_field] = <limit>`; the
+    /// offset advances by the page's record count. With `stop_when_short`
+    /// (default `true`) a page shorter than `limit` ends pagination; a zero-record
+    /// page always ends it, and a repeated identical page trips a loop guard.
+    OffsetInBody {
+        offset_field: String,
+        limit_field: String,
+        limit: usize,
+        #[serde(default = "default_true")]
+        stop_when_short: bool,
+    },
+    /// Keyset pagination by the running max/min of a record field (#554). After
+    /// each page the aggregate of `field` over its records is injected into the
+    /// next request (as a query param or body field per `into`) at `param`. With
+    /// `stop_when_short` (default `true`) a page shorter than `page_size` ends
+    /// pagination; a zero-record page always ends it, and a non-advancing cursor
+    /// trips a loop guard.
+    RecordFieldCursor {
+        /// Record field whose value drives the cursor.
+        field: String,
+        /// Where the cursor is injected on the next request (default `query`).
+        #[serde(default)]
+        into: RecordCursorTarget,
+        /// Request parameter/body-field name the cursor is written to.
+        param: String,
+        /// Aggregation over the page (default `max`).
+        #[serde(default)]
+        agg: RecordCursorAgg,
+        /// Stop when a page returns fewer than `page_size` records (default `true`).
+        #[serde(default = "default_true")]
+        stop_when_short: bool,
+        /// Expected page size, used for the short-page stop check.
+        page_size: usize,
+    },
 }
 
 /// Internal state tracked across pages.
@@ -81,6 +147,11 @@ pub struct PaginationState {
     /// last-page stop leaves it `false` so the final page is still emitted.
     #[doc(hidden)]
     pub current_page_is_duplicate: bool,
+    /// Running keyset cursor for [`PaginationStyle::RecordFieldCursor`] (#554):
+    /// the aggregate (max/min) of the cursor field seen across pages so far.
+    /// Injected into the next request; `None` until the first page is processed.
+    #[doc(hidden)]
+    pub record_field_cursor: Option<Value>,
 }
 
 /// Cheap, stable fingerprint of a response body for content-stagnation
@@ -90,6 +161,38 @@ fn body_fingerprint(body: &Value) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     body.to_string().hash(&mut h);
     h.finish()
+}
+
+/// Render a scalar cursor value for a query parameter: a string verbatim,
+/// anything else via its JSON text form (numbers as `123`, bools as `true`).
+pub(crate) fn value_to_param_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Keep the max (or min) of two cursor values: numbers compare numerically,
+/// strings lexicographically; a heterogeneous pair keeps the candidate.
+fn pick_cursor(agg: RecordCursorAgg, current: Value, candidate: Value) -> Value {
+    let candidate_wins = match (&current, &candidate) {
+        (Value::Number(a), Value::Number(b)) => {
+            let (a, b) = (
+                a.as_f64().unwrap_or(f64::NAN),
+                b.as_f64().unwrap_or(f64::NAN),
+            );
+            match agg {
+                RecordCursorAgg::Max => b > a,
+                RecordCursorAgg::Min => b < a,
+            }
+        }
+        (Value::String(a), Value::String(b)) => match agg {
+            RecordCursorAgg::Max => b > a,
+            RecordCursorAgg::Min => b < a,
+        },
+        _ => true,
+    };
+    if candidate_wins { candidate } else { current }
 }
 
 impl PaginationStyle {
@@ -126,6 +229,19 @@ impl PaginationStyle {
             } => {
                 offset::apply_params(params, offset_param, limit_param, state.offset, *limit);
             }
+            // Offset/limit live in the request body, not the query string.
+            PaginationStyle::OffsetInBody { .. } => {}
+            // The keyset cursor is a query param only when `into: query`.
+            PaginationStyle::RecordFieldCursor {
+                into: RecordCursorTarget::Query,
+                param,
+                ..
+            } => {
+                if let Some(cursor) = &state.record_field_cursor {
+                    params.insert(param.clone(), value_to_param_string(cursor));
+                }
+            }
+            PaginationStyle::RecordFieldCursor { .. } => {}
         }
     }
 
@@ -272,6 +388,134 @@ impl PaginationStyle {
                 }
                 Ok(has_next)
             }
+            PaginationStyle::OffsetInBody {
+                limit,
+                stop_when_short,
+                ..
+            } => {
+                // Mirror `Offset` (record-count driven), but the offset lands in
+                // the body via `body_params`. A zero-record page always stops.
+                if record_count == 0 {
+                    return Ok(false);
+                }
+                state.offset += record_count;
+                if *stop_when_short && record_count < *limit {
+                    return Ok(false);
+                }
+                // Content-stagnation guard: a server ignoring the body offset
+                // would re-return the identical page forever.
+                let fp = body_fingerprint(body);
+                if state.previous_page_fingerprint == Some(fp) {
+                    tracing::warn!(
+                        "pagination loop detected: OffsetInBody returned an identical page \
+                         (server likely ignoring the body offset) — stopping"
+                    );
+                    state.current_page_is_duplicate = true;
+                    return Ok(false);
+                }
+                state.previous_page_fingerprint = Some(fp);
+                Ok(true)
+            }
+            PaginationStyle::RecordFieldCursor {
+                page_size,
+                stop_when_short,
+                ..
+            } => {
+                // The keyset cursor itself was computed by `update_record_cursor`
+                // (called with this page's records before `advance`). Here we only
+                // decide whether to continue.
+                if record_count == 0 {
+                    return Ok(false);
+                }
+                if *stop_when_short && record_count < *page_size {
+                    return Ok(false);
+                }
+                // Loop guard: if the cursor didn't advance this page, stop rather
+                // than re-issue the identical request forever.
+                let cursor = state
+                    .record_field_cursor
+                    .as_ref()
+                    .map(value_to_param_string);
+                if cursor.is_some() && cursor == state.previous_token {
+                    tracing::warn!(
+                        "pagination loop detected: RecordFieldCursor did not advance \
+                         (cursor {cursor:?} repeated) — stopping"
+                    );
+                    return Ok(false);
+                }
+                state.previous_token = cursor;
+                Ok(true)
+            }
+        }
+    }
+
+    /// Compute this page's keyset cursor for [`PaginationStyle::RecordFieldCursor`]
+    /// (#554), merging the page aggregate of `field` into `state.record_field_cursor`.
+    /// A no-op for every other style. Call this with the page's records *before*
+    /// [`advance`](Self::advance).
+    pub fn update_record_cursor(&self, records: &[Value], state: &mut PaginationState) {
+        if let PaginationStyle::RecordFieldCursor { field, agg, .. } = self {
+            let page_agg = records
+                .iter()
+                .filter_map(|r| r.get(field).cloned())
+                .reduce(|a, b| pick_cursor(*agg, a, b));
+            if let Some(page_agg) = page_agg {
+                state.record_field_cursor = Some(match state.record_field_cursor.take() {
+                    Some(prev) => pick_cursor(*agg, prev, page_agg),
+                    None => page_agg,
+                });
+            }
+        }
+    }
+
+    /// The JSONPath a cursor style reads its next-page token from
+    /// ([`Cursor`](Self::Cursor) / [`CursorInBody`](Self::CursorInBody)); used by
+    /// the resumable-cursor bookmark (#547). `None` for every other style.
+    pub fn cursor_path(&self) -> Option<&str> {
+        match self {
+            PaginationStyle::Cursor {
+                next_token_path, ..
+            }
+            | PaginationStyle::CursorInBody {
+                next_token_path, ..
+            } => Some(next_token_path),
+            _ => None,
+        }
+    }
+
+    /// Request-body fields to inject for body-carrying pagination styles
+    /// (`CursorInBody`, `OffsetInBody`, and `RecordFieldCursor` with `into: body`).
+    /// Empty for every other style, and for the first page of a cursor style
+    /// (nothing extracted yet). Supersedes [`body_cursor`](Self::body_cursor),
+    /// which is retained for API compatibility.
+    pub fn body_params(&self, state: &PaginationState) -> Vec<(String, Value)> {
+        match self {
+            PaginationStyle::CursorInBody {
+                body_cursor_field, ..
+            } => state
+                .next_token
+                .as_deref()
+                .map(|tok| vec![(body_cursor_field.clone(), Value::String(tok.to_owned()))])
+                .unwrap_or_default(),
+            PaginationStyle::OffsetInBody {
+                offset_field,
+                limit_field,
+                limit,
+                ..
+            } => vec![
+                (offset_field.clone(), Value::from(state.offset as u64)),
+                (limit_field.clone(), Value::from(*limit as u64)),
+            ],
+            PaginationStyle::RecordFieldCursor {
+                into: RecordCursorTarget::Body,
+                param,
+                ..
+            } => state
+                .record_field_cursor
+                .clone()
+                .map(|c| vec![(param.clone(), c)])
+                .unwrap_or_default(),
+            _ => Vec::new(),
         }
     }
 
@@ -290,5 +534,217 @@ impl PaginationStyle {
                 .map(|tok| (body_cursor_field.as_str(), tok)),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod new_style_tests {
+    use super::*;
+    use reqwest::header::HeaderMap;
+    use serde_json::json;
+
+    fn offset_in_body() -> PaginationStyle {
+        PaginationStyle::OffsetInBody {
+            offset_field: "offset".into(),
+            limit_field: "limit".into(),
+            limit: 2,
+            stop_when_short: true,
+        }
+    }
+
+    #[test]
+    fn offset_in_body_writes_offset_and_limit_and_advances() {
+        let style = offset_in_body();
+        let mut state = PaginationState::default();
+
+        // Page 1: offset 0, limit 2.
+        let bp = style.body_params(&state);
+        assert_eq!(
+            bp,
+            vec![("offset".into(), json!(0)), ("limit".into(), json!(2))]
+        );
+        // apply_params must NOT touch the query string.
+        let mut params = HashMap::new();
+        style.apply_params(&mut params, &state);
+        assert!(params.is_empty());
+
+        // A full page → advance, offset += 2.
+        let body = json!([{"id": 1}, {"id": 2}]);
+        assert!(
+            style
+                .advance(&body, &HeaderMap::new(), &mut state, 2)
+                .unwrap()
+        );
+        assert_eq!(state.offset, 2);
+        let bp = style.body_params(&state);
+        assert_eq!(bp[0], ("offset".into(), json!(2)));
+
+        // A short page ends pagination.
+        let body2 = json!([{"id": 3}]);
+        assert!(
+            !style
+                .advance(&body2, &HeaderMap::new(), &mut state, 1)
+                .unwrap()
+        );
+        assert_eq!(state.offset, 3);
+    }
+
+    #[test]
+    fn offset_in_body_zero_records_stops() {
+        let style = offset_in_body();
+        let mut state = PaginationState::default();
+        assert!(
+            !style
+                .advance(&json!([]), &HeaderMap::new(), &mut state, 0)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn offset_in_body_stagnation_guard_stops_when_short_disabled() {
+        let style = PaginationStyle::OffsetInBody {
+            offset_field: "o".into(),
+            limit_field: "l".into(),
+            limit: 2,
+            stop_when_short: false,
+        };
+        let mut state = PaginationState::default();
+        let body = json!([{"id": 1}, {"id": 2}]);
+        // First full page → continue.
+        assert!(
+            style
+                .advance(&body, &HeaderMap::new(), &mut state, 2)
+                .unwrap()
+        );
+        // Identical page again (server ignored offset) → stop + mark duplicate.
+        assert!(
+            !style
+                .advance(&body, &HeaderMap::new(), &mut state, 2)
+                .unwrap()
+        );
+        assert!(state.current_page_is_duplicate);
+    }
+
+    fn keyset(into: RecordCursorTarget) -> PaginationStyle {
+        PaginationStyle::RecordFieldCursor {
+            field: "JournalNumber".into(),
+            into,
+            param: "offset".into(),
+            agg: RecordCursorAgg::Max,
+            stop_when_short: true,
+            page_size: 2,
+        }
+    }
+
+    #[test]
+    fn record_field_cursor_computes_max_and_injects_query() {
+        let style = keyset(RecordCursorTarget::Query);
+        let mut state = PaginationState::default();
+
+        // Page 1: no cursor yet → no query param.
+        let mut params = HashMap::new();
+        style.apply_params(&mut params, &state);
+        assert!(!params.contains_key("offset"));
+
+        let page = vec![json!({"JournalNumber": 10}), json!({"JournalNumber": 25})];
+        style.update_record_cursor(&page, &mut state);
+        assert_eq!(state.record_field_cursor, Some(json!(25)));
+
+        // Full page → continue.
+        assert!(
+            style
+                .advance(&json!({}), &HeaderMap::new(), &mut state, 2)
+                .unwrap()
+        );
+        // Next request carries the max as the offset param.
+        let mut params = HashMap::new();
+        style.apply_params(&mut params, &state);
+        assert_eq!(params.get("offset").unwrap(), "25");
+
+        // A later lower page does not move a `max` cursor backwards.
+        let page2 = vec![json!({"JournalNumber": 5})];
+        style.update_record_cursor(&page2, &mut state);
+        assert_eq!(state.record_field_cursor, Some(json!(25)));
+    }
+
+    #[test]
+    fn record_field_cursor_into_body() {
+        let style = keyset(RecordCursorTarget::Body);
+        let mut state = PaginationState::default();
+        assert!(style.body_params(&state).is_empty());
+        style.update_record_cursor(&[json!({"JournalNumber": 7})], &mut state);
+        assert_eq!(style.body_params(&state), vec![("offset".into(), json!(7))]);
+        // apply_params does not inject into the query for `into: body`.
+        let mut params = HashMap::new();
+        style.apply_params(&mut params, &state);
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn record_field_cursor_stops_on_short_page_and_non_advance() {
+        // Short page ends pagination.
+        let style = keyset(RecordCursorTarget::Query);
+        let mut state = PaginationState::default();
+        style.update_record_cursor(&[json!({"JournalNumber": 3})], &mut state);
+        assert!(
+            !style
+                .advance(&json!({}), &HeaderMap::new(), &mut state, 1)
+                .unwrap()
+        );
+
+        // Non-advancing cursor trips the loop guard.
+        let mut state = PaginationState::default();
+        let page = vec![json!({"JournalNumber": 9}), json!({"JournalNumber": 9})];
+        style.update_record_cursor(&page, &mut state);
+        assert!(
+            style
+                .advance(&json!({}), &HeaderMap::new(), &mut state, 2)
+                .unwrap()
+        );
+        // Same max again → stop.
+        style.update_record_cursor(&page, &mut state);
+        assert!(
+            !style
+                .advance(&json!({}), &HeaderMap::new(), &mut state, 2)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn record_field_cursor_min_agg() {
+        let style = PaginationStyle::RecordFieldCursor {
+            field: "seq".into(),
+            into: RecordCursorTarget::Query,
+            param: "before".into(),
+            agg: RecordCursorAgg::Min,
+            stop_when_short: true,
+            page_size: 2,
+        };
+        let mut state = PaginationState::default();
+        style.update_record_cursor(&[json!({"seq": 10}), json!({"seq": 4})], &mut state);
+        assert_eq!(state.record_field_cursor, Some(json!(4)));
+        style.update_record_cursor(&[json!({"seq": 2})], &mut state);
+        assert_eq!(state.record_field_cursor, Some(json!(2)));
+    }
+
+    #[test]
+    fn cursor_path_only_for_cursor_styles() {
+        assert_eq!(
+            PaginationStyle::Cursor {
+                next_token_path: "$.n".into(),
+                param_name: "c".into(),
+            }
+            .cursor_path(),
+            Some("$.n")
+        );
+        assert_eq!(
+            PaginationStyle::CursorInBody {
+                next_token_path: "$.p.next".into(),
+                body_cursor_field: "after".into(),
+            }
+            .cursor_path(),
+            Some("$.p.next")
+        );
+        assert_eq!(offset_in_body().cursor_path(), None);
     }
 }

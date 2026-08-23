@@ -59,6 +59,8 @@ pub mod util;
 pub mod verify;
 pub mod window;
 pub mod write_mode;
+#[cfg(feature = "transform-zip-columns")]
+pub mod zip_columns;
 
 #[cfg(feature = "compression")]
 pub mod compression;
@@ -138,7 +140,7 @@ pub use stage::{CompiledUnpivot, UnpivotSpec};
 pub use stage::{ExplodeSpec, OnMissing};
 #[cfg(feature = "transform-filter")]
 pub use stage::{FilterOp, FilterSpec};
-pub use stage::{TransformStage, compile_stage};
+pub use stage::{TransformStage, apply_stages, compile_stage};
 pub use staging::{
     StagedFile, StagingCleanup, StagingCompression, StagingFormat, StagingLocation, StagingScheme,
     StagingSpec, serialize_records,
@@ -175,6 +177,8 @@ pub use write_mode::{
     DeleteMarker, KeyTuple, OverwriteScope, WriteMode, WritePlan, WriteSpec, key_to_doc_id,
     key_to_filter, plan_writes,
 };
+#[cfg(feature = "transform-zip-columns")]
+pub use zip_columns::{CompiledZipColumns, ZipColumnsSpec};
 
 // Re-export dependencies that connector authors need, so they only depend on
 // `faucet-core` instead of adding `async-trait` and `serde_json` themselves.

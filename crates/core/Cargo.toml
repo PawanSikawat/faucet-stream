@@ -42,6 +42,7 @@ transform-unpivot = []
 transform-tree-flatten = []
 # Cartesian product of sibling array fields → one row per combination (#534).
 transform-cross-join = []
+transform-zip-columns = []
 transform-filter = []
 transform-explode = []
 transform-cdc-unwrap = []
@@ -66,6 +67,7 @@ transforms = [
     "transform-unpivot",
     "transform-tree-flatten",
     "transform-cross-join",
+    "transform-zip-columns",
     "transform-filter",
     "transform-explode",
     "transform-cdc-unwrap",

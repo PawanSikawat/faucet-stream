@@ -11,6 +11,8 @@ every style has a loop/termination guard so a misbehaving API can't loop forever
 | `CursorInBody` | the next-token JSONPath is null/absent (or repeats) — for POST-search APIs that take the cursor in the request body |
 | `PageNumber` | a page returns zero records (or an identical body repeats) |
 | `Offset` | the offset reaches `total` (via `total_path`) or a short page arrives |
+| `OffsetInBody` | a short page arrives — offset/limit are written into the JSON **request body** (POST-query APIs) |
+| `RecordFieldCursor` | a short page arrives — keyset paging by the running max/min of a **record field** |
 | `LinkHeader` | there's no `rel="next"` in the `Link` response header |
 | `NextLinkInBody` | the next-page URL in the body is absent, null, or empty |
 
@@ -71,6 +73,42 @@ pagination:
   offset_param: offset
   total_path: $.meta.total             # optional; enables an exact stop
 ```
+
+## Offset / limit in the body (POST-query APIs)
+
+For POST endpoints that take `offset`/`limit` in the JSON **request body** (not the query string). The offset advances by each page's record count and paging stops on a short page.
+
+```yaml
+pagination:
+  type: OffsetInBody
+  offset_field: offset
+  limit_field: limit
+  limit: 500
+  stop_when_short: true                # default
+```
+
+## Keyset (record-field cursor)
+
+Page by the running **max** (or **min**) of a record field — the pattern APIs like Xero's `journals` use (`offset = max(JournalNumber)` of the last page). Stops on a short page.
+
+```yaml
+pagination:
+  type: RecordFieldCursor
+  field: JournalNumber
+  into: query                          # or `body`
+  param: offset
+  agg: max                             # or `min`
+  page_size: 100
+  stop_when_short: true
+```
+
+## Resumable cursor & multi-array responses
+
+- **`persist_cursor: true`** on a `Cursor` / `CursorInBody` stream saves the terminal cursor as the run's bookmark (via a `state:` store) and seeds it into the next run's first request — so an envelope-cursor feed (e.g. Plaid `/transactions/sync`) resumes incrementally instead of re-pulling from the start.
+- **`records_multi`** emits several response arrays in one pass (one pagination advance), each stamped with a configurable `op_field` — pair with a sink `write_mode: upsert` + `delete_marker` to route added/modified→upsert and removed→delete from a single sync response.
+- **`record_ancestors`** lifts fields from an enclosing array-element ancestor onto records unwrapped from a nested `records_path` (e.g. keep a Stripe event's envelope `id` on each unwrapped object).
+
+See the [`faucet-source-rest` README](https://github.com/faucet-hq/faucet-stream/tree/main/crates/source/rest) for the full field reference.
 
 ## Link header
 

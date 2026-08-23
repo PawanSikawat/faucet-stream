@@ -5,13 +5,13 @@
 [![MSRV](https://img.shields.io/crates/msrv/faucet-source-rest.svg)](https://github.com/faucet-hq/faucet-stream/blob/main/rust-toolchain.toml)
 [![License](https://img.shields.io/crates/l/faucet-source-rest.svg)](https://github.com/faucet-hq/faucet-stream#license)
 
-A declarative, config-driven **REST API source** with pluggable authentication, six pagination styles, schema inference, and incremental replication. Part of the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem.
+A declarative, config-driven **REST API source** with pluggable authentication, nine pagination styles, schema inference, and incremental replication. Part of the [faucet-stream](https://github.com/faucet-hq/faucet-stream) ecosystem.
 
 This is the flagship faucet-stream source: point it at any JSON-over-HTTP API, describe how to authenticate and paginate, and it streams every record page-by-page into any faucet-stream sink — with retries, `Retry-After` honouring, loop detection, and resumable bookmarks — all from one YAML config and no glue code.
 
 ## Feature highlights
 
-- **Seven pagination styles** — `Cursor`, `CursorInBody` (POST-search cursor in the request body), `LinkHeader`, `NextLinkInBody`, `PageNumber`, `Offset`, and `None`, each with its own termination/loop guard so a misbehaving API can't loop forever.
+- **Nine pagination styles** — `Cursor`, `CursorInBody` (POST-search cursor in the request body), `OffsetInBody` (offset/limit in the request body), `RecordFieldCursor` (keyset — page by the running max/min of a record field), `LinkHeader`, `NextLinkInBody`, `PageNumber`, `Offset`, and `None`, each with its own termination/loop guard so a misbehaving API can't loop forever.
 - **Eight auth methods** — `bearer`, `basic`, `api_key` (header), `api_key_query`, `oauth2` (client credentials with token caching), `token_endpoint` (fetch a token from an arbitrary endpoint), `custom` headers, and `none` — plus shared `auth: { ref }` providers via the CLI's top-level `auth:` catalog.
 - **Mutual TLS** — present a client certificate (PEM pair or PKCS#12) on every request via a `tls:` block (feature `mtls`), for APIs that require client-certificate auth.
 - **Memory-bounded streaming** — overrides `Source::stream_pages`, so `Pipeline::run` writes each page to the sink as it arrives; peak memory stays `O(page)` regardless of total record count.
@@ -119,6 +119,39 @@ the secrets/redaction boundary like any other config string.
 | `records_path` | string / null | `null` | JSONPath expression to extract the record array from each response body (e.g. `$.data[*]`). When unset, the whole body is treated as the record set. |
 | `max_pages` | int / null | `100` | Hard cap on pages fetched, across **all** pagination styles. `null` removes the cap (rely on the style's own termination). |
 | `request_delay` | int (seconds) / null | `null` | Delay between consecutive page requests. |
+
+**Body & keyset pagination.** Two styles page without a query param or a response token:
+
+```yaml
+# OffsetInBody — POST-query APIs that carry offset/limit in the JSON body.
+pagination: { type: OffsetInBody, offset_field: offset, limit_field: limit, limit: 500, stop_when_short: true }
+
+# RecordFieldCursor — keyset: page by the running max (or min) of a record field.
+pagination: { type: RecordFieldCursor, field: JournalNumber, into: query, param: offset, agg: max, page_size: 100, stop_when_short: true }
+```
+
+Both stop on a short page (fewer than `limit`/`page_size` records) and guard against a non-advancing cursor.
+
+**Resumable cursor (`persist_cursor`).** With `persist_cursor: true`, a `Cursor` / `CursorInBody` stream emits its terminal cursor as the run's `StreamPage` bookmark (persisted via a `state:` store) and, on the next run, seeds that saved cursor into the first request — so an envelope-cursor feed (e.g. Plaid `/transactions/sync`) resumes incrementally instead of re-pulling from the start.
+
+### Multi-array fan-out (`records_multi`) & envelope carry (`record_ancestors`)
+
+```yaml
+# records_multi — emit several arrays from ONE response (one pagination advance),
+# each stamped with an op marker for a downstream upsert sink's delete_marker.
+records_multi:
+  - { path: "$.added[*]",    op: upsert }
+  - { path: "$.modified[*]", op: upsert }
+  - { path: "$.removed[*]",  op: delete }
+op_field: _op          # each record gets { _op: "<op>" }; default "_op"
+
+# record_ancestors — lift fields from the enclosing array-element ancestor onto
+# each record when records_path selects a NESTED array (e.g. Stripe events).
+records_path: "$.data[*].data.object"
+record_ancestors: { event_id: id, event_created: created }
+```
+
+`records_multi` is mutually exclusive with `records_path` / `record_ancestors` and requires a JSON response. Pair it with a sink `write_mode: upsert` + `delete_marker: { field: _op, values: [delete] }` to route inserts/updates and deletes from a single sync response.
 
 ### Reliability
 
@@ -334,6 +367,22 @@ async_job:
 decode:
   - parse: { format: csv }
 ```
+
+#### Result-set continuation (`fetch.locator_*`)
+
+When a job's results span several pages behind a continuation locator (e.g. the Salesforce Bulk API's `Sforce-Locator` response header), loop the fetch until the locator is absent:
+
+```yaml
+async_job:
+  # …submit / poll / status…
+  fetch:
+    url: "/jobs/${job_id}/result"
+    locator_header: "Sforce-Locator"   # or locator_body: "$.nextLocator"
+    locator_param: "locator"           # sent as ?locator=<value> on each continuation
+    records_path: "$.records[*]"
+```
+
+Records are appended across pages; the loop stops when the locator header/body is missing, empty, or `"null"`.
 
 ### Singer / Meltano metadata
 

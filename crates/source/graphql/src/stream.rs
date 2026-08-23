@@ -1,6 +1,9 @@
 //! GraphQL stream executor.
 
-use crate::config::{GraphqlAuth, GraphqlPagination, GraphqlStreamConfig};
+use crate::config::{
+    GraphqlAuth, GraphqlOffsetPagination, GraphqlPagination, GraphqlPaginationSpec,
+    GraphqlStreamConfig,
+};
 use async_trait::async_trait;
 use base64::Engine as _;
 use faucet_core::util::{self, DEFAULT_ERROR_BODY_MAX_LEN};
@@ -188,6 +191,7 @@ impl GraphqlStream {
     ) -> Result<Vec<Value>, FaucetError> {
         let mut all_records = Vec::new();
         let mut cursor: Option<String> = None;
+        let mut offset = 0usize;
         let mut pages_fetched = 0usize;
         let mut warned_unresolved_has_next = false;
         let mut cursor_guard = CursorGuard::new();
@@ -200,14 +204,15 @@ impl GraphqlStream {
                 break;
             }
 
-            let body = self.execute_query(&cursor, context).await?;
+            let body = self.execute_query(&cursor, offset, context).await?;
             let records = self.extract_records(&body)?;
+            let records_in_page = records.len();
             all_records.extend(records);
             pages_fetched += 1;
 
             // Check pagination.
             match &self.config.pagination {
-                Some(pag) => {
+                Some(GraphqlPaginationSpec::Cursor(pag)) => {
                     let (step, unresolved) = decide_next_page(&body, pag, cursor.as_deref());
                     if unresolved && !warned_unresolved_has_next {
                         tracing::warn!(
@@ -234,6 +239,13 @@ impl GraphqlStream {
                         }
                     }
                 }
+                Some(GraphqlPaginationSpec::Offset(off)) => {
+                    if offset_should_continue(records_in_page, off) {
+                        offset += off.page_size;
+                    } else {
+                        break;
+                    }
+                }
                 None => break,
             }
         }
@@ -247,9 +259,14 @@ impl GraphqlStream {
     }
 
     /// Execute a single GraphQL query, merging parent context into variables.
+    ///
+    /// `cursor` carries the Relay cursor for the next request (cursor mode);
+    /// `offset` carries the current offset (offset mode). Only the field the
+    /// active pagination style uses is injected — the other stays inert.
     async fn execute_query(
         &self,
         cursor: &Option<String>,
+        offset: usize,
         context: &std::collections::HashMap<String, Value>,
     ) -> Result<Value, FaucetError> {
         let mut variables = self.config.variables.clone();
@@ -263,23 +280,32 @@ impl GraphqlStream {
             }
         }
 
-        // Inject cursor and page size into variables.
-        if let (Some(pag), Some(cursor_val)) = (&self.config.pagination, cursor)
-            && let Value::Object(ref mut map) = variables
-        {
-            map.insert(pag.cursor_variable.clone(), json!(cursor_val));
-        }
-        // Inject `first:` (or whatever `page_size_variable` is named) from
-        // `batch_size`. `batch_size = 0` is the "use upstream default"
-        // sentinel — we omit the variable entirely in that case.
-        if let Some(pag) = &self.config.pagination
-            && self.config.batch_size != 0
-            && let Value::Object(map) = &mut variables
-        {
-            map.insert(
-                pag.page_size_variable.clone(),
-                json!(self.config.batch_size),
-            );
+        // Inject the per-request pagination variable(s).
+        match &self.config.pagination {
+            // Cursor mode: inject the `after` cursor (once we have one) and the
+            // page-size variable from `batch_size`. `batch_size = 0` is the
+            // "use upstream default" sentinel — we omit the size variable.
+            Some(GraphqlPaginationSpec::Cursor(pag)) => {
+                if let (Some(cursor_val), Value::Object(map)) = (cursor, &mut variables) {
+                    map.insert(pag.cursor_variable.clone(), json!(cursor_val));
+                }
+                if self.config.batch_size != 0
+                    && let Value::Object(map) = &mut variables
+                {
+                    map.insert(
+                        pag.page_size_variable.clone(),
+                        json!(self.config.batch_size),
+                    );
+                }
+            }
+            // Offset mode: inject the current offset as a JSON number. The page
+            // size is not injected — the user bakes the limit into the query.
+            Some(GraphqlPaginationSpec::Offset(off)) => {
+                if let Value::Object(map) = &mut variables {
+                    map.insert(off.offset_variable.clone(), json!(offset));
+                }
+            }
+            None => {}
         }
 
         let payload = json!({
@@ -367,7 +393,7 @@ impl GraphqlStream {
             // GraphQL servers don't standardise an error-code field.
             let lower = msg.to_lowercase();
             if self.config.batch_size == 0
-                && let Some(pag) = &self.config.pagination
+                && let Some(GraphqlPaginationSpec::Cursor(pag)) = &self.config.pagination
             {
                 let var_name = pag.page_size_variable.to_lowercase();
                 if lower.contains(&var_name)
@@ -433,6 +459,7 @@ impl GraphqlStream {
 
         Box::pin(async_stream::try_stream! {
             let mut cursor: Option<String> = None;
+            let mut offset = 0usize;
             let mut cursor_guard = CursorGuard::new();
             let mut pages_fetched = 0usize;
             let mut warned_unresolved_has_next = false;
@@ -451,14 +478,15 @@ impl GraphqlStream {
                     break;
                 }
 
-                let body = self.execute_query(&cursor, &owned_context).await?;
+                let body = self.execute_query(&cursor, offset, &owned_context).await?;
                 let records = self.extract_records(&body)?;
+                let records_in_page = records.len();
                 pages_fetched += 1;
 
                 // Advance pagination state BEFORE yielding the current page,
                 // so the bookmark is only attached on the final page.
                 let has_next = match &self.config.pagination {
-                    Some(pag) => {
+                    Some(GraphqlPaginationSpec::Cursor(pag)) => {
                         let (step, unresolved) =
                             decide_next_page(&body, pag, cursor.as_deref());
                         if unresolved && !warned_unresolved_has_next {
@@ -487,6 +515,13 @@ impl GraphqlStream {
                                 }
                             }
                         }
+                    }
+                    Some(GraphqlPaginationSpec::Offset(off)) => {
+                        let advance = offset_should_continue(records_in_page, off);
+                        if advance {
+                            offset += off.page_size;
+                        }
+                        advance
                     }
                     None => false,
                 };
@@ -619,6 +654,27 @@ fn decide_next_page(
     }
 }
 
+/// Pure offset-pagination advance decision.
+///
+/// Returns `true` when another page should be fetched (the caller then advances
+/// the offset by `page_size`), `false` to stop. Termination rules:
+///
+/// - A **fully empty** page (0 records) always stops — this is the unconditional
+///   loop guard that keeps `stop_when_short: false` from paginating forever.
+/// - With `stop_when_short` (the default), a **short** page — fewer than
+///   `page_size` records — is the last one and stops pagination.
+/// - Otherwise (a full page, or `stop_when_short: false` with a non-empty page)
+///   pagination continues.
+fn offset_should_continue(records_in_page: usize, off: &GraphqlOffsetPagination) -> bool {
+    if records_in_page == 0 {
+        return false;
+    }
+    if off.stop_when_short && records_in_page < off.page_size {
+        return false;
+    }
+    true
+}
+
 /// Bounded record of recently-advanced pagination cursors.
 ///
 /// [`decide_next_page`] only compares against the *immediately previous* cursor,
@@ -738,6 +794,46 @@ mod tests {
             decide_next_page(&body_no_cursor, &pageinfo_pagination(), Some("c1"));
         assert_eq!(step, PageStep::Stop);
         assert!(unresolved);
+    }
+
+    fn offset_pagination(page_size: usize, stop_when_short: bool) -> GraphqlOffsetPagination {
+        GraphqlOffsetPagination {
+            r#type: crate::config::OffsetPaginationKind::Offset,
+            offset_variable: "q_offset".into(),
+            page_size,
+            stop_when_short,
+        }
+    }
+
+    #[test]
+    fn offset_continues_on_full_page() {
+        // A page filled to page_size means there may be more — keep going.
+        assert!(offset_should_continue(250, &offset_pagination(250, true)));
+    }
+
+    #[test]
+    fn offset_stops_on_short_page_when_stop_when_short() {
+        // Fewer than page_size records with stop_when_short: the final page.
+        assert!(!offset_should_continue(100, &offset_pagination(250, true)));
+    }
+
+    #[test]
+    fn offset_continues_on_short_page_when_not_stop_when_short() {
+        // stop_when_short: false keeps paginating on a non-empty short page.
+        assert!(offset_should_continue(100, &offset_pagination(250, false)));
+    }
+
+    #[test]
+    fn offset_always_stops_on_empty_page() {
+        // An empty page terminates regardless of stop_when_short (loop guard).
+        assert!(!offset_should_continue(0, &offset_pagination(250, true)));
+        assert!(!offset_should_continue(0, &offset_pagination(250, false)));
+    }
+
+    #[test]
+    fn offset_exact_page_size_is_full_not_short() {
+        // records_in_page == page_size is a full page (>= not <), so continue.
+        assert!(offset_should_continue(1, &offset_pagination(1, true)));
     }
 
     #[test]

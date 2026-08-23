@@ -106,6 +106,16 @@ pub fn values_to_record_batch(
     json_to_record_batch(&objs, schema)
 }
 
+/// Build a [`RecordBatch`] from a slice of JSON objects (one row each).
+///
+/// Infers the schema from the records, then encodes them. Used by the `http`
+/// reference relation, whose fetched rows are already JSON objects. Every
+/// element must be a JSON object; a non-object surfaces as a `FaucetError`.
+pub fn records_to_record_batch(records: &[Value]) -> Result<RecordBatch, FaucetError> {
+    let schema = infer_schema(records)?;
+    json_to_record_batch(records, schema)
+}
+
 /// Compare two schemas for field-level equality (name + data-type + nullability).
 ///
 /// Used by the per-page schema cache in the runtime to detect schema drift

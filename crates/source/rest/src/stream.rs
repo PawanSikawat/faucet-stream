@@ -165,6 +165,44 @@ fn jsonpath_first_string(v: &Value, path: &str) -> Option<String> {
     }
 }
 
+/// First JSONPath match as an owned [`Value`] (type-preserving). Used by the
+/// resumable-cursor bookmark (#547) so a numeric cursor stays a number.
+fn jsonpath_first_value(v: &Value, path: &str) -> Option<Value> {
+    use jsonpath_rust::JsonPath;
+    v.query(path).ok()?.first().map(|x| (*x).clone())
+}
+
+/// A locator value counts as "no more pages" when it is empty or the literal
+/// string `null` (Salesforce Bulk sends `Sforce-Locator: null` when done).
+fn is_terminal_locator(value: &str) -> bool {
+    let v = value.trim();
+    v.is_empty() || v.eq_ignore_ascii_case("null")
+}
+
+/// Read the next result-set locator (#557) from the fetch response header or
+/// body, per the `fetch` config. Returns `None` when no locator source is
+/// configured or the locator signals completion.
+fn next_locator(
+    headers: &HeaderMap,
+    body: Option<&Value>,
+    job: &crate::async_job::AsyncJobConfig,
+) -> Option<String> {
+    if let Some(name) = &job.fetch.locator_header
+        && let Some(raw) = headers.get(name).and_then(|v| v.to_str().ok())
+        && !is_terminal_locator(raw)
+    {
+        return Some(raw.trim().to_string());
+    }
+    if let Some(path) = &job.fetch.locator_body
+        && let Some(body) = body
+        && let Some(raw) = jsonpath_first_string(body, path)
+        && !is_terminal_locator(&raw)
+    {
+        return Some(raw.trim().to_string());
+    }
+    None
+}
+
 /// Insert a header from string parts, mapping invalid names/values to a typed
 /// config error rather than panicking.
 fn insert_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(), FaucetError> {
@@ -424,6 +462,20 @@ impl RestStream {
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
+    /// Extract a page's records from a parsed response body, honouring the
+    /// configured extraction mode: `records_multi` (#548, op-stamped multi-array
+    /// fan-out), `record_ancestors` (#549, nested path with lifted ancestor
+    /// fields), or the classic single `records_path`.
+    fn extract_page(&self, body: &Value) -> Result<Vec<Value>, FaucetError> {
+        extract::extract_configured(
+            body,
+            self.config.records_path.as_deref(),
+            self.config.record_ancestors.as_ref(),
+            &self.config.records_multi,
+            self.config.op_field.as_deref().unwrap_or("_op"),
+        )
+    }
+
     /// Core pagination loop shared by [`Source::stream_pages`] and
     /// [`fetch_partition`](Self::fetch_partition).
     ///
@@ -540,8 +592,18 @@ impl RestStream {
                     pass.as_ref().map(|w| Value::String(w.end.to_rfc3339()));
 
                 let mut state = PaginationState::default();
+                // #547: on resume, seed the stored cursor into the first request
+                // (query param for `Cursor`, body field for `CursorInBody`).
+                if self.config.persist_cursor
+                    && let Some(seed) = effective_start.as_ref()
+                {
+                    state.next_token =
+                        Some(crate::pagination::value_to_param_string(seed));
+                }
                 let mut pages_fetched = 0usize;
                 let mut running_max: Option<Value> = effective_start.clone();
+                // #547: the terminal cursor to persist as this run's bookmark.
+                let mut running_cursor: Option<Value> = effective_start.clone();
                 let mut bookmark_emitted = false;
 
                 loop {
@@ -562,19 +624,14 @@ impl RestStream {
                         _ => None,
                     };
 
-                    // POST-search (CursorInBody): the extracted cursor is injected
-                    // into the request body for every page after the first.
-                    let body_cursor: Option<(String, String)> = self
-                        .config
-                        .pagination
-                        .body_cursor(&state)
-                        .map(|(f, v)| (f.to_string(), v.to_string()));
+                    // Body-carrying pagination (CursorInBody / OffsetInBody /
+                    // RecordFieldCursor into:body): fields injected into the
+                    // request JSON body for this page.
+                    let body_params = self.config.pagination.body_params(&state);
 
                     let params_clone = params.clone();
                     let ctx_ref = owned_context.as_ref();
                     let is_first_page = pages_fetched == 0;
-                    let body_cursor_ref =
-                        body_cursor.as_ref().map(|(f, v)| (f.as_str(), v.as_str()));
                     let (body, resp_headers) = retry::execute_with_retry(
                         // The REST runner takes retries-after-first; the policy holds
                         // total attempts. Feed both knobs from the resolved policy so
@@ -589,15 +646,26 @@ impl RestStream {
                                 url_override.as_deref(),
                                 ctx_ref,
                                 is_first_page,
-                                body_cursor_ref,
+                                &body_params,
                             )
                         },
                     )
                     .await?;
 
-                    let raw_records =
-                        extract::extract_records(&body, self.config.records_path.as_deref())?;
+                    let raw_records = self.extract_page(&body)?;
                     let raw_count = raw_records.len();
+
+                    // #547: track the terminal cursor to persist as the bookmark.
+                    if self.config.persist_cursor
+                        && let Some(path) = self.config.pagination.cursor_path()
+                        && let Some(cursor) = jsonpath_first_value(&body, path)
+                    {
+                        match &cursor {
+                            Value::Null => {}
+                            Value::String(s) if s.is_empty() => {}
+                            _ => running_cursor = Some(cursor),
+                        }
+                    }
 
                     // Client-side incremental filter. Skipped for windowed passes:
                     // the server already bounds each window, and filtering by the
@@ -648,6 +716,13 @@ impl RestStream {
                         }
                     }
 
+                    // #554: derive this page's keyset cursor (max/min of the
+                    // configured field) so the next request can page by it. A
+                    // no-op for every non-RecordFieldCursor style.
+                    self.config
+                        .pagination
+                        .update_record_cursor(&records, &mut state);
+
                     // Advance pagination state to learn whether there is a next
                     // page BEFORE yielding the current one. This way the bookmark
                     // is only attached to pages where `has_next == false`, and we
@@ -672,7 +747,9 @@ impl RestStream {
                         break;
                     } else {
                         // Final page of this pass — attach the pass bookmark.
-                        let bookmark = if windowed {
+                        let bookmark = if self.config.persist_cursor {
+                            running_cursor.clone()
+                        } else if windowed {
                             window_bookmark.clone()
                         } else {
                             running_max.clone()
@@ -693,7 +770,9 @@ impl RestStream {
                 // still persists and the next run resumes from here. (Safe forward
                 // progress under max_pages assumes ascending order by the
                 // replication key — see the warning emitted above, audit #146 H13.)
-                let pass_bookmark = if windowed {
+                let pass_bookmark = if self.config.persist_cursor {
+                    running_cursor.clone()
+                } else if windowed {
                     window_bookmark.clone()
                 } else {
                     running_max.clone()
@@ -778,7 +857,7 @@ impl RestStream {
         url_override: Option<&str>,
         path_context: Option<&HashMap<String, Value>>,
         is_first_page: bool,
-        body_cursor: Option<(&str, &str)>,
+        body_params: &[(String, Value)],
     ) -> Result<(Value, HeaderMap), FaucetError> {
         match self
             .execute_request_once(
@@ -786,7 +865,7 @@ impl RestStream {
                 url_override,
                 path_context,
                 is_first_page,
-                body_cursor,
+                body_params,
             )
             .await
         {
@@ -801,7 +880,7 @@ impl RestStream {
                     url_override,
                     path_context,
                     is_first_page,
-                    body_cursor,
+                    body_params,
                 )
                 .await
             }
@@ -822,7 +901,7 @@ impl RestStream {
                     url_override,
                     path_context,
                     is_first_page,
-                    body_cursor,
+                    body_params,
                 )
                 .await
             }
@@ -889,7 +968,7 @@ impl RestStream {
         headers: &HashMap<String, String>,
         query: &HashMap<String, String>,
         json: Option<&Value>,
-    ) -> Result<Vec<u8>, FaucetError> {
+    ) -> Result<(Vec<u8>, HeaderMap), FaucetError> {
         let m = reqwest::Method::from_bytes(method.to_uppercase().as_bytes()).map_err(|_| {
             FaucetError::Config(format!("async_job: invalid HTTP method '{method}'"))
         })?;
@@ -925,7 +1004,8 @@ impl RestStream {
                 body: format!("async_job: {url} returned HTTP {}", status.as_u16()),
             });
         }
-        Ok(resp.bytes().await?.to_vec())
+        let resp_headers = resp.headers().clone();
+        Ok((resp.bytes().await?.to_vec(), resp_headers))
     }
 
     async fn job_request_json(
@@ -936,7 +1016,7 @@ impl RestStream {
         query: &HashMap<String, String>,
         json: Option<&Value>,
     ) -> Result<Value, FaucetError> {
-        let bytes = self
+        let (bytes, _headers) = self
             .job_request_bytes(method, url, headers, query, json)
             .await?;
         serde_json::from_slice(&bytes)
@@ -1028,42 +1108,82 @@ impl RestStream {
             }
         };
 
-        // 4) Fetch the result and decode it.
-        let bytes = self
-            .job_request_bytes(
-                &job.fetch.method,
-                &fetch_url,
-                &job.fetch.headers,
-                &job.fetch.query,
-                job.fetch.json.as_ref(),
-            )
-            .await?;
+        // 4) Fetch the result and decode it — looping across locator-paged result
+        // sets (#557) when a `locator_header` / `locator_body` is configured.
+        // Without a locator this runs exactly once (the classic single fetch).
+        let mut all_records = Vec::new();
+        let mut locator: Option<String> = None;
+        loop {
+            // Send the locator (when we have one) as the configured query param.
+            let mut query = job.fetch.query.clone();
+            if let (Some(loc), Some(param)) = (&locator, &job.fetch.locator_param) {
+                query.insert(param.clone(), loc.clone());
+            }
+            let (bytes, resp_headers) = self
+                .job_request_bytes(
+                    &job.fetch.method,
+                    &fetch_url,
+                    &job.fetch.headers,
+                    &query,
+                    job.fetch.json.as_ref(),
+                )
+                .await?;
+            let (records, body_value) = self.parse_fetch_page(&bytes, job).await?;
+            all_records.extend(records);
+
+            // Determine the next locator from the header or the body; stop when
+            // it is absent, empty, `"null"`, or repeats (loop guard).
+            let next = next_locator(&resp_headers, body_value.as_ref(), job);
+            match next {
+                Some(loc) if locator.as_deref() != Some(loc.as_str()) => {
+                    locator = Some(loc);
+                }
+                _ => break,
+            }
+        }
+        Ok(all_records)
+    }
+
+    /// Parse one async-job fetch page into records, returning the parsed JSON
+    /// body too (for `locator_body` extraction) when the result is JSON. Mirrors
+    /// the single-fetch parsing: a `decode:` pipeline wins, else `response_format`
+    /// (JSON honouring `fetch.records_path` or the source `records_path`).
+    async fn parse_fetch_page(
+        &self,
+        bytes: &[u8],
+        job: &crate::async_job::AsyncJobConfig,
+    ) -> Result<(Vec<Value>, Option<Value>), FaucetError> {
         if !self.config.decode.is_empty() {
-            crate::decode::run_decode(&bytes, &self.config.decode).await
-        } else {
-            match self.config.response_format {
-                crate::config::ResponseFormat::Json => {
-                    let v: Value = serde_json::from_slice(&bytes).map_err(|e| {
-                        FaucetError::Source(format!("async_job: result is not JSON: {e}"))
-                    })?;
-                    Ok(extract::extract_records(
-                        &v,
-                        self.config.records_path.as_deref(),
-                    )?)
-                }
-                crate::config::ResponseFormat::Csv => {
-                    crate::format::parse_csv(
-                        &bytes,
-                        self.config.csv_delimiter,
-                        self.config.csv_has_headers,
-                    )
-                    .await
-                }
-                crate::config::ResponseFormat::Excel => crate::format::parse_excel(
-                    &bytes,
+            let records = crate::decode::run_decode(bytes, &self.config.decode).await?;
+            return Ok((records, None));
+        }
+        match self.config.response_format {
+            crate::config::ResponseFormat::Json => {
+                let v: Value = serde_json::from_slice(bytes).map_err(|e| {
+                    FaucetError::Source(format!("async_job: result is not JSON: {e}"))
+                })?;
+                let records = match job.fetch.records_path.as_deref() {
+                    Some(rp) => extract::extract_records(&v, Some(rp))?,
+                    None => self.extract_page(&v)?,
+                };
+                Ok((records, Some(v)))
+            }
+            crate::config::ResponseFormat::Csv => {
+                let records = crate::format::parse_csv(
+                    bytes,
+                    self.config.csv_delimiter,
+                    self.config.csv_has_headers,
+                )
+                .await?;
+                Ok((records, None))
+            }
+            crate::config::ResponseFormat::Excel => {
+                let records = crate::format::parse_excel(
+                    bytes,
                     self.config.excel_sheet.as_deref(),
                     self.config.excel_header_row,
-                ),
+                )?;
+                Ok((records, None))
             }
         }
     }
@@ -1160,7 +1280,7 @@ impl RestStream {
         url_override: Option<&str>,
         path_context: Option<&HashMap<String, Value>>,
         is_first_page: bool,
-        body_cursor: Option<(&str, &str)>,
+        body_params: &[(String, Value)],
     ) -> Result<(Value, HeaderMap), FaucetError> {
         let use_override = url_override.is_some();
 
@@ -1422,19 +1542,22 @@ impl RestStream {
             },
             None => None,
         };
-        // CursorInBody: inject the pagination cursor into the request body for
-        // pages after the first. If no base body was configured, start from an
-        // empty object so the cursor still lands somewhere.
-        if let Some((field, cursor)) = body_cursor {
+        // Body-carrying pagination (CursorInBody / OffsetInBody / RecordFieldCursor
+        // with `into: body`): inject the pagination fields into the request body.
+        // If no base body was configured, start from an empty object so the
+        // fields still land somewhere.
+        if !body_params.is_empty() {
             let obj = body_value.get_or_insert_with(|| Value::Object(serde_json::Map::new()));
             match obj.as_object_mut() {
                 Some(map) => {
-                    map.insert(field.to_string(), Value::String(cursor.to_string()));
+                    for (field, value) in body_params {
+                        map.insert(field.clone(), value.clone());
+                    }
                 }
                 None => {
                     return Err(FaucetError::Source(
-                        "REST source: pagination `CursorInBody` requires a JSON object request \
-                         body to inject the cursor into"
+                        "REST source: body-carrying pagination requires a JSON object request \
+                         body to inject the pagination fields into"
                             .into(),
                     ));
                 }

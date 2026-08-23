@@ -158,6 +158,11 @@ pub struct OAuth2RefreshProvider {
     client_id: String,
     client_secret: String,
     expiry_ratio: f64,
+    /// Optional `scope` sent on the refresh grant. Some IdPs (Microsoft, Rippling)
+    /// require it on refresh — e.g. `https://graph.microsoft.com/.default
+    /// offline_access`. `None` omits the parameter entirely (RFC 6749 §6 allows
+    /// omitting `scope` on refresh to keep the original grant's scope).
+    scope: Option<String>,
     /// Durable store for the rotated refresh token (`None` = in-memory only).
     store: Option<Arc<dyn StateStore>>,
     /// Key the rotated refresh token is stored under; stable across runs.
@@ -173,6 +178,7 @@ impl std::fmt::Debug for OAuth2RefreshProvider {
             .field("token_url", &self.token_url)
             .field("client_id", &self.client_id)
             .field("client_secret", &"***")
+            .field("scope", &self.scope)
             .field("expiry_ratio", &self.expiry_ratio)
             .finish_non_exhaustive()
     }
@@ -180,7 +186,8 @@ impl std::fmt::Debug for OAuth2RefreshProvider {
 
 impl OAuth2RefreshProvider {
     /// Build from a config object with `token_url`, `client_id`,
-    /// `client_secret`, `refresh_token`, and optional `expiry_ratio`.
+    /// `client_secret`, `refresh_token`, and optional `scope` / `expiry_ratio` /
+    /// `persist`.
     pub fn from_config(config: &Value) -> Result<Self, FaucetError> {
         let refresh_token = required_str(config, "refresh_token")?;
         let token_url = required_str(config, "token_url")?;
@@ -192,6 +199,7 @@ impl OAuth2RefreshProvider {
             client_id,
             client_secret: required_str(config, "client_secret")?,
             expiry_ratio: crate::parse_expiry_ratio(config)?,
+            scope: optional_str(config, "scope"),
             store,
             store_key,
             state: Mutex::new(RefreshState {
@@ -251,17 +259,18 @@ impl OAuth2RefreshProvider {
     /// Refresh using the *current* refresh token and capture rotation in place.
     async fn refresh(&self, state: &mut RefreshState) -> Result<String, FaucetError> {
         self.ensure_loaded(state).await;
-        let resp = self
-            .http
-            .post(&self.token_url)
-            .form(&[
-                ("grant_type", "refresh_token"),
-                ("refresh_token", &state.refresh_token),
-                ("client_id", &self.client_id),
-                ("client_secret", &self.client_secret),
-            ])
-            .send()
-            .await?;
+        let mut form: Vec<(&str, &str)> = vec![
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &state.refresh_token),
+            ("client_id", &self.client_id),
+            ("client_secret", &self.client_secret),
+        ];
+        // Only send `scope` when configured — RFC 6749 §6 lets a refresh omit it
+        // to inherit the original grant's scope, and some IdPs reject an empty one.
+        if let Some(scope) = &self.scope {
+            form.push(("scope", scope));
+        }
+        let resp = self.http.post(&self.token_url).form(&form).send().await?;
         let body = parse_token_response(resp).await?;
         state.access_token = Some(body.access_token.clone());
         state.expires_at = expiry_instant(body.expires_in, self.expiry_ratio);
@@ -359,6 +368,15 @@ fn required_str(config: &Value, key: &str) -> Result<String, FaucetError> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| FaucetError::Config(format!("oauth2 auth provider: missing `{key}`")))
+}
+
+/// Read an optional non-empty string field; `None` when absent, null, or empty.
+fn optional_str(config: &Value, key: &str) -> Option<String> {
+    config
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 fn string_array(config: &Value, key: &str) -> Vec<String> {
@@ -700,6 +718,92 @@ mod tests {
         assert_eq!(k1, k1b, "same identity → same key across calls");
         assert_ne!(k1, k2, "different client_id → different key");
         assert!(_none.is_none(), "no persist block → no store");
+    }
+
+    #[tokio::test]
+    async fn refresh_grant_includes_scope_when_configured() {
+        use wiremock::matchers::body_string_contains;
+        let server = MockServer::start().await;
+        // The mock only matches when the POST body carries the configured scope,
+        // so a passing assertion proves `scope=` was sent on the refresh grant.
+        Mock::given(method("POST"))
+            .and(body_string_contains("grant_type=refresh_token"))
+            .and(body_string_contains(
+                "scope=https%3A%2F%2Fgraph.microsoft.com%2F.default+offline_access",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "A1",
+                "expires_in": 3600,
+            })))
+            .mount(&server)
+            .await;
+        let provider = OAuth2RefreshProvider::from_config(&serde_json::json!({
+            "token_url": server.uri(),
+            "client_id": "id",
+            "client_secret": "secret",
+            "refresh_token": "rt0",
+            "scope": "https://graph.microsoft.com/.default offline_access",
+        }))
+        .unwrap();
+        assert_eq!(
+            provider.credential().await.unwrap(),
+            Credential::Bearer("A1".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_grant_omits_scope_when_not_configured() {
+        use wiremock::matchers::body_string_contains;
+        let server = MockServer::start().await;
+        // A request carrying any `scope=` param must NOT match; only the
+        // scope-free mock does, proving the parameter is omitted by default.
+        Mock::given(method("POST"))
+            .and(body_string_contains("grant_type=refresh_token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "A1",
+                "expires_in": 3600,
+            })))
+            .mount(&server)
+            .await;
+        let provider = OAuth2RefreshProvider::from_config(&serde_json::json!({
+            "token_url": server.uri(),
+            "client_id": "id",
+            "client_secret": "secret",
+            "refresh_token": "rt0",
+        }))
+        .unwrap();
+        assert_eq!(
+            provider.credential().await.unwrap(),
+            Credential::Bearer("A1".into())
+        );
+        // Verify no request body contained a scope parameter.
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body = String::from_utf8_lossy(&requests[0].body);
+        assert!(
+            !body.contains("scope="),
+            "scope must be omitted when not configured: {body}"
+        );
+    }
+
+    #[test]
+    fn empty_scope_string_is_treated_as_absent() {
+        // An empty `scope: ""` should be normalized to `None` so we never send an
+        // empty `scope=` (which some IdPs reject).
+        let p = OAuth2RefreshProvider::from_config(&serde_json::json!({
+            "token_url": "http://x",
+            "client_id": "id",
+            "client_secret": "secret",
+            "refresh_token": "rt0",
+            "scope": "",
+        }))
+        .unwrap();
+        assert!(p.scope.is_none());
+        let s = format!("{p:?}");
+        assert!(
+            s.contains("scope"),
+            "debug should surface the scope field: {s}"
+        );
     }
 
     #[tokio::test]
