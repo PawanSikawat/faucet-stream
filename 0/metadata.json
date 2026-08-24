@@ -3,7 +3,7 @@
   "checkpoint_id": "01M0S17R1KCQ1MDQV9Z5SFZTNS",
   "session_id": "55398c64-7c65-40db-9b68-886111a86d7f",
   "strategy": "manual-commit",
-  "created_at": "2026-08-24T04:42:52.160899Z",
+  "created_at": "2026-08-24T04:43:56.728797Z",
   "branch": "feat/bigquery-auto-create-table",
   "checkpoints_count": 6,
   "save_step_count": 1,
@@ -13,11 +13,11 @@
   "turn_id": "3bc60e52dd48",
   "compact_transcript_start": 0,
   "token_usage": {
-    "input_tokens": 7308,
-    "cache_creation_tokens": 13977013,
-    "cache_read_tokens": 2071163941,
-    "output_tokens": 3766800,
-    "api_call_count": 3668
+    "input_tokens": 7314,
+    "cache_creation_tokens": 13985956,
+    "cache_read_tokens": 2073186134,
+    "output_tokens": 3771084,
+    "api_call_count": 3671
   },
   "skill_events_version": 1,
   "skill_events": [
