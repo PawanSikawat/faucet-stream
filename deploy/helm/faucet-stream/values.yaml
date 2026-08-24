@@ -74,6 +74,24 @@ secret:
   #   PGPASSWORD: "s3cr3t"
   #   GOOGLE_APPLICATION_CREDENTIALS_JSON: "..."
 
+# Mount secrets as FILES (for `${file:...}` interpolation), in addition to the
+# env / envFrom paths above. Each Secret key becomes a file under mountPath. Uses
+# the chart-managed env Secret (secret.create=true) by default, or an existing one.
+# NB: this is a k8s-native Secret volume — for an EXTERNAL fetcher (Vault etc.)
+# use extraInitContainers below to populate a shared volume.
+secretFiles:
+  enabled: false
+  mountPath: /var/run/secrets/faucet
+  existingSecret: ""   # defaults to the chart-managed env Secret when secret.create=true
+
+# Extra init containers (verbatim k8s specs) run before the app starts — e.g. a
+# Vault/cloud secrets fetcher that writes into a shared volume the app also mounts.
+# The chart's own optional `verify` init container still runs alongside these.
+extraInitContainers: []
+#  - name: fetch-secrets
+#    image: my/secrets-fetcher:tag
+#    volumeMounts: [{ name: secret-files, mountPath: /var/run/secrets/faucet }]
+
 # -----------------------------------------------------------------------------
 # Pipeline config (a `faucet` YAML/JSON). Mounted read-only at
 # pipelineConfig.mountPath. Used by Job/CronJob, and optionally as the serve
@@ -153,6 +171,12 @@ serve:
     storageClass: ""
     accessModes: [ReadWriteOnce]
     mountPath: /var/lib/faucet
+    # Reuse an existing PVC instead of letting the chart create one; when set, the
+    # chart renders no PVC of its own. Leave empty for a chart-managed claim.
+    existingClaim: ""
+    # Tip: point durable sink outputs (and the sqlite history/catalog) under
+    # mountPath so they survive restarts, e.g.:
+    #   sink: { type: jsonl, config: { path: /var/lib/faucet/out.jsonl } }
 
   livenessProbe:
     httpGet:
