@@ -310,7 +310,9 @@ function renderVersions(host, id, st, d, reload) {
 /** A typed form over the template's declared `params:`, plus a version selector. */
 function renderTrigger(host, id, st, d) {
   const params = d.params || {};
-  const names = Object.keys(params);
+  // Computed params are derived from other params, not supplied — exclude them
+  // from the trigger form (supplying one is rejected server-side, #573).
+  const names = Object.keys(params).filter((n) => params[n].computed == null);
   // Only offer channels that actually resolve — an unset one would just 422.
   const choices = ["stable", "newest", "previous", ...Object.keys(st.tags).sort()].filter(
     (c) => channelTarget(c, st) != null,

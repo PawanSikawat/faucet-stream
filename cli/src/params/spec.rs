@@ -81,6 +81,16 @@ pub struct ParamSpec {
     /// MCP `get_template` tool, and `GET /v1/templates/{id}`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+
+    /// A **derived** value: this param is not user-supplied but computed from
+    /// other params via an interpolation expression — `${param.NAME}` and the
+    /// `${map:NAME|case=value|*=default}` lookup — resolved *after* the ordinary
+    /// params bind (#573). A computed param is excluded from the trigger surface
+    /// (supplying a value for it is an error) and is mutually exclusive with
+    /// `required`, `default`, and `secret`. Example:
+    /// `accounts_domain: { computed: "${map:region|ca=zohocloud|*=zoho}" }`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computed: Option<String>,
 }
 
 impl ParamSpec {
@@ -93,6 +103,7 @@ impl ParamSpec {
             default: Some(Value::String(default.into())),
             secret: false,
             description: None,
+            computed: None,
         }
     }
 }
@@ -139,6 +150,26 @@ fn default_matches(kind: ParamType, value: &Value) -> bool {
 pub fn validate(spec: &ParamsSpec) -> CliResult<()> {
     for (name, p) in spec {
         validate_name(name)?;
+        if p.computed.is_some() {
+            if p.required {
+                return Err(CliError::Config(format!(
+                    "param '{name}' is `computed` and cannot be `required` — a computed param is \
+                     derived, never supplied"
+                )));
+            }
+            if p.default.is_some() {
+                return Err(CliError::Config(format!(
+                    "param '{name}' is `computed` and cannot have a `default` — its value is the \
+                     computed expression"
+                )));
+            }
+            if p.secret {
+                return Err(CliError::Config(format!(
+                    "param '{name}' is `computed` and cannot be `secret` — a derived value is not \
+                     a secret source; reference the secret directly where it is used"
+                )));
+            }
+        }
         if p.required && p.default.is_some() {
             return Err(CliError::Config(format!(
                 "param '{name}' is both `required: true` and has a `default` — a param with a \
@@ -227,7 +258,26 @@ mod tests {
             default,
             secret: false,
             description: None,
+            computed: None,
         }
+    }
+
+    #[test]
+    fn computed_param_cannot_be_required_default_or_secret() {
+        for yaml in [
+            "a: { computed: \"${param.x}\", required: true }\n",
+            "a: { computed: \"${param.x}\", default: y }\n",
+            "a: { computed: \"${param.x}\", secret: true }\n",
+        ] {
+            let spec: ParamsSpec = serde_yaml::from_str(yaml).unwrap();
+            assert!(
+                matches!(validate(&spec), Err(CliError::Config(m)) if m.contains("computed")),
+                "expected a computed-conflict error for: {yaml}"
+            );
+        }
+        // A plain computed param validates.
+        let spec: ParamsSpec = serde_yaml::from_str("a: { computed: \"${param.x}\" }\n").unwrap();
+        assert!(validate(&spec).is_ok());
     }
 
     #[test]
