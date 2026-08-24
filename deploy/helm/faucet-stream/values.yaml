@@ -171,8 +171,9 @@ serve:
     storageClass: ""
     accessModes: [ReadWriteOnce]
     mountPath: /var/lib/faucet
-    # Reuse an existing PVC instead of letting the chart create one; when set, the
-    # chart renders no PVC of its own. Leave empty for a chart-managed claim.
+    # Reuse an existing PVC instead of letting the chart create one. Setting this
+    # mounts the claim on its own (no need to also set `enabled`), and the chart
+    # renders no PVC of its own. Leave empty for a chart-managed claim.
     existingClaim: ""
     # Tip: point durable sink outputs (and the sqlite history/catalog) under
     # mountPath so they survive restarts, e.g.:
