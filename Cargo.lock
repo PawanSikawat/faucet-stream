@@ -4145,7 +4145,7 @@ dependencies = [
 
 [[package]]
 name = "faucet-auth"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -4166,7 +4166,7 @@ dependencies = [
 
 [[package]]
 name = "faucet-cli"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "assert_cmd",
  "async-stream",
@@ -4548,7 +4548,7 @@ dependencies = [
 
 [[package]]
 name = "faucet-core"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "aes-gcm 0.11.0",
  "arrow",
@@ -4642,7 +4642,7 @@ dependencies = [
 
 [[package]]
 name = "faucet-sink-bigquery"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -5406,7 +5406,7 @@ dependencies = [
 
 [[package]]
 name = "faucet-source-graphql"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -5779,7 +5779,7 @@ dependencies = [
 
 [[package]]
 name = "faucet-source-rest"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -5992,7 +5992,7 @@ dependencies = [
 
 [[package]]
 name = "faucet-source-xml"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "async-stream",
  "async-trait",
