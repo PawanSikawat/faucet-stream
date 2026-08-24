@@ -48,7 +48,39 @@ fn offset_config(
         offset_variable: "q_offset".into(),
         page_size,
         stop_when_short,
+        substitute_in_query: false,
     })
+}
+
+/// A ShopifyQL-style config that embeds the offset in the query STRING via
+/// `${q_offset}` and pages by string substitution (#569).
+fn substitute_config(server: &MockServer, page_size: usize) -> GraphqlStreamConfig {
+    GraphqlStreamConfig::new(
+        server.uri(),
+        "{ shopifyqlQuery(query: \"FROM orders SHOW id LIMIT 250 OFFSET ${q_offset}\") \
+         { tableData { rowData } } }",
+    )
+    .records_path("$.data.orders[*]")
+    .offset_pagination(GraphqlOffsetPagination {
+        r#type: OffsetPaginationKind::Offset,
+        offset_variable: "q_offset".into(),
+        page_size,
+        stop_when_short: true,
+        substitute_in_query: true,
+    })
+}
+
+/// Read the offset from `OFFSET <n>` inside the request's `query` string.
+fn request_offset_from_query(req: &Request) -> Option<u64> {
+    let body: Value = serde_json::from_slice(&req.body).expect("request body is JSON");
+    let q = body.get("query")?.as_str()?;
+    let after = q.split("OFFSET ").nth(1)?;
+    after
+        .trim_start()
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// Two pages: a full page (250) then a short page (100) → stop. Asserts the
@@ -109,6 +141,59 @@ async fn offset_walks_two_pages_and_stops_on_short_page() {
         seen,
         vec![0, 250],
         "first request starts at offset 0; second carries the incremented offset"
+    );
+}
+
+/// ShopifyQL string-substitution mode: the offset is baked into the query
+/// STRING (`OFFSET ${q_offset}`), not sent as a variable. Assert the server
+/// sees the incremented offset in the query text and no `variables.q_offset`,
+/// and that pagination walks two pages and stops on the short one (#569).
+#[tokio::test(flavor = "multi_thread")]
+async fn offset_substituted_into_query_string_pages_and_stops() {
+    let server = MockServer::start().await;
+    let page_size: u64 = 250;
+
+    let offsets = Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+    let offsets_resp = Arc::clone(&offsets);
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(move |req: &Request| {
+            // The offset must be in the query string, not a variable.
+            let offset = request_offset_from_query(req)
+                .expect("offset must be substituted into the query string");
+            assert!(
+                request_offset(req).is_none(),
+                "substitute mode must not also send a q_offset variable"
+            );
+            offsets_resp.lock().unwrap().push(offset);
+            let n = match offset {
+                0 => page_size,
+                250 => 100,
+                _ => 0,
+            };
+            ResponseTemplate::new(200).set_body_json(make_page(offset, n))
+        })
+        .mount(&server)
+        .await;
+
+    let source = GraphqlStream::new(substitute_config(&server, page_size as usize));
+    let ctx: HashMap<String, Value> = HashMap::new();
+    let mut pages = source.stream_pages(&ctx, page_size as usize);
+
+    let mut total = 0usize;
+    let mut sizes = Vec::new();
+    while let Some(page) = pages.next().await {
+        let page = page.expect("page ok");
+        sizes.push(page.records.len());
+        total += page.records.len();
+    }
+    assert_eq!(sizes, vec![250, 100]);
+    assert_eq!(total, 350);
+    assert_eq!(
+        offsets.lock().unwrap().clone(),
+        vec![0, 250],
+        "offset advances by page_size, substituted into the query string each request"
     );
 }
 

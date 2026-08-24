@@ -95,6 +95,15 @@ pub struct GraphqlOffsetPagination {
     /// `max_pages`) is reached.
     #[serde(default = "default_true")]
     pub stop_when_short: bool,
+    /// Substitute `${offset_variable}` occurrences in the **query string** with
+    /// the current offset before each request, instead of sending it as a
+    /// GraphQL variable. Required for query languages that embed the offset in a
+    /// string-literal argument — e.g. ShopifyQL's
+    /// `shopifyqlQuery(query: "… LIMIT 250 OFFSET ${q_offset}")`, where a GraphQL
+    /// variable cannot interpolate into a string literal (#569). Default
+    /// `false` (variable injection, the #550 behavior).
+    #[serde(default)]
+    pub substitute_in_query: bool,
 }
 
 fn default_true() -> bool {
@@ -485,6 +494,7 @@ mod tests {
                 offset_variable: "q_offset".into(),
                 page_size: 250,
                 stop_when_short: true,
+                substitute_in_query: false,
             });
         assert!(matches!(
             config.pagination,
@@ -500,6 +510,7 @@ mod tests {
                 offset_variable: "q_offset".into(),
                 page_size: 0,
                 stop_when_short: true,
+                substitute_in_query: false,
             });
         assert!(matches!(config.validate(), Err(FaucetError::Config(_))));
     }
@@ -512,6 +523,7 @@ mod tests {
                 offset_variable: "q_offset".into(),
                 page_size: 1,
                 stop_when_short: false,
+                substitute_in_query: false,
             });
         assert!(config.validate().is_ok());
     }
