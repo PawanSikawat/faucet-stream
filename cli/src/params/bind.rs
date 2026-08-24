@@ -117,8 +117,23 @@ pub fn resolve(
         }
     }
 
+    // A computed param is derived, never supplied — reject a value for one.
+    for (name, p) in spec {
+        if p.computed.is_some() && supplied.contains_key(name) {
+            return Err(CliError::Config(format!(
+                "param '{name}' is `computed` and cannot be supplied a value — it is derived from \
+                 other params"
+            )));
+        }
+    }
+
     let mut bound = BoundParams::default();
     for (name, p) in spec {
+        // Computed params are resolved in a second pass (they may reference
+        // other params, including each other), after the supplied/default ones.
+        if p.computed.is_some() {
+            continue;
+        }
         let value = match supplied.get(name) {
             Some(raw) => {
                 reject_directives(name, raw)?;
@@ -148,7 +163,180 @@ pub fn resolve(
         }
         bound.values.insert(name.clone(), value);
     }
+
+    resolve_computed(spec, &mut bound)?;
     Ok(bound)
+}
+
+/// Resolve every `computed` param, in dependency order, into `bound.values`.
+///
+/// A computed param's expression may reference regular params and other
+/// computed params via `${param.NAME}` and the `${map:NAME|case=value|*=default}`
+/// lookup. We loop, resolving any computed param all of whose referenced params
+/// are already bound, until none remain. If a round makes no progress, the
+/// leftover set either references an undeclared param (→ `UnknownParamRef`) or
+/// forms a cycle (→ `InterpolationCycle`).
+fn resolve_computed(spec: &ParamsSpec, bound: &mut BoundParams) -> CliResult<()> {
+    let computed_names: BTreeSet<String> = spec
+        .iter()
+        .filter(|(_, p)| p.computed.is_some())
+        .map(|(n, _)| n.clone())
+        .collect();
+    let mut remaining: Vec<(String, String)> = spec
+        .iter()
+        .filter_map(|(n, p)| p.computed.as_ref().map(|c| (n.clone(), c.clone())))
+        .collect();
+
+    while !remaining.is_empty() {
+        let mut progressed = false;
+        let mut still = Vec::new();
+        for (name, expr) in remaining {
+            let refs = referenced_params(&expr);
+            if refs.iter().all(|r| bound.values.contains_key(r)) {
+                let value = eval_computed_expr(&name, &expr, &bound.values)?;
+                bound.values.insert(name, Value::String(value));
+                progressed = true;
+            } else {
+                still.push((name, expr));
+            }
+        }
+        if !progressed {
+            // No computed param could resolve. Distinguish an undeclared
+            // reference from a cycle among the remaining computed params.
+            for (name, expr) in &still {
+                for r in referenced_params(expr) {
+                    if !bound.values.contains_key(&r) && !computed_names.contains(&r) {
+                        return Err(CliError::UnknownParamRef {
+                            name: r,
+                            token: format!("computed param '{name}'"),
+                        });
+                    }
+                }
+            }
+            let mut chain: Vec<String> = still.into_iter().map(|(n, _)| n).collect();
+            chain.sort();
+            return Err(CliError::InterpolationCycle { chain });
+        }
+        remaining = still;
+    }
+    Ok(())
+}
+
+/// Param names referenced by a computed expression — the `NAME` in every
+/// `${param.NAME}` and the switch `NAME` in every `${map:NAME|…}`.
+fn referenced_params(expr: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = expr;
+    while let Some(start) = rest.find("${") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else { break };
+        let body = &after[..end];
+        if let Some(name) = body.strip_prefix("param.") {
+            out.push(name.trim().to_string());
+        } else if let Some(spec) = body.strip_prefix("map:")
+            && let Some(input) = spec.split('|').next()
+        {
+            out.push(input.trim().to_string());
+        }
+        rest = &after[end + 1..];
+    }
+    out
+}
+
+/// Evaluate a computed expression: substitute `${param.NAME}` (stringified bound
+/// value) and `${map:NAME|case=value|*=default}` (lookup on the bound value of
+/// `NAME`). Any other `${…}` directive is rejected — a computed value is derived
+/// from other params only, never from the environment/secrets.
+fn eval_computed_expr(
+    name: &str,
+    expr: &str,
+    bound: &BTreeMap<String, Value>,
+) -> CliResult<String> {
+    let mut out = String::new();
+    let mut rest = expr;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let end = after.find('}').ok_or_else(|| {
+            CliError::Config(format!(
+                "computed param '{name}': unterminated `${{` in expression '{expr}'"
+            ))
+        })?;
+        let body = &after[..end];
+        out.push_str(&resolve_computed_token(name, body, bound)?);
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// Resolve one `${…}` body inside a computed expression to its string value.
+fn resolve_computed_token(
+    owner: &str,
+    body: &str,
+    bound: &BTreeMap<String, Value>,
+) -> CliResult<String> {
+    if let Some(pname) = body.strip_prefix("param.") {
+        let pname = pname.trim();
+        let v = bound.get(pname).ok_or_else(|| CliError::UnknownParamRef {
+            name: pname.to_string(),
+            token: format!("computed param '{owner}'"),
+        })?;
+        return Ok(value_to_string(v));
+    }
+    if let Some(spec) = body.strip_prefix("map:") {
+        return resolve_map(owner, spec, bound);
+    }
+    Err(CliError::Config(format!(
+        "computed param '{owner}': `${{{body}}}` is not allowed — a computed expression may only \
+         reference `${{param.NAME}}` or `${{map:NAME|case=value|*=default}}`"
+    )))
+}
+
+/// Resolve a `map:NAME|case=value|…|*=default` body: look up the bound value of
+/// `NAME`, return the value of the matching case, or the `*` default. No match
+/// and no `*` is a typed load-time error.
+fn resolve_map(owner: &str, spec: &str, bound: &BTreeMap<String, Value>) -> CliResult<String> {
+    let mut parts = spec.split('|');
+    let input_name = parts
+        .next()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            CliError::Config(format!(
+                "computed param '{owner}': `${{map:…}}` is missing the switch param name — write \
+                 `${{map:NAME|case=value|*=default}}`"
+            ))
+        })?;
+    let input = bound
+        .get(input_name)
+        .ok_or_else(|| CliError::UnknownParamRef {
+            name: input_name.to_string(),
+            token: format!("computed param '{owner}'"),
+        })?;
+    let input_str = value_to_string(input);
+
+    let mut default: Option<String> = None;
+    let mut matched: Option<String> = None;
+    for pair in parts {
+        let (case, value) = pair.split_once('=').ok_or_else(|| {
+            CliError::Config(format!(
+                "computed param '{owner}': map case '{pair}' is not `case=value`"
+            ))
+        })?;
+        let case = case.trim();
+        if case == "*" {
+            default = Some(value.to_string());
+        } else if case == input_str {
+            matched = Some(value.to_string());
+        }
+    }
+    matched.or(default).ok_or_else(|| {
+        CliError::Config(format!(
+            "computed param '{owner}': map has no case for '{input_name}' = '{input_str}' and no \
+             `*` default"
+        ))
+    })
 }
 
 /// Bind params in an untyped config document, in place.
@@ -238,6 +426,10 @@ fn whole_token(s: &str, bound: &BTreeMap<String, Value>) -> CliResult<Option<Val
         Directive::Deferred { id, path } if id == PARAM_ID => {
             Ok(Some(lookup(path, token, bound)?.clone()))
         }
+        Directive::LoadTime {
+            prefix: "map",
+            body,
+        } => Ok(Some(Value::String(resolve_map(token, body, bound)?))),
         _ => Ok(None),
     }
 }
@@ -249,6 +441,13 @@ fn rewrite_text(s: &str, bound: &BTreeMap<String, Value>) -> CliResult<String> {
         Directive::Deferred { id, path } if id == PARAM_ID => {
             let token = format!("${{{body}}}");
             Ok(Some(value_to_string(lookup(path, &token, bound)?)))
+        }
+        Directive::LoadTime {
+            prefix: "map",
+            body: map_body,
+        } => {
+            let token = format!("${{{body}}}");
+            Ok(Some(resolve_map(&token, map_body, bound)?))
         }
         _ => Ok(None),
     })
@@ -375,6 +574,205 @@ mod tests {
         assert_eq!(bound.values["tenant"], json!("<param>"));
         assert_eq!(bound.values["page"], json!(0));
         assert_eq!(bound.values["since"], json!("1970-01-01"));
+    }
+
+    #[test]
+    fn computed_param_map_default_and_match() {
+        let spec = spec_of(
+            "region: { default: com }\n\
+             accounts_domain: { computed: \"${map:region|ca=zohocloud|*=zoho}\" }\n",
+        );
+        // Default region → `*` default value.
+        let bound = resolve(&spec, &SuppliedParams::new(), BindMode::Strict).unwrap();
+        assert_eq!(bound.values["accounts_domain"], json!("zoho"));
+        assert_eq!(bound.values["region"], json!("com"));
+        // region=ca → matching case.
+        let bound = resolve(
+            &spec,
+            &supplied(&[("region", json!("ca"))]),
+            BindMode::Strict,
+        )
+        .unwrap();
+        assert_eq!(bound.values["accounts_domain"], json!("zohocloud"));
+    }
+
+    #[test]
+    fn computed_param_rejected_when_supplied() {
+        let spec = spec_of(
+            "region: { default: com }\n\
+             accounts_domain: { computed: \"${map:region|*=zoho}\" }\n",
+        );
+        let err = resolve(
+            &spec,
+            &supplied(&[("accounts_domain", json!("hacked"))]),
+            BindMode::Strict,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, CliError::Config(m) if m.contains("computed") && m.contains("cannot be supplied")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn computed_param_chain_resolves_in_dependency_order() {
+        // b depends on a (also computed); resolution order is derived, not lexical.
+        let spec = spec_of(
+            "env: { default: prod }\n\
+             a: { computed: \"${map:env|prod=live|*=test}\" }\n\
+             b: { computed: \"tier-${param.a}\" }\n",
+        );
+        let bound = resolve(&spec, &SuppliedParams::new(), BindMode::Strict).unwrap();
+        assert_eq!(bound.values["a"], json!("live"));
+        assert_eq!(bound.values["b"], json!("tier-live"));
+    }
+
+    #[test]
+    fn computed_param_cycle_is_detected() {
+        let spec = spec_of(
+            "a: { computed: \"${param.b}\" }\n\
+             b: { computed: \"${param.a}\" }\n",
+        );
+        match resolve(&spec, &SuppliedParams::new(), BindMode::Strict).unwrap_err() {
+            CliError::InterpolationCycle { chain } => {
+                assert_eq!(chain, vec!["a".to_string(), "b".to_string()]);
+            }
+            other => panic!("expected InterpolationCycle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn computed_param_unknown_reference_is_typed() {
+        let spec = spec_of("a: { computed: \"${param.nope}\" }\n");
+        match resolve(&spec, &SuppliedParams::new(), BindMode::Strict).unwrap_err() {
+            CliError::UnknownParamRef { name, .. } => assert_eq!(name, "nope"),
+            other => panic!("expected UnknownParamRef, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_with_no_match_and_no_default_errors() {
+        let spec = spec_of(
+            "region: { default: xx }\n\
+             d: { computed: \"${map:region|ca=zohocloud}\" }\n",
+        );
+        let err = resolve(&spec, &SuppliedParams::new(), BindMode::Strict).unwrap_err();
+        assert!(
+            matches!(&err, CliError::Config(m) if m.contains("no case for") && m.contains("no")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn computed_unterminated_brace_errors() {
+        // No closing `}` → referenced_params finds nothing, eval hits the guard.
+        let spec = spec_of("a: { computed: \"x-${param.region\" }\n");
+        let err = resolve(&spec, &SuppliedParams::new(), BindMode::Strict).unwrap_err();
+        assert!(
+            matches!(&err, CliError::Config(m) if m.contains("unterminated")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn computed_disallowed_directive_errors() {
+        // A computed expression may only reference ${param.*} / ${map:…}.
+        let spec = spec_of("a: { computed: \"${env:SECRET}\" }\n");
+        let err = resolve(&spec, &SuppliedParams::new(), BindMode::Strict).unwrap_err();
+        assert!(
+            matches!(&err, CliError::Config(m) if m.contains("may only reference")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn map_case_not_key_value_errors() {
+        let spec = spec_of(
+            "region: { default: com }\n\
+             d: { computed: \"${map:region|badcase}\" }\n",
+        );
+        let err = resolve(&spec, &SuppliedParams::new(), BindMode::Strict).unwrap_err();
+        assert!(
+            matches!(&err, CliError::Config(m) if m.contains("is not `case=value`")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn standalone_map_missing_switch_name_errors() {
+        // `${map:|a=b}` — empty switch name.
+        let mut doc = json!({
+            "pipeline": { "source": { "config": { "h": "${map:|a=b}" } } }
+        });
+        let err = bind_document(&mut doc, &SuppliedParams::new(), BindMode::Strict).unwrap_err();
+        assert!(
+            matches!(&err, CliError::Config(m) if m.contains("missing the switch param name")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn standalone_map_unknown_input_errors() {
+        let mut doc = json!({
+            "pipeline": { "source": { "config": { "h": "${map:nope|*=x}" } } }
+        });
+        let err = bind_document(&mut doc, &SuppliedParams::new(), BindMode::Strict).unwrap_err();
+        assert!(
+            matches!(&err, CliError::UnknownParamRef { name, .. } if name == "nope"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn whole_token_map_resolves_with_declared_type() {
+        // The entire value is a single `${map:…}` token → whole_token path.
+        let mut doc = json!({
+            "params": { "region": { "default": "com" } },
+            "pipeline": { "source": { "config": {
+                "domain": "${map:region|ca=zohocloud|*=zoho}"
+            } } }
+        });
+        bind_document(&mut doc, &SuppliedParams::new(), BindMode::Strict).unwrap();
+        assert_eq!(doc["pipeline"]["source"]["config"]["domain"], json!("zoho"));
+    }
+
+    #[test]
+    fn standalone_map_token_resolves_in_document() {
+        // `${map:…}` used directly in a config value (not via a computed param).
+        let mut doc = json!({
+            "params": { "region": { "default": "ca" } },
+            "pipeline": { "source": { "config": {
+                "host": "accounts.${map:region|ca=zohocloud|*=zoho}.${param.region}"
+            } } }
+        });
+        bind_document(&mut doc, &SuppliedParams::new(), BindMode::Strict).unwrap();
+        assert_eq!(
+            doc["pipeline"]["source"]["config"]["host"],
+            json!("accounts.zohocloud.ca")
+        );
+    }
+
+    #[test]
+    fn bind_document_substitutes_computed_param() {
+        let mut doc = json!({
+            "params": {
+                "region": { "default": "com" },
+                "accounts_domain": { "computed": "${map:region|ca=zohocloud|*=zoho}" }
+            },
+            "pipeline": { "source": { "config": {
+                "base_url": "https://accounts.${param.accounts_domain}.${param.region}"
+            } } }
+        });
+        bind_document(&mut doc, &SuppliedParams::new(), BindMode::Strict).unwrap();
+        assert_eq!(
+            doc["pipeline"]["source"]["config"]["base_url"],
+            json!("https://accounts.zoho.com")
+        );
+        // The declaration block is preserved byte-identical (computed expr intact).
+        assert_eq!(
+            doc["params"]["accounts_domain"]["computed"],
+            json!("${map:region|ca=zohocloud|*=zoho}")
+        );
     }
 
     #[test]

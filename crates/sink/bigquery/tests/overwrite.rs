@@ -103,6 +103,25 @@ async fn mount_table_schema(server: &MockServer) {
         .await;
 }
 
+/// `tables.get` returns 404 (table not found) — the shape the BigQuery client
+/// maps to a not-found error. `up_to` bounds how many times it answers before a
+/// later, higher-numbered-priority mock (e.g. a 200 schema) takes over.
+async fn mount_table_missing(server: &MockServer, up_to: Option<u64>) {
+    let mut m = Mock::given(method("GET"))
+        .and(path(format!(
+            "/projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "error": {"code": 404, "message": "Not found: Table",
+                      "errors": [{"reason": "notFound", "message": "Not found: Table"}]}
+        })))
+        .with_priority(1);
+    if let Some(n) = up_to {
+        m = m.up_to_n_times(n);
+    }
+    m.mount(server).await;
+}
+
 async fn mount_query_and_job(server: &MockServer, job_id: &str) {
     Mock::given(method("POST"))
         .and(path(format!("/projects/{PROJECT_ID}/queries")))
@@ -236,6 +255,9 @@ async fn scoped_overwrite_commit_deletes_in_window_not_truncate() {
 async fn overwrite_abort_drops_staging_without_swap() {
     let server = MockServer::start().await;
     mount_token_endpoint(&server).await;
+    // `begin_overwrite` now probes table existence first; the target exists, so
+    // it clones staging via `LIKE` and abort drops that staging.
+    mount_table_schema(&server).await;
     mount_query_and_job(&server, "job-a").await;
 
     let (sink, _sa) = build_sink(&server, config_overwrite()).await;
@@ -278,5 +300,245 @@ async fn overwrite_staging_insert_failure_surfaces_error() {
     assert!(
         err.to_string().contains("overwrite page insert"),
         "error should name the overwrite page insert: {err}"
+    );
+}
+
+#[tokio::test]
+async fn overwrite_creates_dataset_table_and_staging_when_missing() {
+    // create_table defaults to true: a first-ever overwrite sync must create the
+    // dataset + target table (schema inferred from the first page) and the
+    // staging clone, then swap — instead of 404ing on the missing target.
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    // tables.get: 404 for the begin-time existence probe, then 200 once created
+    // (the deferred create re-reads the schema to build the staging load).
+    mount_table_missing(&server, Some(1)).await;
+    mount_table_schema(&server).await;
+    mount_query_and_job(&server, "job-c").await;
+
+    let (sink, _sa) = build_sink(&server, config_overwrite()).await;
+
+    sink.begin_overwrite().await.expect("begin");
+    let n = sink
+        .write_batch(&[json!({"id": 1, "name": "a"}), json!({"id": 2, "name": "b"})])
+        .await
+        .expect("write");
+    assert_eq!(n, 2);
+    sink.commit_overwrite().await.expect("commit");
+
+    let qs = queries(&server).await;
+    assert!(
+        qs.iter()
+            .any(|q| q.contains("CREATE SCHEMA IF NOT EXISTS `p`.`d`")),
+        "dataset create missing: {qs:?}"
+    );
+    assert!(
+        qs.iter()
+            .any(|q| q.starts_with("CREATE OR REPLACE TABLE `p.d.t` (")
+                && q.contains("`id` INT64")
+                && q.contains("`name` STRING")),
+        "target table create missing: {qs:?}"
+    );
+    assert!(
+        qs.iter()
+            .any(|q| q.contains("CREATE OR REPLACE TABLE `p.d.t__faucet_ovw` LIKE `p.d.t`")),
+        "staging clone missing: {qs:?}"
+    );
+    assert!(
+        qs.iter()
+            .any(|q| q.contains("INSERT INTO `p.d.t__faucet_ovw`")),
+        "staging load missing: {qs:?}"
+    );
+    assert!(
+        qs.iter().any(|q| q.contains("TRUNCATE TABLE `p.d.t`")
+            && q.contains("INSERT INTO `p.d.t` SELECT * FROM `p.d.t__faucet_ovw`")),
+        "commit swap missing: {qs:?}"
+    );
+}
+
+#[tokio::test]
+async fn overwrite_begin_errors_when_target_missing_and_create_disabled() {
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    mount_table_missing(&server, None).await;
+
+    let mut config = config_overwrite();
+    config.create_table = false;
+    let (sink, _sa) = build_sink(&server, config).await;
+
+    let err = sink
+        .begin_overwrite()
+        .await
+        .expect_err("missing target + create_table disabled must error");
+    assert!(
+        err.to_string().contains("create_table` is disabled"),
+        "error should name the disabled create_table: {err}"
+    );
+}
+
+#[tokio::test]
+async fn append_creates_table_when_missing_by_default() {
+    // The append path also honors create_table: a missing table is created from
+    // the first page's inferred schema before the streaming insert.
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    mount_table_missing(&server, None).await;
+    mount_query_and_job(&server, "job-ap").await;
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}/insertAll"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+
+    // Default config = append mode, create_table defaults true.
+    let config = BigQuerySinkConfig::new(
+        PROJECT_ID,
+        DATASET_ID,
+        TABLE_ID,
+        BigQueryCredentials::ApplicationDefault,
+    );
+    let (sink, _sa) = build_sink(&server, config).await;
+
+    let n = sink
+        .write_batch(&[json!({"id": 1, "name": "a"})])
+        .await
+        .expect("write");
+    assert_eq!(n, 1);
+
+    let qs = queries(&server).await;
+    assert!(
+        qs.iter()
+            .any(|q| q.starts_with("CREATE OR REPLACE TABLE `p.d.t` (")),
+        "append path must create the missing table: {qs:?}"
+    );
+}
+
+#[tokio::test]
+async fn overwrite_recreates_schemaless_target() {
+    // A table created by a bare `bq mk` (no schema) exists but has no fields, so
+    // `CREATE … LIKE` / typed inserts fail against it. create_table (default on)
+    // must (re)create it from the first page's schema, then swap.
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    // schema probe: empty-schema 200 for the begin-time check, then a real
+    // schema once the table has been (re)created.
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "tableReference": {"projectId": PROJECT_ID, "datasetId": DATASET_ID, "tableId": TABLE_ID},
+            "schema": {"fields": []}
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    mount_table_schema(&server).await;
+    mount_query_and_job(&server, "job-sl").await;
+
+    let (sink, _sa) = build_sink(&server, config_overwrite()).await;
+    sink.begin_overwrite().await.expect("begin");
+    let n = sink
+        .write_batch(&[json!({"id": 1, "name": "a"})])
+        .await
+        .expect("write");
+    assert_eq!(n, 1);
+    sink.commit_overwrite().await.expect("commit");
+
+    let qs = queries(&server).await;
+    assert!(
+        qs.iter()
+            .any(|q| q.starts_with("CREATE OR REPLACE TABLE `p.d.t` (")),
+        "schemaless target must be re-created: {qs:?}"
+    );
+    assert!(
+        qs.iter().any(|q| q.contains("TRUNCATE TABLE `p.d.t`")),
+        "commit swap missing: {qs:?}"
+    );
+}
+
+#[tokio::test]
+async fn create_table_surfaces_non_404_schema_probe_error() {
+    // A non-404 tables.get error (e.g. 500) during the readiness probe must
+    // surface, not be treated as "missing" (#578).
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+            "error": {"code": 500, "message": "backend error"}
+        })))
+        .mount(&server)
+        .await;
+
+    let config = BigQuerySinkConfig::new(
+        PROJECT_ID,
+        DATASET_ID,
+        TABLE_ID,
+        BigQueryCredentials::ApplicationDefault,
+    );
+    let (sink, _sa) = build_sink(&server, config).await;
+    let err = sink
+        .write_batch(&[json!({"id": 1})])
+        .await
+        .expect_err("a non-404 probe error must surface");
+    assert!(
+        err.to_string().contains("schema probe"),
+        "error should name the schema probe: {err}"
+    );
+}
+
+#[tokio::test]
+async fn create_table_errors_when_schema_uninferable() {
+    // create_table on + missing table + a page with no object fields → the
+    // schema can't be inferred, so it errors rather than creating an empty table.
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    mount_table_missing(&server, None).await;
+
+    let config = BigQuerySinkConfig::new(
+        PROJECT_ID,
+        DATASET_ID,
+        TABLE_ID,
+        BigQueryCredentials::ApplicationDefault,
+    );
+    let (sink, _sa) = build_sink(&server, config).await;
+    let err = sink
+        .write_batch(&[json!(1), json!("x")])
+        .await
+        .expect_err("uninferable schema must error");
+    assert!(
+        err.to_string().contains("cannot infer a schema"),
+        "error should explain the schema could not be inferred: {err}"
+    );
+}
+
+#[tokio::test]
+async fn append_errors_when_missing_and_create_disabled() {
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    mount_table_missing(&server, None).await;
+
+    let config = BigQuerySinkConfig::new(
+        PROJECT_ID,
+        DATASET_ID,
+        TABLE_ID,
+        BigQueryCredentials::ApplicationDefault,
+    )
+    .with_create_table(false);
+    let (sink, _sa) = build_sink(&server, config).await;
+
+    let err = sink
+        .write_batch(&[json!({"id": 1, "name": "a"})])
+        .await
+        .expect_err("missing table + create_table disabled must error");
+    assert!(
+        err.to_string().contains("create_table` is disabled"),
+        "error should name the disabled create_table: {err}"
     );
 }

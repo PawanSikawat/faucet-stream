@@ -754,6 +754,7 @@ pipeline:
                 default: None,
                 secret: false,
                 description: None,
+                computed: None,
             },
         );
         params.insert(
@@ -763,6 +764,7 @@ pipeline:
                 required: false,
                 default: Some(serde_json::json!(5)),
                 secret: false,
+                computed: None,
                 description: None,
             },
         );

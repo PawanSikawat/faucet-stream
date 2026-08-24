@@ -19,6 +19,7 @@ use gcp_bigquery_client::model::query_response::{QueryResponse, ResultSet};
 use gcp_bigquery_client::model::table_data_insert_all_request::TableDataInsertAllRequest;
 use gcp_bigquery_client::model::table_data_insert_all_response::TableDataInsertAllResponse;
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::RwLock;
 
@@ -89,6 +90,13 @@ pub struct BigQuerySink {
     /// the next page diffs against the evolved table. Unused on the plain
     /// streaming path.
     schema_cache: RwLock<Option<Vec<idempotent::FieldSpec>>>,
+    /// Set once the target table has been confirmed to exist (or been created)
+    /// this run, so the existence probe / create runs at most once.
+    table_ready: AtomicBool,
+    /// Overwrite-only: set in [`begin_overwrite`](faucet_core::Sink::begin_overwrite)
+    /// when the target was missing and `create_table` is on, so the first written
+    /// page creates the target (from its inferred schema) and the staging clone.
+    overwrite_deferred: AtomicBool,
     /// Lazily-built GCS client for the Arrow columnar load-job staging upload
     /// (#380). Built once from `config.bulk_load.gcs_auth` on the first
     /// columnar write and reused for every staged file.
@@ -109,6 +117,8 @@ impl BigQuerySink {
             config,
             client,
             schema_cache: RwLock::new(None),
+            table_ready: AtomicBool::new(false),
+            overwrite_deferred: AtomicBool::new(false),
             #[cfg(feature = "arrow")]
             gcs_store: tokio::sync::OnceCell::new(),
         })
@@ -128,6 +138,8 @@ impl BigQuerySink {
             config,
             client,
             schema_cache: RwLock::new(None),
+            table_ready: AtomicBool::new(false),
+            overwrite_deferred: AtomicBool::new(false),
             #[cfg(feature = "arrow")]
             gcs_store: tokio::sync::OnceCell::new(),
         }
@@ -332,6 +344,19 @@ impl BigQuerySink {
     /// avoided deliberately: its rows sit in a streaming buffer that the commit
     /// swap's `SELECT` might not see yet.
     async fn insert_overwrite_page(&self, records: &[Value]) -> Result<usize, FaucetError> {
+        // Deferred create: `begin_overwrite` found no target and `create_table`
+        // is on, so the first page provides the schema. Create the target, then
+        // the staging clone, before loading.
+        if self.overwrite_deferred.swap(false, Ordering::AcqRel) {
+            self.create_target_from_sample(records).await?;
+            self.table_ready.store(true, Ordering::Release);
+            self.run_ddl(format!(
+                "CREATE OR REPLACE TABLE {} LIKE {}",
+                self.overwrite_temp_ref(),
+                self.table_ref()
+            ))
+            .await?;
+        }
         let columns = self.target_schema().await?;
         let payload = serde_json::to_string(records).map_err(|e| {
             FaucetError::Sink(format!("BigQuery overwrite: serialize page payload: {e}"))
@@ -358,12 +383,14 @@ impl BigQuerySink {
         Ok(records.len())
     }
 
-    /// Run one schema-evolution DDL statement through the same `jobs.query` +
+    /// Run one schema-evolution / DDL statement through the same `jobs.query` +
     /// authoritative job-status-verify path the data writes use, mapping any
-    /// failure to [`FaucetError::Sink`].
+    /// failure to [`FaucetError::Sink`]. The configured `location` (if any) is
+    /// applied so dataset/table creation lands in the intended region.
     async fn run_ddl(&self, sql: String) -> Result<(), FaucetError> {
         let mut req = QueryRequest::new(sql);
         req.use_legacy_sql = false;
+        req.location = self.config.location.clone();
         let resp = self
             .client
             .job()
@@ -371,6 +398,79 @@ impl BigQuerySink {
             .await
             .map_err(|e| FaucetError::Sink(format!("BigQuery schema-evolution DDL failed: {e}")))?;
         self.await_query_complete(resp).await
+    }
+
+    /// Is the target table present **with a usable schema** (≥1 field)? A
+    /// `tables.get` 404 → `Ok(false)` (missing); a table with an empty schema
+    /// → `Ok(false)` (schemaless, e.g. created by a bare `bq mk` — `CREATE …
+    /// LIKE` / typed inserts fail against it, so it must be (re)created); any
+    /// other error is surfaced.
+    async fn target_has_schema(&self) -> Result<bool, FaucetError> {
+        match self.fetch_schema_fields().await {
+            Ok(fields) => Ok(!fields.is_empty()),
+            Err(e) if is_table_not_found(&e) => Ok(false),
+            Err(e) => Err(FaucetError::Sink(format!(
+                "BigQuery tables.get (schema probe) failed: {e}"
+            ))),
+        }
+    }
+
+    /// Best-effort `CREATE SCHEMA IF NOT EXISTS` so `create_table` can target a
+    /// dataset that does not exist yet. Idempotent; runs in `config.location`.
+    async fn ensure_dataset(&self) -> Result<(), FaucetError> {
+        let sql = format!(
+            "CREATE SCHEMA IF NOT EXISTS `{}`.`{}`",
+            self.config.project_id.replace('`', ""),
+            self.config.dataset_id.replace('`', "")
+        );
+        self.run_ddl(sql).await
+    }
+
+    /// Create the target dataset (if missing) and table, inferring the table's
+    /// schema from `sample`. Invalidates the schema cache so the freshly-created
+    /// schema is fetched on the next read.
+    async fn create_target_from_sample(&self, sample: &[Value]) -> Result<(), FaucetError> {
+        let ddl = idempotent::build_create_table_ddl(
+            &self.config.project_id,
+            &self.config.dataset_id,
+            &self.config.table_id,
+            sample,
+        )
+        .ok_or_else(|| {
+            FaucetError::Sink(format!(
+                "BigQuery create_table: cannot infer a schema for {}.{}.{} from the first page \
+                 (no object fields); pre-create the table or ensure records carry fields",
+                self.config.project_id, self.config.dataset_id, self.config.table_id
+            ))
+        })?;
+        self.ensure_dataset().await?;
+        self.run_ddl(ddl).await?;
+        *self.schema_cache.write().await = None;
+        Ok(())
+    }
+
+    /// Ensure the target table exists before a (non-overwrite) write. When
+    /// `create_table` is on and the table is missing, create it (and its
+    /// dataset) from `sample`; when off, surface a clear error. The probe /
+    /// create runs at most once per run.
+    async fn ensure_table_ready(&self, sample: &[Value]) -> Result<(), FaucetError> {
+        if self.table_ready.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if self.target_has_schema().await? {
+            self.table_ready.store(true, Ordering::Release);
+            return Ok(());
+        }
+        if !self.config.create_table {
+            return Err(FaucetError::Sink(format!(
+                "BigQuery table {}.{}.{} does not exist (or has no schema) and \
+                 `create_table` is disabled",
+                self.config.project_id, self.config.dataset_id, self.config.table_id
+            )));
+        }
+        self.create_target_from_sample(sample).await?;
+        self.table_ready.store(true, Ordering::Release);
+        Ok(())
     }
 
     /// Create the commit-token watermark table if it does not exist.
@@ -752,6 +852,7 @@ impl faucet_core::Sink for BigQuerySink {
             self.config.write.write_mode,
             faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
         ) {
+            self.ensure_table_ready(records).await?;
             let plan = faucet_core::plan_writes(records, &self.config.write);
             if let Some((idx, msg)) = plan.failed.first() {
                 return Err(FaucetError::Sink(format!(
@@ -764,10 +865,13 @@ impl faucet_core::Sink for BigQuerySink {
 
         // Overwrite: load the page into the staging table via the buffer-free
         // query path (not streaming `insertAll`); the atomic swap runs in
-        // `commit_overwrite`.
+        // `commit_overwrite`. Table/staging creation is handled by
+        // `begin_overwrite` + the deferred create in `insert_overwrite_page`.
         if self.config.write.is_overwrite() {
             return self.insert_overwrite_page(records).await;
         }
+
+        self.ensure_table_ready(records).await?;
 
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
             // Sentinel: pass the entire upstream page through in a single
@@ -827,6 +931,7 @@ impl faucet_core::Sink for BigQuerySink {
         }
 
         if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
+            self.ensure_table_ready(records).await?;
             let plan = faucet_core::plan_writes(records, &self.config.write);
             self.run_upsert_script(&plan, None).await?;
             let mut outcomes: Vec<faucet_core::RowOutcome> =
@@ -839,6 +944,8 @@ impl faucet_core::Sink for BigQuerySink {
             }
             return Ok(outcomes);
         }
+
+        self.ensure_table_ready(records).await?;
 
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
             vec![records]
@@ -906,12 +1013,30 @@ impl faucet_core::Sink for BigQuerySink {
     /// run. Bucket-free: no GCS staging is involved. The target must already
     /// exist (LIKE requires it) — overwrite replaces its rows, not its schema.
     async fn begin_overwrite(&self) -> Result<(), FaucetError> {
-        self.run_ddl(format!(
-            "CREATE OR REPLACE TABLE {} LIKE {}",
-            self.overwrite_temp_ref(),
-            self.table_ref()
-        ))
-        .await
+        if self.target_has_schema().await? {
+            self.table_ready.store(true, Ordering::Release);
+            return self
+                .run_ddl(format!(
+                    "CREATE OR REPLACE TABLE {} LIKE {}",
+                    self.overwrite_temp_ref(),
+                    self.table_ref()
+                ))
+                .await;
+        }
+        if self.config.create_table {
+            // Nothing usable to overwrite — the target is missing or schemaless.
+            // Ensure the dataset and defer target + staging creation to the first
+            // page, which supplies the schema to infer (`LIKE` needs a schema'd
+            // target).
+            self.ensure_dataset().await?;
+            self.overwrite_deferred.store(true, Ordering::Release);
+            return Ok(());
+        }
+        Err(FaucetError::Sink(format!(
+            "BigQuery overwrite target {}.{}.{} does not exist (or has no schema) and \
+             `create_table` is disabled",
+            self.config.project_id, self.config.dataset_id, self.config.table_id
+        )))
     }
 
     /// Atomically replace the destination in one BigQuery multi-statement
@@ -922,6 +1047,20 @@ impl faucet_core::Sink for BigQuerySink {
     /// staging table is dropped afterwards. Staging was loaded via the query
     /// path, so there is no streaming buffer to miss.
     async fn commit_overwrite(&self) -> Result<(), FaucetError> {
+        if self.overwrite_deferred.load(Ordering::Acquire) {
+            // The target was missing and no page was ever written (empty
+            // source), so there is no schema to create from and nothing to
+            // swap. Leave nothing behind rather than fail the run.
+            tracing::warn!(
+                table = %format!(
+                    "{}.{}.{}",
+                    self.config.project_id, self.config.dataset_id, self.config.table_id
+                ),
+                "BigQuery overwrite: source produced no rows and the target did not exist; \
+                 table not created"
+            );
+            return Ok(());
+        }
         let temp = self.overwrite_temp_ref();
         let sql = match &self.config.scope {
             Some(scope) => {
@@ -1037,6 +1176,7 @@ impl faucet_core::Sink for BigQuerySink {
         token: &str,
     ) -> Result<usize, FaucetError> {
         self.ensure_commit_table().await?;
+        self.ensure_table_ready(records).await?;
 
         if !matches!(self.config.write.write_mode, faucet_core::WriteMode::Append) {
             let plan = faucet_core::plan_writes(records, &self.config.write);

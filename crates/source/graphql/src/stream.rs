@@ -280,6 +280,10 @@ impl GraphqlStream {
             }
         }
 
+        // The query string; for offset `substitute_in_query` mode it is
+        // rewritten per request with the current offset (ShopifyQL etc.).
+        let mut query = self.config.query.clone();
+
         // Inject the per-request pagination variable(s).
         match &self.config.pagination {
             // Cursor mode: inject the `after` cursor (once we have one) and the
@@ -298,10 +302,15 @@ impl GraphqlStream {
                     );
                 }
             }
-            // Offset mode: inject the current offset as a JSON number. The page
-            // size is not injected — the user bakes the limit into the query.
+            // Offset mode: either substitute `${offset_variable}` into the query
+            // string (ShopifyQL's string-literal `LIMIT … OFFSET …`, #569) or
+            // inject the current offset as a JSON GraphQL variable (#550). The
+            // page size is not injected — the user bakes the limit into the query.
             Some(GraphqlPaginationSpec::Offset(off)) => {
-                if let Value::Object(map) = &mut variables {
+                if off.substitute_in_query {
+                    let token = format!("${{{}}}", off.offset_variable);
+                    query = query.replace(&token, &offset.to_string());
+                } else if let Value::Object(map) = &mut variables {
                     map.insert(off.offset_variable.clone(), json!(offset));
                 }
             }
@@ -309,7 +318,7 @@ impl GraphqlStream {
         }
 
         let payload = json!({
-            "query": self.config.query,
+            "query": query,
             "variables": variables,
         });
 
@@ -802,6 +811,7 @@ mod tests {
             offset_variable: "q_offset".into(),
             page_size,
             stop_when_short,
+            substitute_in_query: false,
         }
     }
 

@@ -4,11 +4,11 @@ use crate::config::{XmlAuth, XmlPagination, XmlStreamConfig};
 use crate::convert;
 use async_trait::async_trait;
 use faucet_core::util::{self, DEFAULT_ERROR_BODY_MAX_LEN};
-use faucet_core::{AuthSpec, Credential, FaucetError, SharedAuthProvider};
+use faucet_core::{AuthSpec, Credential, CredentialPlacement, FaucetError, SharedAuthProvider};
 use faucet_core::{Stream, StreamPage};
 use reqwest::Client;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -26,6 +26,22 @@ fn page_fingerprint(records: &[Value]) -> u64 {
         r.to_string().hash(&mut hasher);
     }
     hasher.finish()
+}
+
+/// Substitute `${name}` tokens with flow-captured login values (#567) — e.g. an
+/// Intacct `sessionid` captured from the login response and needed inside every
+/// data request's raw XML body. Only exact `${name}` occurrences for a captured
+/// `name` are replaced; any other `${...}` token is left untouched. Applied per
+/// request, after the parent-context substitution.
+fn substitute_captured(s: &str, captured: &BTreeMap<String, String>) -> String {
+    if captured.is_empty() || !s.contains("${") {
+        return s.to_string();
+    }
+    let mut out = s.to_string();
+    for (k, v) in captured {
+        out = out.replace(&format!("${{{k}}}"), v);
+    }
+    out
 }
 
 /// Retries on transient (5xx / connection) failures before giving up.
@@ -406,64 +422,145 @@ impl XmlStream {
             faucet_core::util::substitute_context(&self.config.path, context)
         };
 
-        let url = format!("{}/{}", self.config.base_url, path.trim_start_matches('/'));
+        // #567 rich per-request auth: a flow provider may override the base-URL,
+        // place credentials across header/query/cookie, and expose captured
+        // login values for `${name}` substitution into the raw body/headers
+        // (an Intacct `sessionid`). When it contributes anything it supersedes
+        // the plain credential() path below.
+        let mut base_url = self.config.base_url.clone();
+        let mut ra_headers: Vec<(String, String)> = Vec::new();
+        let mut ra_query: Vec<(String, String)> = Vec::new();
+        let mut ra_cookies: Vec<(String, String)> = Vec::new();
+        let mut captured: BTreeMap<String, String> = BTreeMap::new();
+        let mut used_request_auth = false;
+        if let Some(provider) = &self.auth_provider {
+            let q: BTreeMap<String, String> =
+                params.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            let ra = provider
+                .request_auth(self.config.method.as_str(), &base_url, &q)
+                .await?;
+            if !ra.is_empty() {
+                used_request_auth = true;
+                if let Some(b) = ra.base_url {
+                    base_url = b;
+                }
+                for p in ra.placements {
+                    match p {
+                        CredentialPlacement::Header { name, value } => {
+                            ra_headers.push((name, value))
+                        }
+                        CredentialPlacement::Query { name, value } => ra_query.push((name, value)),
+                        CredentialPlacement::Cookie { name, value } => {
+                            ra_cookies.push((name, value))
+                        }
+                        // BodyField is JSON-body-specific; an XML body carries a
+                        // captured value via `${name}` substitution instead.
+                        _ => {}
+                    }
+                }
+                captured = ra.captured;
+            }
+        }
 
-        // Substitute context into query parameter values.
-        let resolved_params: HashMap<String, String> = if context.is_empty() {
-            params.clone()
-        } else {
-            params
+        let url = format!("{}/{}", base_url, path.trim_start_matches('/'));
+
+        // Query values: parent context + captured substitution, then the flow
+        // provider's query placements.
+        let mut resolved_params: HashMap<String, String> = params
+            .iter()
+            .map(|(k, v)| {
+                let v = if context.is_empty() {
+                    v.clone()
+                } else {
+                    faucet_core::util::substitute_context(v, context)
+                };
+                (k.clone(), substitute_captured(&v, &captured))
+            })
+            .collect();
+        for (k, v) in ra_query {
+            resolved_params.insert(k, v);
+        }
+
+        // Config headers with captured substitution, plus the flow provider's
+        // header + cookie placements.
+        let mut header_map = reqwest::header::HeaderMap::new();
+        for (name, value) in self.config.headers.iter() {
+            let sv = substitute_captured(value.to_str().unwrap_or_default(), &captured);
+            match reqwest::header::HeaderValue::from_str(&sv) {
+                Ok(hv) => header_map.insert(name.clone(), hv),
+                Err(_) => header_map.insert(name.clone(), value.clone()),
+            };
+        }
+        for (name, value) in &ra_headers {
+            if let (Ok(n), Ok(v)) = (
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()),
+                reqwest::header::HeaderValue::from_str(value),
+            ) {
+                header_map.insert(n, v);
+            }
+        }
+        if !ra_cookies.is_empty() {
+            let cookie = ra_cookies
                 .iter()
-                .map(|(k, v)| (k.clone(), faucet_core::util::substitute_context(v, context)))
-                .collect()
-        };
+                .map(|(n, v)| format!("{n}={v}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            if let Ok(v) = reqwest::header::HeaderValue::from_str(&cookie) {
+                header_map.insert(reqwest::header::COOKIE, v);
+            }
+        }
 
         let mut req = self
             .client
             .request(self.config.method.clone(), &url)
-            .headers(self.config.headers.clone())
+            .headers(header_map)
             .query(&resolved_params);
 
-        // Resolve credentials to concrete auth. A shared auth provider
-        // (from `auth: { ref }` or injected by a library caller) takes
-        // precedence; otherwise inline auth is used.
-        let effective_auth: XmlAuth = if let Some(provider) = &self.auth_provider {
-            credential_to_auth(provider.credential().await?)
-        } else {
-            match &self.config.auth {
-                AuthSpec::Inline(a) => a.clone(),
-                AuthSpec::Reference(r) => {
-                    return Err(FaucetError::Auth(format!(
-                        "auth references provider '{}' but no provider was supplied; \
-                         set one via the CLI `auth:` catalog or `with_auth_provider`",
-                        r.name
-                    )));
+        // Resolve inline / single credentials — unless the flow provider already
+        // supplied the request auth above.
+        if !used_request_auth {
+            let effective_auth: XmlAuth = if let Some(provider) = &self.auth_provider {
+                credential_to_auth(provider.credential().await?)
+            } else {
+                match &self.config.auth {
+                    AuthSpec::Inline(a) => a.clone(),
+                    AuthSpec::Reference(r) => {
+                        return Err(FaucetError::Auth(format!(
+                            "auth references provider '{}' but no provider was supplied; \
+                             set one via the CLI `auth:` catalog or `with_auth_provider`",
+                            r.name
+                        )));
+                    }
                 }
-            }
-        };
+            };
 
-        // Apply auth.
-        match &effective_auth {
-            XmlAuth::None => {}
-            XmlAuth::Bearer { token } => {
-                req = req.bearer_auth(token);
-            }
-            XmlAuth::Basic { username, password } => {
-                req = req.basic_auth(username, Some(password));
-            }
-            XmlAuth::Custom { headers } => {
-                let mut hm = reqwest::header::HeaderMap::new();
-                for (name, value) in headers {
-                    let n =
-                        reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
-                            FaucetError::Auth(format!("invalid custom header name {name:?}: {e}"))
-                        })?;
-                    let v = reqwest::header::HeaderValue::from_str(value).map_err(|e| {
-                        FaucetError::Auth(format!("invalid custom header value for {name:?}: {e}"))
-                    })?;
-                    hm.insert(n, v);
+            match &effective_auth {
+                XmlAuth::None => {}
+                XmlAuth::Bearer { token } => {
+                    req = req.bearer_auth(token);
                 }
-                req = req.headers(hm);
+                XmlAuth::Basic { username, password } => {
+                    req = req.basic_auth(username, Some(password));
+                }
+                XmlAuth::Custom { headers } => {
+                    let mut hm = reqwest::header::HeaderMap::new();
+                    for (name, value) in headers {
+                        let n = reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(
+                            |e| {
+                                FaucetError::Auth(format!(
+                                    "invalid custom header name {name:?}: {e}"
+                                ))
+                            },
+                        )?;
+                        let v = reqwest::header::HeaderValue::from_str(value).map_err(|e| {
+                            FaucetError::Auth(format!(
+                                "invalid custom header value for {name:?}: {e}"
+                            ))
+                        })?;
+                        hm.insert(n, v);
+                    }
+                    req = req.headers(hm);
+                }
             }
         }
 
@@ -483,6 +580,7 @@ impl XmlStream {
             } else {
                 faucet_core::util::substitute_context(ob, context)
             };
+            let resolved = substitute_captured(&resolved, &captured);
             req = req
                 .header("Content-Type", "text/xml; charset=utf-8")
                 .body(resolved);
@@ -493,6 +591,7 @@ impl XmlStream {
             } else {
                 faucet_core::util::substitute_context(inner, context)
             };
+            let resolved_inner = substitute_captured(&resolved_inner, &captured);
             let envelope = soap.build_envelope(&resolved_inner);
             req = req
                 .header("Content-Type", soap.content_type())
@@ -506,6 +605,7 @@ impl XmlStream {
             } else {
                 faucet_core::util::substitute_context(body, context)
             };
+            let resolved_body = substitute_captured(&resolved_body, &captured);
             req = req
                 .header("Content-Type", "text/xml; charset=utf-8")
                 .body(resolved_body);

@@ -1516,23 +1516,23 @@ async fn run_one_invocation(
     // Runtime fan-out context. A `parent:` child sees `{parent_id: record}`;
     // a discovery-driven `for_each` row (#501) sees `{dim_id: {alias: value}}`
     // for each dimension in its product tuple. Both resolve `${id.path}` tokens
-    // through the same `interpolate_record` path.
-    {
-        let mut ctx: HashMap<String, Value> = HashMap::new();
-        if let (Some(record), NodeRole::Child { parent_id, .. }) = (parent_record, &node.role) {
-            ctx.insert(parent_id.clone(), record.clone());
+    // through the same `interpolate_record` path. Kept in function scope so the
+    // transform-compile step below can resolve the same tokens in a `set`
+    // transform's values (#568).
+    let mut fanout_ctx: HashMap<String, Value> = HashMap::new();
+    if let (Some(record), NodeRole::Child { parent_id, .. }) = (parent_record, &node.role) {
+        fanout_ctx.insert(parent_id.clone(), record.clone());
+    }
+    if let Some(pc) = product_ctx {
+        for (k, v) in pc {
+            fanout_ctx.insert(k.clone(), v.clone());
         }
-        if let Some(pc) = product_ctx {
-            for (k, v) in pc {
-                ctx.insert(k.clone(), v.clone());
-            }
-        }
-        if !ctx.is_empty() {
-            resolve_inplace(&mut source_cfg, &ctx)?;
-            resolve_inplace(&mut sink_cfg, &ctx)?;
-            if let Some(scope) = cleanup_scope.as_mut() {
-                resolve_inplace(scope, &ctx)?;
-            }
+    }
+    if !fanout_ctx.is_empty() {
+        resolve_inplace(&mut source_cfg, &fanout_ctx)?;
+        resolve_inplace(&mut sink_cfg, &fanout_ctx)?;
+        if let Some(scope) = cleanup_scope.as_mut() {
+            resolve_inplace(scope, &fanout_ctx)?;
         }
     }
 
@@ -1639,13 +1639,18 @@ async fn run_one_invocation(
         None => source,
     };
 
-    // 3) Compile transforms. Resolve `${now.*}` run-clock tokens in each
+    // 3) Compile transforms. Resolve `${now.*}` run-clock tokens and, on a
+    //    child / discovery fan-out, `${parent.*}` record tokens in each
     //    transform's config first — exactly as for source/sink above — so e.g. a
-    //    `set` transform stamping `${now.date}` writes the real date instead of
-    //    the literal token string. Without this the token leaks into every record.
+    //    `set` transform stamping `${now.date}` or `${company.company_id}` writes
+    //    the real value instead of the literal token string (#568). Without this
+    //    the token leaks into every record.
     let mut transforms = node.transforms.clone();
     for t in &mut transforms {
         resolve_now_inplace(&mut t.config, opts.clock)?;
+        if !fanout_ctx.is_empty() {
+            resolve_inplace(&mut t.config, &fanout_ctx)?;
+        }
     }
     // With `arrow`, compile the columnar batch forms too so an all-columnar
     // chain (e.g. `parquet → sql → parquet`) runs on the Arrow fast path; a

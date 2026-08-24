@@ -58,6 +58,18 @@ pub struct BigQuerySinkConfig {
     /// of the whole table — the out-of-scope rows are preserved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<faucet_core::OverwriteScope>,
+    /// Create the target table (and its dataset) if it does not exist, inferring
+    /// the schema from the first written page. Enabled by default: a first-ever
+    /// sync cannot assume the destination table already exists. Set to `false` to
+    /// require the table to pre-exist and fail fast when it is missing (e.g. the
+    /// schema is managed externally and a missing table signals a typo).
+    #[serde(default = "default_create_table")]
+    pub create_table: bool,
+    /// Location (region or multi-region, e.g. `US`, `EU`, `us-central1`) used only
+    /// when `create_table` has to create the dataset. `None` uses the BigQuery
+    /// job's default location. Ignored once the dataset exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
     /// Arrow columnar **load-job** mode (#380): buffer Arrow `RecordBatch`es to
     /// Parquet, stage them on a GCS bucket, then run a BigQuery `PARQUET` load
     /// job (`jobs.insert`) instead of the per-row `insertAll` path. Only
@@ -110,6 +122,10 @@ fn default_batch_size() -> usize {
     DEFAULT_BATCH_SIZE
 }
 
+fn default_create_table() -> bool {
+    true
+}
+
 impl BigQuerySinkConfig {
     /// Create a new config with the required fields and sensible defaults.
     pub fn new(
@@ -127,9 +143,26 @@ impl BigQuerySinkConfig {
             insert_id_field: None,
             write: faucet_core::WriteSpec::default(),
             scope: None,
+            create_table: default_create_table(),
+            location: None,
             #[cfg(feature = "arrow")]
             bulk_load: None,
         }
+    }
+
+    /// Set whether the sink creates the target table (and dataset) when it is
+    /// missing, inferring the schema from the first written page. Defaults to
+    /// `true`; pass `false` to require the table to already exist.
+    pub fn with_create_table(mut self, create_table: bool) -> Self {
+        self.create_table = create_table;
+        self
+    }
+
+    /// Set the dataset location used when `create_table` has to create the
+    /// dataset (e.g. `US`, `EU`, `us-central1`).
+    pub fn with_location(mut self, location: impl Into<String>) -> Self {
+        self.location = Some(location.into());
+        self
     }
 
     /// Enable Arrow columnar bulk-load via a GCS-staged Parquet load job (#380).
@@ -321,6 +354,51 @@ mod tests {
         assert_eq!(l.staging_prefix, "faucet-bq-load/");
         assert_eq!(l.write_disposition, "WRITE_APPEND");
         assert!(l.storage_host.is_none());
+    }
+
+    #[test]
+    fn create_table_defaults_to_true() {
+        let config =
+            BigQuerySinkConfig::new("p", "d", "t", BigQueryCredentials::ApplicationDefault);
+        assert!(config.create_table);
+        assert!(config.location.is_none());
+    }
+
+    #[test]
+    fn create_table_defaults_true_when_absent_in_json() {
+        let json = r#"{
+            "project_id": "p",
+            "dataset_id": "d",
+            "table_id": "t",
+            "auth": {"type": "application_default"}
+        }"#;
+        let config: BigQuerySinkConfig = serde_json::from_str(json).unwrap();
+        assert!(config.create_table);
+    }
+
+    #[test]
+    fn create_table_and_location_deserialize_from_json() {
+        let json = r#"{
+            "project_id": "p",
+            "dataset_id": "d",
+            "table_id": "t",
+            "auth": {"type": "application_default"},
+            "create_table": false,
+            "location": "EU"
+        }"#;
+        let config: BigQuerySinkConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.create_table);
+        assert_eq!(config.location.as_deref(), Some("EU"));
+    }
+
+    #[test]
+    fn with_create_table_and_with_location_builders() {
+        let config =
+            BigQuerySinkConfig::new("p", "d", "t", BigQueryCredentials::ApplicationDefault)
+                .with_create_table(false)
+                .with_location("us-central1");
+        assert!(!config.create_table);
+        assert_eq!(config.location.as_deref(), Some("us-central1"));
     }
 
     #[test]

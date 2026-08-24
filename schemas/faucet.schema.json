@@ -258,6 +258,13 @@
             "string",
             "null"
           ]
+        },
+        "computed": {
+          "description": "A **derived** value: this param is not user-supplied but computed from\nother params via an interpolation expression — `${param.NAME}` and the\n`${map:NAME|case=value|*=default}` lookup — resolved *after* the ordinary\nparams bind (#573). A computed param is excluded from the trigger surface\n(supplying a value for it is an error) and is mutually exclusive with\n`required`, `default`, and `secret`. Example:\n`accounts_domain: { computed: \"${map:region|ca=zohocloud|*=zoho}\" }`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
@@ -14667,6 +14674,21 @@
                         }
                       ],
                       "description": "Scoped/windowed overwrite (#518): with `write_mode: overwrite`, replace\nonly the rows matching this scope (e.g. a partition/date window) instead\nof the whole table — the out-of-scope rows are preserved."
+                    },
+                    "create_table": {
+                      "description": "Create the target table (and its dataset) if it does not exist, inferring\nthe schema from the first written page. Enabled by default: a first-ever\nsync cannot assume the destination table already exists. Set to `false` to\nrequire the table to pre-exist and fail fast when it is missing (e.g. the\nschema is managed externally and a missing table signals a typo).",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": true
+                    },
+                    "location": {
+                      "description": "Location (region or multi-region, e.g. `US`, `EU`, `us-central1`) used only\nwhen `create_table` has to create the dataset. `None` uses the BigQuery\njob's default location. Ignored once the dataset exists.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
                   "title": "BigQuerySinkConfig",
@@ -18739,6 +18761,14 @@
             "string"
           ],
           "default": true
+        },
+        "substitute_in_query": {
+          "description": "Substitute `${offset_variable}` occurrences in the **query string** with\nthe current offset before each request, instead of sending it as a\nGraphQL variable. Required for query languages that embed the offset in a\nstring-literal argument — e.g. ShopifyQL's\n`shopifyqlQuery(query: \"… LIMIT 250 OFFSET ${q_offset}\")`, where a GraphQL\nvariable cannot interpolate into a string literal (#569). Default\n`false` (variable injection, the #550 behavior).",
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "default": false
         }
       },
       "additionalProperties": true

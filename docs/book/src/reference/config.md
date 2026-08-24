@@ -157,7 +157,9 @@ Reference cycles surface as a clear `InterpolationCycle` error.
 ### `${now.*}` — run-clock interpolation
 
 `${now.*}` tokens inject the current wall time into **source and sink config
-values**. Each invocation evaluates them once at run time:
+values** — and into a **`set` transform's values**, so a run can stamp a column
+with the run date (`set: { values: { run_date: "${now.date}" } }`, #568). Each
+invocation evaluates them once at run time:
 
 | Token | Example output | Notes |
 |-------|---------------|-------|
@@ -246,6 +248,26 @@ params:
 | `default` | — | Value when none is supplied. An ordinary config scalar, so `default: "${env:SINCE}"` resolves. |
 | `secret` | `false` | Registered for redaction the instant it is bound — never reaches a log, error, API response, audit record, or the template registry. |
 | `description` | — | Surfaced by `faucet template list`/`show`, `GET /v1/templates`, and the MCP `get_template` tool. |
+| `computed` | — | A **derived** value (see below). Mutually exclusive with `required`, `default`, and `secret`; excluded from the trigger surface. |
+
+**Computed params & `${map:…}`.** A param can be *derived* from other params
+instead of supplied, via `computed:` — resolved after the ordinary params bind
+and excluded from the trigger surface (the console form, `--param`, and the HTTP
+trigger body); supplying a value for one is an error. A `computed` expression may
+reference other params (`${param.NAME}`, including other computed params) and the
+`${map:NAME|case=value|*=default}` lookup — a small, non-Turing-complete switch on
+another param's value. Cycles and an unmatched map with no `*` default are
+load-time errors.
+
+```yaml
+params:
+  region:          { default: com }
+  accounts_domain: { computed: "${map:region|ca=zohocloud|*=zoho}" }
+# region=ca → accounts.zohocloud.ca ; anything else → accounts.zoho.<region>
+```
+
+`${map:NAME|…}` also works inline in a source/sink config value, not only in a
+`computed` param.
 
 **Supplying values.** `faucet run --param name=value` (repeatable),
 `faucet template run <id> --param …`, or `POST /v1/templates/{id}/runs` with a
