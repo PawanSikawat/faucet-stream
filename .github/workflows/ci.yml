@@ -38,6 +38,7 @@ jobs:
     outputs:
       code: ${{ steps.gate.outputs.code }}
       ui: ${{ steps.filter.outputs.ui }}
+      deploy: ${{ steps.filter.outputs.deploy }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -61,11 +62,18 @@ jobs:
               - '!**/*.svg'
               - '!**/*.jpg'
               - '!cli/src/serve/ui/**'
+              - '!deploy/**'
             # serve web-console assets (JS/CSS/HTML). They embed into the binary,
             # so a change here needs the serve-ui isolation test — but NOT the
             # Rust matrix, clippy, semver, connector features, or supply-chain.
             ui:
               - 'cli/src/serve/ui/**'
+            # Deployment manifests (Helm chart). A change here needs a Helm lint /
+            # template render — but NOT the Rust matrix, clippy, semver, connector
+            # features, or supply-chain. Excluded from `code` above so a chart-only
+            # PR skips the heavy suite (like docs), and validated by `helm-lint`.
+            deploy:
+              - 'deploy/helm/**'
       # The release-plz "chore: release" PR is auto-updated on every push to main
       # (version + changelog bumps), which would otherwise re-run the full CI on
       # it after every normal merge. Force `code=false` for that PR so all heavy
@@ -242,6 +250,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Serve-ui + serve-openapi isolation tests
         run: cargo test -p faucet-cli --features serve-ui --test serve_ui --test serve_openapi
+
+  # Lint + render the Helm chart on chart-only PRs (which skip the Rust suite).
+  # Pushes to main always run it so the chart stays verified.
+  helm-lint:
+    name: Helm lint
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.deploy == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: helm lint
+        run: helm lint deploy/helm/faucet-stream
+      - name: helm template (default values)
+        run: helm template faucet-stream deploy/helm/faucet-stream > /dev/null
+      - name: helm template (serve + existing PVC + secret files)
+        run: |
+          helm template faucet-stream deploy/helm/faucet-stream \
+            --set serve.enabled=true \
+            --set serve.persistence.existingClaim=my-pvc \
+            --set secretFiles.enabled=true > /dev/null
 
   # Verify each feature compiles in isolation (catches accidental cross-feature deps)
   feature-check:

@@ -43,9 +43,14 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       terminationGracePeriodSeconds: {{ .Values.serve.terminationGracePeriodSeconds }}
       {{- $verify := include "faucet-stream.verifyInitContainer" . }}
-      {{- if trim $verify }}
+      {{- if or (trim $verify) .Values.extraInitContainers }}
       initContainers:
+        {{- if trim $verify }}
         {{- $verify | nindent 8 }}
+        {{- end }}
+        {{- with .Values.extraInitContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
       containers:
         - name: serve
@@ -125,13 +130,18 @@ spec:
               mountPath: /etc/faucet-auth
               readOnly: true
             {{- end }}
+            {{- if .Values.secretFiles.enabled }}
+            - name: secret-files
+              mountPath: {{ .Values.secretFiles.mountPath }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
-        {{- if .Values.serve.persistence.enabled }}
+        {{- if or .Values.serve.persistence.enabled .Values.serve.persistence.existingClaim }}
         - name: scratch
           persistentVolumeClaim:
-            claimName: {{ include "faucet-stream.fullname" . }}-data
+            claimName: {{ .Values.serve.persistence.existingClaim | default (printf "%s-data" (include "faucet-stream.fullname" .)) }}
         {{- else }}
         - name: scratch
           emptyDir: {}
@@ -145,6 +155,11 @@ spec:
         - name: rbac-auth
           secret:
             secretName: {{ .Values.serve.auth.existingSecret | default (include "faucet-stream.authSecretName" .) }}
+        {{- end }}
+        {{- if .Values.secretFiles.enabled }}
+        - name: secret-files
+          secret:
+            secretName: {{ .Values.secretFiles.existingSecret | default (include "faucet-stream.envSecretName" .) }}
         {{- end }}
       {{- with .Values.serve.nodeSelector }}
       nodeSelector:
