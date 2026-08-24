@@ -461,6 +461,64 @@ async fn overwrite_recreates_schemaless_target() {
 }
 
 #[tokio::test]
+async fn create_table_surfaces_non_404_schema_probe_error() {
+    // A non-404 tables.get error (e.g. 500) during the readiness probe must
+    // surface, not be treated as "missing" (#578).
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+            "error": {"code": 500, "message": "backend error"}
+        })))
+        .mount(&server)
+        .await;
+
+    let config = BigQuerySinkConfig::new(
+        PROJECT_ID,
+        DATASET_ID,
+        TABLE_ID,
+        BigQueryCredentials::ApplicationDefault,
+    );
+    let (sink, _sa) = build_sink(&server, config).await;
+    let err = sink
+        .write_batch(&[json!({"id": 1})])
+        .await
+        .expect_err("a non-404 probe error must surface");
+    assert!(
+        err.to_string().contains("schema probe"),
+        "error should name the schema probe: {err}"
+    );
+}
+
+#[tokio::test]
+async fn create_table_errors_when_schema_uninferable() {
+    // create_table on + missing table + a page with no object fields → the
+    // schema can't be inferred, so it errors rather than creating an empty table.
+    let server = MockServer::start().await;
+    mount_token_endpoint(&server).await;
+    mount_table_missing(&server, None).await;
+
+    let config = BigQuerySinkConfig::new(
+        PROJECT_ID,
+        DATASET_ID,
+        TABLE_ID,
+        BigQueryCredentials::ApplicationDefault,
+    );
+    let (sink, _sa) = build_sink(&server, config).await;
+    let err = sink
+        .write_batch(&[json!(1), json!("x")])
+        .await
+        .expect_err("uninferable schema must error");
+    assert!(
+        err.to_string().contains("cannot infer a schema"),
+        "error should explain the schema could not be inferred: {err}"
+    );
+}
+
+#[tokio::test]
 async fn append_errors_when_missing_and_create_disabled() {
     let server = MockServer::start().await;
     mount_token_endpoint(&server).await;

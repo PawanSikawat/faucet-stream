@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use faucet_core::{
-    AuthProvider, AuthReference, AuthSpec, Credential, FaucetError, SharedAuthProvider,
+    AuthProvider, AuthReference, AuthSpec, Credential, CredentialPlacement, FaucetError,
+    RequestAuth, SharedAuthProvider,
 };
 use faucet_source_rest::{PaginationStyle, RestStream, RestStreamConfig};
 use serde_json::json;
@@ -21,6 +22,63 @@ impl AuthProvider for FixedBearer {
     fn provider_name(&self) -> &'static str {
         "fixed-bearer"
     }
+}
+
+/// A flow-style provider exposing a captured `session_id` via
+/// `request_auth().captured`, plus a header placement (#567).
+#[derive(Debug)]
+struct CapturingProvider;
+
+#[async_trait::async_trait]
+impl AuthProvider for CapturingProvider {
+    async fn credential(&self) -> Result<Credential, FaucetError> {
+        Ok(Credential::Token(String::new()))
+    }
+    async fn request_auth(
+        &self,
+        _method: &str,
+        _url: &str,
+        _query: &std::collections::BTreeMap<String, String>,
+    ) -> Result<RequestAuth, FaucetError> {
+        let mut captured = std::collections::BTreeMap::new();
+        captured.insert("session_id".to_string(), "SID-REST".to_string());
+        Ok(RequestAuth::new()
+            .with_captured(captured)
+            .with_placement(CredentialPlacement::Header {
+                name: "X-Flow".into(),
+                value: "on".into(),
+            }))
+    }
+    fn provider_name(&self) -> &'static str {
+        "capturing"
+    }
+}
+
+#[tokio::test]
+async fn captured_value_substituted_into_config_header() {
+    let server = MockServer::start().await;
+    // Matches only when `${session_id}` in the config header was substituted
+    // from the flow capture, and the header placement was applied (#567).
+    Mock::given(method("GET"))
+        .and(path("/data"))
+        .and(header("x-session", "SID-REST"))
+        .and(header("x-flow", "on"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": [{"id": 7}]})))
+        .mount(&server)
+        .await;
+
+    let stream = RestStream::new(
+        RestStreamConfig::new(&server.uri(), "/data")
+            .records_path("$.data[*]")
+            .header("X-Session", "${session_id}")
+            .pagination(PaginationStyle::None),
+    )
+    .unwrap()
+    .with_auth_provider(Arc::new(CapturingProvider));
+
+    let records = stream.fetch_all().await.unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["id"], 7);
 }
 
 #[tokio::test]

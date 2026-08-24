@@ -1690,6 +1690,23 @@ pipeline:
     }
 
     #[test]
+    fn allows_reserved_builtin_tokens_in_transform_config() {
+        // Reserved runtime built-ins (`${now.*}`, `${window.*}`, `${backfill.*}`,
+        // `${bookmark}`, `${job_id}`, `${partition.*}`) are accepted in a
+        // transform's config, exercising the check_refs guard chain (#568).
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: jsonl, config: { path: ./o } }
+  transforms:
+    - type: set
+      config: { values: { a: "${now.date}", b: "${window.from}", c: "${backfill.start}", d: "${bookmark}", e: "${job_id}", f: "${partition.id}" } }
+"#);
+        assert_eq!(expand(&c).unwrap().len(), 1);
+    }
+
+    #[test]
     fn rejects_unknown_id_token_in_transform_config() {
         // An unknown id (not `now`/`backfill`/… and not a declared row) in a
         // transform still fails — it would leak as a literal at runtime.

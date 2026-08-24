@@ -463,6 +463,17 @@ mod tests {
         // base-URL alone (no placements) is still non-empty.
         assert!(!RequestAuth::new().with_base_url("https://h").is_empty());
         assert!(RequestAuth::default().is_empty());
+
+        // Captured values alone (no placements / base-URL) also make it
+        // non-empty, and are exposed for `${name}` body substitution (#567).
+        let mut cap = std::collections::BTreeMap::new();
+        cap.insert("session_id".to_string(), "SID".to_string());
+        let ra = RequestAuth::new().with_captured(cap);
+        assert!(!ra.is_empty());
+        assert_eq!(
+            ra.captured.get("session_id").map(String::as_str),
+            Some("SID")
+        );
     }
 
     #[test]

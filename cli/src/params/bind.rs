@@ -664,6 +664,79 @@ mod tests {
     }
 
     #[test]
+    fn computed_unterminated_brace_errors() {
+        // No closing `}` → referenced_params finds nothing, eval hits the guard.
+        let spec = spec_of("a: { computed: \"x-${param.region\" }\n");
+        let err = resolve(&spec, &SuppliedParams::new(), BindMode::Strict).unwrap_err();
+        assert!(
+            matches!(&err, CliError::Config(m) if m.contains("unterminated")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn computed_disallowed_directive_errors() {
+        // A computed expression may only reference ${param.*} / ${map:…}.
+        let spec = spec_of("a: { computed: \"${env:SECRET}\" }\n");
+        let err = resolve(&spec, &SuppliedParams::new(), BindMode::Strict).unwrap_err();
+        assert!(
+            matches!(&err, CliError::Config(m) if m.contains("may only reference")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn map_case_not_key_value_errors() {
+        let spec = spec_of(
+            "region: { default: com }\n\
+             d: { computed: \"${map:region|badcase}\" }\n",
+        );
+        let err = resolve(&spec, &SuppliedParams::new(), BindMode::Strict).unwrap_err();
+        assert!(
+            matches!(&err, CliError::Config(m) if m.contains("is not `case=value`")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn standalone_map_missing_switch_name_errors() {
+        // `${map:|a=b}` — empty switch name.
+        let mut doc = json!({
+            "pipeline": { "source": { "config": { "h": "${map:|a=b}" } } }
+        });
+        let err = bind_document(&mut doc, &SuppliedParams::new(), BindMode::Strict).unwrap_err();
+        assert!(
+            matches!(&err, CliError::Config(m) if m.contains("missing the switch param name")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn standalone_map_unknown_input_errors() {
+        let mut doc = json!({
+            "pipeline": { "source": { "config": { "h": "${map:nope|*=x}" } } }
+        });
+        let err = bind_document(&mut doc, &SuppliedParams::new(), BindMode::Strict).unwrap_err();
+        assert!(
+            matches!(&err, CliError::UnknownParamRef { name, .. } if name == "nope"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn whole_token_map_resolves_with_declared_type() {
+        // The entire value is a single `${map:…}` token → whole_token path.
+        let mut doc = json!({
+            "params": { "region": { "default": "com" } },
+            "pipeline": { "source": { "config": {
+                "domain": "${map:region|ca=zohocloud|*=zoho}"
+            } } }
+        });
+        bind_document(&mut doc, &SuppliedParams::new(), BindMode::Strict).unwrap();
+        assert_eq!(doc["pipeline"]["source"]["config"]["domain"], json!("zoho"));
+    }
+
+    #[test]
     fn standalone_map_token_resolves_in_document() {
         // `${map:…}` used directly in a config value (not via a computed param).
         let mut doc = json!({
