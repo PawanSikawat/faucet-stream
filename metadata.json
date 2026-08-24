@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.10.2",
+  "checkpoint_id": "01M0S1EWCZYP5D663E61CV12TQ",
+  "strategy": "manual-commit",
+  "branch": "feat/bigquery-auto-create-table",
+  "checkpoints_count": 6,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 7320,
+    "cache_creation_tokens": 13990363,
+    "cache_read_tokens": 2075231243,
+    "output_tokens": 3774936,
+    "api_call_count": 3674
+  }
+}
