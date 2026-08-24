@@ -527,7 +527,10 @@ pipeline:
         // comments are gone
         assert!(!out.contains('#'), "comments must be stripped: {out}");
         // param placeholders survive (they're plain strings)
-        assert!(out.contains("${param.p}"), "param token must survive: {out}");
+        assert!(
+            out.contains("${param.p}"),
+            "param token must survive: {out}"
+        );
         // round-trips to the same parsed value
         let before: serde_yaml::Value = serde_yaml::from_str(body).unwrap();
         let after: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
@@ -540,7 +543,10 @@ pipeline:
         let body = r#"{"version":1,"name":"j","pipeline":{"source":{"type":"csv"}}}"#;
         let out = crate::templates::clean_config_yaml(body).unwrap();
         assert!(out.contains("version: 1"), "should be YAML now: {out}");
-        assert!(!out.contains('{'), "no JSON braces in canonical YAML: {out}");
+        assert!(
+            !out.contains('{'),
+            "no JSON braces in canonical YAML: {out}"
+        );
     }
 
     fn common(store: &str, json: bool) -> TemplateStoreArgs {
