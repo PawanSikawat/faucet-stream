@@ -233,10 +233,10 @@ fn referenced_params(expr: &str) -> Vec<String> {
         let body = &after[..end];
         if let Some(name) = body.strip_prefix("param.") {
             out.push(name.trim().to_string());
-        } else if let Some(spec) = body.strip_prefix("map:") {
-            if let Some(input) = spec.split('|').next() {
-                out.push(input.trim().to_string());
-            }
+        } else if let Some(spec) = body.strip_prefix("map:")
+            && let Some(input) = spec.split('|').next()
+        {
+            out.push(input.trim().to_string());
         }
         rest = &after[end + 1..];
     }
@@ -426,7 +426,7 @@ fn whole_token(s: &str, bound: &BTreeMap<String, Value>) -> CliResult<Option<Val
         Directive::Deferred { id, path } if id == PARAM_ID => {
             Ok(Some(lookup(path, token, bound)?.clone()))
         }
-        Directive::LoadTime { prefix, body } if prefix == "map" => {
+        Directive::LoadTime { prefix: "map", body } => {
             Ok(Some(Value::String(resolve_map(token, body, bound)?)))
         }
         _ => Ok(None),
@@ -442,9 +442,9 @@ fn rewrite_text(s: &str, bound: &BTreeMap<String, Value>) -> CliResult<String> {
             Ok(Some(value_to_string(lookup(path, &token, bound)?)))
         }
         Directive::LoadTime {
-            prefix,
+            prefix: "map",
             body: map_body,
-        } if prefix == "map" => {
+        } => {
             let token = format!("${{{body}}}");
             Ok(Some(resolve_map(&token, map_body, bound)?))
         }
