@@ -448,6 +448,63 @@ pub fn build_drop_not_null_ddl(table_ref: &str, col: &str) -> String {
     )
 }
 
+/// Map a single `infer_schema` field spec (a JSON-Schema fragment) to the
+/// BigQuery column-type keyword used in a `CREATE TABLE` column list. Scalars
+/// map precisely; objects and arrays become `JSON`; a null-only or untyped
+/// field falls back to `STRING` (the shape it takes in a JSON page).
+pub fn bq_column_type(field_spec: &serde_json::Value) -> &'static str {
+    let token = match field_spec.get("type") {
+        Some(serde_json::Value::String(s)) => Some(s.as_str()),
+        Some(serde_json::Value::Array(a)) => {
+            a.iter().filter_map(|v| v.as_str()).find(|s| *s != "null")
+        }
+        _ => None,
+    };
+    match token {
+        Some("integer") => "INT64",
+        Some("number") => "FLOAT64",
+        Some("boolean") => "BOOL",
+        Some("string") => "STRING",
+        Some("object") | Some("array") => "JSON",
+        _ => "STRING",
+    }
+}
+
+/// Build a `CREATE OR REPLACE TABLE` DDL for `project.dataset.table` from a
+/// schema inferred over `sample` records. Columns are emitted in a stable
+/// (sorted) order so the DDL is deterministic. Returns `None` when no columns
+/// can be inferred (an empty page, or records with no object fields) — the
+/// caller must not attempt to create a zero-column table.
+///
+/// `CREATE OR REPLACE` (not `IF NOT EXISTS`) so it also fixes a **schemaless**
+/// table (e.g. one created by a bare `bq mk` with no schema): `IF NOT EXISTS`
+/// would no-op and leave it unusable. The caller only reaches this when the
+/// target has no usable schema (missing or schemaless), so nothing typed is
+/// dropped.
+pub fn build_create_table_ddl(
+    project: &str,
+    dataset: &str,
+    table: &str,
+    sample: &[serde_json::Value],
+) -> Option<String> {
+    let schema = faucet_core::schema::infer_schema(sample);
+    let props = schema.get("properties")?.as_object()?;
+    if props.is_empty() {
+        return None;
+    }
+    let mut names: Vec<&String> = props.keys().collect();
+    names.sort();
+    let cols: Vec<String> = names
+        .iter()
+        .map(|n| format!("{} {}", quote_ident(n), bq_column_type(&props[*n])))
+        .collect();
+    Some(format!(
+        "CREATE OR REPLACE TABLE {} ({})",
+        table_ref(project, dataset, table),
+        cols.join(", ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,6 +516,64 @@ mod tests {
             repeated: false,
             fields: vec![],
         }
+    }
+
+    #[test]
+    fn bq_column_type_maps_each_json_type() {
+        use serde_json::json;
+        assert_eq!(bq_column_type(&json!({"type": "integer"})), "INT64");
+        assert_eq!(bq_column_type(&json!({"type": "number"})), "FLOAT64");
+        assert_eq!(bq_column_type(&json!({"type": "boolean"})), "BOOL");
+        assert_eq!(bq_column_type(&json!({"type": "string"})), "STRING");
+        assert_eq!(bq_column_type(&json!({"type": "object"})), "JSON");
+        assert_eq!(bq_column_type(&json!({"type": "array"})), "JSON");
+    }
+
+    #[test]
+    fn bq_column_type_nullable_picks_non_null_and_unknown_falls_back_to_string() {
+        use serde_json::json;
+        // A nullable field is rendered by infer_schema as ["string","null"].
+        assert_eq!(
+            bq_column_type(&json!({"type": ["integer", "null"]})),
+            "INT64"
+        );
+        assert_eq!(
+            bq_column_type(&json!({"type": ["null", "string"]})),
+            "STRING"
+        );
+        // Null-only or untyped → STRING.
+        assert_eq!(bq_column_type(&json!({"type": "null"})), "STRING");
+        assert_eq!(bq_column_type(&json!({})), "STRING");
+    }
+
+    #[test]
+    fn build_create_table_ddl_from_sample() {
+        use serde_json::json;
+        let sample = vec![
+            json!({"id": 1, "name": "a", "active": true, "score": 1.5, "meta": {"k": "v"}}),
+            json!({"id": 2, "name": "b", "active": false, "score": 2.0, "tags": ["x"]}),
+        ];
+        let ddl = build_create_table_ddl("p", "d", "t", &sample).expect("ddl");
+        assert!(
+            ddl.starts_with("CREATE OR REPLACE TABLE `p.d.t` ("),
+            "ddl: {ddl}"
+        );
+        // Columns are sorted; scalars typed precisely, object/array → JSON.
+        assert!(ddl.contains("`active` BOOL"), "ddl: {ddl}");
+        assert!(ddl.contains("`id` INT64"), "ddl: {ddl}");
+        assert!(ddl.contains("`meta` JSON"), "ddl: {ddl}");
+        assert!(ddl.contains("`name` STRING"), "ddl: {ddl}");
+        assert!(ddl.contains("`score` FLOAT64"), "ddl: {ddl}");
+        // `tags` is absent from the first record → nullable array → JSON.
+        assert!(ddl.contains("`tags` JSON"), "ddl: {ddl}");
+    }
+
+    #[test]
+    fn build_create_table_ddl_none_for_empty_or_columnless() {
+        use serde_json::json;
+        assert!(build_create_table_ddl("p", "d", "t", &[]).is_none());
+        // Non-object records yield no properties.
+        assert!(build_create_table_ddl("p", "d", "t", &[json!(1), json!("x")]).is_none());
     }
 
     #[test]

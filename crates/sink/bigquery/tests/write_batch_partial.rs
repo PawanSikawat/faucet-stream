@@ -84,6 +84,22 @@ async fn build_sink(
         .await
         .expect("build bigquery client against mock");
 
+    // The append path probes `tables.get` before writing (create_table defaults
+    // on); stub a 200 so the existing table is found and no create is attempted.
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "tableReference": {"projectId": PROJECT_ID, "datasetId": DATASET_ID, "tableId": TABLE_ID},
+            "schema": {"fields": [
+                {"name": "id", "type": "INTEGER", "mode": "NULLABLE"},
+                {"name": "name", "type": "STRING", "mode": "NULLABLE"}
+            ]}
+        })))
+        .mount(server)
+        .await;
+
     let config = BigQuerySinkConfig::new(
         PROJECT_ID,
         DATASET_ID,
@@ -298,6 +314,17 @@ async fn insert_id_field_populates_per_row_insert_id() {
     // A row missing the field is sent without an insertId.
     let server = MockServer::start().await;
     mount_token_endpoint(&server).await;
+    // Existing table (append probes tables.get before writing).
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "tableReference": {"projectId": PROJECT_ID, "datasetId": DATASET_ID, "tableId": TABLE_ID},
+            "schema": {"fields": [{"name": "v", "type": "INTEGER", "mode": "NULLABLE"}]}
+        })))
+        .mount(&server)
+        .await;
     Mock::given(method("POST"))
         .and(path(insert_path()))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))

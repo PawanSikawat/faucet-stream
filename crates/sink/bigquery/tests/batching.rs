@@ -64,6 +64,22 @@ async fn mount_happy_path(server: &MockServer) {
         .mount(server)
         .await;
 
+    // The table exists: the append path probes `tables.get` before writing
+    // (create_table defaults on), so stub a 200 schema response.
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "tableReference": {"projectId": PROJECT_ID, "datasetId": DATASET_ID, "tableId": TABLE_ID},
+            "schema": {"fields": [
+                {"name": "id", "type": "INTEGER", "mode": "NULLABLE"},
+                {"name": "name", "type": "STRING", "mode": "NULLABLE"}
+            ]}
+        })))
+        .mount(server)
+        .await;
+
     let insert_path =
         format!("/projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}/insertAll");
     Mock::given(method("POST"))

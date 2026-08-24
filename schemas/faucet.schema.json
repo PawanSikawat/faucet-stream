@@ -14667,6 +14667,21 @@
                         }
                       ],
                       "description": "Scoped/windowed overwrite (#518): with `write_mode: overwrite`, replace\nonly the rows matching this scope (e.g. a partition/date window) instead\nof the whole table — the out-of-scope rows are preserved."
+                    },
+                    "create_table": {
+                      "description": "Create the target table (and its dataset) if it does not exist, inferring\nthe schema from the first written page. Enabled by default: a first-ever\nsync cannot assume the destination table already exists. Set to `false` to\nrequire the table to pre-exist and fail fast when it is missing (e.g. the\nschema is managed externally and a missing table signals a typo).",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": true
+                    },
+                    "location": {
+                      "description": "Location (region or multi-region, e.g. `US`, `EU`, `us-central1`) used only\nwhen `create_table` has to create the dataset. `None` uses the BigQuery\njob's default location. Ignored once the dataset exists.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
                   "title": "BigQuerySinkConfig",
