@@ -291,6 +291,7 @@ function renderVersions(host, id, st, d, reload) {
       <button class="btn-ghost tpl-launch" ${st.stable === v ? "disabled" : ""}
         title="${st.stable === v ? "already live" : `make v${v} live for unpinned runs`}">Launch</button>
       <button class="btn-ghost tpl-view">Config</button>
+      <button class="btn-ghost tpl-view-clean" title="comments stripped, canonical YAML">Clean</button>
       <button class="btn-danger tpl-del">Delete</button>
       <pre class="tpl-body" hidden></pre>`;
 
@@ -313,16 +314,28 @@ function renderVersions(host, id, st, d, reload) {
     };
 
     const body = row.querySelector(".tpl-body");
-    row.querySelector(".tpl-view").onclick = async () => {
-      if (!body.hidden) { body.hidden = true; return; }
-      if (!body.textContent) {
-        try {
-          const rec = await api(`/v1/templates/${encodeURIComponent(id)}?version=${v}`);
-          body.textContent = rec.body;
-        } catch (e) { toast(e.message, "error"); return; }
+    // Config = raw stored body; Clean = comments stripped, canonical YAML (the
+    // server renders it via ?clean=true, sharing the CLI's clean_config_yaml).
+    // Each toggles the shared <pre>; switching modes refetches so the two views
+    // never collide.
+    const showConfig = async (clean) => {
+      const mode = clean ? "clean" : "raw";
+      if (!body.hidden && body.dataset.mode === mode) {
+        body.hidden = true;
+        return;
       }
-      body.hidden = false;
+      try {
+        const q = clean ? `?version=${v}&clean=true` : `?version=${v}`;
+        const rec = await api(`/v1/templates/${encodeURIComponent(id)}${q}`);
+        body.textContent = rec.body;
+        body.dataset.mode = mode;
+        body.hidden = false;
+      } catch (e) {
+        toast(e.message, "error");
+      }
     };
+    row.querySelector(".tpl-view").onclick = () => showConfig(false);
+    row.querySelector(".tpl-view-clean").onclick = () => showConfig(true);
 
     row.querySelector(".tpl-del").onclick = async () => {
       if (!confirm(`Delete ${id} v${v}? Channels pointing at it are dropped too.`)) return;

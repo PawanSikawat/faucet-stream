@@ -222,6 +222,15 @@ async fn show(args: TemplateShowArgs) -> CliResult<()> {
     let selector = VersionSelector::parse(&args.version)?;
     let want = crate::templates::resolve_version(&store, &args.id, selector).await?;
     let record = fetch(&store, &args.id, Some(want)).await?;
+
+    // `--clean`: emit ONLY the pure template config — comments stripped, canonical
+    // YAML — so it pipes to a file. Skips the metadata report (and the extra store
+    // reads below). `--json` takes precedence.
+    if args.clean && !args.common.json {
+        print!("{}", crate::templates::clean_config_yaml(&record.body)?);
+        return Ok(());
+    }
+
     let state = crate::templates::template_state(&store, &args.id).await?;
     let launches = store
         .template_launches(&args.id)
@@ -503,6 +512,36 @@ async fn run_template(args: TemplateRunArgs) -> CliResult<()> {
 mod tests {
     use super::*;
     use crate::cli::TemplateStoreArgs;
+
+    #[test]
+    fn clean_config_strips_comments_and_preserves_params() {
+        let body = "\
+version: 1  # trailing comment
+# a top-level comment
+name: orders
+pipeline:
+  source: { type: csv, config: { path: \"${param.p}\" } }  # inline
+  sink: { type: jsonl, config: { path: ./out.jsonl } }
+";
+        let out = crate::templates::clean_config_yaml(body).unwrap();
+        // comments are gone
+        assert!(!out.contains('#'), "comments must be stripped: {out}");
+        // param placeholders survive (they're plain strings)
+        assert!(out.contains("${param.p}"), "param token must survive: {out}");
+        // round-trips to the same parsed value
+        let before: serde_yaml::Value = serde_yaml::from_str(body).unwrap();
+        let after: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(before, after, "clean output must parse to the same config");
+    }
+
+    #[test]
+    fn clean_config_normalizes_json_body_to_yaml() {
+        // A JSON-format template body normalizes to YAML too (JSON ⊂ YAML).
+        let body = r#"{"version":1,"name":"j","pipeline":{"source":{"type":"csv"}}}"#;
+        let out = crate::templates::clean_config_yaml(body).unwrap();
+        assert!(out.contains("version: 1"), "should be YAML now: {out}");
+        assert!(!out.contains('{'), "no JSON braces in canonical YAML: {out}");
+    }
 
     fn common(store: &str, json: bool) -> TemplateStoreArgs {
         TemplateStoreArgs {
