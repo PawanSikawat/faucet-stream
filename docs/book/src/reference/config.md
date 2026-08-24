@@ -157,7 +157,9 @@ Reference cycles surface as a clear `InterpolationCycle` error.
 ### `${now.*}` — run-clock interpolation
 
 `${now.*}` tokens inject the current wall time into **source and sink config
-values**. Each invocation evaluates them once at run time:
+values** — and into a **`set` transform's values**, so a run can stamp a column
+with the run date (`set: { values: { run_date: "${now.date}" } }`, #568). Each
+invocation evaluates them once at run time:
 
 | Token | Example output | Notes |
 |-------|---------------|-------|

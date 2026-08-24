@@ -760,13 +760,16 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             }
         }
 
-        // Runtime interpolation (`${row.path}` parent refs and `${now.*}`) is
-        // resolved only in source/sink configs. A token in a transform / state
-        // / dlq config would otherwise reach the connector as a literal
-        // `${...}` string with no error (#146 M2) — reject it at expand time.
+        // A transform's config may reference `${now.*}` and `${<parent-row>.*}`
+        // — the executor resolves both per invocation, exactly like source/sink
+        // configs (#568) — so validate them like source/sink (`check_refs`:
+        // `${now.*}` and known row ids pass, an unknown id fails) rather than
+        // blanket-rejecting every runtime token. State / dlq configs have no
+        // such runtime resolution, so they keep the stricter rejection below.
         for (ti, t) in transforms.iter().enumerate() {
-            reject_runtime_tokens(
+            check_refs(
                 &t.config,
+                &id_set,
                 &format!("row `{row_id}` transform[{ti}] (`{}`)", t.kind),
             )?;
         }
@@ -1627,7 +1630,9 @@ pipeline:
     }
 
     #[test]
-    fn rejects_runtime_token_in_transform_config() {
+    fn allows_now_token_in_transform_config() {
+        // `${now.*}` in a transform is resolved per invocation by the executor
+        // (#568), so expand must accept it — like source/sink configs.
         let c = cfg(r#"
 version: 1
 pipeline:
@@ -1635,11 +1640,27 @@ pipeline:
   sink:   { type: jsonl, config: { path: ./o } }
   transforms:
     - type: set
-      config: { field: ts, value: "${now.datetime}" }
+      config: { values: { ts: "${now.datetime}" } }
+"#);
+        assert_eq!(expand(&c).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rejects_unknown_id_token_in_transform_config() {
+        // An unknown id (not `now`/`backfill`/… and not a declared row) in a
+        // transform still fails — it would leak as a literal at runtime.
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source: { type: rest, config: { base_url: https://x } }
+  sink:   { type: jsonl, config: { path: ./o } }
+  transforms:
+    - type: set
+      config: { values: { who: "${nobody.name}" } }
 "#);
         let err = expand(&c).unwrap_err();
         assert!(
-            matches!(&err, CliError::Config(m) if m.contains("transform")),
+            matches!(&err, CliError::UnknownInterpolationId { id, .. } if id == "nobody"),
             "got: {err:?}"
         );
     }
