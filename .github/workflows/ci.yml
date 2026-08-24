@@ -36,7 +36,7 @@ jobs:
     name: Detect code changes
     runs-on: ubuntu-latest
     outputs:
-      code: ${{ steps.filter.outputs.code }}
+      code: ${{ steps.gate.outputs.code }}
       ui: ${{ steps.filter.outputs.ui }}
     steps:
       - uses: actions/checkout@v4
@@ -66,6 +66,25 @@ jobs:
             # Rust matrix, clippy, semver, connector features, or supply-chain.
             ui:
               - 'cli/src/serve/ui/**'
+      # The release-plz "chore: release" PR is auto-updated on every push to main
+      # (version + changelog bumps), which would otherwise re-run the full CI on
+      # it after every normal merge. Force `code=false` for that PR so all heavy
+      # work skips (the whole-job-gated jobs skip; the required checks — clippy,
+      # docs, cli-build, semver, coverage — run cheap and report green because
+      # their expensive steps are also code-gated). Opt back in by adding the
+      # `release-ci` label to the release PR when you're ready to cut a release.
+      - id: gate
+        env:
+          RAW_CODE: ${{ steps.filter.outputs.code }}
+          IS_RELEASE_PR: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-plz') }}
+          HAS_RELEASE_CI: ${{ contains(github.event.pull_request.labels.*.name, 'release-ci') }}
+        run: |
+          code="$RAW_CODE"
+          if [ "$IS_RELEASE_PR" = "true" ] && [ "$HAS_RELEASE_CI" != "true" ]; then
+            echo "release-plz PR without the 'release-ci' label → skipping CI. Add the label to run it."
+            code=false
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
 
   fmt:
     name: Format
