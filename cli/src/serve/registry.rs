@@ -165,6 +165,27 @@ impl Registry {
         fired
     }
 
+    /// Run ids with a live cancellation token — i.e. runs this instance has
+    /// registered and not yet finished.
+    ///
+    /// Used by the local-output GC (#587) to skip files a run is still writing:
+    /// deleting an output mid-write would corrupt it. Shard entries are keyed
+    /// `{run_id}::{shard_id}`, so the prefix before `::` is taken — a shard being
+    /// live makes its parent run live for this purpose, which is what the
+    /// sweeper needs.
+    pub fn live_run_ids(&self) -> std::collections::BTreeSet<String> {
+        self.tokens
+            .iter()
+            .map(|e| {
+                let key = e.key();
+                match key.split_once("::") {
+                    Some((run_id, _shard)) => run_id.to_string(),
+                    None => key.clone(),
+                }
+            })
+            .collect()
+    }
+
     pub fn queued(&self) -> usize {
         self.queued.load(Ordering::Acquire)
     }

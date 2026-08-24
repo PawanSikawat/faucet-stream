@@ -317,6 +317,7 @@ async fn server_with_sqlite_history_persists_runs() {
         idempotency_retention_secs: 86_400,
         log_retention_secs: 604_800,
         log_max_lines_per_run: 100_000,
+        local_output_retention_days: 7,
         lease_ttl_secs: 30,
         probe_timeout_secs: 5,
         env_file: None,

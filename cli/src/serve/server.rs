@@ -57,11 +57,19 @@ pub fn build_router(
     }
     #[cfg(feature = "catalog")]
     {
-        use crate::serve::handlers::catalog;
+        use crate::serve::handlers::{catalog, local_outputs};
         api = api
             .route("/v1/catalog/datasets", get(catalog::list_datasets))
             .route("/v1/catalog/datasets/{id}", get(catalog::get_dataset))
-            .route("/v1/catalog/lineage", get(catalog::lineage));
+            .route("/v1/catalog/lineage", get(catalog::lineage))
+            // Local sink output retention (#587) — the control surface behind the
+            // Datasets page's cleanup controls (#588).
+            .route("/v1/local-outputs", get(local_outputs::list_outputs))
+            .route(
+                "/v1/local-outputs/{id}",
+                axum::routing::delete(local_outputs::delete_output),
+            )
+            .route("/v1/local-outputs/cleanup", post(local_outputs::cleanup));
     }
     // Pipeline template registry + parameterized trigger API (#444).
     #[cfg(feature = "templates")]
@@ -209,6 +217,57 @@ pub(crate) async fn maintenance_loop(
                         Ok(_) => {}
                         Err(e) => tracing::warn!(error = %e, "history purge_run_logs failed"),
                     }
+                }
+            },
+        }
+    }
+}
+
+/// How often the local-output GC sweeps (#587).
+///
+/// A quarter of the retention window, clamped to `[60s, 1h]` — the same shape as
+/// [`purge_interval`]. With the 7-day default that is hourly, which bounds the
+/// local footprint without stat-ing the ledger in a tight loop.
+#[cfg(feature = "catalog")]
+fn local_output_gc_interval(retention_days: u32) -> Duration {
+    let window = Duration::from_secs(u64::from(retention_days) * 86_400);
+    (window / 4).clamp(Duration::from_secs(60), Duration::from_secs(3600))
+}
+
+/// Background local-output GC (#587): every `period`, delete the recorded local
+/// sink output files whose retention window has elapsed, until `shutdown` fires.
+///
+/// Deletes **only** paths the ledger records as faucet's own sink outputs — never
+/// a glob, never a directory, and never a file faucet merely appended to (see
+/// [`crate::local_outputs`]). Outputs of runs still in flight on this instance
+/// are skipped and retried next tick, so a sweep can never unlink a file
+/// mid-write.
+///
+/// Run records, catalog entries, and lineage are untouched: this reclaims data
+/// files, and a swept output keeps its ledger row marked `expired`.
+#[cfg(feature = "catalog")]
+pub(crate) async fn local_output_gc_loop(
+    state: ServerState,
+    retention_days: u32,
+    period: Duration,
+    shutdown: CancellationToken,
+) {
+    use crate::local_outputs::{SweepOptions, SweepScope, sweep};
+    let mut tick = tokio::time::interval(period);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tick.tick().await; // consume the immediate first tick so nothing is swept at t=0
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = tick.tick() => {
+                let opts = SweepOptions::new(retention_days)
+                    .in_flight(state.registry().live_run_ids());
+                match sweep::run(state.history().as_ref(), &SweepScope::Expired, &opts).await {
+                    Ok(_) => {}
+                    // A store failure means the sweep does not know what it is
+                    // allowed to touch, so it deleted nothing. Log and retry next
+                    // tick rather than taking the server down over housekeeping.
+                    Err(e) => tracing::warn!(error = %e, "local-output GC sweep failed"),
                 }
             },
         }
@@ -460,6 +519,31 @@ pub async fn serve(config: ServeConfig, mcp: crate::serve::McpServeSettings) -> 
         shutdown.clone(),
     ));
 
+    // Local sink output retention GC (#587). `--local-output-retention-days 0`
+    // disables the automatic sweep; on-demand cleanup from the Datasets page and
+    // `faucet cleanup` still works.
+    #[cfg(feature = "catalog")]
+    let local_output_gc = if config.local_output_retention_days > 0 {
+        let period = local_output_gc_interval(config.local_output_retention_days);
+        tracing::info!(
+            interval_secs = period.as_secs(),
+            retention_days = config.local_output_retention_days,
+            "local sink output retention GC started"
+        );
+        Some(tokio::spawn(local_output_gc_loop(
+            state.clone(),
+            config.local_output_retention_days,
+            period,
+            shutdown.clone(),
+        )))
+    } else {
+        tracing::info!(
+            "local sink output retention GC disabled (--local-output-retention-days 0); \
+             outputs are still tracked and can be cleaned on demand"
+        );
+        None
+    };
+
     // Lease heartbeat + cross-instance orphan recovery (#146 H7). Renews this
     // instance's run leases and reclaims runs whose owning instance's lease has
     // expired. A no-op for the in-memory backend.
@@ -543,6 +627,10 @@ pub async fn serve(config: ServeConfig, mcp: crate::serve::McpServeSettings) -> 
     .await;
     maintenance.abort();
     leases.abort();
+    #[cfg(feature = "catalog")]
+    if let Some(gc) = local_output_gc {
+        gc.abort();
+    }
     #[cfg(feature = "triggers")]
     for h in trigger_handles {
         h.abort();

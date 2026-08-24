@@ -1155,6 +1155,42 @@ SQL stores additionally require the matching `serve-history-sqlite` /
 [HTTP endpoints](./http-api.md), or the web console's Datasets / Lineage views.
 Schema: `faucet schema catalog`.
 
+## `local_outputs`
+
+Optional. Retention policy for the **local files** this pipeline's sinks write —
+jsonl, csv, and parquet paths on the local filesystem. Requires a build with the
+`catalog` feature (in `--features full`).
+
+```yaml
+local_outputs:
+  retention_days: 3   # override the runtime default (7) for this pipeline's outputs
+  track: true         # record them at all (default true)
+```
+
+Without the block a pipeline still records its local outputs — so they can be
+listed in the console and reclaimed — and inherits the runtime's default window
+(`--local-output-retention-days` / `FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS`,
+itself 7 days). `retention_days: 0` keeps this pipeline's outputs forever; the
+window is measured from the **last** write, so an output a local run keeps
+refreshing never expires underneath it.
+
+`track: false` opts the pipeline out of the ledger entirely. Because the GC only
+ever deletes *recorded* paths, that also means its outputs are never
+automatically deleted — an opt-out of the bookkeeping, not just of the listing.
+
+Recording needs somewhere to record *to*: the `catalog:` block's store for
+`faucet run` / `schedule` / `replicate`, or the `--history` backend under
+`faucet serve`. With neither, tracking is inert and logs one line rather than
+failing the run.
+
+Reclaim outputs with [`faucet cleanup`](./cli.md#cleanup), the console's Datasets
+page, or the [`/v1/local-outputs*` endpoints](./http-api.md#local-sink-outputs);
+the sweeper that runs them automatically is described under
+[Local output retention](./cli.md#local-output-retention). It deletes only files
+faucet recorded as its own sink outputs — never a glob, never a directory, and
+never a file faucet merely appended to — and never touches run history, catalog
+entries, or lineage. Schema: `faucet schema local-outputs`.
+
 ## `observability`
 
 Optional top-level block that enables runtime observability backends. All

@@ -512,6 +512,127 @@ paths:
                     items: { $ref: "#/components/schemas/CatalogLineageEdge" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { description: Principal's role lacks the required permission }
+  /v1/local-outputs:
+    get:
+      summary: List local sink outputs
+      description: >
+        The local files this server's sinks wrote (jsonl / csv / parquet), each
+        with its age, lifecycle state, and the retention window in force. The
+        provenance the retention GC works from — it only ever deletes files
+        listed here. `state` is `present` (on disk), `expired` (collected; the
+        record is kept), or `external` (faucet wrote the file but did not create
+        it, so it is never collected). Requires the `LocalOutputRead` permission
+        (viewer). Requires the `catalog` Cargo feature.
+      operationId: listLocalOutputs
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: dataset_id, in: query, required: false, schema: { type: string }, description: "Only this dataset's outputs." }
+        - { name: pipeline, in: query, required: false, schema: { type: string }, description: "Only this pipeline's outputs." }
+        - { name: include_expired, in: query, required: false, schema: { type: boolean, default: false }, description: "Include already-collected outputs." }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 200, maximum: 2000 } }
+      responses:
+        "200":
+          description: The tracked local outputs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [outputs, retention_days, gc_enabled, can_manage]
+                properties:
+                  outputs:
+                    type: array
+                    items: { $ref: "#/components/schemas/LocalOutput" }
+                  retention_days:
+                    type: integer
+                    description: The server's default retention window, in days.
+                  gc_enabled:
+                    type: boolean
+                    description: Whether the background sweeper is running (retention_days > 0).
+                  can_manage:
+                    type: boolean
+                    description: >
+                      Whether the calling principal holds `LocalOutputManage`, so a
+                      client can hide destructive controls instead of offering
+                      buttons that can only 403.
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { description: Principal's role lacks the required permission }
+  /v1/local-outputs/{id}:
+    delete:
+      summary: Delete one local sink output now
+      description: >
+        Deletes the single recorded file, then marks its ledger row `expired`.
+        Run history, catalog entries, and lineage are untouched — this removes a
+        data file only. A refusal is a `200` whose report carries
+        `deleted: 0` and a `skipped` reason, not an error: a `pre_existing` file
+        (one faucet wrote but did not create) is never deleted, and an output of
+        a run still in flight is skipped rather than unlinked mid-write.
+        Requires the `LocalOutputManage` permission (operator). Requires the
+        `catalog` Cargo feature.
+      operationId: deleteLocalOutput
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: "Output id from the list endpoint." }
+      responses:
+        "200":
+          description: The sweep report for this one output.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SweepReport" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { description: Principal's role lacks the required permission }
+        "404": { description: No such tracked output }
+  /v1/local-outputs/cleanup:
+    post:
+      summary: Bulk-clean local sink outputs
+      description: >
+        Deletes recorded local output files in bulk. Exactly one scope must be
+        given — `older_than_days`, `expired` (each output's own window),
+        `dataset_id`, `run_id`, or `all` — and combining them is a `400` rather
+        than a guess. `all` includes outputs still inside their retention window, so a
+        client should confirm before sending it. Only files the ledger records as
+        faucet's own sink outputs are ever deleted: never a glob, never a
+        directory, and never a file faucet merely appended to. Requires the
+        `LocalOutputManage` permission (operator). Requires the `catalog` Cargo
+        feature.
+      operationId: cleanupLocalOutputs
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                older_than_days:
+                  type: integer
+                  description: Delete outputs older than this many days, ignoring per-pipeline overrides.
+                expired:
+                  type: boolean
+                  description: Delete outputs whose own retention window has elapsed.
+                dataset_id:
+                  type: string
+                  description: Delete this dataset's outputs.
+                run_id:
+                  type: string
+                  description: >
+                    Delete the outputs one run most recently wrote — "clean up
+                    after that run". The run's history record is untouched.
+                all:
+                  type: boolean
+                  description: Delete every tracked output, regardless of age.
+                dry_run:
+                  type: boolean
+                  default: false
+                  description: Report what would be deleted without touching anything.
+      responses:
+        "200":
+          description: The sweep report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SweepReport" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { description: Principal's role lacks the required permission }
   /v1/templates:
     post:
       summary: Register a pipeline template
@@ -1250,6 +1371,92 @@ components:
         last_records: 1
         column_lineage:
           key: value
+    LocalOutput:
+      type: object
+      description: >
+        One recorded local sink output file. The `record` fields are the stored
+        ledger row; `state`, `age_secs`, and `retention_days_effective` are
+        derived server-side so clients cannot disagree about what "expired" means.
+      required: [id, path, dataset_uri, dataset_id, kind, pipeline, row, run_id, pre_existing, first_written_at, last_written_at, state, age_secs]
+      properties:
+        id: { type: string, description: "Stable id (sha256 prefix of the path); used in the delete route." }
+        path: { type: string, description: "The concrete file faucet wrote." }
+        dataset_uri: { type: string, description: "Canonical dataset URI of the writing sink." }
+        dataset_id: { type: string, description: "Catalog dataset id, so an output groups under its dataset." }
+        kind: { type: string, description: "Connector kind (jsonl / csv / parquet)." }
+        pipeline: { type: string }
+        row: { type: string, description: "Matrix row id (default for non-matrix runs)." }
+        run_id: { type: string, description: "The run that most recently wrote this file." }
+        pre_existing:
+          type: boolean
+          description: >
+            The file already existed when faucet first opened it — faucet wrote
+            to a file it did not create. Never deleted by any cleanup scope.
+        retention_days: { type: integer, nullable: true, description: "Per-pipeline override from `local_outputs.retention_days` (0 = keep forever)." }
+        first_written_at: { type: string, format: date-time }
+        last_written_at: { type: string, format: date-time, description: "The instant retention is measured from." }
+        deleted_at: { type: string, format: date-time, nullable: true, description: "When the GC collected the file. The record is kept." }
+        deleted_bytes: { type: integer, nullable: true, description: "Bytes reclaimed when it was collected." }
+        state:
+          type: string
+          enum: [present, expired, external]
+          description: "present = on disk; expired = collected (record kept); external = faucet did not create it."
+        age_secs: { type: integer, description: "Seconds since the last write." }
+        retention_days_effective: { type: integer, nullable: true, description: "The window actually in force; null = never expires." }
+      example:
+        id: 9f2b1c4d5e6f7a8b
+        path: /work/out/orders.jsonl
+        dataset_uri: file:///work/out/orders.jsonl
+        dataset_id: 4a1f0c8e2b7d6a95
+        kind: jsonl
+        pipeline: orders_to_warehouse
+        row: default
+        run_id: run_01HZY8K3QK7
+        pre_existing: false
+        first_written_at: '2026-01-01T00:00:00Z'
+        last_written_at: '2026-01-01T00:00:00Z'
+        state: present
+        age_secs: 3600
+        retention_days_effective: 7
+    SweepOutcome:
+      type: object
+      required: [id, path, dataset_uri, deleted, bytes]
+      properties:
+        id: { type: string }
+        path: { type: string }
+        dataset_uri: { type: string }
+        deleted: { type: boolean, description: "The file was deleted (or, in a dry run, would be)." }
+        bytes: { type: integer, description: "Bytes reclaimed; 0 when nothing was deleted." }
+        skipped:
+          type: string
+          nullable: true
+          enum: [pre_existing, already_deleted, not_on_disk, in_flight, delete_failed]
+          description: >
+            Why the file was left alone. `pre_existing` = faucet did not create
+            it; `not_on_disk` = already gone (a no-op, and the record is marked
+            expired); `in_flight` = a run is still writing it, retried later.
+        error: { type: string, nullable: true, description: "Detail for a delete_failed outcome." }
+    SweepReport:
+      type: object
+      required: [dry_run, scope, deleted, bytes, skipped, outputs]
+      properties:
+        dry_run: { type: boolean, description: "Nothing was deleted; the report is what would happen." }
+        scope: { type: string, enum: [output, dataset, run, older_than, expired, all] }
+        deleted: { type: integer, description: "Files deleted." }
+        bytes: { type: integer, description: "Total bytes reclaimed." }
+        skipped: { type: integer, description: "In-scope outputs left alone." }
+        outputs:
+          type: array
+          items: { $ref: "#/components/schemas/SweepOutcome" }
+      example:
+        dry_run: false
+        scope: expired
+        deleted: 2
+        bytes: 40960
+        skipped: 1
+        outputs:
+          - { id: 9f2b1c4d5e6f7a8b, path: /work/out/orders.jsonl, dataset_uri: "file:///work/out/orders.jsonl", deleted: true, bytes: 40960 }
+          - { id: 1a2b3c4d5e6f7081, path: /shared/theirs.csv, dataset_uri: "file:///shared/theirs.csv", deleted: false, bytes: 0, skipped: pre_existing }
     CatalogDatasetDetail:
       allOf:
         - { $ref: "#/components/schemas/CatalogDataset" }

@@ -155,6 +155,38 @@ When the server is built with the `catalog` feature, two more views browse the
 On a server built without the `catalog` feature both views show a short
 "not available" notice (the endpoints are absent).
 
+### Cleaning up local outputs
+
+The Datasets page is also where the **local files** the server's sinks wrote
+(jsonl / csv / parquet) are listed and reclaimed — cleanup of *data artifacts*
+belongs next to the data artifacts, not on the Runs tab, which is about execution
+history. A **Local outputs** panel sits under the dataset list (and under each
+dataset's detail, scoped to it) showing every tracked file with its age and state:
+
+| State | Meaning |
+|---|---|
+| `present` | on disk |
+| `expired` | already cleaned — the file is gone, the record is kept |
+| `external` | faucet wrote this file but did not create it, so it is never cleaned |
+
+Controls, when your role holds `LocalOutputManage` (`operator` and up — a
+`viewer` sees the list and no buttons):
+
+- **Delete now** on any `present` output.
+- **Purge older than N days**, prefilled with the server's configured window.
+- **Clean all local outputs** — behind a confirm, because it also removes files
+  still inside their retention window. On a dataset's detail page the same button
+  is scoped to that dataset.
+
+The model to keep in mind: **data artifacts are disposable; run history is
+durable.** Cleaning an output removes the *file* — the run record is untouched,
+so the Runs tab still shows what ran, and the output re-renders as `expired`
+rather than as a broken row. Only files faucet created are ever deleted (never a
+glob, never a directory); a skipped file always comes with the reason, so a "0
+files" result never looks like a broken button. The same operations run
+automatically on a timer — see
+[Local output retention](../reference/cli.md#local-output-retention).
+
 ## Disabling the console at runtime
 
 If you built with `serve-ui` but want to serve only the API (no static assets),
@@ -177,6 +209,11 @@ The `serve-ui` feature ships three new bearer-gated endpoints that the console
 | `GET` | `/v1/schemas` | Catalog of all compiled sources, sinks, transforms, and state-store kinds. |
 | `GET` | `/v1/schemas/{kind}/{name}` | JSON Schema for one connector or transform (`kind` ∈ `source`/`sink`/`transform`). Returns 404 for unknown kind or name. |
 | `POST` | `/v1/doctor` | Validate and probe a submitted config without running it. Returns 200 (all probes pass) or 422 (any probe fails) with a probe report. Request body: `{ "config": "<yaml-or-json>", "config_format": "yaml" }`. |
+
+With the `catalog` feature the console also drives the local-output endpoints —
+`GET /v1/local-outputs`, `DELETE /v1/local-outputs/{id}`, and
+`POST /v1/local-outputs/cleanup` — documented in the
+[HTTP API reference](../reference/http-api.md#local-sink-outputs).
 
 These endpoints require the `serve` feature and are available at runtime
 regardless of whether `--no-ui` was passed.

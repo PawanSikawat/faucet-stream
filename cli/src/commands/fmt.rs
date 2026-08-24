@@ -161,6 +161,8 @@ const KEY_ORDER: &[&str] = &[
     "notifications",
     "lineage",
     "catalog",
+    "local_outputs",
+    "metadata_columns",
     "profiles",
 ];
 

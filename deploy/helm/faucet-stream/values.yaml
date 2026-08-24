@@ -128,6 +128,22 @@ serve:
   ui:
     enabled: true
 
+  # Retention GC for the local files a run's sinks write (jsonl / csv / parquet)
+  # — a local-testing convenience that keeps the pod's data footprint bounded.
+  # Surfaced as FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS.
+  #
+  # The sweeper deletes ONLY files faucet recorded as its own sink outputs
+  # (paths come from the run/catalog record) — never a glob or a directory, and
+  # never a file faucet merely appended to. Run history, catalog entries, and
+  # lineage are never touched: a cleaned output keeps its record, marked expired.
+  #
+  # Set retentionDays: 0 to disable the automatic sweep; outputs are still
+  # tracked and can be cleaned on demand from the console's Datasets page or
+  # with `faucet cleanup`. Requires an image built with the `catalog` feature,
+  # and a persistent history backend for the ledger to survive a restart.
+  localOutputs:
+    retentionDays: 7
+
   # Multi-instance clustered execution (requires history.backend != memory).
   cluster:
     enabled: false

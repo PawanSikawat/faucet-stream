@@ -89,6 +89,11 @@ spec:
               containerPort: 8080
               protocol: TCP
           env:
+            # Retention window for local sink outputs (#587). Passed as env rather
+            # than a flag so it can be overridden per environment without
+            # touching args.
+            - name: FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS
+              value: {{ .Values.serve.localOutputs.retentionDays | quote }}
             {{- if eq .Values.serve.auth.mode "token" }}
             - name: FAUCET_SERVE_AUTH_TOKEN
               valueFrom:

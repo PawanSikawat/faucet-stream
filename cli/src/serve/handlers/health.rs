@@ -90,6 +90,7 @@ mod tests {
             idempotency_retention: Duration::from_secs(60),
             log_retention: std::time::Duration::from_secs(0),
             log_max_lines_per_run: 100_000,
+            local_output_retention_days: 7,
             lease_ttl: Duration::from_secs(30),
             probe_timeout: Duration::from_secs(10),
             env_file: None,

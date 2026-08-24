@@ -223,6 +223,9 @@ impl Sink for MetadataSink {
     }
 
     // ── Pure forwarding ──────────────────────────────────────────────────────
+    async fn local_outputs(&self) -> Vec<crate::local_output::LocalOutput> {
+        self.inner.local_outputs().await
+    }
     async fn check(
         &self,
         ctx: &crate::check::CheckContext,

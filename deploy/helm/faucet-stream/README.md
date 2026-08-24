@@ -206,6 +206,7 @@ See [`values.yaml`](./values.yaml) — every key is commented. Common ones:
 | `serve.enabled` | `true` | deploy the control plane |
 | `serve.auth.mode` | `token` | `token` \| `none` \| `rbac` |
 | `serve.history.backend` | `memory` | `memory` \| `sqlite` \| `postgres` |
+| `serve.localOutputs.retentionDays` | `7` | days before local sink output files (jsonl/csv/parquet) are reclaimed; `0` disables the sweep |
 | `serve.autoscaling.enabled` | `false` | HPA on the Deployment |
 | `serve.persistence.enabled` | `false` | PVC for sqlite history / bookmarks |
 | `job.enabled` | `false` | one-shot `faucet run` |

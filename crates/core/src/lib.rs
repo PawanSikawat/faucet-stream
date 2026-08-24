@@ -32,6 +32,7 @@ pub mod encryption;
 pub mod error;
 pub mod idempotency;
 pub mod join;
+pub mod local_output;
 #[cfg(feature = "masking")]
 pub mod masking;
 pub mod metadata;
@@ -101,6 +102,7 @@ pub use idempotency::{
 pub use join::{
     HashJoin, JoinConfig, JoinMode, JoinStats, KeyNormalize, OnCollision, OnDuplicate, Projection,
 };
+pub use local_output::{LocalOutput, LocalOutputLog, probe_pre_existing};
 pub use metadata::{
     CompiledMetadata, MetadataColumn, MetadataColumnsSpec, MetadataContext, MetadataSink,
 };

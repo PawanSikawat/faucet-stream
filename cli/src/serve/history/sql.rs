@@ -187,6 +187,27 @@ pub const DDL: &[&str] = &[
         deprecated_at TEXT NOT NULL,\
         deprecated_by TEXT,\
         reason TEXT)",
+    // Local sink output ledger (#587): one row per concrete local file a sink
+    // opened. This is the provenance the retention GC deletes from — it may only
+    // remove files listed here, never a glob or a directory — so the table is
+    // deliberately NOT covered by `purge_expired`: losing a row would orphan the
+    // file on disk forever. `deleted_at` is set when the file is collected and
+    // the row is kept, which is what renders the output as *expired* rather than
+    // as a dangling path. `path` is the natural key but `id` (sha256 prefix of
+    // it) is the PK, so an output is addressable in a URL.
+    "CREATE TABLE IF NOT EXISTS faucet_local_outputs (\
+        id TEXT PRIMARY KEY,\
+        path TEXT NOT NULL,\
+        dataset_id TEXT NOT NULL,\
+        pipeline TEXT NOT NULL,\
+        last_written_at TEXT NOT NULL,\
+        deleted_at TEXT,\
+        body TEXT NOT NULL)",
+    // Speeds the console's newest-first listing and the sweeper's age scan.
+    "CREATE INDEX IF NOT EXISTS faucet_local_outputs_written_idx \
+        ON faucet_local_outputs (last_written_at)",
+    "CREATE INDEX IF NOT EXISTS faucet_local_outputs_dataset_idx \
+        ON faucet_local_outputs (dataset_id)",
 ];
 
 /// SQL placeholder dialect.
@@ -308,6 +329,14 @@ pub struct Stmts {
     pub catalog_select_dataset: String,
     /// Upsert one dataset row (filter columns + body). Params: id, uri, kind,
     /// last_seen, body.
+    /// Local-output ledger (#587). Read-modify-write on upsert (the sticky
+    /// first-open fields live in the JSON `body`, and `observe` is the single
+    /// shared implementation of that merge), so the write is a select + insert
+    /// rather than a bare `ON CONFLICT DO UPDATE`.
+    pub local_output_select: String,
+    pub local_output_upsert: String,
+    pub local_output_select_all: String,
+    pub local_output_mark_deleted: String,
     pub catalog_upsert_dataset: String,
     /// Every dataset body — filtering/ordering happens in shared pure code
     /// ([`catalog::filter_datasets`](super::catalog::filter_datasets)), so the
@@ -574,6 +603,21 @@ impl Stmts {
                 .into(),
             purge_run_logs: "DELETE FROM faucet_serve_run_logs WHERE ts < $1".into(),
             catalog_select_dataset: "SELECT body FROM faucet_catalog_datasets WHERE id=$1".into(),
+            local_output_select: "SELECT body FROM faucet_local_outputs WHERE id=$1".into(),
+            local_output_upsert: "INSERT INTO faucet_local_outputs \
+                (id, path, dataset_id, pipeline, last_written_at, deleted_at, body) \
+                VALUES ($1,$2,$3,$4,$5,$6,$7) \
+                ON CONFLICT (id) DO UPDATE SET path=excluded.path, \
+                dataset_id=excluded.dataset_id, pipeline=excluded.pipeline, \
+                last_written_at=excluded.last_written_at, deleted_at=excluded.deleted_at, \
+                body=excluded.body"
+                .into(),
+            local_output_select_all: "SELECT body FROM faucet_local_outputs \
+                ORDER BY last_written_at DESC"
+                .into(),
+            local_output_mark_deleted: "UPDATE faucet_local_outputs \
+                SET deleted_at=$2, body=$3 WHERE id=$1"
+                .into(),
             catalog_upsert_dataset: "INSERT INTO faucet_catalog_datasets \
                 (id, uri, kind, last_seen, body) VALUES ($1,$2,$3,$4,$5) \
                 ON CONFLICT (id) DO UPDATE SET uri=excluded.uri, kind=excluded.kind, \
@@ -848,6 +892,21 @@ impl Stmts {
                 .into(),
             purge_run_logs: "DELETE FROM faucet_serve_run_logs WHERE ts < ?".into(),
             catalog_select_dataset: "SELECT body FROM faucet_catalog_datasets WHERE id=?".into(),
+            local_output_select: "SELECT body FROM faucet_local_outputs WHERE id=?".into(),
+            local_output_upsert: "INSERT INTO faucet_local_outputs \
+                (id, path, dataset_id, pipeline, last_written_at, deleted_at, body) \
+                VALUES (?,?,?,?,?,?,?) \
+                ON CONFLICT (id) DO UPDATE SET path=excluded.path, \
+                dataset_id=excluded.dataset_id, pipeline=excluded.pipeline, \
+                last_written_at=excluded.last_written_at, deleted_at=excluded.deleted_at, \
+                body=excluded.body"
+                .into(),
+            local_output_select_all: "SELECT body FROM faucet_local_outputs \
+                ORDER BY last_written_at DESC"
+                .into(),
+            local_output_mark_deleted: "UPDATE faucet_local_outputs \
+                SET deleted_at=?2, body=?3 WHERE id=?1"
+                .into(),
             catalog_upsert_dataset: "INSERT INTO faucet_catalog_datasets \
                 (id, uri, kind, last_seen, body) VALUES (?,?,?,?,?) \
                 ON CONFLICT (id) DO UPDATE SET uri=excluded.uri, kind=excluded.kind, \
@@ -2524,6 +2583,143 @@ macro_rules! impl_sql_history {
                 };
                 let body: String = row.try_get("body").map_err(backend)?;
                 Ok(Some(sql::decode_json(&body, "config snapshot")?))
+            }
+
+            // ── Local sink output ledger (#587) ──────────────────────────────
+
+            async fn local_output_record(
+                &self,
+                obs: &$crate::local_outputs::LocalOutputObservation,
+            ) -> Result<(), $crate::serve::history::HistoryError> {
+                use sqlx::Row as _;
+                use $crate::local_outputs::LocalOutputRecord;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let id = $crate::local_outputs::ledger::output_id(&obs.path);
+
+                // Read-modify-write so the sticky first-open fields survive a
+                // re-run, using the same `observe` merge the memory backend uses —
+                // the two must never disagree about whether a file is faucet's own.
+                // A concurrent writer racing here can only lose a `last_written_at`
+                // refresh, which the next run restores; it can never flip
+                // `pre_existing`, because both racers read the same stored value.
+                let existing: Option<LocalOutputRecord> =
+                    match sqlx::query(&self.stmts.local_output_select)
+                        .bind(&id)
+                        .fetch_optional(&self.pool)
+                        .await
+                        .map_err(backend)?
+                    {
+                        Some(row) => {
+                            let body: String = row.try_get("body").map_err(backend)?;
+                            Some(sql::decode_json(&body, "local output")?)
+                        }
+                        None => None,
+                    };
+                let rec = match existing {
+                    Some(mut rec) => {
+                        rec.observe(obs);
+                        rec
+                    }
+                    None => LocalOutputRecord::new(obs),
+                };
+
+                sqlx::query(&self.stmts.local_output_upsert)
+                    .bind(&rec.id)
+                    .bind(&rec.path)
+                    .bind(&rec.dataset_id)
+                    .bind(&rec.pipeline)
+                    .bind(sql::fmt_ts(rec.last_written_at))
+                    .bind(rec.deleted_at.map(sql::fmt_ts))
+                    .bind(sql::encode_json(&rec, "local output")?)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                Ok(())
+            }
+
+            async fn local_output_list(
+                &self,
+                filter: &$crate::local_outputs::LocalOutputFilter,
+            ) -> Result<
+                Vec<$crate::local_outputs::LocalOutputRecord>,
+                $crate::serve::history::HistoryError,
+            > {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let rows = sqlx::query(&self.stmts.local_output_select_all)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+                // Filtering runs through the shared pure predicate rather than in
+                // SQL, so this backend and the in-memory one cannot drift on what
+                // the filter means (the same reason `catalog_list_datasets` does).
+                let mut out = Vec::with_capacity(rows.len());
+                for row in rows {
+                    let body: String = row.try_get("body").map_err(backend)?;
+                    let rec: $crate::local_outputs::LocalOutputRecord =
+                        sql::decode_json(&body, "local output")?;
+                    if $crate::local_outputs::ledger::matches(&rec, filter) {
+                        out.push(rec);
+                        if filter.limit > 0 && out.len() >= filter.limit {
+                            break;
+                        }
+                    }
+                }
+                Ok(out)
+            }
+
+            async fn local_output_get(
+                &self,
+                id: &str,
+            ) -> Result<
+                Option<$crate::local_outputs::LocalOutputRecord>,
+                $crate::serve::history::HistoryError,
+            > {
+                use sqlx::Row as _;
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let Some(row) = sqlx::query(&self.stmts.local_output_select)
+                    .bind(id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(backend)?
+                else {
+                    return Ok(None);
+                };
+                let body: String = row.try_get("body").map_err(backend)?;
+                Ok(Some(sql::decode_json(&body, "local output")?))
+            }
+
+            async fn local_output_mark_deleted(
+                &self,
+                id: &str,
+                at: chrono::DateTime<chrono::Utc>,
+                bytes: u64,
+            ) -> Result<bool, $crate::serve::history::HistoryError> {
+                use $crate::serve::history::HistoryError;
+                use $crate::serve::history::sql;
+                let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
+                let Some(mut rec) =
+                    $crate::serve::history::RunHistory::local_output_get(self, id).await?
+                else {
+                    return Ok(false);
+                };
+                rec.deleted_at = Some(at);
+                rec.deleted_bytes = Some(bytes);
+                let n = sqlx::query(&self.stmts.local_output_mark_deleted)
+                    .bind(id)
+                    .bind(sql::fmt_ts(at))
+                    .bind(sql::encode_json(&rec, "local output")?)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?
+                    .rows_affected();
+                Ok(n > 0)
             }
 
             // ── Pipeline-template registry (#444) ────────────────────────────

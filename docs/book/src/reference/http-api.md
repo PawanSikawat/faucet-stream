@@ -27,8 +27,8 @@ built-in roles form a ladder:
 
 | Role | Permitted |
 |------|-----------|
-| `viewer` | read-only: `GET /v1/runs*`, `GET /v1/schemas*`, `GET /v1/catalog/*`, `GET /v1/templates*` |
-| `operator` | everything a viewer can do **plus** submit / cancel / delete runs, `POST /v1/doctor`, firing triggers, and registering / deleting / triggering pipeline templates |
+| `viewer` | read-only: `GET /v1/runs*`, `GET /v1/schemas*`, `GET /v1/catalog/*`, `GET /v1/templates*`, `GET /v1/local-outputs` |
+| `operator` | everything a viewer can do **plus** submit / cancel / delete runs, `POST /v1/doctor`, firing triggers, registering / deleting / triggering pipeline templates, and deleting local sink outputs |
 | `admin` | everything, including `GET /v1/audit` |
 
 ```yaml
@@ -49,7 +49,8 @@ A request whose role lacks the route's required permission gets `403 forbidden`
 startup.
 
 **Audit log.** Every mutating action (`run.submit` / `run.cancel` / `run.delete` /
-`template.register` / `template.delete` / `template.run` / `template.promote`)
+`template.register` / `template.delete` / `template.run` / `template.promote` /
+`local_output.delete` / `local_output.cleanup`)
 and every denied attempt is recorded with principal, role, action, run id,
 config fingerprint (submit), source IP, timestamp, and result. Admins read it via
 `GET /v1/audit`. Records persist in the run-history backend (`faucet_serve_audit`
@@ -72,6 +73,9 @@ for the SQL backends; an in-memory ring otherwise) and expire with the
 | `GET` | `/v1/catalog/datasets` | `200` | List catalogued datasets (`kind`, `q`, `limit`, `cursor`) — requires the `catalog` build feature |
 | `GET` | `/v1/catalog/datasets/{id}` | `200` | One dataset's detail: schema timeline, volume, edges |
 | `GET` | `/v1/catalog/lineage` | `200` | The lineage edge graph (`root`, `depth`) |
+| `GET` | `/v1/local-outputs` | `200` | List tracked local sink output files with age + state (`dataset_id`, `pipeline`, `include_expired`, `limit`) — viewer / `LocalOutputRead` |
+| `DELETE` | `/v1/local-outputs/{id}` | `200` | Delete one recorded output file now (operator / `LocalOutputManage`); `404` for an unknown id |
+| `POST` | `/v1/local-outputs/cleanup` | `200` | Bulk clean: `older_than_days` \| `expired` \| `dataset_id` \| `run_id` \| `all`, plus `dry_run` (operator / `LocalOutputManage`) |
 | `POST` | `/v1/templates` | `201` | Register a pipeline template (operator / `TemplateWrite`) — requires the `templates` build feature |
 | `GET` | `/v1/templates` | `200` | List templates — newest version each, plus release state (viewer / `TemplateRead`) |
 | `GET` | `/v1/templates/{id}` | `200` | One template version + its whole release state. `?version=stable` (default), another channel, or `?version=N` |
@@ -232,6 +236,50 @@ it automatically). Viewer-readable under RBAC; requires a build with the
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \
   "http://127.0.0.1:8080/v1/catalog/datasets?kind=postgres&limit=20"
+```
+
+### Local sink outputs
+
+Lists and reclaims the **local files** the server's sinks wrote (jsonl / csv /
+parquet). The control surface behind the console's Datasets-page cleanup
+controls, and the same engine as the background sweeper described under
+[Local output retention](cli.md#local-output-retention). Requires a build with
+the `catalog` feature.
+
+- `GET /v1/local-outputs?dataset_id=&pipeline=&include_expired=&limit=` — the
+  tracked outputs, newest write first, each with `state`, `age_secs`, and the
+  retention window in force. The response also carries the server's default
+  `retention_days`, whether the sweeper is running (`gc_enabled`), and whether
+  the **caller** may delete (`can_manage`), so a client can hide destructive
+  controls rather than offer buttons that only 403.
+- `DELETE /v1/local-outputs/{id}` — delete one file now.
+- `POST /v1/local-outputs/cleanup` — bulk clean. Exactly one scope:
+  `{"older_than_days": N}`, `{"expired": true}` (each output's own window),
+  `{"dataset_id": "…"}`, `{"run_id": "…"}` ("clean up after that run" — its
+  history record is untouched), or `{"all": true}`. Sending none or several is a
+  `400` rather than a guess. Add `"dry_run": true` to see what would go.
+
+`state` is `present` (on disk), `expired` (collected — the record is kept), or
+`external` (faucet wrote the file but did not create it).
+
+**A refusal is a `200`, not an error.** The report carries `deleted: 0` and a
+`skipped` reason: `pre_existing` (faucet did not create the file — never
+deleted, by any scope), `in_flight` (a run is still writing it; retried later),
+`not_on_disk` (already gone — a no-op, and the record is marked expired),
+`already_deleted`, or `delete_failed`. Only recorded paths are ever touched:
+never a glob, never a directory. Run history, catalog entries, and lineage are
+untouched.
+
+```bash
+# What would "clean everything" remove?
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"all": true, "dry_run": true}' \
+  http://127.0.0.1:8080/v1/local-outputs/cleanup
+
+# Reclaim anything older than 3 days.
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"older_than_days": 3}' \
+  http://127.0.0.1:8080/v1/local-outputs/cleanup
 ```
 
 ### `/v1/templates*` (pipeline template registry)

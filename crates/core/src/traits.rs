@@ -656,6 +656,33 @@ pub trait Sink: Send + Sync {
         format!("{}://unknown", self.connector_name())
     }
 
+    /// The concrete **local files** this sink instance opened during the run.
+    ///
+    /// The provenance record faucet's local-output retention GC (#587) deletes
+    /// from: it may only remove files faucet recorded here, never a glob or a
+    /// directory. A sink that writes local files (jsonl, csv, parquet to a local
+    /// destination) accumulates a
+    /// [`LocalOutputLog`](crate::local_output::LocalOutputLog) as it opens them
+    /// and returns its snapshot; every other sink keeps the empty default, which
+    /// simply means "nothing local to collect".
+    ///
+    /// Two properties the GC depends on, so an implementation must preserve them:
+    ///
+    /// 1. **Every file, individually named.** A rolling parquet sink returns one
+    ///    entry per UUID-named part — the directory itself is not an output.
+    /// 2. **[`LocalOutput::pre_existing`](crate::local_output::LocalOutput) is
+    ///    honest**, captured before the first open. A file faucet appended to but
+    ///    did not create is never collected.
+    ///
+    /// Called after the run (and by `faucet cleanup`), never on the data path, so
+    /// an implementation may take a lock. Decorating sinks **must forward** this
+    /// to their inner sink, exactly as they do
+    /// [`dataset_uri`](Self::dataset_uri) — a decorator that returns the default
+    /// hides its inner sink's files from the GC and they are never reclaimed.
+    async fn local_outputs(&self) -> Vec<crate::local_output::LocalOutput> {
+        Vec::new()
+    }
+
     /// Run a fast, non-mutating preflight probe (used by `faucet doctor`).
     ///
     /// Unlike sources, a sink has no non-mutating "first page" equivalent

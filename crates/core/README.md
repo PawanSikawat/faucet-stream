@@ -114,6 +114,7 @@ println!("Wrote {} records", result.records_written);
 | `supported_write_modes()` | The `WriteMode`s this sink accepts (`Append` / `Upsert` / `Delete`). | `[Append]` |
 | `config_schema()` | JSON Schema of the config struct. | empty object |
 | `connector_name()` / `dataset_uri()` | Metrics label / lineage URI. | as for `Source` |
+| `local_outputs()` | The concrete **local files** this sink opened, for faucet's local-output retention GC. Return one entry per file (a rolling parquet sink returns each part), each flagged `pre_existing` if the file already existed — such a file is never deleted. | `[]` (nothing local to collect) |
 | `check(ctx)` | Non-mutating preflight probe. | `not_implemented` (sinks override with a connect/auth probe) |
 
 ## The `AuthProvider` trait
@@ -511,6 +512,7 @@ let schema = serde_json::to_value(schema_for!(MyConfig))?;
 | Module | Contents |
 |--------|----------|
 | `traits` | `Source` and `Sink` async traits; `RowOutcome` |
+| `local_output` | `LocalOutput`, `LocalOutputLog`, `probe_pre_existing` — the provenance a local-file sink records so faucet's retention GC deletes only files it created |
 | `auth` | `AuthProvider`, `Credential`, `AuthSpec`, `SharedAuthProvider` |
 | `pipeline` | `Pipeline`, `PipelineResult`, `StreamPage`, `run_stream`, batch-size constants |
 | `error` | `FaucetError` enum + `is_retriable` |

@@ -6,6 +6,8 @@ pub mod catalog;
 pub mod dlq;
 pub mod doctor;
 pub mod health;
+#[cfg(feature = "catalog")]
+pub mod local_outputs;
 pub mod logs;
 pub mod reload;
 pub mod runs;

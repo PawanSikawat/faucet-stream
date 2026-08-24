@@ -56,6 +56,12 @@ pub struct ParquetSink {
     /// run and the footer is written on `Drop`, never on a per-page `flush()`.
     single_file: bool,
     state: Mutex<WriterState>,
+    /// Every local file this sink opened, for the local-output retention GC
+    /// (#587). Rollover means one run can create many UUID-named parts, and each
+    /// is recorded individually — the GC deletes recorded files, never the
+    /// directory holding them. Empty for an S3 destination (nothing local to
+    /// collect). See `faucet_core::local_output`.
+    outputs: faucet_core::LocalOutputLog,
 }
 
 /// Bookkeeping that mutates as we write.
@@ -129,6 +135,7 @@ impl ParquetSink {
             local_root,
             single_file,
             state: Mutex::new(WriterState::new()),
+            outputs: faucet_core::LocalOutputLog::new(),
         })
     }
 
@@ -143,7 +150,11 @@ impl ParquetSink {
     ///
     /// Uses `Path::from_absolute_path` (not `from_filesystem_path`) because
     /// the target file does not exist yet — canonicalize would fail.
-    fn next_object_path(&self) -> Result<ObjPath, FaucetError> {
+    /// Also returns the concrete filesystem path for a local destination (the
+    /// `object_store` `Path` is percent-encoded and root-relative, so it is not
+    /// a usable filesystem path), which `open_writer` records for the retention
+    /// GC. `None` for S3 — there is no local file to collect.
+    fn next_object_path(&self) -> Result<(ObjPath, Option<PathBuf>), FaucetError> {
         match &self.config.destination {
             ParquetDestination::LocalPath { path } => {
                 let pb = if self.single_file_mode() {
@@ -162,17 +173,20 @@ impl ParquetSink {
                         .map_err(|e| FaucetError::Sink(format!("could not read cwd: {e}")))?
                         .join(&pb)
                 };
-                ObjPath::from_absolute_path(&absolute).map_err(|e| {
+                let obj = ObjPath::from_absolute_path(&absolute).map_err(|e| {
                     FaucetError::Sink(format!(
                         "could not encode local path {}: {e}",
                         absolute.display()
                     ))
-                })
+                })?;
+                Ok((obj, Some(absolute)))
             }
             ParquetDestination::S3(s3) => {
                 let key = format!("{}{}.parquet", s3.prefix, Uuid::new_v4());
-                ObjPath::parse(&key)
-                    .map_err(|e| FaucetError::Sink(format!("invalid s3 prefix/key '{key}': {e}")))
+                let obj = ObjPath::parse(&key).map_err(|e| {
+                    FaucetError::Sink(format!("invalid s3 prefix/key '{key}': {e}"))
+                })?;
+                Ok((obj, None))
             }
         }
     }
@@ -188,7 +202,14 @@ impl ParquetSink {
         &self,
         schema: SchemaRef,
     ) -> Result<AsyncArrowWriter<Box<dyn AsyncFileWriter>>, FaucetError> {
-        let obj_path = self.next_object_path()?;
+        let (obj_path, local_path) = self.next_object_path()?;
+        // Provenance for the retention GC (#587), recorded before the writer
+        // creates the file so a destination that already held a file of this name
+        // is flagged `pre_existing` and never collected. In rollover mode each
+        // part lands here as its own entry.
+        if let Some(local) = &local_path {
+            self.outputs.record_open_probing(local.clone());
+        }
         let writer = ParquetObjectWriter::new(self.store.clone(), obj_path);
         let boxed: Box<dyn AsyncFileWriter> = Box::new(writer);
         AsyncArrowWriter::try_new(boxed, schema, Some(self.writer_properties()))
@@ -473,6 +494,10 @@ impl faucet_core::Sink for ParquetSink {
             ParquetDestination::LocalPath { path } => format!("file://{path}"),
             ParquetDestination::S3(s3) => format!("s3://{}/{}", s3.bucket, s3.prefix),
         }
+    }
+
+    async fn local_outputs(&self) -> Vec<faucet_core::LocalOutput> {
+        self.outputs.snapshot()
     }
 
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
@@ -1281,5 +1306,81 @@ mod tests {
         warned.clear();
         warn_on_unknown_fields(&mut warned, &schema, &records);
         assert!(warned.contains("ghost"), "a fresh file must re-warn");
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn local_outputs_records_every_rolled_part_individually() {
+        // Retention GC provenance (#587). Rollover names each part with a fresh
+        // UUID, so nothing outside the sink could enumerate them without
+        // globbing the directory — which the GC is forbidden to do. Every part
+        // must therefore arrive as its own recorded entry.
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg =
+            ParquetSinkConfig::local(tmp.path().to_string_lossy().to_string()).max_rows_per_file(2);
+        let sink = ParquetSink::new(cfg).await.unwrap();
+        assert!(sink.local_outputs().await.is_empty());
+
+        sink.write_batch(&[json!({"id": 1}), json!({"id": 2}), json!({"id": 3})])
+            .await
+            .unwrap();
+        sink.flush().await.unwrap();
+        sink.write_batch(&[json!({"id": 4})]).await.unwrap();
+        sink.flush().await.unwrap();
+
+        let outs = sink.local_outputs().await;
+        let on_disk: std::collections::BTreeSet<PathBuf> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("parquet"))
+            .collect();
+        assert!(
+            on_disk.len() >= 2,
+            "expected rollover to write several parts"
+        );
+        let recorded: std::collections::BTreeSet<PathBuf> =
+            outs.iter().map(|o| o.path.clone()).collect();
+        assert_eq!(
+            recorded, on_disk,
+            "every part faucet wrote must be recorded, and nothing else"
+        );
+        assert!(
+            outs.iter().all(|o| !o.pre_existing),
+            "UUID-named parts are always faucet's own files"
+        );
+        assert!(
+            !recorded.contains(&PathBuf::from(tmp.path())),
+            "the directory itself is never an output — only the files in it"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn local_outputs_reports_the_single_file_destination() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("out.parquet");
+        let sink = ParquetSink::new(cfg(&path)).await.unwrap();
+        assert!(compute_single_file_mode(&cfg(&path)));
+        sink.write_batch(&[json!({"id": 1})]).await.unwrap();
+        sink.flush().await.unwrap();
+
+        let outs = sink.local_outputs().await;
+        assert_eq!(outs.len(), 1);
+        assert_eq!(outs[0].path, path);
+        assert!(!outs[0].pre_existing);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn local_outputs_flags_a_pre_existing_single_file_destination() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("out.parquet");
+        std::fs::write(&path, b"not really parquet").unwrap();
+        let sink = ParquetSink::new(cfg(&path)).await.unwrap();
+        sink.write_batch(&[json!({"id": 1})]).await.unwrap();
+        sink.flush().await.unwrap();
+
+        let outs = sink.local_outputs().await;
+        assert_eq!(outs.len(), 1);
+        assert!(
+            outs[0].pre_existing,
+            "faucet overwrote a file it did not create — never collectable"
+        );
     }
 }
