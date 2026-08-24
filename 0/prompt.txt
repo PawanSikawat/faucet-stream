@@ -4774,3 +4774,7 @@ can u use ~/gcn/gcn-key-preprod.json, And create a dataset by the name of tenant
 <status>completed</status>
 <summary>Background command "Create all 47 tenant2425_ datasets in US" completed (exit code 0)</summary>
 </task-notification>
+
+---
+
+internal error: overwrite: preparing destination 'bigquery:cohort_ggr_ngr': Sink error: BigQuery schema-evolution DDL failed: Response error (error: ResponseError { error: NestedResponseError { code: 404, errors: [{"domain": "global", "reason": "notFound", "message": "Not found: Table drivetrain-preprod:tenant2425_redshift.cohort_ggr_ngr was not found in location US"}], message: "Not found: Table drivetrain-preprod:tenant2425_redshift.cohort_ggr_ngr was not found in location US", status: "NOT_FOUND" } })
