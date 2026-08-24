@@ -40,11 +40,18 @@ export async function renderTemplates(container) {
         <button class="btn-primary" id="t-new">Register a template</button>
       </div>
       <div id="t-register" hidden></div>
+      <div class="filters" id="t-filters" hidden>
+        <input id="t-search" type="search" autocomplete="off"
+          placeholder="search templates by id or description…" />
+      </div>
       <div id="t-list" class="runs-list"></div>
     </div>`;
 
   const list = container.querySelector("#t-list");
   const registerHost = container.querySelector("#t-register");
+  const filters = container.querySelector("#t-filters");
+  const search = container.querySelector("#t-search");
+  let all = [];
 
   container.querySelector("#t-new").onclick = () => {
     registerHost.hidden = !registerHost.hidden;
@@ -53,17 +60,41 @@ export async function renderTemplates(container) {
     }
   };
   container.querySelector("#t-refresh").onclick = () => load();
+  search.oninput = () => render();
+
+  // Client-side filter over the loaded set — match id or description,
+  // case-insensitive. The registry is small, so there's no server round-trip.
+  function render() {
+    const q = search.value.trim().toLowerCase();
+    const rows = q
+      ? all.filter(
+          (t) =>
+            (t.id || "").toLowerCase().includes(q) ||
+            (t.description || "").toLowerCase().includes(q),
+        )
+      : all;
+    list.innerHTML = "";
+    if (!rows.length) {
+      list.innerHTML = `<div class="empty">No templates match “${escapeHtml(search.value.trim())}”.</div>`;
+      return;
+    }
+    for (const t of rows) list.appendChild(listRow(t));
+  }
 
   async function load() {
     try {
       const data = await api("/v1/templates");
+      all = data.templates || [];
       list.innerHTML = "";
-      if (!data.templates.length) {
+      if (!all.length) {
+        filters.hidden = true;
         list.innerHTML = `<div class="empty">No templates registered yet — register one to give operators a parameterized, versioned pipeline to trigger.</div>`;
         return;
       }
-      for (const t of data.templates) list.appendChild(listRow(t));
+      filters.hidden = false;
+      render(); // keeps any active search term across a refresh
     } catch (e) {
+      filters.hidden = true;
       if (templatesUnavailable(e)) list.innerHTML = `<div class="empty">${TEMPLATES_MISSING}</div>`;
       else toast(e.message, "error");
     }

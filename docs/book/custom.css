@@ -162,28 +162,6 @@ kbd {
 .ayu .sidebar .chapter .section li.chapter-item > a.active {
   color: var(--fs-green-bright) !important;
 }
-/* Nested sub-sections of the active page (mdBook's <ol class="section">): replace
-   the chunky default rail with a soft, thin guide rail, indented so it doesn't
-   collide with the active pill's corner. Sub-items sit quietly; the current one
-   picks up teal text (no pill). */
-.sidebar .chapter .section {
-  border-inline-start: 2px solid color-mix(in srgb, var(--fs-green) 26%, transparent) !important;
-  margin-inline-start: 0.9rem;
-  padding-inline-start: 0.5rem;
-}
-.sidebar .chapter .section li.chapter-item > a {
-  color: color-mix(in srgb, var(--sidebar-fg) 82%, transparent);
-  padding-block: 0.28rem;
-}
-.sidebar .chapter .section li.chapter-item > a.active {
-  background: transparent !important;
-  color: var(--fs-green-deep) !important;
-}
-.navy .sidebar .chapter .section li.chapter-item > a.active,
-.coal .sidebar .chapter .section li.chapter-item > a.active,
-.ayu .sidebar .chapter .section li.chapter-item > a.active {
-  color: var(--fs-green-bright) !important;
-}
 .chapter .part-title {
   color: var(--sidebar-fg);
   opacity: 0.62;
@@ -319,13 +297,39 @@ summary:focus-visible {
   height: 1.5rem;
 }
 
-/* On narrow screens keep the bar tidy: shrink the pill and drop the badge. */
+/* On narrow screens the absolute-centered pill overlaps the hamburger and the
+   right-hand icons (the hidden menu-title normally spaces the button groups
+   apart). So on mobile let the pill flow in-line, taking the space *between* the
+   two button groups — it can no longer sit on top of them. */
 @media (max-width: 700px) {
+  .menu-bar.fs-has-search #mdbook-search-wrapper {
+    position: static;
+    transform: none;
+    left: auto;
+    top: auto;
+    width: auto;
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0 0.6rem;
+    z-index: auto;
+    align-items: center; /* vertically center the pill with the hamburger + icons */
+  }
+  .menu-bar.fs-has-search #mdbook-searchbar-outer {
+    max-width: none;
+  }
   .menu-bar.fs-has-search #mdbook-searchbar {
     padding-right: 1rem;
+    font-size: 1rem; /* 1.5rem is oversized on a phone */
   }
   .fs-kbd {
     display: none;
+  }
+  /* keep the results dropdown within the viewport under the in-flow pill */
+  .menu-bar.fs-has-search #mdbook-searchresults-outer {
+    left: 0;
+    right: 0;
+    width: auto;
+    transform: none;
   }
 }
 
