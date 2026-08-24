@@ -258,6 +258,13 @@
             "string",
             "null"
           ]
+        },
+        "computed": {
+          "description": "A **derived** value: this param is not user-supplied but computed from\nother params via an interpolation expression — `${param.NAME}` and the\n`${map:NAME|case=value|*=default}` lookup — resolved *after* the ordinary\nparams bind (#573). A computed param is excluded from the trigger surface\n(supplying a value for it is an error) and is mutually exclusive with\n`required`, `default`, and `secret`. Example:\n`accounts_domain: { computed: \"${map:region|ca=zohocloud|*=zoho}\" }`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
@@ -18754,6 +18761,14 @@
             "string"
           ],
           "default": true
+        },
+        "substitute_in_query": {
+          "description": "Substitute `${offset_variable}` occurrences in the **query string** with\nthe current offset before each request, instead of sending it as a\nGraphQL variable. Required for query languages that embed the offset in a\nstring-literal argument — e.g. ShopifyQL's\n`shopifyqlQuery(query: \"… LIMIT 250 OFFSET ${q_offset}\")`, where a GraphQL\nvariable cannot interpolate into a string literal (#569). Default\n`false` (variable injection, the #550 behavior).",
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "default": false
         }
       },
       "additionalProperties": true
