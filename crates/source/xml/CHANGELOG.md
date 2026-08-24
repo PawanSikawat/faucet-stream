@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.6.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-source-xml-v1.5.0...faucet-source-xml-v1.6.0) - 2026-08-24
+
+### Features
+
+- BigQuery auto-create-table + Meltano-migration connector/CLI gaps (#567–#569, #573) ([#577](https://github.com/faucet-hq/faucet-stream/pull/577))
+
 ## [1.5.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-source-xml-v1.4.0...faucet-source-xml-v1.5.0) - 2026-08-23
 
 ### Features
