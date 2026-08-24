@@ -312,6 +312,7 @@ summary:focus-visible {
     min-width: 0;
     margin: 0 0.6rem;
     z-index: auto;
+    align-items: center; /* vertically center the pill with the hamburger + icons */
   }
   .menu-bar.fs-has-search #mdbook-searchbar-outer {
     max-width: none;
