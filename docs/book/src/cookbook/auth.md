@@ -204,9 +204,34 @@ pipeline:
 `${captured}` values from earlier steps are substituted into later steps and into
 `apply`; a signer entry is `{ sign: { alg: hmac_sha256, key, template, encoding:
 hex|base64, into: { header, format: "${sig}" } } }` (with `${ts}` / `${nonce}`
-available in the template). Header placements also work on the `xml`/`graphql`
-sources; query / cookie / body placement and dynamic base-URL are honored by
-`rest`. See the [`rest_flow_auth.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/rest_flow_auth.yaml) example.
+available in the template). The `rest` and `xml` sources honor header / query /
+cookie placement and the dynamic base-URL.
+
+**Captured value into a raw body (`${name}`, #567).** A captured value can also
+be substituted directly into a **raw request body** (or a config header/URL) via
+`${<capture_name>}` — what an XML/SOAP gateway needs, since no placement can reach
+inside a raw body. The `xml` source captures a `sessionid` at login and every data
+request carries it:
+
+```yaml
+auth:
+  intacct:
+    type: flow
+    config:
+      steps:
+        - request: { url: "https://api.intacct.com/ia/xml/xmlgw.phtml", method: POST, body: "<request>…getAPISession…</request>" }
+          capture: { session_id: { from: xml, path: "operation.result.data.api.sessionid" } }
+pipeline:
+  source:
+    type: xml
+    config:
+      method: POST
+      body: "<request><control>…</control><operation><authentication><sessionid>${session_id}</sessionid></authentication>…</operation></request>"
+      auth: { ref: intacct }
+```
+
+The capture names declared by a `flow` provider are valid `${name}` tokens
+anywhere in a source config. See the [`rest_flow_auth.yaml`](https://github.com/faucet-hq/faucet-stream/blob/main/cli/examples/rest_flow_auth.yaml) example.
 
 ## Shared auth providers (`auth: { ref }`)
 

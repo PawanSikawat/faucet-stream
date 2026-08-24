@@ -584,6 +584,10 @@ fn build_request_auth(
             out = out.with_base_url(rendered);
         }
     }
+    // Expose the captured context so a connector can substitute `${name}` into a
+    // raw body/header string (an XML/SOAP `sessionid`, #567) — the same names the
+    // `apply` placements above draw from.
+    out = out.with_captured(ctx.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
     out
 }
 
@@ -931,6 +935,10 @@ mod tests {
             matches!(&ra.placements[3], CredentialPlacement::BodyField { name, value } if name=="auth" && value=="T")
         );
         assert!(ra.base_url.is_none());
+        // #567: the captured context is exposed for `${name}` body/header
+        // substitution by connectors (e.g. an XML `sessionid`).
+        assert_eq!(ra.captured.get("tok").map(String::as_str), Some("T"));
+        assert_eq!(ra.captured.get("sid").map(String::as_str), Some("S"));
     }
 
     #[test]

@@ -345,7 +345,16 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
         }
         ids.push(id);
     }
-    let id_set: HashSet<&str> = ids.iter().map(String::as_str).collect();
+    // Flow-auth capture names (#567) are runtime-resolved deferred tokens: a
+    // source body/header may reference `${session_id}` where `session_id` is
+    // captured by a `type: flow` provider's login step and substituted per
+    // request by the connector. Treat them like row ids for `${...}` validation.
+    let capture_names: Vec<String> = collect_flow_capture_names(cfg);
+    let id_set: HashSet<&str> = ids
+        .iter()
+        .chain(capture_names.iter())
+        .map(String::as_str)
+        .collect();
 
     // 1b) Discovery-driven matrix (#501): identify `discover:` rows and validate
     // the `discover:` / `for_each:` shapes before the graph checks below, so
@@ -1411,6 +1420,41 @@ fn detect_combined_cycle(
 /// Verify that every `${X.path}` token in `value` has `X` listed in `id_set`.
 /// Load-time prefixes (`env`, `file`, `secret`) were already handled and are
 /// ignored here.
+/// Collect the capture names declared by every `type: flow` provider in the
+/// top-level `auth:` catalog — the `capture` keys of each login step plus each
+/// `apply[].name`. These become valid `${name}` deferred tokens so a source
+/// body/header can reference a captured value the connector substitutes per
+/// request (#567).
+fn collect_flow_capture_names(cfg: &PipelineConfig) -> Vec<String> {
+    let mut names = Vec::new();
+    let Some(auth) = &cfg.auth else {
+        return names;
+    };
+    for provider in auth.values() {
+        if provider.get("type").and_then(Value::as_str) != Some("flow") {
+            continue;
+        }
+        let Some(config) = provider.get("config") else {
+            continue;
+        };
+        if let Some(steps) = config.get("steps").and_then(Value::as_array) {
+            for step in steps {
+                if let Some(cap) = step.get("capture").and_then(Value::as_object) {
+                    names.extend(cap.keys().cloned());
+                }
+            }
+        }
+        if let Some(apply) = config.get("apply").and_then(Value::as_array) {
+            for a in apply {
+                if let Some(n) = a.get("name").and_then(Value::as_str) {
+                    names.push(n.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
 fn check_refs(value: &Value, id_set: &HashSet<&str>, owner: &str) -> CliResult<()> {
     walk_strings(value, &mut |s| {
         for (token, dir) in iter_directives(s) {
@@ -1661,6 +1705,56 @@ pipeline:
         let err = expand(&c).unwrap_err();
         assert!(
             matches!(&err, CliError::UnknownInterpolationId { id, .. } if id == "nobody"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn allows_flow_capture_token_in_source_config() {
+        // A `type: flow` provider captures `session_id`; a source body may then
+        // reference `${session_id}`, substituted per request by the connector
+        // (#567). Expand must accept the token rather than rejecting it.
+        let c = cfg(r#"
+version: 1
+auth:
+  intacct:
+    type: flow
+    config:
+      steps:
+        - request: { url: "https://x/login", method: POST }
+          capture: { session_id: "$.sessionid" }
+      apply: []
+pipeline:
+  source:
+    type: xml
+    config:
+      base_url: "https://x"
+      path: /gw
+      body: "<r><sessionid>${session_id}</sessionid></r>"
+      auth: { ref: intacct }
+  sink: { type: jsonl, config: { path: ./o } }
+"#);
+        assert_eq!(expand(&c).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rejects_capture_token_without_a_declaring_flow_provider() {
+        // The same token with no flow provider declaring it is still an unknown
+        // id — the allowance is scoped to declared captures.
+        let c = cfg(r#"
+version: 1
+pipeline:
+  source:
+    type: xml
+    config:
+      base_url: "https://x"
+      path: /gw
+      body: "<r><sessionid>${session_id}</sessionid></r>"
+  sink: { type: jsonl, config: { path: ./o } }
+"#);
+        let err = expand(&c).unwrap_err();
+        assert!(
+            matches!(&err, CliError::UnknownInterpolationId { id, .. } if id == "session_id"),
             "got: {err:?}"
         );
     }

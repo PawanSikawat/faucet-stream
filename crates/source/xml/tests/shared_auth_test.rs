@@ -2,9 +2,12 @@
 
 use std::sync::Arc;
 
-use faucet_core::{AuthProvider, AuthReference, AuthSpec, Credential, FaucetError};
+use faucet_core::{
+    AuthProvider, AuthReference, AuthSpec, Credential, CredentialPlacement, FaucetError,
+    RequestAuth,
+};
 use faucet_source_xml::{XmlStream, XmlStreamConfig};
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[derive(Debug)]
@@ -81,6 +84,70 @@ async fn one_provider_shared_across_two_streams() {
 
     assert_eq!(a.fetch_all().await.unwrap().len(), 1);
     assert_eq!(b.fetch_all().await.unwrap().len(), 1);
+}
+
+/// A flow-style provider that captured a `session_id` at login and exposes it
+/// via `request_auth().captured`, plus a header placement (#567).
+#[derive(Debug)]
+struct SessionProvider;
+
+#[async_trait::async_trait]
+impl AuthProvider for SessionProvider {
+    async fn credential(&self) -> Result<Credential, FaucetError> {
+        // A flow provider carries its auth via `request_auth`; this placeholder
+        // is never consulted because `request_auth` is non-empty.
+        Ok(Credential::Token(String::new()))
+    }
+    async fn request_auth(
+        &self,
+        _method: &str,
+        _url: &str,
+        _query: &std::collections::BTreeMap<String, String>,
+    ) -> Result<RequestAuth, FaucetError> {
+        let mut captured = std::collections::BTreeMap::new();
+        captured.insert("session_id".to_string(), "SID-XYZ".to_string());
+        Ok(RequestAuth::new()
+            .with_captured(captured)
+            .with_placement(CredentialPlacement::Header {
+                name: "X-Session".into(),
+                value: "SID-XYZ".into(),
+            }))
+    }
+    fn provider_name(&self) -> &'static str {
+        "session-provider"
+    }
+}
+
+#[tokio::test]
+async fn captured_value_substituted_into_raw_xml_body() {
+    let server = MockServer::start().await;
+    // The mock matches only when the request body carries the substituted
+    // session id — proving `${session_id}` was resolved from the flow capture —
+    // and the header placement was applied.
+    Mock::given(method("POST"))
+        .and(path("/gateway.xml"))
+        .and(header("x-session", "SID-XYZ"))
+        .and(body_string_contains("<sessionid>SID-XYZ</sessionid>"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "application/xml")
+                .set_body_string(xml_response(3)),
+        )
+        .mount(&server)
+        .await;
+
+    let config = XmlStreamConfig::new(server.uri(), "/gateway.xml")
+        .method(reqwest::Method::POST)
+        .body("<request><sessionid>${session_id}</sessionid></request>")
+        .records_element_path("root.item");
+    let stream = XmlStream::new(config).with_auth_provider(Arc::new(SessionProvider));
+
+    let records = stream.fetch_all().await.unwrap();
+    assert_eq!(
+        records.len(),
+        3,
+        "the captured session id must be substituted into the XML body per request"
+    );
 }
 
 #[tokio::test]

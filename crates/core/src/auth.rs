@@ -164,6 +164,13 @@ pub struct RequestAuth {
     pub placements: Vec<CredentialPlacement>,
     /// Optional per-session base-URL override.
     pub base_url: Option<String>,
+    /// Values captured by a multi-step login (name → value), exposed so a
+    /// connector can substitute `${name}` tokens into a **raw request body**
+    /// (or header) string — an XML/SOAP gateway that must carry a captured
+    /// `sessionid` inside its body, which no [`CredentialPlacement`] can express
+    /// (#567). These are the same captured values the flow's `apply` placements
+    /// draw from; secret-bearing, so a connector must treat them as sensitive.
+    pub captured: std::collections::BTreeMap<String, String>,
 }
 
 impl RequestAuth {
@@ -186,10 +193,18 @@ impl RequestAuth {
         self
     }
 
+    /// Attach the captured login values (name → value) for `${name}` body/header
+    /// substitution (builder, #567).
+    #[must_use]
+    pub fn with_captured(mut self, captured: std::collections::BTreeMap<String, String>) -> Self {
+        self.captured = captured;
+        self
+    }
+
     /// True when the provider contributed nothing (the connector then falls back
     /// to the plain [`credential`](AuthProvider::credential) path).
     pub fn is_empty(&self) -> bool {
-        self.placements.is_empty() && self.base_url.is_none()
+        self.placements.is_empty() && self.base_url.is_none() && self.captured.is_empty()
     }
 }
 

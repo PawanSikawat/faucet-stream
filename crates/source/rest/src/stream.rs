@@ -139,6 +139,21 @@ fn build_identity(tls: &TlsClientConfig) -> Result<reqwest::Identity, FaucetErro
 
 /// Map a [`Credential`] from a shared provider onto the REST [`Auth`]
 /// representation so the existing header-application path can be reused.
+/// Substitute `${name}` tokens with flow-captured login values (#567). Only
+/// exact `${name}` occurrences for a captured `name` are replaced; any other
+/// `${...}` is left untouched. Applied to the URL and config header values so a
+/// captured session value can travel there per request.
+fn substitute_captured(s: &str, captured: &std::collections::BTreeMap<String, String>) -> String {
+    if captured.is_empty() || !s.contains("${") {
+        return s.to_string();
+    }
+    let mut out = s.to_string();
+    for (k, v) in captured {
+        out = out.replace(&format!("${{{k}}}"), v);
+    }
+    out
+}
+
 fn credential_to_auth(cred: Credential) -> Auth {
     match cred {
         Credential::Bearer(token) => Auth::Bearer { token },
@@ -1305,6 +1320,8 @@ impl RestStream {
         let mut ra_query: Vec<(String, String)> = Vec::new();
         let mut ra_cookies: Vec<(String, String)> = Vec::new();
         let mut ra_body: Vec<(String, String)> = Vec::new();
+        let mut captured: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
         let mut used_request_auth = false;
         if let Some(provider) = &self.auth_provider {
             let ra = provider
@@ -1315,6 +1332,7 @@ impl RestStream {
                 if let Some(b) = ra.base_url {
                     base_url = b;
                 }
+                captured = ra.captured;
                 for p in ra.placements {
                     match p {
                         CredentialPlacement::Header { name, value } => {
@@ -1350,6 +1368,9 @@ impl RestStream {
                 url = url.replace(&format!("{{{name}}}"), rendered);
             }
         }
+        // #567: substitute flow-captured `${name}` values into the URL (a
+        // captured session id in the path, say). No-op when nothing was captured.
+        url = substitute_captured(&url, &captured);
 
         // Resolve inline / signed credentials — unless a flow provider already
         // supplied the request auth. A shared provider (from `auth: { ref }` or
@@ -1429,8 +1450,21 @@ impl RestStream {
         };
 
         // Static config headers form the base; auth (inline or provider) is
-        // applied on top so an auth header of the same name wins (#539).
-        let mut headers = self.static_headers.clone();
+        // applied on top so an auth header of the same name wins (#539). A
+        // flow-captured `${name}` in a header value is substituted per request
+        // (#567); the map is empty (and this a plain clone) for non-flow auth.
+        let mut headers = if captured.is_empty() {
+            self.static_headers.clone()
+        } else {
+            let mut h = HeaderMap::new();
+            for (name, value) in self.static_headers.iter() {
+                let sv = substitute_captured(value.to_str().unwrap_or_default(), &captured);
+                let hv =
+                    reqwest::header::HeaderValue::from_str(&sv).unwrap_or_else(|_| value.clone());
+                h.insert(name.clone(), hv);
+            }
+            h
+        };
         if let Some(auth) = &resolved_auth {
             auth.apply(&mut headers)?;
         }
