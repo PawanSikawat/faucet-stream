@@ -145,6 +145,10 @@ pub async fn list_templates(
 pub struct VersionQuery {
     #[serde(default)]
     pub version: Option<VersionSelector>,
+    /// `clean=true` returns the config body with comments stripped and re-emitted
+    /// as canonical YAML (the pure template). Powers the console's "Clean" toggle.
+    #[serde(default)]
+    pub clean: bool,
 }
 
 impl VersionQuery {
@@ -181,11 +185,14 @@ pub async fn get_template(
     let want = crate::templates::resolve_version(&s, &id, q.selector())
         .await
         .map_err(map_err)?;
-    let template = s
+    let mut template = s
         .template_get(&id, Some(want))
         .await
         .map_err(|e| ServeError::Internal(e.to_string()))?
         .ok_or(ServeError::NotFound)?;
+    if q.clean {
+        template.body = crate::templates::clean_config_yaml(&template.body).map_err(map_err)?;
+    }
     let state = crate::templates::template_state(&s, &id)
         .await
         .map_err(map_err)?;
@@ -719,6 +726,7 @@ mod tests {
                 "tpl-demo",
                 VersionQuery {
                     version: Some(VersionSelector::Pinned(9)),
+                    clean: false,
                 },
             )
             .await,
@@ -1083,6 +1091,7 @@ mod tests {
             "tpl-demo",
             VersionQuery {
                 version: Some(VersionSelector::Channel(VersionChannel::Canary)),
+                clean: false,
             },
         )
         .await
@@ -1110,6 +1119,7 @@ mod tests {
             Path("tpl-demo".into()),
             Query(VersionQuery {
                 version: Some(VersionSelector::newest()),
+                clean: false,
             }),
         )
         .await
@@ -1338,6 +1348,7 @@ mod tests {
             Path("tpl-demo".into()),
             Query(VersionQuery {
                 version: Some(VersionSelector::Pinned(1)),
+                clean: false,
             }),
         )
         .await
@@ -1354,6 +1365,7 @@ mod tests {
             Path("tpl-demo".into()),
             Query(VersionQuery {
                 version: Some(VersionSelector::Pinned(1)),
+                clean: false,
             }),
         )
         .await
