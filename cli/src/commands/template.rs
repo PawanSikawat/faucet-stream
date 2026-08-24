@@ -657,6 +657,7 @@ pipeline:
         show(TemplateShowArgs {
             id: "cli-tpl".into(),
             version: "stable".into(),
+            clean: false,
             common: common(&store, false),
         })
         .await
