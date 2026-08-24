@@ -426,9 +426,10 @@ fn whole_token(s: &str, bound: &BTreeMap<String, Value>) -> CliResult<Option<Val
         Directive::Deferred { id, path } if id == PARAM_ID => {
             Ok(Some(lookup(path, token, bound)?.clone()))
         }
-        Directive::LoadTime { prefix: "map", body } => {
-            Ok(Some(Value::String(resolve_map(token, body, bound)?)))
-        }
+        Directive::LoadTime {
+            prefix: "map",
+            body,
+        } => Ok(Some(Value::String(resolve_map(token, body, bound)?))),
         _ => Ok(None),
     }
 }
