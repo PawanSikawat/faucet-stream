@@ -335,7 +335,7 @@ function renderVersions(host, id, st, d, reload) {
       <span class="tpl-vnum mono">v${v}</span>
       <span class="tpl-vchannels">${pills || `<span class="run-meta">no channel</span>`}</span>
       <select class="tpl-assign" title="point a channel at v${v}">
-        <option value="">assign channel…</option>
+        <option value="">assign channel</option>
         ${ASSIGNABLE.map((c) => `<option value="${c}">${c}</option>`).join("")}
       </select>
       <button class="btn-ghost tpl-launch" ${st.stable === v ? "disabled" : ""}
@@ -442,10 +442,12 @@ function renderTrigger(host, id, st, d) {
         : `<input data-name="${escapeHtml(name)}" ${p.secret ? 'type="password"' : type === "int" || type === "float" ? 'type="number"' : ""}
              placeholder="${p.default !== undefined && p.default !== null ? escapeHtml(String(p.default)) : type}" />`;
     field.innerHTML = `
-      <span class="tpl-param-name mono">${escapeHtml(name)}
+      <span class="tpl-param-name mono">${escapeHtml(name)}</span>
+      <span class="tpl-param-tags">
         <span class="pill">${escapeHtml(type)}</span>
         ${p.required ? `<span class="pill pill-failed">required</span>` : ""}
-        ${p.secret ? `<span class="pill pill-cancelled">secret</span>` : ""}</span>
+        ${p.secret ? `<span class="pill pill-cancelled">secret</span>` : ""}
+      </span>
       ${input}
       ${p.description ? `<span class="help">${escapeHtml(p.description)}</span>` : ""}`;
     paramHost.appendChild(field);
