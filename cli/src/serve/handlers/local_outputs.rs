@@ -124,6 +124,7 @@ pub async fn list_outputs(
 /// the console renders the reason next to the output.
 pub async fn delete_output(
     State(state): State<ServerState>,
+    Extension(actor): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<SweepReport>, ServeError> {
     // 404 before sweeping so an unknown id is distinguishable from a refusal.
@@ -143,6 +144,7 @@ pub async fn delete_output(
     )
     .await
     .map_err(|e| ServeError::Internal(e.to_string()))?;
+    audit(&state, &actor, "local_output.delete", &report).await;
     Ok(Json(report))
 }
 
@@ -222,6 +224,7 @@ impl CleanupRequest {
 /// `POST /v1/local-outputs/cleanup` → 200 with the sweep report.
 pub async fn cleanup(
     State(state): State<ServerState>,
+    Extension(actor): Extension<AuthContext>,
     Json(req): Json<CleanupRequest>,
 ) -> Result<Json<SweepReport>, ServeError> {
     let scope = req.scope()?;
@@ -242,7 +245,27 @@ pub async fn cleanup(
     )
     .await
     .map_err(|e| ServeError::Internal(e.to_string()))?;
+    audit(&state, &actor, "local_output.cleanup", &report).await;
     Ok(Json(report))
+}
+
+/// Record a deletion in the audit log.
+///
+/// Every other destructive control-plane action writes one on success, and these
+/// two are the ones that delete a user's data off disk — a `cleanup{all}` wipe
+/// with no attributable trace is exactly the gap an audit log exists to close.
+/// The action labels were already wired in `rbac::audit_action`; without this
+/// call they were only ever reachable on a `403`.
+///
+/// The `result` field carries the outcome, so the log distinguishes a wipe from a
+/// no-op and a dry run from a real delete without needing the report body.
+async fn audit(state: &ServerState, actor: &AuthContext, action: &str, report: &SweepReport) {
+    let result = if report.dry_run {
+        "dry_run".to_string()
+    } else {
+        format!("deleted={} skipped={}", report.deleted, report.skipped)
+    };
+    crate::serve::audit::write(state, actor, action, None, None, &result).await;
 }
 
 /// The server's configured default retention window, in days (`0` = the

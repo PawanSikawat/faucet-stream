@@ -222,9 +222,15 @@ pub struct CleanupArgs {
     /// retention window. Requires `--yes` (or `--dry-run`).
     #[arg(long)]
     pub all: bool,
-    /// Retention window in days for the default sweep, overriding the config's
-    /// `local_outputs.retention_days` and the 7-day default. `0` = keep forever.
-    #[arg(long)]
+    /// Retention window in days for the default (expired-only) sweep, overriding
+    /// the config's `local_outputs.retention_days`. `0` = keep forever. Distinct
+    /// from `--older-than-days`, which is a *scope selector* that ignores every
+    /// retention setting.
+    ///
+    /// Reads `FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS` when unset, so the runtime
+    /// default is the same number here and under `faucet serve` rather than the
+    /// env being silently serve-only.
+    #[arg(long, env = "FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS")]
     pub retention_days: Option<u32>,
     /// Never delete an output touched within this many seconds — the guard
     /// against unlinking a file a run is still writing (including one in another
@@ -998,14 +1004,10 @@ pub struct ServeArgs {
     ///
     /// The GC only ever deletes files faucet recorded as its own sink outputs —
     /// never a glob or a directory, and never a file it merely appended to.
-    // The default is spelled out rather than referencing
-    // `local_outputs::DEFAULT_RETENTION_DAYS` because that module rides the
-    // `catalog` feature while this flag is always present; a test in
-    // `serve::config` asserts the two never drift.
     #[arg(
         long,
         env = "FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS",
-        default_value_t = 7
+        default_value_t = crate::local_outputs::DEFAULT_RETENTION_DAYS
     )]
     pub local_output_retention_days: u32,
     /// Never delete a local sink output touched within this many seconds (#587) —

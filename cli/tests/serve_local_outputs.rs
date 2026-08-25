@@ -35,7 +35,11 @@ const AUTH_CONFIG: &str = "principals:\n\
     \x20   token: viewer-tok\n\
     \x20   role: viewer\n";
 
-fn serve_args(port: u16, auth_config: std::path::PathBuf) -> faucet_cli::cli::ServeArgs {
+fn serve_args_with_retention(
+    port: u16,
+    auth_config: std::path::PathBuf,
+    retention_days: u32,
+) -> faucet_cli::cli::ServeArgs {
     faucet_cli::cli::ServeArgs {
         listen: format!("127.0.0.1:{port}"),
         auth_token: None,
@@ -54,7 +58,7 @@ fn serve_args(port: u16, auth_config: std::path::PathBuf) -> faucet_cli::cli::Se
         log_max_lines_per_run: 100_000,
         // Long window: these tests drive cleanup explicitly, so the background
         // sweeper must not race them by collecting a fresh file first.
-        local_output_retention_days: 3650,
+        local_output_retention_days: retention_days,
         // …and no mtime grace: every file here is written microseconds before it
         // is cleaned, so the real guard would (correctly) skip them all. The
         // guard itself is covered by unit tests in `local_outputs::sweep`; what
@@ -76,10 +80,18 @@ fn serve_args(port: u16, auth_config: std::path::PathBuf) -> faucet_cli::cli::Se
 }
 
 async fn spawn_server(port: u16, dir: &std::path::Path) {
+    spawn_server_with_retention(port, dir, 3650).await
+}
+
+async fn spawn_server_with_retention(port: u16, dir: &std::path::Path, retention_days: u32) {
     let auth_path = dir.join("auth.yaml");
     std::fs::write(&auth_path, AUTH_CONFIG).unwrap();
-    let mut config =
-        faucet_cli::serve::ServeConfig::from_args(serve_args(port, auth_path)).unwrap();
+    let mut config = faucet_cli::serve::ServeConfig::from_args(serve_args_with_retention(
+        port,
+        auth_path,
+        retention_days,
+    ))
+    .unwrap();
     config.log_level = "warn".into();
     tokio::spawn(async move {
         let _ = faucet_cli::serve::run_server(config, Default::default()).await;
@@ -574,6 +586,141 @@ async fn cleaning_up_after_one_run_leaves_another_runs_output_alone() {
         .await
         .unwrap();
     assert_eq!(rec["status"], "completed", "{rec}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn disabling_the_sweeper_still_allows_on_demand_cleanup() {
+    // `--local-output-retention-days 0` turns the background sweep off. The
+    // documented promise is that outputs are *still tracked* and can *still* be
+    // cleaned on demand — so this pins the claim rather than leaving it to the
+    // docs, and checks the console gets `gc_enabled: false` to render it with.
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.csv");
+    let output = dir.path().join("out.jsonl");
+    std::fs::write(&input, "id\n1\n").unwrap();
+    let port = free_port();
+    spawn_server_with_retention(port, dir.path(), 0).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+
+    run_pipeline(
+        &base,
+        &client,
+        &input.display().to_string(),
+        &output.display().to_string(),
+    )
+    .await;
+
+    let listed = list_outputs(&base, &client, "").await;
+    assert_eq!(listed["gc_enabled"], false);
+    assert_eq!(listed["retention_days"], 0);
+    let row = find(&listed, "out.jsonl").expect("outputs are still tracked with the GC off");
+    assert_eq!(row["state"], "present");
+    assert!(
+        row["retention_days_effective"].is_null(),
+        "a zero window means never expires, not expires immediately"
+    );
+
+    // Nothing is ever "expired" under a zero window…
+    let report: Value = client
+        .post(format!("{base}/v1/local-outputs/cleanup"))
+        .bearer_auth("admin-tok")
+        .json(&serde_json::json!({ "expired": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(report["deleted"], 0, "{report}");
+    assert!(output.exists());
+
+    // …but an explicit delete still works, which is the documented escape hatch.
+    let id = row["id"].as_str().unwrap();
+    let report: Value = client
+        .delete(format!("{base}/v1/local-outputs/{id}"))
+        .bearer_auth("admin-tok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(report["deleted"], 1, "{report}");
+    assert!(!output.exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn destructive_actions_are_recorded_in_the_audit_log() {
+    // A wipe with no attributable trace is the gap an audit log exists to close,
+    // and these are the only endpoints that delete a user's data off disk.
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.csv");
+    let a = dir.path().join("a.jsonl");
+    let b = dir.path().join("b.jsonl");
+    std::fs::write(&input, "id\n1\n").unwrap();
+    let port = free_port();
+    spawn_server(port, dir.path()).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+    let input_s = input.display().to_string();
+
+    run_pipeline(&base, &client, &input_s, &a.display().to_string()).await;
+    run_pipeline(&base, &client, &input_s, &b.display().to_string()).await;
+
+    let id = find(&list_outputs(&base, &client, "").await, "a.jsonl").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    client
+        .delete(format!("{base}/v1/local-outputs/{id}"))
+        .bearer_auth("admin-tok")
+        .send()
+        .await
+        .unwrap();
+    client
+        .post(format!("{base}/v1/local-outputs/cleanup"))
+        .bearer_auth("admin-tok")
+        .json(&serde_json::json!({ "all": true, "confirm": true }))
+        .send()
+        .await
+        .unwrap();
+
+    let audit: Value = client
+        .get(format!("{base}/v1/audit"))
+        .bearer_auth("admin-tok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let actions: Vec<&str> = audit["entries"]
+        .as_array()
+        .expect("audit entries")
+        .iter()
+        .map(|e| e["action"].as_str().unwrap())
+        .collect();
+    assert!(
+        actions.contains(&"local_output.delete"),
+        "a per-output delete must be attributable: {actions:?}"
+    );
+    assert!(
+        actions.contains(&"local_output.cleanup"),
+        "a bulk wipe must be attributable: {actions:?}"
+    );
+    // …and the record says what happened, so a wipe is distinguishable from a no-op.
+    let wipe = audit["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "local_output.cleanup")
+        .unwrap();
+    assert!(
+        wipe["result"].as_str().unwrap().starts_with("deleted="),
+        "{wipe}"
+    );
+    assert_eq!(wipe["principal"], "alice");
 }
 
 #[tokio::test(flavor = "multi_thread")]

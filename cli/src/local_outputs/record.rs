@@ -187,6 +187,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_store_failure_never_fails_the_run() {
+        // Contract #1 of this module. A ledger that cannot be written must not
+        // take the pipeline down with it — the cost of a lost row is a file the
+        // GC does not know about, which stays on disk. That is the safe
+        // direction, and it must stay a warning rather than an error.
+        struct BrokenStore;
+
+        #[async_trait::async_trait]
+        impl RunHistory for BrokenStore {
+            async fn claim_idempotency(
+                &self,
+                _: &str,
+                _: &str,
+                _: &str,
+                _: Duration,
+            ) -> Result<crate::serve::history::Claim, crate::serve::history::HistoryError>
+            {
+                unreachable!("not exercised")
+            }
+            async fn upsert(
+                &self,
+                _: &crate::serve::history::RunRecord,
+            ) -> Result<(), crate::serve::history::HistoryError> {
+                unreachable!("not exercised")
+            }
+            async fn get(
+                &self,
+                _: &str,
+            ) -> Result<Option<crate::serve::history::RunRecord>, crate::serve::history::HistoryError>
+            {
+                unreachable!("not exercised")
+            }
+            async fn list(
+                &self,
+                _: &crate::serve::history::ListFilter,
+            ) -> Result<crate::serve::history::ListPage, crate::serve::history::HistoryError>
+            {
+                unreachable!("not exercised")
+            }
+            async fn delete(
+                &self,
+                _: &str,
+            ) -> Result<crate::serve::history::DeleteOutcome, crate::serve::history::HistoryError>
+            {
+                unreachable!("not exercised")
+            }
+            async fn purge_expired(
+                &self,
+                _: Duration,
+            ) -> Result<usize, crate::serve::history::HistoryError> {
+                unreachable!("not exercised")
+            }
+            async fn recover_orphans(&self) -> Result<usize, crate::serve::history::HistoryError> {
+                unreachable!("not exercised")
+            }
+            fn degraded(&self) -> bool {
+                true
+            }
+            async fn local_output_record(
+                &self,
+                _: &LocalOutputObservation,
+            ) -> Result<(), crate::serve::history::HistoryError> {
+                Err(crate::serve::history::HistoryError::Backend(
+                    "ledger unavailable".into(),
+                ))
+            }
+        }
+
+        // Two files, both failing: the loop must attempt every one rather than
+        // abandoning the rest after the first error.
+        let written = record(
+            &BrokenStore,
+            &[
+                LocalOutput::created("/tmp/a.jsonl"),
+                LocalOutput::created("/tmp/b.jsonl"),
+            ],
+            &ctx(),
+        )
+        .await;
+        assert_eq!(written, 0, "nothing was recorded…");
+        // …and `record` returned normally, which is what keeps the run alive.
+    }
+
+    #[tokio::test]
     async fn a_retention_override_lands_on_the_row() {
         let store = MemoryHistory::new(Duration::from_secs(60));
         let mut c = ctx();

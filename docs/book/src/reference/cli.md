@@ -1096,6 +1096,18 @@ The ledger of outputs lives in the config's `catalog:` store — the same one
 `faucet run` / `schedule` / `replicate` record into and `faucet serve --history`
 browses — so `--store` can point at a server's store directly.
 
+**`--retention-days` vs `--older-than-days`** — easy to conflate, and they do
+different things:
+
+| Flag | Kind | Meaning |
+|---|---|---|
+| `--retention-days <n>` | *policy* | The window the bare (expired-only) sweep measures against, overriding the config's `local_outputs.retention_days`. Reads `FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS` when unset, so it matches the `faucet serve` default. `0` = keep forever. Per-pipeline overrides still apply. |
+| `--older-than-days <n>` | *scope* | Selects everything older than `n` days **ignoring every retention setting**, including per-pipeline overrides. `0` matches every output and needs `--yes`. |
+
+So `--retention-days 3` means "treat 3 days as this store's policy and collect
+what that policy has expired"; `--older-than-days 3` means "delete anything older
+than 3 days, whatever the policy says".
+
 **What it will and will not delete.** Only paths faucet recorded as its own sink
 outputs. Never a glob, never a directory, and never a file faucet *wrote to* but
 did not *create* — point a sink at an existing export and its ledger row is

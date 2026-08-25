@@ -201,13 +201,16 @@ pub async fn run(
     let rows = match scope {
         // One output: fetch just that row rather than paging the whole ledger.
         SweepScope::Output(id) => store.local_output_get(id).await?.into_iter().collect(),
+        // Every bulk scope treats a tombstone as out of scope, so asking for them
+        // would only pay to decode rows that are then discarded — and would defeat
+        // the `deleted_at IS NULL` push-down whose whole point is to stop the
+        // hourly sweep reading a table that is never purged. The single-output
+        // path above needs the tombstone (to answer "already gone") and fetches
+        // it by id, so nothing loses information here.
         _ => {
             store
                 .local_output_list(&LocalOutputFilter {
-                    // The engine needs deleted rows too: `in_scope` decides what
-                    // to do with them, and for a single-output request the
-                    // "already gone" answer is the useful one.
-                    include_deleted: true,
+                    include_deleted: false,
                     ..Default::default()
                 })
                 .await?
@@ -803,6 +806,80 @@ mod tests {
         assert!(written_recently(&refreshed, &guarded));
         // …and a zero grace short-circuits regardless.
         assert!(!written_recently(&meta, &opts()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_undeletable_file_is_reported_not_swallowed() {
+        // A read-only parent directory makes `remove_file` fail with EACCES. The
+        // sweep must report it rather than abort the pass or claim success: a
+        // rising `delete_failed` is how an operator learns the footprint is *not*
+        // being bounded, which is the whole point of the feature.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let path = locked.join("out.jsonl");
+        std::fs::write(&path, b"data").unwrap();
+        let store = store_with(&[obs(path.to_str().unwrap(), "2026-08-01T00:00:00Z")]).await;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let report = run(&store, &SweepScope::Expired, &opts()).await.unwrap();
+
+        // Restore before any assertion can panic, or the tempdir cannot clean up.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(report.deleted, 0);
+        assert_eq!(
+            report.skipped_for(SkipReason::DeleteFailed),
+            1,
+            "{report:?}"
+        );
+        assert!(
+            report.outputs[0].error.is_some(),
+            "the failure must carry the OS error, not just a category"
+        );
+        assert!(path.exists());
+        // The row stays `present`, so the next pass retries instead of pretending
+        // the file is gone.
+        let rows = store
+            .local_output_list(&LocalOutputFilter {
+                include_deleted: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows[0].state(), super::super::LocalOutputState::Present);
+    }
+
+    #[tokio::test]
+    async fn a_bulk_sweep_does_not_read_tombstones() {
+        // Efficiency, and the repo's #1 priority: `faucet_local_outputs` is never
+        // purged, so tombstones accumulate for the life of a deployment. The
+        // hourly sweep must not decode them — asking for `include_deleted` would
+        // defeat the `deleted_at IS NULL` push-down that exists to prevent it.
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("collected.jsonl");
+        let live = dir.path().join("live.jsonl");
+        std::fs::write(&live, b"x").unwrap();
+        let store = store_with(&[
+            obs(gone.to_str().unwrap(), "2026-01-01T00:00:00Z"),
+            obs(live.to_str().unwrap(), "2026-01-02T00:00:00Z"),
+        ])
+        .await;
+        // Collect the first one, leaving a tombstone behind.
+        let first = run(&store, &SweepScope::Expired, &opts()).await.unwrap();
+        assert_eq!(first.skipped_for(SkipReason::NotOnDisk), 1, "{first:?}");
+        assert_eq!(first.deleted, 1);
+
+        // The next pass must see neither the tombstone nor the already-collected
+        // row — not even as a skip.
+        let second = run(&store, &SweepScope::Expired, &opts()).await.unwrap();
+        assert_eq!(
+            (second.deleted, second.skipped, second.outputs.len()),
+            (0, 0, 0),
+            "a tombstone must be invisible to a bulk sweep: {second:?}"
+        );
     }
 
     #[tokio::test]
