@@ -44,14 +44,41 @@ export async function renderTemplates(container) {
         <input id="t-search" type="search" autocomplete="off"
           placeholder="search templates by id or description…" />
       </div>
+      <div class="tpl-list-head" id="t-list-head" hidden>
+        <button type="button" class="tpl-sort" data-sort="status">status<span class="tpl-sort-caret"></span></button>
+        <button type="button" class="tpl-sort" data-sort="name">name<span class="tpl-sort-caret"></span></button>
+        <button type="button" class="tpl-sort tpl-col-r" data-sort="updated">last updated<span class="tpl-sort-caret"></span></button>
+        <span class="tpl-col-r">live</span>
+        <span class="tpl-col-r">newest</span>
+        <span class="tpl-col-r">params</span>
+      </div>
       <div id="t-list" class="runs-list"></div>
     </div>`;
 
   const list = container.querySelector("#t-list");
   const registerHost = container.querySelector("#t-register");
   const filters = container.querySelector("#t-filters");
+  const listHead = container.querySelector("#t-list-head");
   const search = container.querySelector("#t-search");
   let all = [];
+
+  // Column sort. `col === null` keeps registry order (the default); clicking a
+  // sortable header sets the column and toggles asc/desc on repeat clicks.
+  const sort = { col: null, dir: 1 };
+  const STATUS_RANK = { launched: 0, draft: 1, deprecated: 2 };
+  const sortKey = {
+    status: (t) => STATUS_RANK[(t.state || {}).status] ?? 9,
+    name: (t) => (t.id || "").toLowerCase(),
+    updated: (t) => new Date(t.created_at || 0).getTime() || 0,
+  };
+  listHead.querySelectorAll(".tpl-sort").forEach((btn) => {
+    btn.onclick = () => {
+      const col = btn.dataset.sort;
+      if (sort.col === col) sort.dir *= -1;
+      else { sort.col = col; sort.dir = 1; }
+      render();
+    };
+  });
 
   container.querySelector("#t-new").onclick = () => {
     registerHost.hidden = !registerHost.hidden;
@@ -72,13 +99,33 @@ export async function renderTemplates(container) {
             (t.id || "").toLowerCase().includes(q) ||
             (t.description || "").toLowerCase().includes(q),
         )
-      : all;
+      : all.slice();
+    if (sort.col) {
+      const key = sortKey[sort.col];
+      rows.sort((a, b) => {
+        const av = key(a), bv = key(b);
+        return (av < bv ? -1 : av > bv ? 1 : 0) * sort.dir;
+      });
+    }
+    updateSortCarets();
     list.innerHTML = "";
+    listHead.hidden = !rows.length; // only show the column header when rows are shown
     if (!rows.length) {
       list.innerHTML = `<div class="empty">No templates match “${escapeHtml(search.value.trim())}”.</div>`;
       return;
     }
     for (const t of rows) list.appendChild(listRow(t));
+  }
+
+  // Reflect the active sort on the header: ▲/▼ on the sorted column, a faint ↕
+  // hint on the other sortable columns.
+  function updateSortCarets() {
+    listHead.querySelectorAll(".tpl-sort").forEach((btn) => {
+      const active = sort.col === btn.dataset.sort;
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-sort", active ? (sort.dir > 0 ? "ascending" : "descending") : "none");
+      btn.querySelector(".tpl-sort-caret").textContent = active ? (sort.dir > 0 ? " ▲" : " ▼") : " ↕";
+    });
   }
 
   async function load() {
@@ -88,6 +135,7 @@ export async function renderTemplates(container) {
       list.innerHTML = "";
       if (!all.length) {
         filters.hidden = true;
+        listHead.hidden = true;
         list.innerHTML = `<div class="empty">No templates registered yet — register one to give operators a parameterized, versioned pipeline to trigger.</div>`;
         return;
       }
@@ -95,6 +143,7 @@ export async function renderTemplates(container) {
       render(); // keeps any active search term across a refresh
     } catch (e) {
       filters.hidden = true;
+      listHead.hidden = true;
       if (templatesUnavailable(e)) list.innerHTML = `<div class="empty">${TEMPLATES_MISSING}</div>`;
       else toast(e.message, "error");
     }
@@ -116,9 +165,10 @@ function listRow(t) {
       <b class="mono">${escapeHtml(t.id)}</b>
       ${t.description ? `<span class="tpl-row-desc">${escapeHtml(t.description)}</span>` : ""}
     </span>
-    <span class="run-meta" title="live version — what an unpinned run uses">live ${live}</span>
-    <span class="run-meta" title="newest registered build">newest v${st.newest ?? t.version}</span>
-    <span class="run-meta">${params} param${params === 1 ? "" : "s"}</span>`;
+    <span class="run-meta" title="last registered / updated">${fmtTime(t.created_at)}</span>
+    <span class="run-meta" title="live version — what an unpinned run uses">${live}</span>
+    <span class="run-meta" title="newest registered build">v${st.newest ?? t.version}</span>
+    <span class="run-meta" title="declared params">${params}</span>`;
   return el;
 }
 
