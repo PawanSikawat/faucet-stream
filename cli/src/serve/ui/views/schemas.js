@@ -1,9 +1,20 @@
 import { api, toast } from "../api.js";
-import { escapeHtml } from "../utils.js";
+import { escapeHtml, mdInline } from "../utils.js";
 
 export async function renderSchemas(container) {
   let catalog = { sources: [], sinks: [], transforms: [], state: [] };
   try { catalog = await api("/v1/schemas"); } catch (e) { toast(e.message, "error"); }
+
+  // State stores have no per-connector JSON schema (they're simple kinds), so we
+  // show a short description instead of a clickable schema link. Unknown kinds
+  // fall back to just the name.
+  const STATE_DESC = {
+    memory: "In-process only — checkpoints last for the run; nothing survives a restart.",
+    file: "Local file — durable checkpoints via fsync + atomic rename.",
+    redis: "Redis — shared checkpoints; durability follows your Redis persistence config.",
+    postgres: "Postgres table — durable checkpoints, upserted per commit.",
+    sqlite: "Local SQLite — durable checkpoints in a single file.",
+  };
 
   const group = (title, kind, items) =>
     `<div class="schema-group"><h3>${title}</h3>${items
@@ -13,10 +24,15 @@ export async function renderSchemas(container) {
   container.innerHTML = `
     <div class="page schemas-page">
       <aside class="schema-list">
+        <p class="schema-note">Showing the <b>${catalog.sources.length} source${catalog.sources.length === 1 ? "" : "s"}</b> and <b>${catalog.sinks.length} sink${catalog.sinks.length === 1 ? "" : "s"}</b> built into this server. Rebuild with more Cargo features (e.g. <code>--features full</code>) to enable the rest.</p>
         ${group("Sources", "source", catalog.sources)}
         ${group("Sinks", "sink", catalog.sinks)}
         ${group("Transforms", "transform", catalog.transforms)}
-        <div class="schema-group"><h3>State stores</h3>${catalog.state.map((s) => `<span class="tag">${escapeHtml(s)}</span>`).join("")}</div>
+        <div class="schema-group"><h3>State stores</h3>
+          <div class="schema-state-list">
+            ${catalog.state.map((s) => `<div class="schema-state"><b class="mono">${escapeHtml(s)}</b>${STATE_DESC[s] ? `<span>${escapeHtml(STATE_DESC[s])}</span>` : ""}</div>`).join("")}
+          </div>
+        </div>
       </aside>
       <section id="schema-view" class="schema-view"><div class="empty">Select a connector to view its schema.</div></section>
     </div>`;
@@ -45,7 +61,7 @@ function fieldTable(schema) {
     .map(([name, p]) => {
       const type = p.type || (p.$ref ? p.$ref.split("/").pop() : p.enum ? "enum" : p.oneOf || p.anyOf ? "union" : "object");
       const def = p.default !== undefined ? `<code>${escapeHtml(JSON.stringify(p.default))}</code>` : "";
-      return `<tr><td>${escapeHtml(name)}${req.has(name) ? " *" : ""}</td><td>${escapeHtml(String(type))}</td><td>${def}</td><td>${escapeHtml(firstSentence(p.description || ""))}</td></tr>`;
+      return `<tr><td>${escapeHtml(name)}${req.has(name) ? " *" : ""}</td><td>${escapeHtml(String(type))}</td><td>${def}</td><td>${mdInline(firstSentence(p.description || ""))}</td></tr>`;
     })
     .join("");
   return `<table class="tbl"><thead><tr><th>field</th><th>type</th><th>default</th><th>description</th></tr></thead><tbody>${rows}</tbody></table>`;

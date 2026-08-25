@@ -1,5 +1,6 @@
 import { token, onUnauthorized, authOk } from "./api.js";
-import { startRouter, navigate } from "./router.js";
+import { startRouter, navigate, refresh } from "./router.js";
+import { getTz, setTz, TZ_OPTIONS } from "./tz.js";
 import { renderRuns } from "./views/runs.js";
 import { renderDetail } from "./views/detail.js";
 import { renderSubmit } from "./views/submit.js";
@@ -42,6 +43,16 @@ function wireChrome() {
     const cur = document.documentElement.dataset.theme;
     applyTheme(cur === "dark" ? "light" : cur === "light" ? "auto" : "dark");
   };
+  // Display-timezone selector: populate, reflect the saved choice, and re-render
+  // the current view (all timestamps + the date picker follow it) on change.
+  const tzSel = document.getElementById("tz-select");
+  if (tzSel) {
+    tzSel.innerHTML = TZ_OPTIONS.map(
+      (o) => `<option value="${o.value}">${o.label}</option>`,
+    ).join("");
+    tzSel.value = getTz();
+    tzSel.onchange = () => { setTz(tzSel.value); refresh(); };
+  }
   document.getElementById("token-btn").onclick = openTokenModal;
   document.getElementById("token-save").onclick = () => {
     const v = document.getElementById("token-input").value.trim();

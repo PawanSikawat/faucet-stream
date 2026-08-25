@@ -25,8 +25,10 @@ no-section-label = false
 #                custom.css); a no-op on the landing page and short pages.
 # header-ui.js — Pydantic-style header: relocates mdBook's search into the bar as
 #                an always-visible "Search ⌘K" pill + a single light/dark toggle.
+# ask-ai.js    — "Ask AI" menu in the header: opens the current page in Claude /
+#                ChatGPT / Perplexity / Grok / Gemini with a prefilled prompt.
 additional-css = ["custom.css", "learn-toggle.css"]
-additional-js = ["learn-toggle.js", "page-toc.js", "header-ui.js", "fs-flow.js", "mermaid.min.js", "mermaid-init.js"]
+additional-js = ["learn-toggle.js", "page-toc.js", "header-ui.js", "ask-ai.js", "fs-flow.js", "mermaid.min.js", "mermaid-init.js"]
 
 [output.html.fold]
 enable = true

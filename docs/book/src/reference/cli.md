@@ -692,6 +692,9 @@ Promote a version up the channels as it earns trust, then `launch` it when it
 should become what unpinned callers get; `rollback` re-launches `previous`.
 `list` shows each template's status, live version, and build tip; `show` prints
 every version with the channels pointing at it plus the launch history.
+`faucet template show <id> --clean` instead prints **only** the pure template
+config — comments stripped, re-emitted as canonical YAML — so it pipes cleanly to
+a file (`… --clean > template.yaml`); `${param.…}` placeholders are preserved.
 `faucet template run` executes through the identical path as `faucet run`, so
 observability, lineage, notifications, the catalog, and SLA evaluation all behave
 the same. The stored body is verbatim — `${env:…}` / `${vault:…}` resolve at

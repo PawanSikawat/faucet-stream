@@ -1,6 +1,8 @@
 import { api, toast } from "../api.js";
 import { navigate } from "../router.js";
 import { escapeHtml } from "../utils.js";
+import { attachDatePicker } from "./date-picker.js";
+import { formatTs } from "../tz.js";
 
 const STATUSES = ["", "queued", "running", "completed", "failed", "cancelled"];
 
@@ -18,8 +20,8 @@ export async function renderRuns(container) {
       <div class="filters">
         <select id="f-status">${STATUSES.map((s) => `<option value="${s}">${s || "all statuses"}</option>`).join("")}</select>
         <input id="f-name" placeholder="name" />
-        <input id="f-since" type="datetime-local" />
-        <input id="f-until" type="datetime-local" />
+        <input id="f-since" class="date-input" type="text" readonly placeholder="from…" />
+        <input id="f-until" class="date-input" type="text" readonly placeholder="to…" />
         <button class="btn-ghost" id="f-apply">Apply</button>
         <button class="btn-ghost" id="f-refresh">↻</button>
       </div>
@@ -29,6 +31,8 @@ export async function renderRuns(container) {
 
   const list = container.querySelector("#runs-list");
   container.querySelector("#r-submit").onclick = () => navigate("#/submit");
+  attachDatePicker(container.querySelector("#f-since"));
+  attachDatePicker(container.querySelector("#f-until"));
 
   function query(reset) {
     if (reset) cursor = null;
@@ -66,8 +70,8 @@ export async function renderRuns(container) {
     filters = {
       status: container.querySelector("#f-status").value,
       name: container.querySelector("#f-name").value.trim(),
-      since: container.querySelector("#f-since").value,
-      until: container.querySelector("#f-until").value,
+      since: container.querySelector("#f-since").dataset.value || "",
+      until: container.querySelector("#f-until").dataset.value || "",
     };
     load(true);
   };
@@ -93,6 +97,5 @@ function row(r) {
 }
 
 export function fmtTime(s) {
-  if (!s) return "—";
-  try { return new Date(s).toLocaleString(); } catch { return "—"; }
+  return formatTs(s); // formats in the user's selected display timezone (default local)
 }

@@ -9,7 +9,7 @@
 //   • `stable` / `previous` / `newest` are derived; `dev`…`prod` are assignable
 import { api, toast } from "../api.js";
 import { navigate } from "../router.js";
-import { escapeHtml } from "../utils.js";
+import { escapeHtml, mdInline } from "../utils.js";
 import { fmtTime } from "./runs.js";
 
 const TEMPLATES_MISSING =
@@ -43,6 +43,19 @@ export async function renderTemplates(container) {
       <div class="filters" id="t-filters" hidden>
         <input id="t-search" type="search" autocomplete="off"
           placeholder="search templates by id or description…" />
+        <div class="tpl-status-filter" id="t-status-filter" role="group" aria-label="Filter by status">
+          <button type="button" class="tpl-chip is-on" data-status="launched">launched</button>
+          <button type="button" class="tpl-chip is-on" data-status="draft">draft</button>
+          <button type="button" class="tpl-chip" data-status="deprecated">deprecated</button>
+        </div>
+      </div>
+      <div class="tpl-list-head" id="t-list-head" hidden>
+        <span>status</span>
+        <button type="button" class="tpl-sort" data-sort="name">name<span class="tpl-sort-caret"></span></button>
+        <button type="button" class="tpl-sort tpl-col-r" data-sort="updated">last updated<span class="tpl-sort-caret"></span></button>
+        <span class="tpl-col-r">live</span>
+        <span class="tpl-col-r">newest</span>
+        <span class="tpl-col-r">params</span>
       </div>
       <div id="t-list" class="runs-list"></div>
     </div>`;
@@ -50,8 +63,39 @@ export async function renderTemplates(container) {
   const list = container.querySelector("#t-list");
   const registerHost = container.querySelector("#t-register");
   const filters = container.querySelector("#t-filters");
+  const listHead = container.querySelector("#t-list-head");
   const search = container.querySelector("#t-search");
   let all = [];
+
+  // Column sort — alphabetical by name is the default; clicking a sortable header
+  // sets the column and toggles asc/desc on repeat clicks. Status is a filter
+  // (below), not a sort column.
+  const sort = { col: "name", dir: 1 };
+  const sortKey = {
+    name: (t) => (t.id || "").toLowerCase(),
+    updated: (t) => new Date(t.created_at || 0).getTime() || 0,
+  };
+  listHead.querySelectorAll(".tpl-sort").forEach((btn) => {
+    btn.onclick = () => {
+      const col = btn.dataset.sort;
+      if (sort.col === col) sort.dir *= -1;
+      else { sort.col = col; sort.dir = 1; }
+      render();
+    };
+  });
+
+  // Status filter — launched + draft on by default; deprecated hidden until its
+  // chip is toggled on.
+  const statusFilter = new Set(["launched", "draft"]);
+  container.querySelectorAll("#t-status-filter .tpl-chip").forEach((chip) => {
+    chip.onclick = () => {
+      const s = chip.dataset.status;
+      if (statusFilter.has(s)) statusFilter.delete(s);
+      else statusFilter.add(s);
+      chip.classList.toggle("is-on", statusFilter.has(s));
+      render();
+    };
+  });
 
   container.querySelector("#t-new").onclick = () => {
     registerHost.hidden = !registerHost.hidden;
@@ -66,19 +110,41 @@ export async function renderTemplates(container) {
   // case-insensitive. The registry is small, so there's no server round-trip.
   function render() {
     const q = search.value.trim().toLowerCase();
-    const rows = q
-      ? all.filter(
-          (t) =>
-            (t.id || "").toLowerCase().includes(q) ||
-            (t.description || "").toLowerCase().includes(q),
-        )
-      : all;
+    const rows = all.filter((t) => {
+      const status = (t.state || {}).status || "draft";
+      if (!statusFilter.has(status)) return false;
+      if (q && !((t.id || "").toLowerCase().includes(q) || (t.description || "").toLowerCase().includes(q))) return false;
+      return true;
+    });
+    const key = sortKey[sort.col];
+    if (key) {
+      rows.sort((a, b) => {
+        const av = key(a), bv = key(b);
+        return (av < bv ? -1 : av > bv ? 1 : 0) * sort.dir;
+      });
+    }
+    updateSortCarets();
     list.innerHTML = "";
+    listHead.hidden = !rows.length; // only show the column header when rows are shown
     if (!rows.length) {
-      list.innerHTML = `<div class="empty">No templates match “${escapeHtml(search.value.trim())}”.</div>`;
+      const why = q
+        ? `No templates match “${escapeHtml(search.value.trim())}”.`
+        : "No templates match the selected status filter.";
+      list.innerHTML = `<div class="empty">${why}</div>`;
       return;
     }
     for (const t of rows) list.appendChild(listRow(t));
+  }
+
+  // Reflect the active sort on the header: ▲/▼ on the sorted column, a faint ↕
+  // hint on the other sortable columns.
+  function updateSortCarets() {
+    listHead.querySelectorAll(".tpl-sort").forEach((btn) => {
+      const active = sort.col === btn.dataset.sort;
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-sort", active ? (sort.dir > 0 ? "ascending" : "descending") : "none");
+      btn.querySelector(".tpl-sort-caret").textContent = active ? (sort.dir > 0 ? " ▲" : " ▼") : " ↕";
+    });
   }
 
   async function load() {
@@ -88,6 +154,7 @@ export async function renderTemplates(container) {
       list.innerHTML = "";
       if (!all.length) {
         filters.hidden = true;
+        listHead.hidden = true;
         list.innerHTML = `<div class="empty">No templates registered yet — register one to give operators a parameterized, versioned pipeline to trigger.</div>`;
         return;
       }
@@ -95,6 +162,7 @@ export async function renderTemplates(container) {
       render(); // keeps any active search term across a refresh
     } catch (e) {
       filters.hidden = true;
+      listHead.hidden = true;
       if (templatesUnavailable(e)) list.innerHTML = `<div class="empty">${TEMPLATES_MISSING}</div>`;
       else toast(e.message, "error");
     }
@@ -116,9 +184,10 @@ function listRow(t) {
       <b class="mono">${escapeHtml(t.id)}</b>
       ${t.description ? `<span class="tpl-row-desc">${escapeHtml(t.description)}</span>` : ""}
     </span>
-    <span class="run-meta" title="live version — what an unpinned run uses">live ${live}</span>
-    <span class="run-meta" title="newest registered build">newest v${st.newest ?? t.version}</span>
-    <span class="run-meta">${params} param${params === 1 ? "" : "s"}</span>`;
+    <span class="run-meta" title="last registered / updated">${fmtTime(t.created_at)}</span>
+    <span class="run-meta" title="live version — what an unpinned run uses">${live}</span>
+    <span class="run-meta" title="newest registered build">v${st.newest ?? t.version}</span>
+    <span class="run-meta" title="declared params">${params}</span>`;
   return el;
 }
 
@@ -285,12 +354,13 @@ function renderVersions(host, id, st, d, reload) {
       <span class="tpl-vnum mono">v${v}</span>
       <span class="tpl-vchannels">${pills || `<span class="run-meta">no channel</span>`}</span>
       <select class="tpl-assign" title="point a channel at v${v}">
-        <option value="">assign channel…</option>
+        <option value="">assign channel</option>
         ${ASSIGNABLE.map((c) => `<option value="${c}">${c}</option>`).join("")}
       </select>
       <button class="btn-ghost tpl-launch" ${st.stable === v ? "disabled" : ""}
         title="${st.stable === v ? "already live" : `make v${v} live for unpinned runs`}">Launch</button>
       <button class="btn-ghost tpl-view">Config</button>
+      <button class="btn-ghost tpl-view-clean" title="comments stripped, canonical YAML">Clean</button>
       <button class="btn-danger tpl-del">Delete</button>
       <pre class="tpl-body" hidden></pre>`;
 
@@ -313,16 +383,28 @@ function renderVersions(host, id, st, d, reload) {
     };
 
     const body = row.querySelector(".tpl-body");
-    row.querySelector(".tpl-view").onclick = async () => {
-      if (!body.hidden) { body.hidden = true; return; }
-      if (!body.textContent) {
-        try {
-          const rec = await api(`/v1/templates/${encodeURIComponent(id)}?version=${v}`);
-          body.textContent = rec.body;
-        } catch (e) { toast(e.message, "error"); return; }
+    // Config = raw stored body; Clean = comments stripped, canonical YAML (the
+    // server renders it via ?clean=true, sharing the CLI's clean_config_yaml).
+    // Each toggles the shared <pre>; switching modes refetches so the two views
+    // never collide.
+    const showConfig = async (clean) => {
+      const mode = clean ? "clean" : "raw";
+      if (!body.hidden && body.dataset.mode === mode) {
+        body.hidden = true;
+        return;
       }
-      body.hidden = false;
+      try {
+        const q = clean ? `?version=${v}&clean=true` : `?version=${v}`;
+        const rec = await api(`/v1/templates/${encodeURIComponent(id)}${q}`);
+        body.textContent = rec.body;
+        body.dataset.mode = mode;
+        body.hidden = false;
+      } catch (e) {
+        toast(e.message, "error");
+      }
     };
+    row.querySelector(".tpl-view").onclick = () => showConfig(false);
+    row.querySelector(".tpl-view-clean").onclick = () => showConfig(true);
 
     row.querySelector(".tpl-del").onclick = async () => {
       if (!confirm(`Delete ${id} v${v}? Channels pointing at it are dropped too.`)) return;
@@ -379,12 +461,14 @@ function renderTrigger(host, id, st, d) {
         : `<input data-name="${escapeHtml(name)}" ${p.secret ? 'type="password"' : type === "int" || type === "float" ? 'type="number"' : ""}
              placeholder="${p.default !== undefined && p.default !== null ? escapeHtml(String(p.default)) : type}" />`;
     field.innerHTML = `
-      <span class="tpl-param-name mono">${escapeHtml(name)}
+      <span class="tpl-param-name mono">${escapeHtml(name)}</span>
+      <span class="tpl-param-tags">
         <span class="pill">${escapeHtml(type)}</span>
         ${p.required ? `<span class="pill pill-failed">required</span>` : ""}
-        ${p.secret ? `<span class="pill pill-cancelled">secret</span>` : ""}</span>
+        ${p.secret ? `<span class="pill pill-cancelled">secret</span>` : ""}
+      </span>
       ${input}
-      ${p.description ? `<span class="help">${escapeHtml(p.description)}</span>` : ""}`;
+      ${p.description ? `<span class="help">${mdInline(p.description)}</span>` : ""}`;
     paramHost.appendChild(field);
   }
 

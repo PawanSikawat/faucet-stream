@@ -2,6 +2,7 @@
 // teardown() (used to stop log streams / polling on navigation).
 const routes = [];
 let teardown = null;
+let rootContainer = null;
 
 export function route(pattern, render) {
   // pattern like "#/runs/:id" → regex with named groups
@@ -40,6 +41,12 @@ async function dispatch(container) {
 }
 
 export function startRouter(container) {
+  rootContainer = container;
   window.addEventListener("hashchange", () => dispatch(container));
   dispatch(container);
+}
+
+/** Re-render the current route in place (e.g. after a timezone-preference change). */
+export function refresh() {
+  if (rootContainer) dispatch(rootContainer);
 }

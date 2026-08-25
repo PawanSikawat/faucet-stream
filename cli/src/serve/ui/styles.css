@@ -313,6 +313,8 @@ button { font-family: inherit; }
   border-radius: var(--r);
   box-shadow: var(--shadow-1);
 }
+/* Fill the filter bar so the placeholder is never clipped. */
+.filters #t-search { flex: 1 1 auto; min-width: 0; }
 
 input, select, textarea {
   font-family: var(--font-sans);
@@ -330,6 +332,85 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 0 3px var(--brand-tint);
 }
 input::placeholder, textarea::placeholder { color: var(--ink-faint); }
+
+/* Timezone selector in the topbar — compact; inherits the themed chevron below. */
+.tz-select { font-size: 0.8rem; max-width: 190px; padding-top: 5px; padding-bottom: 5px; background: transparent; }
+
+/* Themed select: drop the native arrow for a custom chevron with real breathing
+   room on the right, so it stops crowding the border. */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='14'%20height='14'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%2351616b'%20stroke-width='2.2'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M6%209l6%206%206-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  background-size: 14px;
+  cursor: pointer;
+}
+[data-theme="dark"] select {
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='14'%20height='14'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%2393a7a3'%20stroke-width='2.2'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M6%209l6%206%206-6'/%3E%3C/svg%3E");
+}
+@media (prefers-color-scheme: dark) {
+  [data-theme="auto"] select {
+    background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='14'%20height='14'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%2393a7a3'%20stroke-width='2.2'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M6%209l6%206%206-6'/%3E%3C/svg%3E");
+  }
+}
+
+/* ============================================================================
+   date-time picker (themed replacement for the native datetime-local popup)
+   ========================================================================== */
+.date-input { cursor: pointer; min-width: 168px; }
+.dp-pop {
+  position: fixed;
+  z-index: 400;
+  width: 268px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.22);
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+.dp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.dp-title { font-weight: 650; }
+.dp-nav {
+  display: inline-grid; place-items: center;
+  width: 26px; height: 26px; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--surface-2);
+  color: var(--ink-dim); cursor: pointer; font-size: 1rem; line-height: 1;
+}
+.dp-nav:hover { color: var(--ink); border-color: var(--border-strong); }
+.dp-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.dp-wd { margin-bottom: 2px; }
+.dp-wdc { text-align: center; font-size: 0.68rem; color: var(--ink-faint); padding: 2px 0; }
+.dp-day {
+  aspect-ratio: 1 / 1; border: 0; background: transparent; cursor: pointer;
+  border-radius: 7px; color: var(--ink); font-size: 0.82rem;
+  font-family: var(--font-sans);
+  transition: background 0.12s, color 0.12s;
+}
+.dp-day:hover { background: var(--surface-sunken); }
+.dp-muted { color: var(--ink-faint); }
+.dp-today-c { box-shadow: inset 0 0 0 1px var(--brand-ring); }
+.dp-sel { background: var(--brand); color: #fff; font-weight: 600; }
+.dp-sel:hover { background: var(--brand-strong); }
+.dp-time { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.dp-time-lbl { font-size: 0.72rem; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.04em; margin-right: auto; }
+.dp-tz { text-transform: none; letter-spacing: 0; opacity: 0.85; }
+.dp-time input { width: 46px; text-align: center; padding: 5px 4px; }
+.dp-colon { color: var(--ink-dim); }
+.dp-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
+.dp-foot-r { display: flex; gap: 6px; }
+.dp-clear, .dp-today, .dp-done {
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--ink-dim);
+  border-radius: var(--r-sm); padding: 5px 11px; font-size: 0.8rem; cursor: pointer;
+  font-family: var(--font-sans);
+}
+.dp-clear:hover, .dp-today:hover { color: var(--ink); border-color: var(--border-strong); }
+.dp-done { background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 550; }
+.dp-done:hover { background: var(--brand-strong); border-color: var(--brand-strong); }
 
 /* ============================================================================
    runs list
@@ -434,6 +515,9 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 /* tables */
 .tbl {
   width: 100%;
+  /* Fixed layout + wrapping so a long description column can't force the table
+     wider than its card (was overflowing the boundary). */
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 0.84rem;
   background: var(--surface);
@@ -441,6 +525,10 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
   border-radius: var(--r);
   overflow: hidden;
 }
+.tbl th, .tbl td { overflow-wrap: anywhere; }
+.tbl th:nth-child(1), .tbl td:nth-child(1) { width: 26%; }
+.tbl th:nth-child(2), .tbl td:nth-child(2) { width: 14%; }
+.tbl th:nth-child(3), .tbl td:nth-child(3) { width: 12%; }
 .tbl th {
   text-align: left;
   font-size: 0.72rem;
@@ -581,7 +669,11 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
   font-family: var(--font-mono);
   font-size: 0.8rem;
   color: var(--ink-dim);
-  padding-top: 7px;
+  /* Center the label against the input's height so their text lines up, instead
+     of pinning it to the top while the input text sits centered. */
+  min-height: 34px;
+  display: flex;
+  align-items: center;
   word-break: break-word;
 }
 .sf-field input:not([type="checkbox"]),
@@ -600,11 +692,19 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 .sf-raw { width: 100%; min-height: 64px; font-family: var(--font-mono); font-size: 0.8rem; }
 
 .help { display: block; color: var(--ink-faint); font-size: 0.74rem; margin-top: 4px; line-height: 1.4; }
+/* Align the description under the input's text (input has a ~11px inset: 1px
+   border + 10px padding), so it doesn't hang to the left of the field. */
+.sf-field .help { padding-left: 11px; }
 
 /* ============================================================================
    schema explorer
    ========================================================================== */
 .schemas-page {
+  /* The schema explorer is a 2-column layout (list + wide reference table), so it
+     needs more room than the default 1080px reading width. Widen it (stays
+     centered, so it grows on both sides) to stop the type/description columns
+     from wrapping awkwardly. */
+  max-width: 1360px;
   display: grid;
   grid-template-columns: 260px 1fr;
   gap: 24px;
@@ -620,6 +720,20 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
   overflow: auto;
   padding-right: 4px;
 }
+.schema-note {
+  margin: 0 0 16px; padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--brand-ring);
+  font-size: 0.72rem; line-height: 1.5; color: var(--ink-faint);
+}
+.schema-note b { color: var(--ink-dim); font-weight: 600; }
+.schema-note code { font-size: 0.92em; }
+.schema-state-list { display: flex; flex-direction: column; gap: 6px; }
+.schema-state {
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.schema-state b { font-size: 0.82rem; color: var(--ink); }
+.schema-state span { display: block; margin-top: 2px; font-size: 0.72rem; line-height: 1.45; color: var(--ink-faint); }
 .schema-group { display: flex; flex-direction: column; gap: 3px; }
 .schema-item {
   appearance: none;
@@ -797,7 +911,45 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 /* ============================================================================
    pipeline templates (#444)
    ========================================================================== */
-.tpl-row { grid-template-columns: 120px 1fr auto auto auto; }
+/* status · name · updated · live · newest · params — fixed meta widths so the
+   column header (a separate grid) lines up with the rows below it. */
+.tpl-row { grid-template-columns: 120px 1fr 205px 56px 64px 60px; }
+.tpl-row .run-meta { white-space: nowrap; } /* keep the timestamp (incl. AM/PM) on one line */
+.tpl-list-head {
+  display: grid;
+  grid-template-columns: 120px 1fr 205px 56px 64px 60px;
+  align-items: center;
+  gap: 14px;
+  /* match .run-row content inset: 16px padding + 3px transparent left border */
+  padding: 2px 16px 6px;
+  border-left: 3px solid transparent;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.tpl-list-head .tpl-col-r { text-align: right; }
+/* Sortable column headers — look like the plain labels, but clickable. */
+.tpl-list-head .tpl-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.tpl-list-head .tpl-sort:hover { color: var(--ink); }
+.tpl-list-head .tpl-sort.is-active { color: var(--brand); }
+.tpl-list-head .tpl-sort.tpl-col-r { justify-content: flex-end; }
+.tpl-sort-caret { font-size: 0.9em; }
+.tpl-list-head .tpl-sort:not(.is-active) .tpl-sort-caret { opacity: 0.4; }
 .tpl-row-id { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .tpl-row-id b { font-weight: 600; font-size: 0.95rem; }
 .tpl-row-desc {
@@ -841,7 +993,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 .tpl-versions { display: flex; flex-direction: column; gap: 6px; }
 .tpl-version {
   display: grid;
-  grid-template-columns: 52px 1fr auto auto auto auto;
+  grid-template-columns: 52px 1fr auto auto auto auto auto;
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
@@ -882,11 +1034,29 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 }
 .tpl-params { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px 18px; }
 .tpl-param { display: flex; flex-direction: column; gap: 5px; }
-.tpl-param-name { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 0.82rem; }
+.tpl-param-name { font-size: 0.82rem; font-weight: 600; color: var(--ink); }
+/* Tags sit on their own row beneath the variable name, and are a touch smaller. */
+.tpl-param-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-bottom: 1px; }
+.tpl-param-tags .pill { font-size: 0.6rem; padding: 1px 7px; }
+
+/* Status filter chips on the templates list (multi-toggle; launched+draft on by default). */
+.tpl-status-filter { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.tpl-chip {
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--ink-faint);
+  border-radius: 999px; padding: 5px 12px; font-size: 0.78rem; cursor: pointer;
+  font-family: var(--font-sans); transition: color 0.14s, background 0.14s, border-color 0.14s;
+}
+.tpl-chip:hover { color: var(--ink); border-color: var(--border-strong); }
+.tpl-chip.is-on { background: var(--brand-tint); border-color: var(--brand-ring); color: var(--brand); font-weight: 550; }
 
 @media (max-width: 760px) {
   .tpl-version { grid-template-columns: 52px 1fr; row-gap: 8px; }
   .tpl-version .tpl-assign { max-width: none; }
+  /* The fixed column header can't line up once rows stack — hide it and let the
+     rows collapse to status + name with the meta wrapping below. */
+  .tpl-list-head { display: none; }
+  .tpl-row { grid-template-columns: auto 1fr; row-gap: 4px; }
+  .tpl-row .run-meta { text-align: left; }
 }
 
 /* ── Local outputs panel (#587/#588) ─────────────────────────────────────────

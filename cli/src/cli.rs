@@ -582,6 +582,11 @@ pub struct TemplateShowArgs {
     /// i.e. the launched version — `newest`, `previous`, `prod`, `dev`, …).
     #[arg(long, default_value = "stable")]
     pub version: String,
+    /// Print ONLY the pure template config — comments stripped, re-emitted as
+    /// canonical YAML — so it pipes cleanly to a file. Suppresses the metadata
+    /// report. Ignored with `--json`.
+    #[arg(long)]
+    pub clean: bool,
     #[command(flatten)]
     pub common: TemplateStoreArgs,
 }
