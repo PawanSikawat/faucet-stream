@@ -110,9 +110,12 @@ fn openapi_routes() -> BTreeSet<(String, String)> {
         if path.starts_with("/v1/triggers") {
             continue;
         }
-        // Likewise for the `catalog` feature's routes.
+        // Likewise for the `catalog` feature's routes — including the
+        // local-output retention endpoints (#587), which ride `catalog` (the
+        // ledger's console surface is the Datasets page) despite not living
+        // under the `/v1/catalog` prefix.
         #[cfg(not(feature = "catalog"))]
-        if path.starts_with("/v1/catalog") {
+        if path.starts_with("/v1/catalog") || path.starts_with("/v1/local-outputs") {
             continue;
         }
         // …and the `templates` feature's routes (#444).
