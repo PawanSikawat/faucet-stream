@@ -14,18 +14,18 @@
     '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
 
   var PROVIDERS = [
-    { id: "claude",     label: "Claude",     url: "https://claude.ai/new",            param: "q",  color: "#d97757" },
-    { id: "chatgpt",    label: "ChatGPT",    url: "https://chatgpt.com/",             param: "q",  color: "#10a37f" },
-    { id: "perplexity", label: "Perplexity", url: "https://www.perplexity.ai/search", param: "q",  color: "#20b8cd" },
-    { id: "grok",       label: "Grok",       url: "https://grok.com/",                param: "q",  color: "#888888" },
-    { id: "gemini",     label: "Gemini",     url: "https://gemini.google.com/app",    param: null, color: "#4285f4" },
+    { id: "claude",     label: "Claude",     url: "https://claude.ai/new",            param: "q",  icon: '<svg viewBox="0 0 24 24" fill="none" stroke="#d97757" stroke-width="2" stroke-linecap="round"><path d="M12 2.5v3.5M12 18v3.5M2.5 12H6M18 12h3.5M5.2 5.2l2.5 2.5M16.3 16.3l2.5 2.5M18.8 5.2l-2.5 2.5M7.7 16.3l-2.5 2.5"/></svg>' },
+    { id: "chatgpt",    label: "ChatGPT",    url: "https://chatgpt.com/",             param: "q",  icon: '<svg viewBox="0 0 24 24" fill="none" stroke="#10a37f" stroke-width="1.5"><g transform="translate(12 12)"><ellipse rx="3" ry="7"/><ellipse rx="3" ry="7" transform="rotate(60)"/><ellipse rx="3" ry="7" transform="rotate(120)"/></g></svg>' },
+    { id: "perplexity", label: "Perplexity", url: "https://www.perplexity.ai/search", param: "q",  icon: '<svg viewBox="0 0 24 24" fill="none" stroke="#20b8cd" stroke-width="1.7" stroke-linejoin="round"><path d="M12 3.2l7.3 4.4v8.8L12 20.8l-7.3-4.4V7.6L12 3.2z"/><path d="M12 3.2v17.6"/></svg>' },
+    { id: "grok",       label: "Grok",       url: "https://grok.com/",                param: "q",  icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6.5 18L16 6M11 18l6.5-8.5"/></svg>' },
+    { id: "gemini",     label: "Gemini",     url: "https://gemini.google.com/app",    param: null, icon: '<svg viewBox="0 0 24 24" fill="#4285f4"><path d="M12 2l2.1 7.9L22 12l-7.9 2.1L12 22l-2.1-7.9L2 12l7.9-2.1z"/></svg>' },
   ];
 
   function injectStyle() {
     if (document.getElementById("fs-askai-style")) return;
     var css =
       ".fs-askai{position:relative;display:inline-flex}" +
-      ".fs-askai-btn{display:inline-flex;align-items:center;gap:.35rem;height:2rem;padding:0 .6rem;border-radius:7px;border:1px solid var(--theme-popup-border);background:transparent;color:var(--icons);font-size:.85rem;font-weight:500;cursor:pointer;font-family:inherit}" +
+      ".fs-askai-btn{display:inline-flex;align-items:center;gap:.45rem;height:2.4rem;padding:0 .9rem;border-radius:8px;border:1px solid var(--theme-popup-border);background:transparent;color:var(--icons);font-size:.95rem;font-weight:500;line-height:1;white-space:nowrap;cursor:pointer;font-family:inherit}" +
       ".fs-askai-btn:hover{color:var(--fg);background:var(--theme-hover)}" +
       ".fs-askai-btn .fs-askai-caret{opacity:.7}" +
       ".fs-askai[data-open='true'] .fs-askai-caret{transform:rotate(180deg)}" +
@@ -34,7 +34,8 @@
       ".fs-askai-head{margin:.2rem .5rem .3rem;font-size:.66rem;letter-spacing:.06em;text-transform:uppercase;opacity:.6}" +
       ".fs-askai-item{display:flex;align-items:center;gap:.55rem;padding:.5rem .5rem;border-radius:6px;font-size:.9rem;color:var(--fg);text-decoration:none}" +
       ".fs-askai-item:hover{background:var(--theme-hover)}" +
-      ".fs-askai-dot{width:.6rem;height:.6rem;border-radius:50%;flex:none}" +
+      ".fs-askai-ico{width:1.15em;height:1.15em;flex:none;display:inline-flex;align-items:center;justify-content:center;color:var(--fg)}" +
+      ".fs-askai-ico svg{width:100%;height:100%;display:block}" +
       ".fs-askai-foot{margin:.35rem .5rem .1rem;padding-top:.4rem;border-top:1px solid var(--theme-popup-border);font-size:.7rem;line-height:1.5;opacity:.6}" +
       "@media(max-width:700px){.fs-askai-label{display:none}.fs-askai-btn{padding:0 .5rem}}";
     var s = document.createElement("style");
@@ -100,10 +101,11 @@
       } else {
         a.href = p.url;
       }
-      var dot = document.createElement("span");
-      dot.className = "fs-askai-dot";
-      dot.style.background = p.color;
-      a.appendChild(dot);
+      var ico = document.createElement("span");
+      ico.className = "fs-askai-ico";
+      ico.setAttribute("aria-hidden", "true");
+      ico.innerHTML = p.icon;
+      a.appendChild(ico);
       a.appendChild(document.createTextNode(p.label));
       a.addEventListener("click", close);
       menu.appendChild(a);
