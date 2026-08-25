@@ -24,8 +24,8 @@
   function injectStyle() {
     if (document.getElementById("fs-askai-style")) return;
     var css =
-      ".fs-askai{position:relative;display:inline-flex}" +
-      ".fs-askai-btn{display:inline-flex;align-items:center;gap:.45rem;height:2.4rem;padding:0 .9rem;border-radius:8px;border:1px solid var(--theme-popup-border);background:transparent;color:var(--icons);font-size:.95rem;font-weight:500;line-height:1;white-space:nowrap;cursor:pointer;font-family:inherit}" +
+      ".fs-askai{position:relative;display:inline-flex;vertical-align:middle;align-items:center}" +
+      ".fs-askai-btn{display:inline-flex;align-items:center;gap:.45rem;height:2.4rem;padding:0 .9rem;border-radius:8px;border:1px solid var(--theme-popup-border);background:transparent;color:var(--icons);font-size:1.02rem;font-weight:500;line-height:1;white-space:nowrap;cursor:pointer;font-family:inherit}" +
       ".fs-askai-btn:hover{color:var(--fg);background:var(--theme-hover)}" +
       ".fs-askai-btn .fs-askai-caret{opacity:.7}" +
       ".fs-askai[data-open='true'] .fs-askai-caret{transform:rotate(180deg)}" +
