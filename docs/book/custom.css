@@ -107,16 +107,16 @@ kbd {
 
 /* ── Sidebar TOC: black text; the active item is a green pill with white text ─ */
 .sidebar .sidebar-scrollbox {
-  padding: 0.6rem 0.8rem;
+  padding: 0.8rem 1.05rem; /* more left/right breathing room so items don't hug the edge */
 }
 .chapter li.chapter-item {
-  margin: 0.04rem 0;
+  margin: 0.14rem 0; /* a touch more separation between items */
   line-height: 1.85; /* match the roomy rhythm mdBook gives nested sections */
 }
 .chapter li.chapter-item > a,
 .chapter li.chapter-item > div {
   border-radius: 6px;
-  padding: 0.3rem 0.5rem;
+  padding: 0.36rem 0.6rem;
   transition: color 0.13s ease;
 }
 .chapter li.chapter-item > a:hover {
