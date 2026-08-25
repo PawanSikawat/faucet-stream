@@ -259,14 +259,26 @@ the `catalog` feature.
   history record is untouched), or `{"all": true}`. Sending none or several is a
   `400` rather than a guess. Add `"dry_run": true` to see what would go.
 
+  A scope that ignores retention windows — `all`, and `older_than_days: 0`, which
+  matches every output — also needs `"confirm": true`, or it is refused with a
+  `400`. That is the same gate as the CLI's `--yes`, decided by the same
+  predicate, so a scripted caller cannot inherit the console's confirm dialog by
+  accident.
+
 `state` is `present` (on disk), `expired` (collected — the record is kept), or
 `external` (faucet wrote the file but did not create it).
 
 **A refusal is a `200`, not an error.** The report carries `deleted: 0` and a
 `skipped` reason: `pre_existing` (faucet did not create the file — never
-deleted, by any scope), `in_flight` (a run is still writing it; retried later),
-`not_on_disk` (already gone — a no-op, and the record is marked expired),
-`already_deleted`, or `delete_failed`. Only recorded paths are ever touched:
+deleted, by any scope), `in_flight` (the file may still be being written; retried
+later), `not_on_disk` (already gone — a no-op, and the record is marked expired),
+`already_deleted`, or `delete_failed`.
+
+`in_flight` covers two cases, because one is not enough: the output's ledger row
+names a run that is currently executing, **or** the file itself was touched
+within `--local-output-in-flight-grace-secs` (default 60). The second is what
+protects a *new* run rewriting a path the ledger still attributes to the previous
+run — a run id the ledger has not recorded yet. Only recorded paths are ever touched:
 never a glob, never a directory. Run history, catalog entries, and lineage are
 untouched.
 

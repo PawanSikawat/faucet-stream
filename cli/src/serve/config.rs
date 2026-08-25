@@ -98,6 +98,9 @@ pub struct ServeConfig {
     /// Datasets page / `faucet cleanup` still works. Overridable per pipeline via
     /// `local_outputs.retention_days`.
     pub local_output_retention_days: u32,
+    /// Never delete a local sink output touched within this window — the guard
+    /// against unlinking a file a live run is still writing (#587). `0` disables.
+    pub local_output_in_flight_grace: Duration,
     /// Run-ownership lease TTL for multi-instance orphan fencing (#146 H7).
     pub lease_ttl: Duration,
     pub probe_timeout: Duration,
@@ -264,6 +267,9 @@ impl ServeConfig {
             log_retention: Duration::from_secs(args.log_retention_secs),
             log_max_lines_per_run: args.log_max_lines_per_run,
             local_output_retention_days: args.local_output_retention_days,
+            local_output_in_flight_grace: Duration::from_secs(
+                args.local_output_in_flight_grace_secs,
+            ),
             lease_ttl: Duration::from_secs(args.lease_ttl_secs),
             probe_timeout: Duration::from_secs(args.probe_timeout_secs),
             env_file: args.env_file,
@@ -300,6 +306,7 @@ mod tests {
             log_retention_secs: 604_800,
             log_max_lines_per_run: 100_000,
             local_output_retention_days: 7,
+            local_output_in_flight_grace_secs: 60,
             lease_ttl_secs: 30,
             probe_timeout_secs: 10,
             env_file: None,

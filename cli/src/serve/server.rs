@@ -253,6 +253,7 @@ pub(crate) async fn local_output_gc_loop(
     shutdown: CancellationToken,
 ) {
     use crate::local_outputs::{SweepOptions, SweepScope, sweep};
+    let grace = state.local_output_in_flight_grace();
     let mut tick = tokio::time::interval(period);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     tick.tick().await; // consume the immediate first tick so nothing is swept at t=0
@@ -261,7 +262,8 @@ pub(crate) async fn local_output_gc_loop(
             _ = shutdown.cancelled() => break,
             _ = tick.tick() => {
                 let opts = SweepOptions::new(retention_days)
-                    .in_flight(state.registry().live_run_ids());
+                    .in_flight(state.registry().live_run_ids())
+                    .in_flight_grace(grace);
                 match sweep::run(state.history().as_ref(), &SweepScope::Expired, &opts).await {
                     Ok(_) => {}
                     // A store failure means the sweep does not know what it is

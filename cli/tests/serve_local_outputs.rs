@@ -55,6 +55,11 @@ fn serve_args(port: u16, auth_config: std::path::PathBuf) -> faucet_cli::cli::Se
         // Long window: these tests drive cleanup explicitly, so the background
         // sweeper must not race them by collecting a fresh file first.
         local_output_retention_days: 3650,
+        // …and no mtime grace: every file here is written microseconds before it
+        // is cleaned, so the real guard would (correctly) skip them all. The
+        // guard itself is covered by unit tests in `local_outputs::sweep`; what
+        // these tests exercise is the plumbing around it.
+        local_output_in_flight_grace_secs: 0,
         lease_ttl_secs: 30,
         probe_timeout_secs: 5,
         env_file: None,
@@ -338,7 +343,7 @@ async fn never_deletes_a_file_faucet_did_not_create() {
     let report: Value = client
         .post(format!("{base}/v1/local-outputs/cleanup"))
         .bearer_auth("admin-tok")
-        .json(&serde_json::json!({ "all": true }))
+        .json(&serde_json::json!({ "all": true, "confirm": true }))
         .send()
         .await
         .unwrap()
@@ -439,7 +444,7 @@ async fn bulk_cleanup_scopes_and_dry_run() {
     let report: Value = client
         .post(format!("{base}/v1/local-outputs/cleanup"))
         .bearer_auth("admin-tok")
-        .json(&serde_json::json!({ "all": true }))
+        .json(&serde_json::json!({ "all": true, "confirm": true }))
         .send()
         .await
         .unwrap()
@@ -452,6 +457,77 @@ async fn bulk_cleanup_scopes_and_dry_run() {
         dir.path().exists() && input.exists(),
         "clean-all removes recorded files only — never the directory or the input"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unconfirmed_unbounded_scope_is_refused() {
+    // The gate the CLI spells `--yes`, on the API path. A scripted caller must
+    // not inherit the console's confirm dialog by accident — and the two scopes
+    // that ignore retention windows (`all`, and a zero-day age which matches
+    // everything) go through the same predicate.
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.csv");
+    let output = dir.path().join("out.jsonl");
+    std::fs::write(&input, "id\n1\n").unwrap();
+    let port = free_port();
+    spawn_server(port, dir.path()).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+
+    run_pipeline(
+        &base,
+        &client,
+        &input.display().to_string(),
+        &output.display().to_string(),
+    )
+    .await;
+
+    for body in [
+        serde_json::json!({ "all": true }),
+        serde_json::json!({ "older_than_days": 0 }),
+    ] {
+        let resp = client
+            .post(format!("{base}/v1/local-outputs/cleanup"))
+            .bearer_auth("admin-tok")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 400, "{body} should be refused");
+        assert!(
+            output.exists(),
+            "nothing may be deleted by a refused request"
+        );
+    }
+
+    // A dry run needs no confirmation: it deletes nothing.
+    let report: Value = client
+        .post(format!("{base}/v1/local-outputs/cleanup"))
+        .bearer_auth("admin-tok")
+        .json(&serde_json::json!({ "all": true, "dry_run": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(report["dry_run"], true);
+    assert_eq!(report["deleted"], 1, "{report}");
+    assert!(output.exists());
+
+    // With the confirmation it proceeds.
+    let report: Value = client
+        .post(format!("{base}/v1/local-outputs/cleanup"))
+        .bearer_auth("admin-tok")
+        .json(&serde_json::json!({ "older_than_days": 0, "confirm": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(report["deleted"], 1, "{report}");
+    assert!(!output.exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -551,7 +627,7 @@ async fn a_viewer_can_look_but_not_delete() {
         client
             .post(format!("{base}/v1/local-outputs/cleanup"))
             .bearer_auth("viewer-tok")
-            .json(&serde_json::json!({ "all": true }))
+            .json(&serde_json::json!({ "all": true, "confirm": true }))
             .send()
             .await
             .unwrap()

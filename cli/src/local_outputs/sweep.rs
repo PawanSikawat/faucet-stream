@@ -2,12 +2,31 @@
 //! and the filesystem work that acts on that decision ([`run`]) (#587).
 //!
 //! Split deliberately. Every rule that decides whether a file may be deleted —
-//! the retention arithmetic, the `pre_existing` refusal, the in-flight guard —
-//! lives in the pure half, where it is exhaustively testable without a
-//! filesystem. The I/O half does only what it is told: `metadata`, `remove_file`,
-//! mark the row. There is no `read_dir`, no glob, and no `remove_dir_all`
-//! anywhere in this module, which is how the "never a directory wipe" guardrail
-//! is held structurally rather than by review.
+//! the retention arithmetic, the `pre_existing` refusal, the recorded-writer
+//! check — lives in the pure half, where it is exhaustively testable without a
+//! filesystem. The I/O half does only what it is told: `metadata`,
+//! `remove_file`, mark the row. There is no `read_dir`, no glob, and no
+//! `remove_dir_all` anywhere in this module, which is how the "never a directory
+//! wipe" guardrail is held structurally rather than by review.
+//!
+//! ## Not deleting a file someone is writing
+//!
+//! Two checks, because neither alone is enough:
+//!
+//! 1. **The recorded writer** — skip a row whose `run_id` is in flight
+//!    ([`select`], pure). Exact, but only covers the run the ledger already knows
+//!    about.
+//! 2. **The path's mtime** — skip a file touched within
+//!    [`SweepOptions::in_flight_grace`], checked immediately before the unlink.
+//!    This is the one that covers a *new* run rewriting a path the ledger still
+//!    attributes to the previous run, and `faucet cleanup` aimed at a live
+//!    server's store, where the writers live in another process.
+//!
+//! Together they bound the risk; they do not eliminate it. A writer that goes
+//! quiet for longer than the grace window between pages can still, rarely, have
+//! its file taken. Making that airtight needs a lock held by the writer for the
+//! file's whole life, which the sink API does not currently express — so the
+//! grace window is the honest guarantee, and it is configurable.
 
 use super::ledger::{
     LocalOutputFilter, LocalOutputRecord, SkipReason, SweepOutcome, SweepReport, SweepScope,
@@ -16,6 +35,11 @@ use super::metrics;
 use crate::serve::history::{HistoryError, RunHistory};
 use chrono::{DateTime, Utc};
 use std::collections::BTreeSet;
+use std::time::Duration;
+
+/// How recently a file must have been written to be treated as possibly still
+/// being written. See [`SweepOptions::in_flight_grace`].
+pub const DEFAULT_IN_FLIGHT_GRACE_SECS: u64 = 60;
 
 /// Inputs a sweep needs beyond the scope itself.
 #[derive(Debug, Clone)]
@@ -26,9 +50,33 @@ pub struct SweepOptions {
     pub dry_run: bool,
     /// Evaluation instant (injected so retention arithmetic is testable).
     pub now: DateTime<Utc>,
-    /// Run ids currently executing. An output last written by one of them is
-    /// skipped: a sweep must never delete a file out from under a live writer.
+    /// Run ids currently executing **on this instance**. An output whose ledger
+    /// row names one of them is skipped.
+    ///
+    /// Necessary but not sufficient — see [`Self::in_flight_grace`], which covers
+    /// what this cannot.
     pub in_flight: BTreeSet<String>,
+    /// Skip a file whose mtime is newer than this.
+    ///
+    /// The load-bearing half of the mid-write guard, because
+    /// [`in_flight`](Self::in_flight) alone has a hole: a ledger row's `run_id` is
+    /// the id of the run that *last finished* writing that path — recording
+    /// happens after an invocation completes. A **new** run rewriting the same
+    /// fixed path (jsonl / csv / single-file parquet) therefore is not named by
+    /// any row yet, so its file looks unowned, and if the row was already expired
+    /// by age the sweeper would `remove_file` it mid-write.
+    ///
+    /// Liveness of a *run* is the wrong invariant; liveness of the *path* is the
+    /// right one. So the final check before unlinking asks the filesystem: was
+    /// this file touched in the last `in_flight_grace`? That also covers the case
+    /// `in_flight` structurally cannot — `faucet cleanup` pointed at a live
+    /// server's store, where the runs are in another process entirely.
+    ///
+    /// A grace window is a bound, not a lock: a writer stalled longer than this
+    /// between pages is still (rarely) at risk. Set it above the longest expected
+    /// gap between a slow source's pages; `0` disables it, for an operator who
+    /// knows nothing is running.
+    pub in_flight_grace: Duration,
 }
 
 impl SweepOptions {
@@ -38,6 +86,7 @@ impl SweepOptions {
             dry_run: false,
             now: Utc::now(),
             in_flight: BTreeSet::new(),
+            in_flight_grace: Duration::from_secs(DEFAULT_IN_FLIGHT_GRACE_SECS),
         }
     }
 
@@ -53,6 +102,11 @@ impl SweepOptions {
 
     pub fn in_flight(mut self, runs: BTreeSet<String>) -> Self {
         self.in_flight = runs;
+        self
+    }
+
+    pub fn in_flight_grace(mut self, grace: Duration) -> Self {
+        self.in_flight_grace = grace;
         self
     }
 }
@@ -206,7 +260,18 @@ async fn apply(store: &dyn RunHistory, sel: Selection, opts: &SweepOptions) -> S
     // that is not "missing" (a permission problem) is not fatal: the delete is
     // still attempted and its own error is what gets reported.
     let bytes = match tokio::fs::metadata(rec.fs_path()).await {
-        Ok(meta) => meta.len(),
+        Ok(meta) => {
+            // Last gate before the unlink, and the only one that asks about the
+            // *path* rather than about a run: a file touched moments ago may have
+            // a writer holding it open right now — including a fresh run whose id
+            // is not in any ledger row yet. Deleting it would corrupt that run's
+            // output, so leave it and let the next pass take it.
+            if written_recently(&meta, opts) {
+                outcome.skipped = Some(SkipReason::InFlight);
+                return outcome;
+            }
+            meta.len()
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // Already gone — somebody's `rm`, or a moved workspace. Not an
             // error; the row is marked so the console stops offering a delete
@@ -250,6 +315,26 @@ async fn apply(store: &dyn RunHistory, sel: Selection, opts: &SweepOptions) -> S
         }
     }
     outcome
+}
+
+/// Whether `meta`'s mtime falls inside the in-flight grace window.
+///
+/// Conservative on every unknown: a platform that cannot report mtime, or a
+/// timestamp the clock cannot make sense of, counts as "recently written" — the
+/// answer that leaves the file alone.
+fn written_recently(meta: &std::fs::Metadata, opts: &SweepOptions) -> bool {
+    if opts.in_flight_grace.is_zero() {
+        return false;
+    }
+    let Ok(modified) = meta.modified() else {
+        return true;
+    };
+    match modified.elapsed() {
+        Ok(age) => age < opts.in_flight_grace,
+        // `elapsed` errors when mtime is in the future (clock skew, a copied
+        // tree). Treat that as fresh rather than assuming it is safe to delete.
+        Err(_) => true,
+    }
 }
 
 /// Mark a row's file gone. A ledger write failure is logged, not propagated: the
@@ -304,8 +389,13 @@ mod tests {
         LocalOutputRecord::new(&obs(path, at))
     }
 
+    /// Test options with the mtime grace disabled: these files are written
+    /// microseconds before the sweep, so the real grace window would (correctly)
+    /// skip them all. The grace itself is covered by its own tests below.
     fn opts() -> SweepOptions {
-        SweepOptions::new(7).at(ts(NOW))
+        SweepOptions::new(7)
+            .at(ts(NOW))
+            .in_flight_grace(Duration::ZERO)
     }
 
     // ── select(): scope ──────────────────────────────────────────────────────
@@ -626,6 +716,93 @@ mod tests {
         let report = run(&store, &SweepScope::All, &opts()).await.unwrap();
         assert_eq!((report.deleted, report.skipped), (0, 0));
         assert_eq!(report.scope, "all");
+    }
+
+    #[tokio::test]
+    async fn a_freshly_written_file_is_skipped_even_when_no_run_is_known() {
+        // The hole the run-id check cannot cover: a *new* run rewriting a path the
+        // ledger still attributes to the previous (finished) run. Nothing is in
+        // `in_flight`, the row is long expired — and the file must still survive,
+        // because it was just touched.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("being-written.jsonl");
+        std::fs::write(&path, b"partial").unwrap();
+        let store = store_with(&[obs(path.to_str().unwrap(), "2020-01-01T00:00:00Z")]).await;
+
+        let guarded = SweepOptions::new(7)
+            .at(Utc::now())
+            .in_flight_grace(Duration::from_secs(60));
+        let report = run(&store, &SweepScope::Expired, &guarded).await.unwrap();
+        assert_eq!(report.deleted, 0);
+        assert_eq!(report.skipped_for(SkipReason::InFlight), 1);
+        assert!(
+            path.exists(),
+            "a file written moments ago must not be unlinked"
+        );
+
+        // The row is left `present`, so the next pass retries it rather than
+        // pretending the file is gone.
+        let rows = store
+            .local_output_list(&LocalOutputFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(rows[0].state(), super::super::LocalOutputState::Present);
+    }
+
+    #[tokio::test]
+    async fn the_grace_applies_to_an_explicit_single_output_delete_too() {
+        // "Delete now" is a human action, but it is still a delete: if a writer
+        // may hold the file, refuse and say why rather than truncate it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fresh.jsonl");
+        std::fs::write(&path, b"x").unwrap();
+        let store = store_with(&[obs(path.to_str().unwrap(), NOW)]).await;
+        let id = crate::local_outputs::ledger::output_id(&path);
+
+        let guarded = SweepOptions::new(7)
+            .at(Utc::now())
+            .in_flight_grace(Duration::from_secs(60));
+        let report = run(&store, &SweepScope::Output(id), &guarded)
+            .await
+            .unwrap();
+        assert_eq!(report.skipped_for(SkipReason::InFlight), 1);
+        assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn an_aged_file_passes_the_grace_check() {
+        // The complement: once the file itself is older than the window, the guard
+        // must get out of the way — otherwise nothing would ever be collected.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.jsonl");
+        std::fs::write(&path, b"stale").unwrap();
+        let store = store_with(&[obs(path.to_str().unwrap(), "2026-08-01T00:00:00Z")]).await;
+
+        // A zero-length grace means "trust the mtime" — the same effect an
+        // operator gets by disabling the window when nothing is running.
+        let report = run(&store, &SweepScope::Expired, &opts()).await.unwrap();
+        assert_eq!(report.deleted, 1);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn written_recently_is_conservative_about_a_future_mtime() {
+        // Clock skew / a copied tree can date a file in the future. `elapsed()`
+        // errors there, and the safe reading is "fresh", never "safe to delete".
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        std::fs::write(&path, b"x").unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        let future = std::time::SystemTime::now() + Duration::from_secs(3600);
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(future))
+            .unwrap();
+        let refreshed = std::fs::metadata(&path).unwrap();
+        let guarded = SweepOptions::new(7).in_flight_grace(Duration::from_secs(60));
+        assert!(written_recently(&refreshed, &guarded));
+        // …and a zero grace short-circuits regardless.
+        assert!(!written_recently(&meta, &opts()));
     }
 
     #[tokio::test]

@@ -261,13 +261,25 @@ pub enum SweepScope {
 }
 
 impl SweepScope {
-    /// Whether this scope needs a confirmation step in the console / CLI.
+    /// Whether this scope needs an explicit human confirmation.
     ///
-    /// `All` deletes files that are still inside their retention window, so it
-    /// is never a bare one-click; the age-bounded scopes are what the operator
-    /// already asked for.
+    /// **The single definition of that gate**, called by every entry point (the
+    /// CLI's `--yes`, the HTTP body's `confirm`). It used to be re-derived per
+    /// surface, and the two promptly disagreed — which is how `--older-than-days
+    /// 0` slipped past the CLI gate and how the HTTP path had no gate at all.
+    ///
+    /// True when the scope can delete files that are still inside their retention
+    /// window:
+    ///
+    /// - [`All`](Self::All), by definition.
+    /// - [`OlderThanDays(0)`](Self::OlderThanDays) — a zero-day window matches
+    ///   *every* row, so it is `All` wearing a different name. A script computing
+    ///   the window and arriving at `0` must not delete everything unconfirmed.
+    ///
+    /// The other scopes are bounded by something the operator named explicitly (a
+    /// real age, one dataset, one run, one file), so they need no second ask.
     pub fn requires_confirmation(&self) -> bool {
-        matches!(self, Self::All)
+        matches!(self, Self::All | Self::OlderThanDays(0))
     }
 
     /// A short label for logs, metrics, and the audit trail.
@@ -295,8 +307,12 @@ pub enum SkipReason {
     /// The file is not on disk (a manual `rm`, or a moved workspace). Not an
     /// error — the row is marked expired and the sweep moves on.
     NotOnDisk,
-    /// A run is currently writing this output; sweeping it now would delete a
-    /// file mid-write. Retried on the next pass.
+    /// The file may still be being written — either its ledger row names a run
+    /// that is in flight, or the file itself was touched inside the in-flight
+    /// grace window. Deleting it now could truncate a live run's output, so it is
+    /// retried on the next pass. See [`SweepOptions::in_flight_grace`].
+    ///
+    /// [`SweepOptions::in_flight_grace`]: crate::local_outputs::SweepOptions::in_flight_grace
     InFlight,
     /// `remove_file` failed (permissions, a read-only mount).
     DeleteFailed,
@@ -566,6 +582,9 @@ mod tests {
     #[test]
     fn only_clean_all_requires_confirmation() {
         assert!(SweepScope::All.requires_confirmation());
+        // A zero-day window is `All` in disguise — it matches every row — so it
+        // must clear the same gate rather than sliding through as "an age".
+        assert!(SweepScope::OlderThanDays(0).requires_confirmation());
         assert!(!SweepScope::Expired.requires_confirmation());
         assert!(!SweepScope::OlderThanDays(3).requires_confirmation());
         assert!(!SweepScope::Output("x".into()).requires_confirmation());

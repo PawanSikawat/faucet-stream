@@ -335,7 +335,6 @@ pub struct Stmts {
     /// rather than a bare `ON CONFLICT DO UPDATE`.
     pub local_output_select: String,
     pub local_output_upsert: String,
-    pub local_output_select_all: String,
     pub local_output_mark_deleted: String,
     pub catalog_upsert_dataset: String,
     /// Every dataset body — filtering/ordering happens in shared pure code
@@ -407,6 +406,11 @@ pub struct Stmts {
     pub template_select_deprecation: String,
     /// Clear the deprecation marker. Param: id.
     pub template_delete_deprecation: String,
+    /// The dialect these statements were built for. Needed by the one query that
+    /// cannot be a fixed string: the local-output listing pushes its filter and
+    /// `LIMIT` into SQL (#587), so the placeholder style has to be known at call
+    /// time. See [`Stmts::local_output_query`].
+    pub dialect: Dialect,
 }
 
 impl Stmts {
@@ -414,6 +418,64 @@ impl Stmts {
         match dialect {
             Dialect::Postgres => Self::postgres(),
             Dialect::Sqlite => Self::sqlite(),
+        }
+    }
+
+    /// Build the local-output listing query for `filter`, returning the SQL and
+    /// the `dataset_id` / `pipeline` binds in order.
+    ///
+    /// Bounded on purpose. `faucet_local_outputs` is deliberately never purged
+    /// (rows outlive their files, kept as `expired`), so it only grows for the
+    /// life of a deployment. A `SELECT body FROM …` with no predicate would make
+    /// every console listing and every hourly sweep decode the whole table —
+    /// O(all-outputs-ever) memory on a long-lived `serve`. So the filter's three
+    /// clauses and the row cap go into SQL, where the indexes on
+    /// `last_written_at` / `dataset_id` can serve them.
+    ///
+    /// The clauses are exact mirrors of
+    /// [`ledger::matches`](crate::local_outputs::ledger::matches) — equality and
+    /// `IS NULL`, nothing interpretive — which is what makes pushing `LIMIT` down
+    /// safe: SQL cannot return a row the shared predicate would then drop, so the
+    /// cap can never under-fill a page. The predicate still runs afterwards as a
+    /// redundant check, and `local_output_backends_agree` pins the two together.
+    pub fn local_output_query(
+        &self,
+        filter: &crate::local_outputs::LocalOutputFilter,
+    ) -> (String, Vec<String>) {
+        let mut sql = String::from("SELECT body FROM faucet_local_outputs");
+        let mut binds: Vec<String> = Vec::new();
+        let mut clauses: Vec<String> = Vec::new();
+        if !filter.include_deleted {
+            // The big win: expired rows accumulate forever and every bulk scope
+            // ignores them, so they must not be read at all.
+            clauses.push("deleted_at IS NULL".to_string());
+        }
+        if let Some(dataset_id) = &filter.dataset_id {
+            binds.push(dataset_id.clone());
+            clauses.push(format!("dataset_id={}", self.placeholder(binds.len())));
+        }
+        if let Some(pipeline) = &filter.pipeline {
+            binds.push(pipeline.clone());
+            clauses.push(format!("pipeline={}", self.placeholder(binds.len())));
+        }
+        if !clauses.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&clauses.join(" AND "));
+        }
+        // `path` breaks ties so a limited page is identical on both backends —
+        // `last_written_at` alone leaves tie order engine-defined.
+        sql.push_str(" ORDER BY last_written_at DESC, path ASC");
+        if filter.limit > 0 {
+            sql.push_str(&format!(" LIMIT {}", filter.limit));
+        }
+        (sql, binds)
+    }
+
+    /// The dialect's positional placeholder for the `n`-th (1-based) bind.
+    fn placeholder(&self, n: usize) -> String {
+        match self.dialect {
+            Dialect::Postgres => format!("${n}"),
+            Dialect::Sqlite => "?".to_string(),
         }
     }
 
@@ -612,9 +674,6 @@ impl Stmts {
                 last_written_at=excluded.last_written_at, deleted_at=excluded.deleted_at, \
                 body=excluded.body"
                 .into(),
-            local_output_select_all: "SELECT body FROM faucet_local_outputs \
-                ORDER BY last_written_at DESC"
-                .into(),
             local_output_mark_deleted: "UPDATE faucet_local_outputs \
                 SET deleted_at=$2, body=$3 WHERE id=$1"
                 .into(),
@@ -711,6 +770,7 @@ impl Stmts {
                 .into(),
             template_delete_deprecation: "DELETE FROM faucet_template_deprecations WHERE id=$1"
                 .into(),
+            dialect: Dialect::Postgres,
         }
     }
 
@@ -901,9 +961,6 @@ impl Stmts {
                 last_written_at=excluded.last_written_at, deleted_at=excluded.deleted_at, \
                 body=excluded.body"
                 .into(),
-            local_output_select_all: "SELECT body FROM faucet_local_outputs \
-                ORDER BY last_written_at DESC"
-                .into(),
             local_output_mark_deleted: "UPDATE faucet_local_outputs \
                 SET deleted_at=?2, body=?3 WHERE id=?1"
                 .into(),
@@ -999,6 +1056,7 @@ impl Stmts {
                 .into(),
             template_delete_deprecation: "DELETE FROM faucet_template_deprecations WHERE id=?"
                 .into(),
+            dialect: Dialect::Sqlite,
         }
     }
 }
@@ -2650,10 +2708,14 @@ macro_rules! impl_sql_history {
                 use $crate::serve::history::HistoryError;
                 use $crate::serve::history::sql;
                 let backend = |e: sqlx::Error| HistoryError::Backend(e.to_string());
-                let rows = sqlx::query(&self.stmts.local_output_select_all)
-                    .fetch_all(&self.pool)
-                    .await
-                    .map_err(backend)?;
+                // Filter + cap pushed into SQL so a never-purged table cannot
+                // grow into an unbounded scan; see `Stmts::local_output_query`.
+                let (sql, binds) = self.stmts.local_output_query(filter);
+                let mut query = sqlx::query(&sql);
+                for bind in &binds {
+                    query = query.bind(bind);
+                }
+                let rows = query.fetch_all(&self.pool).await.map_err(backend)?;
                 // Filtering runs through the shared pure predicate rather than in
                 // SQL, so this backend and the in-memory one cannot drift on what
                 // the filter means (the same reason `catalog_list_datasets` does).
@@ -2662,11 +2724,11 @@ macro_rules! impl_sql_history {
                     let body: String = row.try_get("body").map_err(backend)?;
                     let rec: $crate::local_outputs::LocalOutputRecord =
                         sql::decode_json(&body, "local output")?;
+                    // Redundant by construction (the WHERE mirrors it exactly),
+                    // kept so the shared predicate stays the single definition of
+                    // what the filter means.
                     if $crate::local_outputs::ledger::matches(&rec, filter) {
                         out.push(rec);
-                        if filter.limit > 0 && out.len() >= filter.limit {
-                            break;
-                        }
                     }
                 }
                 Ok(out)

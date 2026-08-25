@@ -855,6 +855,7 @@ Selected flags (`faucet serve --help` for the full list):
 | `--body-limit-bytes` / `--shutdown-grace-secs` / `--retain-terminal-runs-secs` / `--idempotency-retention-secs` | Tuning knobs. |
 | `--no-ui` | Disable the embedded web console at runtime even when the binary was built with `serve-ui`. |
 | `--local-output-retention-days <n>` | How long the local files a run's sinks wrote (jsonl/csv/parquet) are kept before the retention GC reclaims them (default `7`; env `FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS`). `0` disables the automatic sweep. See [Local output retention](#local-output-retention). |
+| `--local-output-in-flight-grace-secs <n>` | Never delete a local output touched within this many seconds — the guard against unlinking a file a run is still writing (default `60`; env `FAUCET_LOCAL_SINK_OUTPUT_IN_FLIGHT_GRACE_SECS`). Raise it above the longest expected gap between a slow source's pages; `0` disables it. |
 | `--triggers <path>` | Path to a YAML triggers file that defines event-driven watchers (object-arrival / webhook / queue-depth). Requires the `triggers` Cargo feature. See [Triggers reference](./triggers.md). |
 | `--callback-allow-host <host>` | Restrict per-run completion callbacks to these hosts. Repeatable. Unset = any host except link-local / cloud-metadata addresses, which are always refused unless named here. See [Completion callbacks](./http-api.md#completion-callbacks). |
 
@@ -904,6 +905,14 @@ it to survive a restart.
 its own sink outputs. Never a glob, never a directory — not even for "clean all"
 — and never a file faucet *wrote to* but did not *create*. Point a sink at an
 existing export and its record is marked `external`, which no scope will delete.
+
+**Nor a file that is still being written.** Two checks guard that: an output whose
+run is currently executing is skipped, and — because a *new* run rewriting a path
+the ledger still attributes to the previous run has an id no row names yet — so is
+any file touched within `--local-output-in-flight-grace-secs` (default 60). That
+is a bound rather than a lock: a writer that goes quiet for longer than the grace
+between pages can still, rarely, have its file taken, so raise the window for slow
+sources.
 
 Run history, catalog entries, and lineage are never touched. Data artifacts are
 disposable; the record of what ran is durable — so a cleaned output keeps its
@@ -1077,6 +1086,7 @@ faucet cleanup --output 9f2b1c4d5e6f7a8b    # one file
 faucet cleanup --all --dry-run          # what "clean all" would remove
 faucet cleanup --all --yes              # every tracked output (confirmed)
 faucet cleanup --store sqlite:./faucet-catalog.db --json
+faucet cleanup --all --yes --in-flight-grace-secs 0   # nothing is running
 ```
 
 The ledger of outputs lives in the config's `catalog:` store — the same one
@@ -1091,8 +1101,15 @@ catalog entries, and lineage are untouched: a cleaned output keeps its record,
 marked `expired`.
 
 `--all` deletes files that are still inside their retention window, so it
-requires `--yes` (or `--dry-run`). Every scope reports what it skipped and why —
-a "0 files" answer always comes with the reason.
+requires `--yes` (or `--dry-run`) — as does `--older-than-days 0`, which matches
+every output and is `--all` under another name. Every scope reports what it
+skipped and why — a "0 files" answer always comes with the reason.
+
+**Files being written are skipped.** An output touched within
+`--in-flight-grace-secs` (default 60) is left alone and reported as `in_flight`,
+because a writer may still hold it — including a `faucet serve` in another
+process sharing this store, whose runs this command cannot see. Pass
+`--in-flight-grace-secs 0` when you know nothing is running.
 
 ## `run --output`
 

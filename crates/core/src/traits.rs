@@ -662,7 +662,7 @@ pub trait Sink: Send + Sync {
     /// from: it may only remove files faucet recorded here, never a glob or a
     /// directory. A sink that writes local files (jsonl, csv, parquet to a local
     /// destination) accumulates a
-    /// [`LocalOutputLog`](crate::local_output::LocalOutputLog) as it opens them
+    /// [`LocalOutputLog`](crate::local_outputs::LocalOutputLog) as it opens them
     /// and returns its snapshot; every other sink keeps the empty default, which
     /// simply means "nothing local to collect".
     ///
@@ -670,7 +670,7 @@ pub trait Sink: Send + Sync {
     ///
     /// 1. **Every file, individually named.** A rolling parquet sink returns one
     ///    entry per UUID-named part — the directory itself is not an output.
-    /// 2. **[`LocalOutput::pre_existing`](crate::local_output::LocalOutput) is
+    /// 2. **[`LocalOutput::pre_existing`](crate::local_outputs::LocalOutput) is
     ///    honest**, captured before the first open. A file faucet appended to but
     ///    did not create is never collected.
     ///
@@ -679,7 +679,7 @@ pub trait Sink: Send + Sync {
     /// to their inner sink, exactly as they do
     /// [`dataset_uri`](Self::dataset_uri) — a decorator that returns the default
     /// hides its inner sink's files from the GC and they are never reclaimed.
-    async fn local_outputs(&self) -> Vec<crate::local_output::LocalOutput> {
+    async fn local_outputs(&self) -> Vec<crate::local_outputs::LocalOutput> {
         Vec::new()
     }
 

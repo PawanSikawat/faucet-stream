@@ -368,7 +368,7 @@ impl<S: Sink + ?Sized> Sink for CleanupTracker<'_, S> {
     fn dataset_uri(&self) -> String {
         self.inner.dataset_uri()
     }
-    async fn local_outputs(&self) -> Vec<crate::local_output::LocalOutput> {
+    async fn local_outputs(&self) -> Vec<crate::local_outputs::LocalOutput> {
         self.inner.local_outputs().await
     }
     fn is_overwrite(&self) -> bool {

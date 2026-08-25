@@ -33,16 +33,24 @@ pub async fn run(args: CleanupArgs) -> CliResult<()> {
     // "Delete everything, including files still inside their retention window"
     // is not something to do because a flag was mistyped in a script.
     if scope.requires_confirmation() && !args.yes && !args.dry_run {
-        return Err(CliError::Config(
-            "cleanup --all deletes every tracked local output, including ones still \
-             inside their retention window. Re-run with --yes to confirm, or with \
-             --dry-run to see what it would remove."
-                .to_string(),
-        ));
+        return Err(CliError::Config(format!(
+            "cleanup: scope `{}` deletes tracked local outputs that are still inside \
+             their retention window (`--older-than-days 0` matches every output, same \
+             as `--all`). Re-run with --yes to confirm, or with --dry-run to see what \
+             it would remove.",
+            scope.label()
+        )));
     }
 
     let (store, retention_days) = connect(&args).await?;
-    let opts = SweepOptions::new(retention_days).dry_run(args.dry_run);
+    // `in_flight` stays empty here — this process runs no pipelines, and a
+    // `--store` pointed at a live server's ledger cannot see that server's runs
+    // at all. The mtime grace is what protects those files: it asks the
+    // filesystem whether the path was touched recently rather than asking about
+    // runs it cannot enumerate.
+    let opts = SweepOptions::new(retention_days)
+        .dry_run(args.dry_run)
+        .in_flight_grace(std::time::Duration::from_secs(args.in_flight_grace_secs));
     let report = sweep::run(store.as_ref(), &scope, &opts)
         .await
         .map_err(|e| CliError::Internal(format!("local-output ledger: {e}")))?;
@@ -220,6 +228,7 @@ mod tests {
             dataset: None,
             run: None,
             output: None,
+            in_flight_grace_secs: 60,
             all: false,
             retention_days: None,
             dry_run: false,
@@ -260,6 +269,28 @@ mod tests {
         let mut a = args();
         a.all = true;
         assert_eq!(resolve_scope(&a).unwrap(), SweepScope::All);
+    }
+
+    #[tokio::test]
+    async fn a_zero_day_window_needs_the_same_confirmation_as_clean_all() {
+        // `--older-than-days 0` matches every row, so a script that computes the
+        // window and lands on 0 must not delete everything unconfirmed.
+        let mut a = args();
+        a.older_than_days = Some(0);
+        let err = run(a).await.unwrap_err();
+        match err {
+            CliError::Config(m) => assert!(m.contains("--yes"), "{m}"),
+            other => panic!("expected a Config error, got {other:?}"),
+        }
+
+        // A real window is the operator's own bound and needs no second ask.
+        let mut a = args();
+        a.older_than_days = Some(1);
+        let err = run(a).await.unwrap_err();
+        assert!(
+            !matches!(&err, CliError::Config(m) if m.contains("--yes")),
+            "should have passed the confirmation gate, got {err:?}"
+        );
     }
 
     #[tokio::test]

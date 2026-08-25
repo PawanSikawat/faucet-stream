@@ -318,6 +318,7 @@ async fn server_with_sqlite_history_persists_runs() {
         log_retention_secs: 604_800,
         log_max_lines_per_run: 100_000,
         local_output_retention_days: 7,
+        local_output_in_flight_grace_secs: 60,
         lease_ttl_secs: 30,
         probe_timeout_secs: 5,
         env_file: None,
@@ -898,4 +899,152 @@ mod templates {
             "one row per id, at its newest version"
         );
     }
+}
+
+/// The local-output ledger's two backends must answer a given filter
+/// identically — same rows, same order, same truncation (#587).
+///
+/// This is the test `Stmts::local_output_query` points at. The SQL backend pushes
+/// the filter and `LIMIT` down (so a never-purged table cannot become an
+/// unbounded scan) while the memory backend applies the shared pure predicate in
+/// Rust; that divergence in *mechanism* is exactly what needs pinning. It also
+/// covers the tie-break: several rows sharing a `last_written_at` used to order
+/// arbitrarily under SQL, so a limited page could differ between backends.
+#[tokio::test]
+async fn local_output_backends_agree() {
+    use faucet_cli::local_outputs::{LocalOutputFilter, LocalOutputObservation};
+    use faucet_cli::serve::history::memory::MemoryHistory;
+    use std::path::PathBuf;
+
+    let dir = tempfile::tempdir().unwrap();
+    let sql = store(&dir, "ledger.db").await;
+    let mem = MemoryHistory::new(Duration::from_secs(3600));
+
+    let at = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&Utc)
+    };
+    let obs = |path: &str, dataset: &str, pipeline: &str, when: &str| LocalOutputObservation {
+        path: PathBuf::from(path),
+        dataset_uri: format!("file://{path}"),
+        dataset_id: dataset.to_string(),
+        kind: "jsonl".into(),
+        pipeline: pipeline.to_string(),
+        row: "default".into(),
+        run_id: "run-1".into(),
+        pre_existing: false,
+        retention_days: None,
+        observed_at: at(when),
+    };
+
+    // Deliberately includes three rows sharing one `last_written_at` — the tie
+    // case — plus two pipelines, two datasets, and one collected row.
+    let rows = [
+        obs("/tmp/c.jsonl", "ds1", "alpha", "2026-08-03T00:00:00Z"),
+        obs("/tmp/a.jsonl", "ds1", "alpha", "2026-08-02T00:00:00Z"),
+        obs("/tmp/b.jsonl", "ds2", "beta", "2026-08-02T00:00:00Z"),
+        obs("/tmp/d.jsonl", "ds2", "beta", "2026-08-02T00:00:00Z"),
+        obs("/tmp/e.jsonl", "ds1", "beta", "2026-08-01T00:00:00Z"),
+    ];
+    for o in &rows {
+        sql.local_output_record(o).await.unwrap();
+        mem.local_output_record(o).await.unwrap();
+    }
+    // Collect one so `include_deleted` has something to hide/show.
+    let gone = faucet_cli::local_outputs::ledger::output_id(&PathBuf::from("/tmp/e.jsonl"));
+    for store in [&sql as &dyn RunHistory, &mem as &dyn RunHistory] {
+        assert!(
+            store
+                .local_output_mark_deleted(&gone, at("2026-08-09T00:00:00Z"), 11)
+                .await
+                .unwrap()
+        );
+    }
+
+    let filters = [
+        LocalOutputFilter::default(),
+        LocalOutputFilter {
+            include_deleted: true,
+            ..Default::default()
+        },
+        LocalOutputFilter {
+            dataset_id: Some("ds1".into()),
+            ..Default::default()
+        },
+        LocalOutputFilter {
+            pipeline: Some("beta".into()),
+            ..Default::default()
+        },
+        LocalOutputFilter {
+            dataset_id: Some("ds2".into()),
+            pipeline: Some("beta".into()),
+            ..Default::default()
+        },
+        // Limits that cut *through* the tie group, where an unstable order shows.
+        LocalOutputFilter {
+            limit: 1,
+            ..Default::default()
+        },
+        LocalOutputFilter {
+            limit: 2,
+            ..Default::default()
+        },
+        LocalOutputFilter {
+            limit: 3,
+            ..Default::default()
+        },
+        LocalOutputFilter {
+            include_deleted: true,
+            limit: 4,
+            ..Default::default()
+        },
+        LocalOutputFilter {
+            dataset_id: Some("nope".into()),
+            ..Default::default()
+        },
+    ];
+
+    for (i, filter) in filters.iter().enumerate() {
+        let from_sql: Vec<String> = sql
+            .local_output_list(filter)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.path)
+            .collect();
+        let from_mem: Vec<String> = mem
+            .local_output_list(filter)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.path)
+            .collect();
+        assert_eq!(
+            from_sql, from_mem,
+            "backends disagree on filter #{i}: {filter:?}"
+        );
+        if filter.limit > 0 {
+            assert!(
+                from_sql.len() <= filter.limit,
+                "filter #{i} returned more than its limit"
+            );
+        }
+    }
+
+    // A limit must not under-fill: pushing LIMIT into SQL is only safe because
+    // the WHERE mirrors the pure predicate exactly.
+    let page = sql
+        .local_output_list(&LocalOutputFilter {
+            limit: 3,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.len(), 3, "a full page must come back full");
+
+    // And `get` agrees with `list` about a collected row.
+    let expired = sql.local_output_get(&gone).await.unwrap().unwrap();
+    assert!(expired.deleted_at.is_some());
+    assert_eq!(expired.deleted_bytes, Some(11));
 }

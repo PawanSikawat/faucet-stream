@@ -81,6 +81,12 @@ const LOCAL_OUTPUTS_MISSING =
   "Local-output retention is not available on this server " +
   "(faucet was built without the `catalog` feature).";
 
+/** The confirm text for a scope that ignores retention windows. */
+const CLEAN_ALL_PROMPT = (what) =>
+  `Delete ${what}, including files still inside their retention window?\n\n` +
+  "Only files faucet created are deleted. Run history, catalog entries, " +
+  "and lineage are not touched.";
+
 /** State labels + one-line meanings, so the UI never shows a bare word. */
 const STATE_HINT = {
   present: "on disk",
@@ -168,24 +174,24 @@ export async function renderLocalOutputs(host, scope = {}) {
         toast("Enter a number of days (0 or more).", "error");
         return;
       }
-      // No confirm: the operator typed the window, which *is* the intent.
-      cleanup({ older_than_days: days }, `purged outputs older than ${days} day(s)`);
+      // The typed window *is* the intent, so no dialog — except for 0, which
+      // means "everything" and clears the same gate as "clean all".
+      if (days === 0 && !confirm(CLEAN_ALL_PROMPT("every tracked local output"))) return;
+      cleanup(
+        { older_than_days: days, confirm: days === 0 },
+        `purged outputs older than ${days} day(s)`,
+      );
     };
     body.querySelector("#lo-all").onclick = () => {
       // "Clean all" removes files that are still inside their retention window,
       // so it is never a bare one-click.
       const what = datasetId ? "this dataset's tracked outputs" : "every tracked local output";
-      if (
-        !confirm(
-          `Delete ${what}, including files still inside their retention window?\n\n` +
-            "Only files faucet created are deleted. Run history, catalog entries, " +
-            "and lineage are not touched.",
-        )
-      ) {
-        return;
-      }
+      if (!confirm(CLEAN_ALL_PROMPT(what))) return;
+      // `confirm: true` is what the server's own gate requires for a scope that
+      // can delete files still inside their retention window — the dialog above
+      // is what earns it. A scripted caller has to opt in deliberately.
       cleanup(
-        datasetId ? { dataset_id: datasetId } : { all: true },
+        datasetId ? { dataset_id: datasetId } : { all: true, confirm: true },
         "cleaned local outputs",
       );
     };

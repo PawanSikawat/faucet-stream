@@ -512,7 +512,7 @@ let schema = serde_json::to_value(schema_for!(MyConfig))?;
 | Module | Contents |
 |--------|----------|
 | `traits` | `Source` and `Sink` async traits; `RowOutcome` |
-| `local_output` | `LocalOutput`, `LocalOutputLog`, `probe_pre_existing` — the provenance a local-file sink records so faucet's retention GC deletes only files it created |
+| `local_outputs` | `LocalOutput`, `LocalOutputLog`, `probe_pre_existing` — the provenance a local-file sink records so faucet's retention GC deletes only files it created |
 | `auth` | `AuthProvider`, `Credential`, `AuthSpec`, `SharedAuthProvider` |
 | `pipeline` | `Pipeline`, `PipelineResult`, `StreamPage`, `run_stream`, batch-size constants |
 | `error` | `FaucetError` enum + `is_retriable` |

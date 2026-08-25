@@ -18,3 +18,6 @@
 {{- if and .Values.serve.enabled (lt (int .Values.serve.localOutputs.retentionDays) 0) -}}
 {{- fail (printf "serve.localOutputs.retentionDays must be 0 (never expire) or a positive number of days (got %v)." .Values.serve.localOutputs.retentionDays) -}}
 {{- end -}}
+{{- if and .Values.serve.enabled (lt (int .Values.serve.localOutputs.inFlightGraceSeconds) 0) -}}
+{{- fail (printf "serve.localOutputs.inFlightGraceSeconds must be 0 (disabled) or a positive number of seconds (got %v)." .Values.serve.localOutputs.inFlightGraceSeconds) -}}
+{{- end -}}

@@ -60,7 +60,7 @@ pub struct ParquetSink {
     /// (#587). Rollover means one run can create many UUID-named parts, and each
     /// is recorded individually — the GC deletes recorded files, never the
     /// directory holding them. Empty for an S3 destination (nothing local to
-    /// collect). See `faucet_core::local_output`.
+    /// collect). See `faucet_core::local_outputs`.
     outputs: faucet_core::LocalOutputLog,
 }
 

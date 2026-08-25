@@ -588,7 +588,9 @@ paths:
         Deletes recorded local output files in bulk. Exactly one scope must be
         given — `older_than_days`, `expired` (each output's own window),
         `dataset_id`, `run_id`, or `all` — and combining them is a `400` rather
-        than a guess. `all` includes outputs still inside their retention window, so a
+        than a guess. A scope that ignores retention windows (`all`, or
+        `older_than_days: 0`) additionally requires `confirm: true`, the same gate
+        the CLI spells `--yes`. `all` includes outputs still inside their retention window, so a
         client should confirm before sending it. Only files the ledger records as
         faucet's own sink outputs are ever deleted: never a glob, never a
         directory, and never a file faucet merely appended to. Requires the
@@ -624,6 +626,14 @@ paths:
                   type: boolean
                   default: false
                   description: Report what would be deleted without touching anything.
+                confirm:
+                  type: boolean
+                  default: false
+                  description: >
+                    Required for a scope that can delete outputs still inside their
+                    retention window — `all`, and `older_than_days: 0` (which
+                    matches everything). Without it such a request is a `400`.
+                    Ignored for the bounded scopes and for a dry run.
       responses:
         "200":
           description: The sweep report.
@@ -1434,7 +1444,9 @@ components:
           description: >
             Why the file was left alone. `pre_existing` = faucet did not create
             it; `not_on_disk` = already gone (a no-op, and the record is marked
-            expired); `in_flight` = a run is still writing it, retried later.
+            expired); `in_flight` = the file may still be being written — either
+            its run is executing, or the file was touched inside the server's
+            in-flight grace window — so it is retried later.
         error: { type: string, nullable: true, description: "Detail for a delete_failed outcome." }
     SweepReport:
       type: object

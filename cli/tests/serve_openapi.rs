@@ -176,6 +176,7 @@ async fn every_documented_route_is_wired_on_the_live_server() {
         log_retention_secs: 604_800,
         log_max_lines_per_run: 100_000,
         local_output_retention_days: 7,
+        local_output_in_flight_grace_secs: 60,
         lease_ttl_secs: 30,
         probe_timeout_secs: 5,
         env_file: None,

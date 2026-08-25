@@ -226,10 +226,17 @@ pub struct CleanupArgs {
     /// `local_outputs.retention_days` and the 7-day default. `0` = keep forever.
     #[arg(long)]
     pub retention_days: Option<u32>,
+    /// Never delete an output touched within this many seconds — the guard
+    /// against unlinking a file a run is still writing (including one in another
+    /// process, e.g. a live `faucet serve` sharing this store). `0` disables it
+    /// when you know nothing is running. Default: 60.
+    #[arg(long, default_value_t = 60)]
+    pub in_flight_grace_secs: u64,
     /// Report what would be deleted without touching anything.
     #[arg(long)]
     pub dry_run: bool,
-    /// Confirm a destructive `--all` sweep.
+    /// Confirm a sweep that ignores retention windows (`--all`, or
+    /// `--older-than-days 0`).
     #[arg(long)]
     pub yes: bool,
 }
@@ -996,6 +1003,16 @@ pub struct ServeArgs {
         default_value_t = 7
     )]
     pub local_output_retention_days: u32,
+    /// Never delete a local sink output touched within this many seconds (#587) —
+    /// the guard against unlinking a file a run is still writing, including a run
+    /// the ledger has not recorded yet. Raise it above the longest expected gap
+    /// between a slow source's pages; `0` disables it. Default: 60.
+    #[arg(
+        long,
+        env = "FAUCET_LOCAL_SINK_OUTPUT_IN_FLIGHT_GRACE_SECS",
+        default_value_t = 60
+    )]
+    pub local_output_in_flight_grace_secs: u64,
     /// Run-ownership lease TTL in seconds (multi-instance orphan fencing). A run
     /// is owned by the instance executing it and its lease is heartbeated at
     /// ~⅓ of this interval; only a run whose lease has expired (owner presumed

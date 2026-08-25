@@ -43,8 +43,17 @@
 //! - [`spec`] — the top-level `local_outputs:` config block.
 //! - [`sweep`] — the engine: pure selection ([`sweep::select`]) separated from
 //!   the I/O that acts on it ([`sweep::run`]).
-//! - [`record`] — the write path the executor calls after an invocation.
+//! - [`record`](mod@record) — the write path the executor calls after an invocation.
 //! - [`metrics`] — the `faucet_local_outputs_*` counters.
+//!
+//! ## Feature gating
+//!
+//! Compiled with `serve`, not `catalog`: the ledger's storage methods are part of
+//! the [`RunHistory`](crate::serve::history::RunHistory) surface, so a
+//! `serve`-only build has to compile them (they are inert defaults there). The
+//! *surfaces* need more — the executor's write path and `faucet cleanup` need a
+//! `catalog:` store to record into, and the console's Datasets page is a catalog
+//! view — so those stay behind `catalog`.
 
 pub mod ledger;
 pub mod metrics;

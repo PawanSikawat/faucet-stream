@@ -38,6 +38,8 @@ struct Inner {
     /// Default retention window (days) for local sink outputs (#587), so the
     /// cleanup handlers and the console can honour and display it.
     local_output_retention_days: u32,
+    /// Mid-write guard window for local-output deletion (#587).
+    local_output_in_flight_grace: Duration,
     /// Allowlist of hosts a per-run completion callback may target (#481).
     callback_allow_hosts: Vec<String>,
     cluster: crate::serve::cluster::ClusterHandle,
@@ -70,6 +72,7 @@ impl ServerState {
                 idempotency_retention: config.idempotency_retention,
                 probe_timeout: config.probe_timeout,
                 local_output_retention_days: config.local_output_retention_days,
+                local_output_in_flight_grace: config.local_output_in_flight_grace,
                 callback_allow_hosts: config.callback_allow_hosts.clone(),
                 cluster: crate::serve::cluster::ClusterHandle::from_config(config),
                 #[cfg(feature = "triggers")]
@@ -110,6 +113,11 @@ impl ServerState {
     /// the background sweep is disabled.
     pub fn local_output_retention_days(&self) -> u32 {
         self.inner.local_output_retention_days
+    }
+
+    /// Window within which a recently-written local output is left alone (#587).
+    pub fn local_output_in_flight_grace(&self) -> Duration {
+        self.inner.local_output_in_flight_grace
     }
 
     pub fn history(&self) -> Arc<dyn RunHistory> {
@@ -184,6 +192,7 @@ mod tests {
             log_retention: Duration::from_secs(0),
             log_max_lines_per_run: 100_000,
             local_output_retention_days: 7,
+            local_output_in_flight_grace: Duration::from_secs(60),
             lease_ttl: Duration::from_secs(30),
             probe_timeout: Duration::from_secs(10),
             env_file: None,

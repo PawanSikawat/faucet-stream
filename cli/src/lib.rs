@@ -36,10 +36,7 @@ pub mod lineage_glue;
 /// sampler), compiled when either live-view feature is on.
 #[cfg(any(feature = "cli-tui", feature = "cli-progress"))]
 pub mod livemetrics;
-/// Retention GC for local sink outputs (#587). Rides the `catalog` feature: the
-/// ledger is stored in the run-history backends and its console surface is the
-/// Datasets page.
-#[cfg(feature = "catalog")]
+#[cfg(feature = "serve")]
 pub mod local_outputs;
 #[cfg(feature = "mcp")]
 pub mod mcp;

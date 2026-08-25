@@ -176,6 +176,15 @@ pub struct CleanupRequest {
     /// Report what would be deleted without touching anything.
     #[serde(default)]
     pub dry_run: bool,
+    /// Acknowledge a scope that can delete files still inside their retention
+    /// window ([`SweepScope::requires_confirmation`]). Required for `all` (and for
+    /// `older_than_days: 0`, which matches everything); ignored otherwise.
+    ///
+    /// The CLI's `--yes` and this field are the same gate, decided by the same
+    /// predicate — the console's confirm dialog sets it, and a scripted caller has
+    /// to set it deliberately rather than inheriting the console's good manners.
+    #[serde(default)]
+    pub confirm: bool,
 }
 
 impl CleanupRequest {
@@ -216,6 +225,16 @@ pub async fn cleanup(
     Json(req): Json<CleanupRequest>,
 ) -> Result<Json<SweepReport>, ServeError> {
     let scope = req.scope()?;
+    // The same gate the CLI applies to `--all`. A dry run needs no confirmation:
+    // it deletes nothing.
+    if scope.requires_confirmation() && !req.confirm && !req.dry_run {
+        return Err(ServeError::BadConfig(format!(
+            "cleanup: scope `{}` deletes tracked outputs that are still inside their \
+             retention window — resend with `\"confirm\": true` to proceed, or \
+             `\"dry_run\": true` to see what it would remove",
+            scope.label()
+        )));
+    }
     let report = sweep::run(
         state.history().as_ref(),
         &scope,
@@ -233,12 +252,14 @@ fn retention_days(state: &ServerState) -> u32 {
 }
 
 /// Sweep options for a request-driven cleanup. Always carries this instance's
-/// in-flight run ids: an operator clicking "clean all" must still not have a file
-/// unlinked out from under a run that is writing it.
+/// in-flight run ids *and* the configured mtime grace: an operator clicking
+/// "clean all" must still not have a file unlinked out from under a run that is
+/// writing it — including a run whose id no ledger row names yet.
 fn options(state: &ServerState, dry_run: bool) -> SweepOptions {
     SweepOptions::new(retention_days(state))
         .dry_run(dry_run)
         .in_flight(state.registry().live_run_ids())
+        .in_flight_grace(state.local_output_in_flight_grace())
 }
 
 #[cfg(test)]
@@ -290,6 +311,29 @@ mod tests {
             ServeError::BadConfig(m) => assert!(m.contains("mutually exclusive"), "{m}"),
             other => panic!("expected BadConfig, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn confirmation_is_required_for_exactly_the_unbounded_scopes() {
+        // Same predicate as the CLI's `--yes`, so the two surfaces cannot drift.
+        let mut r = req();
+        r.all = true;
+        assert!(r.scope().unwrap().requires_confirmation());
+
+        let mut r = req();
+        r.older_than_days = Some(0);
+        assert!(
+            r.scope().unwrap().requires_confirmation(),
+            "a zero-day window matches every row"
+        );
+
+        let mut r = req();
+        r.older_than_days = Some(7);
+        assert!(!r.scope().unwrap().requires_confirmation());
+
+        let mut r = req();
+        r.dataset_id = Some("ds".into());
+        assert!(!r.scope().unwrap().requires_confirmation());
     }
 
     #[test]

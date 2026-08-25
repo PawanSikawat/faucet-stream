@@ -60,7 +60,7 @@ pub struct CsvSink {
     /// The file this sink opened, for the local-output retention GC (#587).
     /// Recorded at the first open — before the file is created — so a path that
     /// already held someone else's data is flagged `pre_existing` and never
-    /// collected. See `faucet_core::local_output`.
+    /// collected. See `faucet_core::local_outputs`.
     outputs: faucet_core::LocalOutputLog,
 }
 

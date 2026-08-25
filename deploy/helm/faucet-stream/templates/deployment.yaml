@@ -94,6 +94,8 @@ spec:
             # touching args.
             - name: FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS
               value: {{ .Values.serve.localOutputs.retentionDays | quote }}
+            - name: FAUCET_LOCAL_SINK_OUTPUT_IN_FLIGHT_GRACE_SECS
+              value: {{ .Values.serve.localOutputs.inFlightGraceSeconds | quote }}
             {{- if eq .Values.serve.auth.mode "token" }}
             - name: FAUCET_SERVE_AUTH_TOKEN
               valueFrom:
