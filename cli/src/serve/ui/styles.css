@@ -313,6 +313,8 @@ button { font-family: inherit; }
   border-radius: var(--r);
   box-shadow: var(--shadow-1);
 }
+/* Fill the filter bar so the placeholder is never clipped. */
+.filters #t-search { flex: 1 1 auto; min-width: 0; }
 
 input, select, textarea {
   font-family: var(--font-sans);
@@ -797,7 +799,44 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 /* ============================================================================
    pipeline templates (#444)
    ========================================================================== */
-.tpl-row { grid-template-columns: 120px 1fr auto auto auto; }
+/* status · name · updated · live · newest · params — fixed meta widths so the
+   column header (a separate grid) lines up with the rows below it. */
+.tpl-row { grid-template-columns: 120px 1fr 175px 56px 64px 60px; }
+.tpl-list-head {
+  display: grid;
+  grid-template-columns: 120px 1fr 175px 56px 64px 60px;
+  align-items: center;
+  gap: 14px;
+  /* match .run-row content inset: 16px padding + 3px transparent left border */
+  padding: 2px 16px 6px;
+  border-left: 3px solid transparent;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.tpl-list-head .tpl-col-r { text-align: right; }
+/* Sortable column headers — look like the plain labels, but clickable. */
+.tpl-list-head .tpl-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.tpl-list-head .tpl-sort:hover { color: var(--ink); }
+.tpl-list-head .tpl-sort.is-active { color: var(--brand); }
+.tpl-list-head .tpl-sort.tpl-col-r { justify-content: flex-end; }
+.tpl-sort-caret { font-size: 0.9em; }
+.tpl-list-head .tpl-sort:not(.is-active) .tpl-sort-caret { opacity: 0.4; }
 .tpl-row-id { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .tpl-row-id b { font-weight: 600; font-size: 0.95rem; }
 .tpl-row-desc {
@@ -841,7 +880,7 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 .tpl-versions { display: flex; flex-direction: column; gap: 6px; }
 .tpl-version {
   display: grid;
-  grid-template-columns: 52px 1fr auto auto auto auto;
+  grid-template-columns: 52px 1fr auto auto auto auto auto;
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
@@ -887,4 +926,9 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 @media (max-width: 760px) {
   .tpl-version { grid-template-columns: 52px 1fr; row-gap: 8px; }
   .tpl-version .tpl-assign { max-width: none; }
+  /* The fixed column header can't line up once rows stack — hide it and let the
+     rows collapse to status + name with the meta wrapping below. */
+  .tpl-list-head { display: none; }
+  .tpl-row { grid-template-columns: auto 1fr; row-gap: 4px; }
+  .tpl-row .run-meta { text-align: left; }
 }
