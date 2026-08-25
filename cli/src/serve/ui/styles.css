@@ -700,6 +700,11 @@ select {
    schema explorer
    ========================================================================== */
 .schemas-page {
+  /* The schema explorer is a 2-column layout (list + wide reference table), so it
+     needs more room than the default 1080px reading width. Widen it (stays
+     centered, so it grows on both sides) to stop the type/description columns
+     from wrapping awkwardly. */
+  max-width: 1360px;
   display: grid;
   grid-template-columns: 260px 1fr;
   gap: 24px;
@@ -908,10 +913,11 @@ select {
    ========================================================================== */
 /* status · name · updated · live · newest · params — fixed meta widths so the
    column header (a separate grid) lines up with the rows below it. */
-.tpl-row { grid-template-columns: 120px 1fr 175px 56px 64px 60px; }
+.tpl-row { grid-template-columns: 120px 1fr 205px 56px 64px 60px; }
+.tpl-row .run-meta { white-space: nowrap; } /* keep the timestamp (incl. AM/PM) on one line */
 .tpl-list-head {
   display: grid;
-  grid-template-columns: 120px 1fr 175px 56px 64px 60px;
+  grid-template-columns: 120px 1fr 205px 56px 64px 60px;
   align-items: center;
   gap: 14px;
   /* match .run-row content inset: 16px padding + 3px transparent left border */
