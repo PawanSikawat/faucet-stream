@@ -2,6 +2,7 @@ import { api, toast } from "../api.js";
 import { navigate } from "../router.js";
 import { escapeHtml } from "../utils.js";
 import { attachDatePicker } from "./date-picker.js";
+import { formatTs } from "../tz.js";
 
 const STATUSES = ["", "queued", "running", "completed", "failed", "cancelled"];
 
@@ -96,6 +97,5 @@ function row(r) {
 }
 
 export function fmtTime(s) {
-  if (!s) return "—";
-  try { return new Date(s).toLocaleString(); } catch { return "—"; }
+  return formatTs(s); // formats in the user's selected display timezone (default local)
 }

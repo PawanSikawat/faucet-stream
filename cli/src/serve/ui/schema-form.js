@@ -4,7 +4,7 @@
 // "type" discriminator (the {type,config} auth pattern). Anything else falls
 // back to a raw-JSON textarea so no config is ever unreachable.
 
-import { escapeHtml } from "./utils.js";
+import { escapeHtml, mdInline } from "./utils.js";
 
 function resolveRef(schema, root) {
   if (schema && schema.$ref) {
@@ -19,7 +19,7 @@ function resolveRef(schema, root) {
 // Build a control for `schema`; returns { el, read() }.
 function build(schema, root, value, required) {
   schema = resolveRef(schema, root) || {};
-  const desc = schema.description ? `<small class="help">${escapeHtml(firstSentence(schema.description))}</small>` : "";
+  const desc = schema.description ? `<small class="help">${mdInline(firstSentence(schema.description))}</small>` : "";
 
   // Discriminated union: oneOf/anyOf whose branches each fix a `type` const.
   const variants = schema.oneOf || schema.anyOf;

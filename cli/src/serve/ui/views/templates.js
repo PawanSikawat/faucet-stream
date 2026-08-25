@@ -9,7 +9,7 @@
 //   • `stable` / `previous` / `newest` are derived; `dev`…`prod` are assignable
 import { api, toast } from "../api.js";
 import { navigate } from "../router.js";
-import { escapeHtml } from "../utils.js";
+import { escapeHtml, mdInline } from "../utils.js";
 import { fmtTime } from "./runs.js";
 
 const TEMPLATES_MISSING =
@@ -43,9 +43,14 @@ export async function renderTemplates(container) {
       <div class="filters" id="t-filters" hidden>
         <input id="t-search" type="search" autocomplete="off"
           placeholder="search templates by id or description…" />
+        <div class="tpl-status-filter" id="t-status-filter" role="group" aria-label="Filter by status">
+          <button type="button" class="tpl-chip is-on" data-status="launched">launched</button>
+          <button type="button" class="tpl-chip is-on" data-status="draft">draft</button>
+          <button type="button" class="tpl-chip" data-status="deprecated">deprecated</button>
+        </div>
       </div>
       <div class="tpl-list-head" id="t-list-head" hidden>
-        <button type="button" class="tpl-sort" data-sort="status">status<span class="tpl-sort-caret"></span></button>
+        <span>status</span>
         <button type="button" class="tpl-sort" data-sort="name">name<span class="tpl-sort-caret"></span></button>
         <button type="button" class="tpl-sort tpl-col-r" data-sort="updated">last updated<span class="tpl-sort-caret"></span></button>
         <span class="tpl-col-r">live</span>
@@ -62,12 +67,11 @@ export async function renderTemplates(container) {
   const search = container.querySelector("#t-search");
   let all = [];
 
-  // Column sort. `col === null` keeps registry order (the default); clicking a
-  // sortable header sets the column and toggles asc/desc on repeat clicks.
-  const sort = { col: null, dir: 1 };
-  const STATUS_RANK = { launched: 0, draft: 1, deprecated: 2 };
+  // Column sort — alphabetical by name is the default; clicking a sortable header
+  // sets the column and toggles asc/desc on repeat clicks. Status is a filter
+  // (below), not a sort column.
+  const sort = { col: "name", dir: 1 };
   const sortKey = {
-    status: (t) => STATUS_RANK[(t.state || {}).status] ?? 9,
     name: (t) => (t.id || "").toLowerCase(),
     updated: (t) => new Date(t.created_at || 0).getTime() || 0,
   };
@@ -76,6 +80,19 @@ export async function renderTemplates(container) {
       const col = btn.dataset.sort;
       if (sort.col === col) sort.dir *= -1;
       else { sort.col = col; sort.dir = 1; }
+      render();
+    };
+  });
+
+  // Status filter — launched + draft on by default; deprecated hidden until its
+  // chip is toggled on.
+  const statusFilter = new Set(["launched", "draft"]);
+  container.querySelectorAll("#t-status-filter .tpl-chip").forEach((chip) => {
+    chip.onclick = () => {
+      const s = chip.dataset.status;
+      if (statusFilter.has(s)) statusFilter.delete(s);
+      else statusFilter.add(s);
+      chip.classList.toggle("is-on", statusFilter.has(s));
       render();
     };
   });
@@ -93,15 +110,14 @@ export async function renderTemplates(container) {
   // case-insensitive. The registry is small, so there's no server round-trip.
   function render() {
     const q = search.value.trim().toLowerCase();
-    const rows = q
-      ? all.filter(
-          (t) =>
-            (t.id || "").toLowerCase().includes(q) ||
-            (t.description || "").toLowerCase().includes(q),
-        )
-      : all.slice();
-    if (sort.col) {
-      const key = sortKey[sort.col];
+    const rows = all.filter((t) => {
+      const status = (t.state || {}).status || "draft";
+      if (!statusFilter.has(status)) return false;
+      if (q && !((t.id || "").toLowerCase().includes(q) || (t.description || "").toLowerCase().includes(q))) return false;
+      return true;
+    });
+    const key = sortKey[sort.col];
+    if (key) {
       rows.sort((a, b) => {
         const av = key(a), bv = key(b);
         return (av < bv ? -1 : av > bv ? 1 : 0) * sort.dir;
@@ -111,7 +127,10 @@ export async function renderTemplates(container) {
     list.innerHTML = "";
     listHead.hidden = !rows.length; // only show the column header when rows are shown
     if (!rows.length) {
-      list.innerHTML = `<div class="empty">No templates match “${escapeHtml(search.value.trim())}”.</div>`;
+      const why = q
+        ? `No templates match “${escapeHtml(search.value.trim())}”.`
+        : "No templates match the selected status filter.";
+      list.innerHTML = `<div class="empty">${why}</div>`;
       return;
     }
     for (const t of rows) list.appendChild(listRow(t));
@@ -449,7 +468,7 @@ function renderTrigger(host, id, st, d) {
         ${p.secret ? `<span class="pill pill-cancelled">secret</span>` : ""}
       </span>
       ${input}
-      ${p.description ? `<span class="help">${escapeHtml(p.description)}</span>` : ""}`;
+      ${p.description ? `<span class="help">${mdInline(p.description)}</span>` : ""}`;
     paramHost.appendChild(field);
   }
 

@@ -5,10 +5,15 @@
 // — and shown human-friendly in `input.value`. A "change" event fires on apply
 // and clear so callers can react. Safe to drop in: no value-format change.
 
+import { zonedWallToUtc, utcToZonedWall, tzShort } from "../tz.js";
+
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December",
 ];
+
+// A naive Date holding wall-clock fields (used only for calendar/time display).
+const wallFromZoned = ({ y, mo, d, h, mi }) => new Date(y, mo, d, h, mi);
 const WD = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
 const pad = (n) => String(n).padStart(2, "0");
@@ -43,7 +48,14 @@ export function attachDatePicker(input) {
 
   function commit(date) {
     if (date) {
-      input.dataset.value = toRaw(date);
+      // `date` holds the wall-clock the user picked (in the selected zone). Store
+      // the true UTC instant so the query path sends the right time regardless of
+      // the display zone; show the entered wall-clock in the field.
+      const utc = zonedWallToUtc(
+        date.getFullYear(), date.getMonth(), date.getDate(),
+        date.getHours(), date.getMinutes(),
+      );
+      input.dataset.value = utc.toISOString();
       input.value = toDisplay(date);
     } else {
       input.dataset.value = "";
@@ -94,7 +106,7 @@ export function attachDatePicker(input) {
       <div class="dp-grid dp-wd">${WD.map((w) => `<span class="dp-wdc">${w}</span>`).join("")}</div>
       <div class="dp-grid dp-days">${cells}</div>
       <div class="dp-time">
-        <span class="dp-time-lbl">Time</span>
+        <span class="dp-time-lbl">Time <span class="dp-tz">· ${tzShort()}</span></span>
         <input class="dp-h" type="number" min="0" max="23" value="${pad(t.getHours())}" aria-label="Hour" />
         <span class="dp-colon">:</span>
         <input class="dp-m" type="number" min="0" max="59" value="${pad(t.getMinutes())}" aria-label="Minute" />
@@ -144,7 +156,9 @@ export function attachDatePicker(input) {
 
   function open() {
     if (isOpen()) return;
-    pending = parseRaw(input.dataset.value);
+    // Stored value is a UTC instant — show it as the wall-clock in the selected zone.
+    const utc = parseRaw(input.dataset.value);
+    pending = utc ? wallFromZoned(utcToZonedWall(utc)) : null;
     view = pending ? new Date(pending) : new Date();
     popup = document.createElement("div");
     popup.className = "dp-pop";
