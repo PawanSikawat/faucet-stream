@@ -333,6 +333,9 @@ input:focus, select:focus, textarea:focus {
 }
 input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 
+/* Timezone selector in the topbar — compact; inherits the themed chevron below. */
+.tz-select { font-size: 0.8rem; max-width: 190px; padding-top: 5px; padding-bottom: 5px; background: transparent; }
+
 /* Themed select: drop the native arrow for a custom chevron with real breathing
    room on the right, so it stops crowding the border. */
 select {
@@ -395,6 +398,7 @@ select {
 .dp-sel:hover { background: var(--brand-strong); }
 .dp-time { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
 .dp-time-lbl { font-size: 0.72rem; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.04em; margin-right: auto; }
+.dp-tz { text-transform: none; letter-spacing: 0; opacity: 0.85; }
 .dp-time input { width: 46px; text-align: center; padding: 5px 4px; }
 .dp-colon { color: var(--ink-dim); }
 .dp-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
@@ -688,6 +692,9 @@ select {
 .sf-raw { width: 100%; min-height: 64px; font-family: var(--font-mono); font-size: 0.8rem; }
 
 .help { display: block; color: var(--ink-faint); font-size: 0.74rem; margin-top: 4px; line-height: 1.4; }
+/* Align the description under the input's text (input has a ~11px inset: 1px
+   border + 10px padding), so it doesn't hang to the left of the field. */
+.sf-field .help { padding-left: 11px; }
 
 /* ============================================================================
    schema explorer
@@ -709,11 +716,11 @@ select {
   padding-right: 4px;
 }
 .schema-note {
-  margin: 0 0 14px; padding: 9px 11px;
-  background: var(--surface-2); border: 1px solid var(--border);
-  border-radius: var(--r-sm); font-size: 0.74rem; line-height: 1.5; color: var(--ink-dim);
+  margin: 0 0 16px; padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--brand-ring);
+  font-size: 0.72rem; line-height: 1.5; color: var(--ink-faint);
 }
-.schema-note b { color: var(--ink); font-weight: 600; }
+.schema-note b { color: var(--ink-dim); font-weight: 600; }
 .schema-note code { font-size: 0.92em; }
 .schema-state-list { display: flex; flex-direction: column; gap: 6px; }
 .schema-state {
@@ -1025,6 +1032,16 @@ select {
 /* Tags sit on their own row beneath the variable name, and are a touch smaller. */
 .tpl-param-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-bottom: 1px; }
 .tpl-param-tags .pill { font-size: 0.6rem; padding: 1px 7px; }
+
+/* Status filter chips on the templates list (multi-toggle; launched+draft on by default). */
+.tpl-status-filter { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.tpl-chip {
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--ink-faint);
+  border-radius: 999px; padding: 5px 12px; font-size: 0.78rem; cursor: pointer;
+  font-family: var(--font-sans); transition: color 0.14s, background 0.14s, border-color 0.14s;
+}
+.tpl-chip:hover { color: var(--ink); border-color: var(--border-strong); }
+.tpl-chip.is-on { background: var(--brand-tint); border-color: var(--brand-ring); color: var(--brand); font-weight: 550; }
 
 @media (max-width: 760px) {
   .tpl-version { grid-template-columns: 52px 1fr; row-gap: 8px; }

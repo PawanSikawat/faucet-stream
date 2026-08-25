@@ -1,5 +1,5 @@
 import { api, toast } from "../api.js";
-import { escapeHtml } from "../utils.js";
+import { escapeHtml, mdInline } from "../utils.js";
 
 export async function renderSchemas(container) {
   let catalog = { sources: [], sinks: [], transforms: [], state: [] };
@@ -61,7 +61,7 @@ function fieldTable(schema) {
     .map(([name, p]) => {
       const type = p.type || (p.$ref ? p.$ref.split("/").pop() : p.enum ? "enum" : p.oneOf || p.anyOf ? "union" : "object");
       const def = p.default !== undefined ? `<code>${escapeHtml(JSON.stringify(p.default))}</code>` : "";
-      return `<tr><td>${escapeHtml(name)}${req.has(name) ? " *" : ""}</td><td>${escapeHtml(String(type))}</td><td>${def}</td><td>${escapeHtml(firstSentence(p.description || ""))}</td></tr>`;
+      return `<tr><td>${escapeHtml(name)}${req.has(name) ? " *" : ""}</td><td>${escapeHtml(String(type))}</td><td>${def}</td><td>${mdInline(firstSentence(p.description || ""))}</td></tr>`;
     })
     .join("");
   return `<table class="tbl"><thead><tr><th>field</th><th>type</th><th>default</th><th>description</th></tr></thead><tbody>${rows}</tbody></table>`;
