@@ -707,6 +707,65 @@ pub trait RunHistory: Send + Sync {
         Ok(None)
     }
 
+    // ── Local sink output ledger (#587) ──────────────────────────────────────
+    //
+    // One row per concrete local file a sink opened, so the retention GC can
+    // delete **only** files faucet recorded as its own — never a glob, never a
+    // directory. Defaulted inert (like the catalog methods) so a third-party
+    // `RunHistory` impl is unaffected; implemented by the memory + SQL backends
+    // and forwarded by the fallback wrapper.
+    //
+    // These rows are NOT purged by run retention. They are the provenance the
+    // GC works from, and a row deliberately outlives its file: after the file is
+    // deleted the row stays, marked `deleted_at`, which is what renders the
+    // output as *expired* instead of as a dangling path.
+
+    /// Record (or refresh) the ledger row for one local output. Upsert by path:
+    /// a re-run that rewrites the same file updates its row rather than
+    /// duplicating it, and must keep the sticky first-open fields
+    /// (`first_written_at`, `pre_existing`) — see
+    /// [`LocalOutputRecord::observe`](crate::local_outputs::LocalOutputRecord::observe).
+    /// Default: inert.
+    async fn local_output_record(
+        &self,
+        obs: &crate::local_outputs::LocalOutputObservation,
+    ) -> Result<(), HistoryError> {
+        let _ = obs;
+        Ok(())
+    }
+
+    /// Ledger rows matching `filter`, newest write first. Default: empty.
+    async fn local_output_list(
+        &self,
+        filter: &crate::local_outputs::LocalOutputFilter,
+    ) -> Result<Vec<crate::local_outputs::LocalOutputRecord>, HistoryError> {
+        let _ = filter;
+        Ok(Vec::new())
+    }
+
+    /// One ledger row by id, deleted rows included (the console needs to render
+    /// an expired output, and a single-output cleanup needs to explain that the
+    /// file is already gone). Default: `None`.
+    async fn local_output_get(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::local_outputs::LocalOutputRecord>, HistoryError> {
+        let _ = id;
+        Ok(None)
+    }
+
+    /// Mark a row's file deleted, recording when and how many bytes were
+    /// reclaimed. Returns whether a row was updated. Default: `false`.
+    async fn local_output_mark_deleted(
+        &self,
+        id: &str,
+        at: DateTime<Utc>,
+        bytes: u64,
+    ) -> Result<bool, HistoryError> {
+        let _ = (id, at, bytes);
+        Ok(false)
+    }
+
     // ── Pipeline-template registry (#444) ────────────────────────────────────
     //
     // Register-once / trigger-by-id storage for parameterized configs. Defaulted

@@ -57,6 +57,11 @@ pub struct CsvSink {
     /// once per run (like the parquet sink's `warn_on_unknown_fields`) so the
     /// loss is visible rather than silent, without flooding the log.
     warned_unknown: std::sync::atomic::AtomicBool,
+    /// The file this sink opened, for the local-output retention GC (#587).
+    /// Recorded at the first open — before the file is created — so a path that
+    /// already held someone else's data is flagged `pre_existing` and never
+    /// collected. See `faucet_core::local_outputs`.
+    outputs: faucet_core::LocalOutputLog,
 }
 
 impl CsvSink {
@@ -68,6 +73,7 @@ impl CsvSink {
             frozen_columns: Mutex::new(None),
             opened_once: std::sync::atomic::AtomicBool::new(false),
             warned_unknown: std::sync::atomic::AtomicBool::new(false),
+            outputs: faucet_core::LocalOutputLog::new(),
         }
     }
 
@@ -96,6 +102,10 @@ impl faucet_core::Sink for CsvSink {
 
     fn dataset_uri(&self) -> String {
         format!("file://{}", self.config.path)
+    }
+
+    async fn local_outputs(&self) -> Vec<faucet_core::LocalOutput> {
+        self.outputs.snapshot()
     }
 
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
@@ -130,6 +140,14 @@ impl faucet_core::Sink for CsvSink {
                 .map_err(|e| FaucetError::Sink(format!("CSV sink lock poisoned: {e}")))?;
             guard.clone()
         };
+
+        // Provenance for the retention GC (#587). Probed here — on the async side,
+        // before the blocking task can create the file — so a path that already
+        // held someone else's data is never mistaken for one faucet created.
+        // Idempotent and first-open-wins, so the flush→reopen cycle cannot
+        // reclassify it.
+        self.outputs
+            .record_open_probing(std::path::PathBuf::from(&self.config.path));
 
         let result = tokio::task::spawn_blocking(move || {
             write_csv_blocking(
@@ -901,5 +919,48 @@ mod tests {
         // Header (from first open) + 2 data rows. The re-open uses
         // append=true so no second header is written.
         assert_eq!(lines.len(), 3);
+    }
+    #[tokio::test]
+    async fn local_outputs_reports_a_file_faucet_created() {
+        // Retention GC provenance (#587).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.csv");
+        let sink = CsvSink::new(CsvSinkConfig::new(path.to_str().unwrap()));
+        assert!(sink.local_outputs().await.is_empty());
+
+        sink.write_batch(&[json!({"id": "1"})]).await.unwrap();
+        sink.flush().await.unwrap();
+
+        let outs = sink.local_outputs().await;
+        assert_eq!(outs.len(), 1);
+        assert_eq!(outs[0].path, path);
+        assert!(!outs[0].pre_existing);
+    }
+
+    #[tokio::test]
+    async fn local_outputs_flags_a_file_faucet_did_not_create() {
+        let tmp = NamedTempFile::with_suffix(".csv").unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let sink = CsvSink::new(CsvSinkConfig::new(&path));
+        sink.write_batch(&[json!({"id": "1"})]).await.unwrap();
+
+        let outs = sink.local_outputs().await;
+        assert_eq!(outs.len(), 1);
+        assert!(outs[0].pre_existing);
+    }
+
+    #[tokio::test]
+    async fn local_outputs_stays_one_entry_across_the_flush_reopen_cycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.csv");
+        let sink = CsvSink::new(CsvSinkConfig::new(path.to_str().unwrap()));
+        sink.write_batch(&[json!({"id": "1"})]).await.unwrap();
+        sink.flush().await.unwrap();
+        sink.write_batch(&[json!({"id": "2"})]).await.unwrap();
+        sink.flush().await.unwrap();
+
+        let outs = sink.local_outputs().await;
+        assert_eq!(outs.len(), 1);
+        assert!(!outs[0].pre_existing);
     }
 }

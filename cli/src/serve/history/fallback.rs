@@ -295,6 +295,36 @@ impl RunHistory for FallbackHistory {
     ) -> Result<Vec<crate::serve::history::catalog::CatalogLineageEdge>, HistoryError> {
         via!(self, p => p.catalog_lineage(root, depth), f => f.catalog_lineage(root, depth))
     }
+    async fn local_output_record(
+        &self,
+        obs: &crate::local_outputs::LocalOutputObservation,
+    ) -> Result<(), HistoryError> {
+        via!(self, p => p.local_output_record(obs), f => f.local_output_record(obs))
+    }
+    async fn local_output_list(
+        &self,
+        filter: &crate::local_outputs::LocalOutputFilter,
+    ) -> Result<Vec<crate::local_outputs::LocalOutputRecord>, HistoryError> {
+        via!(self, p => p.local_output_list(filter), f => f.local_output_list(filter))
+    }
+    async fn local_output_get(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::local_outputs::LocalOutputRecord>, HistoryError> {
+        via!(self, p => p.local_output_get(id), f => f.local_output_get(id))
+    }
+    async fn local_output_mark_deleted(
+        &self,
+        id: &str,
+        at: DateTime<Utc>,
+        bytes: u64,
+    ) -> Result<bool, HistoryError> {
+        via!(
+            self,
+            p => p.local_output_mark_deleted(id, at, bytes),
+            f => f.local_output_mark_deleted(id, at, bytes)
+        )
+    }
     async fn catalog_record_config_snapshot(
         &self,
         snapshot: &crate::serve::history::catalog::ConfigSnapshot,

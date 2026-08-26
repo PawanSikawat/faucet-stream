@@ -117,6 +117,11 @@ pub struct ExpandedNode {
     /// Pipeline-level `_faucet_*` metadata columns (#510), shared by every node;
     /// the executor wraps the sink in a `MetadataSink` decorator when present.
     pub metadata_columns: Option<faucet_core::MetadataColumnsSpec>,
+    /// Pipeline-level local-output retention policy (#587), shared by every
+    /// node. The executor reads it after a successful invocation to decide
+    /// whether to record the files the sink wrote, and with what window.
+    #[cfg(feature = "catalog")]
+    pub local_outputs: Option<crate::local_outputs::LocalOutputsSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -676,6 +681,8 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
                 source_override: None,
                 cleanup_scope: None,
                 metadata_columns: None,
+                #[cfg(feature = "catalog")]
+                local_outputs: None,
             });
             continue;
         }
@@ -1320,6 +1327,8 @@ pub fn expand(cfg: &PipelineConfig) -> CliResult<Vec<ExpandedNode>> {
             source_override: None,
             cleanup_scope,
             metadata_columns: cfg.metadata_columns.clone(),
+            #[cfg(feature = "catalog")]
+            local_outputs: cfg.local_outputs.clone(),
         };
 
         if chunks.is_empty() {

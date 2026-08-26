@@ -46,6 +46,17 @@ pub enum Permission {
     /// arbitrary config to `POST /v1/runs` gains no new capability by storing one
     /// under a name.
     TemplateWrite,
+    /// Read the local sink output ledger (`GET /v1/local-outputs`, #587) —
+    /// read-only, granted to every role from `viewer` up. It lists paths and
+    /// sizes of the server's own output files, which anyone who can already read
+    /// the catalog can see there too.
+    LocalOutputRead,
+    /// Delete local sink output files (`DELETE /v1/local-outputs/{id}`,
+    /// `POST /v1/local-outputs/cleanup`, #587). Destructive, so `operator` up: a
+    /// principal that can already submit runs can already write these files, and
+    /// a `viewer` must never be able to delete data. Guarded further in the
+    /// console — "clean all" needs an explicit confirm.
+    LocalOutputManage,
     /// Read the audit log (`GET /v1/audit`) — admin-only.
     AuditRead,
     /// Hot-reload the server's `--default-config` (`POST /v1/reload`) — admin-only.
@@ -75,7 +86,7 @@ impl Role {
             Role::Viewer => {
                 matches!(
                     perm,
-                    RunRead | SchemaRead | DlqRead | CatalogRead | TemplateRead
+                    RunRead | SchemaRead | DlqRead | CatalogRead | TemplateRead | LocalOutputRead
                 )
             }
             Role::Operator => {
@@ -91,6 +102,8 @@ impl Role {
                         | TriggerFire
                         | DlqManage
                         | TemplateWrite
+                        | LocalOutputRead
+                        | LocalOutputManage
                 )
             }
             Role::Admin => true,
@@ -262,6 +275,12 @@ pub fn required_permission(method: &Method, matched_path: &str) -> Option<Permis
         (&Method::GET, "/v1/catalog/datasets") => Some(CatalogRead),
         (&Method::GET, "/v1/catalog/datasets/{id}") => Some(CatalogRead),
         (&Method::GET, "/v1/catalog/lineage") => Some(CatalogRead),
+        // Local sink output retention (#587). Listing is a read scope; deleting
+        // files is `LocalOutputManage`, so a `viewer` can see what local data
+        // exists but can never remove it.
+        (&Method::GET, "/v1/local-outputs") => Some(LocalOutputRead),
+        (&Method::DELETE, "/v1/local-outputs/{id}") => Some(LocalOutputManage),
+        (&Method::POST, "/v1/local-outputs/cleanup") => Some(LocalOutputManage),
         // Pipeline templates (#444). Triggering maps to `RunWrite` — it starts a
         // run, which is the privileged half; `operator` holds both scopes, so a
         // single check suffices and a `viewer` can browse but never trigger.
@@ -304,6 +323,9 @@ pub fn audit_action(method: &Method, matched_path: &str) -> &'static str {
         (&Method::GET, "/v1/catalog/datasets") => "catalog.list",
         (&Method::GET, "/v1/catalog/datasets/{id}") => "catalog.get",
         (&Method::GET, "/v1/catalog/lineage") => "catalog.lineage",
+        (&Method::GET, "/v1/local-outputs") => "local_output.list",
+        (&Method::DELETE, "/v1/local-outputs/{id}") => "local_output.delete",
+        (&Method::POST, "/v1/local-outputs/cleanup") => "local_output.cleanup",
         (&Method::POST, "/v1/templates") => "template.register",
         (&Method::GET, "/v1/templates") => "template.list",
         (&Method::GET, "/v1/templates/{id}") => "template.get",
@@ -453,6 +475,9 @@ mod tests {
             (Method::GET, "/v1/catalog/datasets", CatalogRead),
             (Method::GET, "/v1/catalog/datasets/{id}", CatalogRead),
             (Method::GET, "/v1/catalog/lineage", CatalogRead),
+            (Method::GET, "/v1/local-outputs", LocalOutputRead),
+            (Method::DELETE, "/v1/local-outputs/{id}", LocalOutputManage),
+            (Method::POST, "/v1/local-outputs/cleanup", LocalOutputManage),
             (Method::POST, "/v1/templates", TemplateWrite),
             (Method::GET, "/v1/templates", TemplateRead),
             (Method::GET, "/v1/templates/{id}", TemplateRead),
@@ -474,6 +499,32 @@ mod tests {
         assert!(Role::Viewer.grants(Permission::CatalogRead));
         assert!(Role::Operator.grants(Permission::CatalogRead));
         assert!(Role::Admin.grants(Permission::CatalogRead));
+        // A viewer can see what local data exists but must never delete it —
+        // "delete now" / "purge" / "clean all" are operator-and-up (#587/#588).
+        assert!(Role::Viewer.grants(Permission::LocalOutputRead));
+        assert!(!Role::Viewer.grants(Permission::LocalOutputManage));
+        assert!(Role::Operator.grants(Permission::LocalOutputManage));
+        assert!(Role::Admin.grants(Permission::LocalOutputManage));
+    }
+
+    #[test]
+    fn local_output_routes_have_distinct_audit_actions() {
+        // Every destructive control-plane action must be attributable in the
+        // audit log, and two actions must never share a label.
+        let actions = [
+            audit_action(&Method::GET, "/v1/local-outputs"),
+            audit_action(&Method::DELETE, "/v1/local-outputs/{id}"),
+            audit_action(&Method::POST, "/v1/local-outputs/cleanup"),
+        ];
+        assert_eq!(
+            actions,
+            [
+                "local_output.list",
+                "local_output.delete",
+                "local_output.cleanup"
+            ]
+        );
+        assert!(actions.iter().all(|a| *a != "unknown"));
     }
 
     #[test]

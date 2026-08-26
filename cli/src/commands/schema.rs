@@ -41,6 +41,8 @@ pub fn schema_targets() -> Vec<&'static str> {
     targets.push("notifications");
     #[cfg(feature = "catalog")]
     targets.push("catalog");
+    #[cfg(feature = "catalog")]
+    targets.push("local-outputs");
     targets.push("params");
     targets
 }
@@ -145,6 +147,11 @@ pub async fn run(args: SchemaArgs) -> CliResult<()> {
         #[cfg(feature = "catalog")]
         SchemaTarget::Catalog => {
             let s = faucet_core::schema_for!(crate::catalog::CatalogSpec);
+            serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
+        }
+        #[cfg(feature = "catalog")]
+        SchemaTarget::LocalOutputs => {
+            let s = faucet_core::schema_for!(crate::local_outputs::LocalOutputsSpec);
             serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
         }
         SchemaTarget::Secrets => serde_json::json!({

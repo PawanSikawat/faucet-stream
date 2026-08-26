@@ -237,6 +237,23 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
         .max(1);
     let semaphore = Arc::new(Semaphore::new(max_concurrent));
 
+    // A `local_outputs:` block with nowhere to record to is inert (#587). Say so
+    // once, here, rather than failing the run or going silent: the pipeline works
+    // fine — it just will not be able to reclaim its own files later, and finding
+    // that out only when `faucet cleanup` reports an empty ledger is worse.
+    #[cfg(feature = "catalog")]
+    if opts.catalog.is_none()
+        && let Some(spec) = nodes.iter().find_map(|n| n.local_outputs.as_ref())
+        && spec.track
+    {
+        tracing::warn!(
+            "`local_outputs:` is set but no store is configured, so local output files are \
+             not being tracked and cannot be reclaimed later — add a `catalog:` block \
+             (e.g. `catalog: {{ url: sqlite:./faucet-catalog.db }}`) or run under \
+             `faucet serve`, whose --history backend holds the ledger"
+        );
+    }
+
     // Index nodes by id for parent → children lookups.
     // parent id → child node ids. Keyed and valued by id (not Vec index) so the
     // failure cascade can look children up directly instead of indexing into a
@@ -2104,6 +2121,47 @@ async fn run_one_invocation(
         crate::catalog::record(handle, &update).await;
     }
 
+    // Local sink outputs (#587): record the concrete files this invocation's
+    // sink opened, so the retention GC has a path list to delete from — and so
+    // the console can list what local data exists.
+    //
+    // Deliberately *not* gated like the catalog block above. That one is scoped
+    // to real root invocations because partial volumes are a misleading signal;
+    // here the opposite holds — a `--limit` run, a shard, a child row, and a run
+    // that failed halfway all leave real files on disk, and a file the ledger
+    // never learned about is a file nothing will ever reclaim. Only `--dry-run`
+    // is excluded, and only because it writes nothing (its sink is a counter).
+    #[cfg(feature = "catalog")]
+    if let Some(handle) = &opts.catalog
+        && !opts.dry_run
+        && node
+            .local_outputs
+            .as_ref()
+            .map(|spec| spec.track)
+            .unwrap_or(true)
+    {
+        let outputs = sink.local_outputs().await;
+        if !outputs.is_empty() {
+            let ctx = crate::local_outputs::RecordContext {
+                dataset_uri: crate::catalog::model::canonicalize_uri(
+                    &sink_dataset_uri,
+                    &node.sink.config,
+                    opts.clock,
+                ),
+                kind: node.sink.kind.clone(),
+                pipeline: obs_labels.pipeline.to_string(),
+                row: obs_labels.row.to_string(),
+                run_id: handle.run_id.clone().unwrap_or_else(|| run_id.clone()),
+                retention_days: node
+                    .local_outputs
+                    .as_ref()
+                    .and_then(|spec| spec.retention_days),
+                observed_at: chrono::Utc::now(),
+            };
+            crate::local_outputs::record(handle.store.as_ref(), &outputs, &ctx).await;
+        }
+    }
+
     let result = result?;
 
     // Per-invocation stats for `faucet run --output json` (#390). `records_read`
@@ -2394,6 +2452,12 @@ impl Sink for CapturingSink {
     fn dataset_uri(&self) -> String {
         self.inner.dataset_uri()
     }
+    // Local-output provenance for the retention GC (#587) must survive every
+    // decorator — a wrapper that fell back to the empty default would hide the
+    // real sink's files and they would never be reclaimed.
+    async fn local_outputs(&self) -> Vec<faucet_core::LocalOutput> {
+        self.inner.local_outputs().await
+    }
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         let written = self.inner.write_batch(records).await?;
         // Capture only what actually landed (LimitedSink may have dropped some),
@@ -2486,6 +2550,12 @@ impl Sink for LimitedSink {
     }
     fn dataset_uri(&self) -> String {
         self.inner.dataset_uri()
+    }
+    // Local-output provenance for the retention GC (#587) must survive every
+    // decorator — a wrapper that fell back to the empty default would hide the
+    // real sink's files and they would never be reclaimed.
+    async fn local_outputs(&self) -> Vec<faucet_core::LocalOutput> {
+        self.inner.local_outputs().await
     }
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
         let remaining = self.remaining.load(Ordering::Relaxed);
@@ -2616,6 +2686,8 @@ mod tests {
             matrix: Vec::new(),
             execution: None,
             metadata_columns: None,
+            #[cfg(feature = "catalog")]
+            local_outputs: None,
             selection: None,
             observability: None,
             delivery: faucet_core::DeliveryMode::default(),
@@ -3881,6 +3953,8 @@ matrix:
                 tags: Vec::new(),
                 cleanup_scope: None,
                 metadata_columns: None,
+                #[cfg(feature = "catalog")]
+                local_outputs: None,
                 deferred_refs: refs
                     .iter()
                     .map(|(rid, p)| DeferredRef {
@@ -3962,6 +4036,8 @@ matrix:
             tags: Vec::new(),
             cleanup_scope: None,
             metadata_columns: None,
+            #[cfg(feature = "catalog")]
+            local_outputs: None,
             deferred_refs: vec![DeferredRef {
                 referenced_id: "p".into(),
                 dotted_path: "".into(),
@@ -4285,6 +4361,8 @@ matrix:
             tags: Vec::new(),
             cleanup_scope: None,
             metadata_columns: None,
+            #[cfg(feature = "catalog")]
+            local_outputs: None,
             deferred_refs: Vec::new(),
             source_override: None,
         }
@@ -4509,6 +4587,8 @@ matrix:
             tags: Vec::new(),
             cleanup_scope: None,
             metadata_columns: None,
+            #[cfg(feature = "catalog")]
+            local_outputs: None,
             deferred_refs: Vec::new(),
             source_override: None,
         };

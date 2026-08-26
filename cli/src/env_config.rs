@@ -351,6 +351,10 @@ pub fn build_pipeline_config(env: &HashMap<String, String>) -> CliResult<Pipelin
         replication: None,
         backfill: None,
         metadata_columns: None,
+        // Pure-env mode doesn't assemble a `local_outputs:` block; outputs are
+        // still tracked (the default) under the runtime's own retention window.
+        #[cfg(feature = "catalog")]
+        local_outputs: None,
         partition: None,
         #[cfg(feature = "schedule")]
         schedule: None,

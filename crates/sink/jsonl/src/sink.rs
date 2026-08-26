@@ -36,6 +36,11 @@ pub struct JsonlSink {
     /// pipeline's per-bookmark flush would silently lose data when
     /// `config.append = false` (the default).
     opened_once: std::sync::atomic::AtomicBool,
+    /// The file this sink opened, for the local-output retention GC (#587).
+    /// Recorded at the first open — before the file is created — so a path that
+    /// already held someone else's data is flagged `pre_existing` and never
+    /// collected. See `faucet_core::local_outputs`.
+    outputs: faucet_core::LocalOutputLog,
 }
 
 impl JsonlSink {
@@ -47,6 +52,7 @@ impl JsonlSink {
             encryption: tokio::sync::OnceCell::new(),
             writer: Mutex::new(None),
             opened_once: std::sync::atomic::AtomicBool::new(false),
+            outputs: faucet_core::LocalOutputLog::new(),
         }
     }
 
@@ -110,6 +116,11 @@ impl JsonlSink {
                     ))
                 })?;
             }
+            // Provenance for the retention GC (#587): probe before the open, so
+            // `create(true)` cannot make a file faucet did not create look like
+            // one it did. Idempotent + first-open-wins, so the flush→reopen
+            // cycle above never reclassifies it.
+            self.outputs.record_open_probing(&self.config.path);
             let file = OpenOptions::new()
                 .create(true)
                 .write(true)
@@ -155,6 +166,10 @@ impl faucet_core::Sink for JsonlSink {
 
     fn dataset_uri(&self) -> String {
         format!("file://{}", self.config.path.display())
+    }
+
+    async fn local_outputs(&self) -> Vec<faucet_core::LocalOutput> {
+        self.outputs.snapshot()
     }
 
     async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
@@ -571,5 +586,57 @@ mod tests {
             sink.flush().await.unwrap();
             assert_eq!(decrypt_lines(&path, "k"), vec![json!({"ok": true})]);
         }
+    }
+    #[tokio::test]
+    async fn local_outputs_reports_a_file_faucet_created() {
+        // Retention GC provenance (#587): a path that did not exist before the
+        // run is faucet's own output and is collectable.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.jsonl");
+        let sink = JsonlSink::new(JsonlSinkConfig::new(&path));
+        assert!(
+            sink.local_outputs().await.is_empty(),
+            "nothing is recorded before the first write — the file does not exist yet"
+        );
+
+        sink.write_batch(&[json!({"id": 1})]).await.unwrap();
+        sink.flush().await.unwrap();
+
+        let outs = sink.local_outputs().await;
+        assert_eq!(outs.len(), 1);
+        assert_eq!(outs[0].path, path);
+        assert!(!outs[0].pre_existing);
+    }
+
+    #[tokio::test]
+    async fn local_outputs_flags_a_file_faucet_did_not_create() {
+        // `NamedTempFile` already exists on disk, so faucet is appending to (or
+        // truncating) someone else's file — the GC must never delete it.
+        let tmp = NamedTempFile::new().unwrap();
+        let sink = JsonlSink::new(JsonlSinkConfig::new(tmp.path()));
+        sink.write_batch(&[json!({"id": 1})]).await.unwrap();
+
+        let outs = sink.local_outputs().await;
+        assert_eq!(outs.len(), 1);
+        assert!(outs[0].pre_existing);
+    }
+
+    #[tokio::test]
+    async fn local_outputs_stays_one_entry_across_the_flush_reopen_cycle() {
+        // The per-page flush clears the writer and the next write re-opens the
+        // path — which now exists. That re-open must neither add a second entry
+        // nor reclassify the file as pre-existing (which would make it
+        // permanently un-collectable).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.jsonl");
+        let sink = JsonlSink::new(JsonlSinkConfig::new(&path));
+        sink.write_batch(&[json!({"id": 1})]).await.unwrap();
+        sink.flush().await.unwrap();
+        sink.write_batch(&[json!({"id": 2})]).await.unwrap();
+        sink.flush().await.unwrap();
+
+        let outs = sink.local_outputs().await;
+        assert_eq!(outs.len(), 1);
+        assert!(!outs[0].pre_existing);
     }
 }
