@@ -1058,3 +1058,57 @@ select {
   .tpl-row { grid-template-columns: auto 1fr; row-gap: 4px; }
   .tpl-row .run-meta { text-align: left; }
 }
+
+/* ── Local outputs panel (#587/#588) ─────────────────────────────────────────
+   Cleanup controls for local sink output files, on the Datasets page (where the
+   data artifacts already are) rather than the Runs tab (which is about
+   execution history). */
+.lo-head { margin-top: 28px; }
+.lo-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.lo-bar .run-meta { margin-right: auto; }
+.lo-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+.lo-purge { display: inline-flex; align-items: center; gap: 6px; }
+.lo-purge input { width: 72px; }
+.lo-list { display: flex; flex-direction: column; gap: 6px; }
+.lo-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto auto;
+  align-items: center;
+  gap: 10px;
+  cursor: default;
+}
+.lo-row .run-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lo-row .btn-danger { padding: 5px 11px; font-size: 0.8rem; }
+/* An expired output is a normal, expected end state — dimmed, never an error. */
+.lo-expired { opacity: 0.62; }
+.lo-expired .lo-state { color: var(--ink-dim); border-color: var(--border); background: transparent; }
+/* An external file is outside the GC's authority; mark it so the absence of a
+   Delete button reads as deliberate rather than as a missing control. */
+.lo-external .lo-state {
+  color: var(--queued);
+  border-color: color-mix(in srgb, var(--queued) 40%, transparent);
+  background: color-mix(in srgb, var(--queued) 12%, transparent);
+}
+.lo-present .lo-state {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+@media (max-width: 760px) {
+  .lo-row { grid-template-columns: auto minmax(0, 1fr) auto; row-gap: 8px; }
+  .lo-bar .run-meta { margin-right: 0; width: 100%; }
+}

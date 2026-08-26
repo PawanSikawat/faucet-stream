@@ -169,6 +169,82 @@ pub enum Command {
     /// `catalog` build feature.
     #[cfg(feature = "catalog")]
     History(HistoryArgs),
+    /// Reclaim the local files a pipeline's sinks wrote (jsonl / csv / parquet)
+    /// — the manual half of the retention GC `faucet serve` runs on a timer.
+    /// Deletes only paths faucet recorded as its own outputs; run history,
+    /// catalog entries, and lineage are untouched. Requires the `catalog` build
+    /// feature.
+    #[cfg(feature = "catalog")]
+    Cleanup(CleanupArgs),
+}
+
+/// `faucet cleanup` arguments (#587).
+#[cfg(feature = "catalog")]
+#[derive(Debug, Parser)]
+pub struct CleanupArgs {
+    /// Path to a `.yaml`, `.yml`, or `.json` pipeline config whose `catalog:`
+    /// block names the store holding the local-output ledger. If omitted,
+    /// auto-discover `faucet.yaml` / `faucet.yml` / `faucet.json` in cwd.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+    /// Path to a `.env` file to load for `${env:VAR}` interpolation.
+    #[arg(long, conflicts_with = "no_env_file")]
+    pub env_file: Option<PathBuf>,
+    /// Skip auto-loading `.env` from cwd.
+    #[arg(long)]
+    pub no_env_file: bool,
+    /// Select a named overlay from the config's `profiles:` block.
+    #[arg(long, env = "FAUCET_PROFILE")]
+    pub profile: Option<String>,
+    /// Emit the machine-readable sweep report instead of the human summary.
+    #[arg(long)]
+    pub json: bool,
+    /// Ledger store URL (`sqlite:<path>`, `postgres://…`, or `memory`), instead
+    /// of reading it from a config's `catalog:` block. Point this at the same URL
+    /// `faucet serve --history` uses to clean a server's outputs.
+    #[arg(long)]
+    pub store: Option<String>,
+    /// Delete outputs older than this many days, ignoring per-pipeline
+    /// `local_outputs.retention_days` overrides.
+    #[arg(long, conflicts_with_all = ["dataset", "output", "all", "run"])]
+    pub older_than_days: Option<u32>,
+    /// Delete every tracked output of one dataset (a catalog dataset id).
+    #[arg(long, conflicts_with_all = ["output", "all", "run"])]
+    pub dataset: Option<String>,
+    /// Delete the outputs one run most recently wrote — "clean up after that
+    /// run". The run's history record is untouched.
+    #[arg(long, conflicts_with_all = ["output", "all"])]
+    pub run: Option<String>,
+    /// Delete one output, by the id `faucet cleanup --json` / the console shows.
+    #[arg(long, conflicts_with = "all")]
+    pub output: Option<String>,
+    /// Delete **every** tracked output, including ones still inside their
+    /// retention window. Requires `--yes` (or `--dry-run`).
+    #[arg(long)]
+    pub all: bool,
+    /// Retention window in days for the default (expired-only) sweep, overriding
+    /// the config's `local_outputs.retention_days`. `0` = keep forever. Distinct
+    /// from `--older-than-days`, which is a *scope selector* that ignores every
+    /// retention setting.
+    ///
+    /// Reads `FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS` when unset, so the runtime
+    /// default is the same number here and under `faucet serve` rather than the
+    /// env being silently serve-only.
+    #[arg(long, env = "FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS")]
+    pub retention_days: Option<u32>,
+    /// Never delete an output touched within this many seconds — the guard
+    /// against unlinking a file a run is still writing (including one in another
+    /// process, e.g. a live `faucet serve` sharing this store). `0` disables it
+    /// when you know nothing is running. Default: 60.
+    #[arg(long, default_value_t = 60)]
+    pub in_flight_grace_secs: u64,
+    /// Report what would be deleted without touching anything.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Confirm a sweep that ignores retention windows (`--all`, or
+    /// `--older-than-days 0`).
+    #[arg(long)]
+    pub yes: bool,
 }
 
 /// `faucet migrate` arguments.
@@ -919,6 +995,31 @@ pub struct ServeArgs {
     /// recorded and further lines are dropped.
     #[arg(long, default_value_t = 100_000)]
     pub log_max_lines_per_run: usize,
+    /// How long the **local files** a run's sinks wrote (jsonl / csv / parquet)
+    /// are kept before the retention GC reclaims them, in days (#587). `0`
+    /// disables the automatic sweep — outputs are still tracked and can be
+    /// cleaned on demand from the Datasets page or `faucet cleanup`. A pipeline's
+    /// `local_outputs.retention_days` overrides this per pipeline. Default: 7
+    /// days.
+    ///
+    /// The GC only ever deletes files faucet recorded as its own sink outputs —
+    /// never a glob or a directory, and never a file it merely appended to.
+    #[arg(
+        long,
+        env = "FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS",
+        default_value_t = crate::local_outputs::DEFAULT_RETENTION_DAYS
+    )]
+    pub local_output_retention_days: u32,
+    /// Never delete a local sink output touched within this many seconds (#587) —
+    /// the guard against unlinking a file a run is still writing, including a run
+    /// the ledger has not recorded yet. Raise it above the longest expected gap
+    /// between a slow source's pages; `0` disables it. Default: 60.
+    #[arg(
+        long,
+        env = "FAUCET_LOCAL_SINK_OUTPUT_IN_FLIGHT_GRACE_SECS",
+        default_value_t = 60
+    )]
+    pub local_output_in_flight_grace_secs: u64,
     /// Run-ownership lease TTL in seconds (multi-instance orphan fencing). A run
     /// is owned by the instance executing it and its lease is heartbeated at
     /// ~⅓ of this interval; only a run whose lease has expired (owner presumed
@@ -1369,6 +1470,9 @@ pub enum SchemaTarget {
     /// JSON Schema for the `catalog:` (Data Movement Catalog store) block.
     #[cfg(feature = "catalog")]
     Catalog,
+    /// JSON Schema for the `local_outputs:` (local sink output retention) block.
+    #[cfg(feature = "catalog")]
+    LocalOutputs,
     /// JSON Schema for one entry of the `params:` (typed run parameters) block.
     /// A config's `params:` maps names to entries of this shape; values are
     /// supplied per run via `--param` or a template trigger.

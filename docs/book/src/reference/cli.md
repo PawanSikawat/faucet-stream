@@ -857,6 +857,8 @@ Selected flags (`faucet serve --help` for the full list):
 | `--cluster-max-attempts <n>` | Maximum total attempts (including crash-failovers) before a run is poisoned and marked `failed` (default `3`). |
 | `--body-limit-bytes` / `--shutdown-grace-secs` / `--retain-terminal-runs-secs` / `--idempotency-retention-secs` | Tuning knobs. |
 | `--no-ui` | Disable the embedded web console at runtime even when the binary was built with `serve-ui`. |
+| `--local-output-retention-days <n>` | How long the local files a run's sinks wrote (jsonl/csv/parquet) are kept before the retention GC reclaims them (default `7`; env `FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS`). `0` disables the automatic sweep. See [Local output retention](#local-output-retention). |
+| `--local-output-in-flight-grace-secs <n>` | Never delete a local output touched within this many seconds — the guard against unlinking a file a run is still writing (default `60`; env `FAUCET_LOCAL_SINK_OUTPUT_IN_FLIGHT_GRACE_SECS`). Raise it above the longest expected gap between a slow source's pages; `0` disables it. |
 | `--triggers <path>` | Path to a YAML triggers file that defines event-driven watchers (object-arrival / webhook / queue-depth). Requires the `triggers` Cargo feature. See [Triggers reference](./triggers.md). |
 | `--callback-allow-host <host>` | Restrict per-run completion callbacks to these hosts. Repeatable. Unset = any host except link-local / cloud-metadata addresses, which are always refused unless named here. See [Completion callbacks](./http-api.md#completion-callbacks). |
 
@@ -889,6 +891,43 @@ These endpoints require `serve` and are available regardless of `--no-ui`. See
 the [web console guide](../cookbook/web-console.md) for the full walkthrough and
 the [HTTP API reference](./http-api.md) for the complete endpoint/schema
 reference.
+
+### Local output retention
+
+A long-running `serve` used for local iteration accumulates real files —
+`out.jsonl`, `rows.csv`, directories of rolled parquet parts. `serve` therefore
+runs a **retention GC** for them: faucet records every local file its sinks open,
+and a background sweeper deletes the ones past their window (default **7 days**,
+`--local-output-retention-days` / `FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS`; `0`
+disables the sweep). A pipeline can override the window for its own outputs with
+the [`local_outputs:` block](./config.md#local_outputs). Requires the `catalog`
+feature; the ledger lives in the `--history` backend, so use a persistent one for
+it to survive a restart.
+
+**The one guarantee that matters:** it deletes *only* files faucet recorded as
+its own sink outputs. Never a glob, never a directory — not even for "clean all"
+— and never a file faucet *wrote to* but did not *create*. Point a sink at an
+existing export and its record is marked `external`, which no scope will delete.
+
+**Nor a file that is still being written.** Two checks guard that: an output whose
+run is currently executing is skipped, and — because a *new* run rewriting a path
+the ledger still attributes to the previous run has an id no row names yet — so is
+any file touched within `--local-output-in-flight-grace-secs` (default 60). That
+is a bound rather than a lock: a writer that goes quiet for longer than the grace
+between pages can still, rarely, have its file taken, so raise the window for slow
+sources.
+
+Run history, catalog entries, and lineage are never touched. Data artifacts are
+disposable; the record of what ran is durable — so a cleaned output keeps its
+record, marked `expired`, and its run still shows in the Runs tab.
+
+On-demand cleanup is available three ways:
+
+| Surface | What it does |
+|---|---|
+| Console → **Datasets** → *Local outputs* | Per-output "delete now", "purge older than N days", and "clean all" (confirmed). Read for `viewer`; deleting needs `operator`. |
+| `POST /v1/local-outputs/cleanup`, `DELETE /v1/local-outputs/{id}` | The same, over HTTP — see the [HTTP API reference](./http-api.md#local-sink-outputs). |
+| [`faucet cleanup`](#cleanup) | The same, from the CLI, against a `catalog:` store. |
 
 > ⚠️ `serve` executes arbitrary client-supplied configs with the server's identity (secrets, files,
 > network egress). Run single-tenant, authenticated, behind egress controls. See the
@@ -1031,6 +1070,61 @@ faucet history --json          # machine-readable
 ```
 
 Run records are written by `faucet serve`; point `history` at the same store.
+
+## `cleanup`
+
+*(requires the `catalog` build feature — included in `full`)*
+
+Reclaims the **local files** a pipeline's sinks wrote — `out.jsonl`, `rows.csv`,
+a directory of rolled parquet parts. The manual half of the retention GC
+`faucet serve` runs on a timer (see
+[Local output retention](#local-output-retention)).
+
+```bash
+faucet cleanup                          # outputs past their retention window (7d default)
+faucet cleanup --older-than-days 3      # regardless of per-pipeline overrides
+faucet cleanup --dataset 3f2a9c1e0b7d4a55   # one dataset's outputs
+faucet cleanup --run 01a033bc-30f1-74a2-…   # clean up after one run
+faucet cleanup --output 9f2b1c4d5e6f7a8b    # one file
+faucet cleanup --all --dry-run          # what "clean all" would remove
+faucet cleanup --all --yes              # every tracked output (confirmed)
+faucet cleanup --store sqlite:./faucet-catalog.db --json
+faucet cleanup --all --yes --in-flight-grace-secs 0   # nothing is running
+```
+
+The ledger of outputs lives in the config's `catalog:` store — the same one
+`faucet run` / `schedule` / `replicate` record into and `faucet serve --history`
+browses — so `--store` can point at a server's store directly.
+
+**`--retention-days` vs `--older-than-days`** — easy to conflate, and they do
+different things:
+
+| Flag | Kind | Meaning |
+|---|---|---|
+| `--retention-days <n>` | *policy* | The window the bare (expired-only) sweep measures against, overriding the config's `local_outputs.retention_days`. Reads `FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS` when unset, so it matches the `faucet serve` default. `0` = keep forever. Per-pipeline overrides still apply. |
+| `--older-than-days <n>` | *scope* | Selects everything older than `n` days **ignoring every retention setting**, including per-pipeline overrides. `0` matches every output and needs `--yes`. |
+
+So `--retention-days 3` means "treat 3 days as this store's policy and collect
+what that policy has expired"; `--older-than-days 3` means "delete anything older
+than 3 days, whatever the policy says".
+
+**What it will and will not delete.** Only paths faucet recorded as its own sink
+outputs. Never a glob, never a directory, and never a file faucet *wrote to* but
+did not *create* — point a sink at an existing export and its ledger row is
+marked `external`, which no scope (including `--all`) will delete. Run history,
+catalog entries, and lineage are untouched: a cleaned output keeps its record,
+marked `expired`.
+
+`--all` deletes files that are still inside their retention window, so it
+requires `--yes` (or `--dry-run`) — as does `--older-than-days 0`, which matches
+every output and is `--all` under another name. Every scope reports what it
+skipped and why — a "0 files" answer always comes with the reason.
+
+**Files being written are skipped.** An output touched within
+`--in-flight-grace-secs` (default 60) is left alone and reported as `in_flight`,
+because a writer may still hold it — including a `faucet serve` in another
+process sharing this store, whose runs this command cannot see. Pass
+`--in-flight-grace-secs 0` when you know nothing is running.
 
 ## `run --output`
 

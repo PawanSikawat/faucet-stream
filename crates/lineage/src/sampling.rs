@@ -131,6 +131,9 @@ impl Sink for SamplingSink {
     fn dataset_uri(&self) -> String {
         self.inner.dataset_uri()
     }
+    async fn local_outputs(&self) -> Vec<faucet_core::LocalOutput> {
+        self.inner.local_outputs().await
+    }
     // Capability + exactly-once passthroughs. Without these the wrapper's
     // trait defaults would mask the inner sink's capabilities whenever lineage
     // (or catalog) sampling is active — e.g. an exactly-once run would be

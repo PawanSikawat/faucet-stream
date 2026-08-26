@@ -35,6 +35,18 @@ cardinality and never a Prometheus label.
   `faucet_pipeline_run_duration_seconds`, `faucet_pipeline_in_flight`,
   `faucet_pipeline_seconds_since_last_bookmark`,
   `faucet_pipeline_last_bookmark_unix_seconds`.
+- **Local outputs** (`catalog` feature): the retention GC for local sink output
+  files — `faucet_local_outputs_recorded_total{kind}`,
+  `faucet_local_outputs_sweeps_total{scope}`,
+  `faucet_local_outputs_deleted_total{scope}`,
+  `faucet_local_outputs_bytes_deleted_total{scope}`, and
+  `faucet_local_outputs_skipped_total{scope,reason}`. Deleted/bytes are emitted
+  even at zero — a sweep that found nothing is the healthy steady state, and its
+  *absence* is how you notice the sweeper stopped. A rising
+  `skipped{reason="delete_failed"}` means the footprint is **not** being bounded
+  and is worth alerting on; `reason="pre_existing"` is benign (files faucet did
+  not create are never deleted). Distinct from `faucet_cleanup_*`, which counts
+  destination *rows* removed by [scoped cleanup](../cookbook/upsert.md).
 - **Build:** `faucet_build_info{version}` is set to `1` — `group_left` it onto
   other metrics to annotate dashboards with the running version.
 

@@ -52,6 +52,10 @@ const ROUTES_CATALOG: &[(&str, &str)] = &[
     ("GET", "/v1/catalog/datasets"),
     ("GET", "/v1/catalog/datasets/{id}"),
     ("GET", "/v1/catalog/lineage"),
+    // Local sink output retention (#587).
+    ("GET", "/v1/local-outputs"),
+    ("DELETE", "/v1/local-outputs/{id}"),
+    ("POST", "/v1/local-outputs/cleanup"),
 ];
 
 /// Routes that are only registered when the `templates` feature is compiled in.
@@ -106,9 +110,12 @@ fn openapi_routes() -> BTreeSet<(String, String)> {
         if path.starts_with("/v1/triggers") {
             continue;
         }
-        // Likewise for the `catalog` feature's routes.
+        // Likewise for the `catalog` feature's routes — including the
+        // local-output retention endpoints (#587), which ride `catalog` (the
+        // ledger's console surface is the Datasets page) despite not living
+        // under the `/v1/catalog` prefix.
         #[cfg(not(feature = "catalog"))]
-        if path.starts_with("/v1/catalog") {
+        if path.starts_with("/v1/catalog") || path.starts_with("/v1/local-outputs") {
             continue;
         }
         // …and the `templates` feature's routes (#444).
@@ -171,6 +178,8 @@ async fn every_documented_route_is_wired_on_the_live_server() {
         idempotency_retention_secs: 86_400,
         log_retention_secs: 604_800,
         log_max_lines_per_run: 100_000,
+        local_output_retention_days: 7,
+        local_output_in_flight_grace_secs: 60,
         lease_ttl_secs: 30,
         probe_timeout_secs: 5,
         env_file: None,
