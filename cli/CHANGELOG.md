@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (see the versioning policy in CONTRIBUTING.md — connector crates version
 independently).
+## [1.13.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-cli-v1.12.0...faucet-cli-v1.13.0) - 2026-08-26
+
+### Bug Fixes
+
+- *(serve-ui)* Wider schemas page, no timestamp wrap, single-dash tz label ([#607](https://github.com/faucet-hq/faucet-stream/pull/607))
+- *(serve-ui)* Repair templates UI — actions row, search, sortable header ([#598](https://github.com/faucet-hq/faucet-stream/pull/598))
+
+### Features
+
+- *(serve)* Retention GC for local sink outputs + Datasets-page cleanup controls ([#596](https://github.com/faucet-hq/faucet-stream/pull/596))
+- *(serve-ui)* Timezone selector, templates sort/filter, inline-markdown descriptions + polish ([#603](https://github.com/faucet-hq/faucet-stream/pull/603))
+- *(serve-ui)* Themed date picker, dropdown chevrons, and schema/template polish ([#601](https://github.com/faucet-hq/faucet-stream/pull/601))
+
 ## [1.12.0](https://github.com/faucet-hq/faucet-stream/compare/faucet-cli-v1.11.0...faucet-cli-v1.12.0) - 2026-08-24
 
 ### Features
