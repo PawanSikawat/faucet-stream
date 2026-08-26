@@ -36,6 +36,8 @@ pub mod lineage_glue;
 /// sampler), compiled when either live-view feature is on.
 #[cfg(any(feature = "cli-tui", feature = "cli-progress"))]
 pub mod livemetrics;
+#[cfg(feature = "serve")]
+pub mod local_outputs;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod merge;
@@ -225,6 +227,8 @@ pub async fn run_command(cli: Cli) -> CliResult<()> {
         Command::Explain(args) => commands::explain::run(args).await,
         #[cfg(feature = "catalog")]
         Command::History(args) => commands::history::run(args).await,
+        #[cfg(feature = "catalog")]
+        Command::Cleanup(args) => commands::cleanup::run(args).await,
     }
 }
 

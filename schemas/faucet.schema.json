@@ -223,6 +223,17 @@
         }
       ],
       "description": "Optional `_faucet_*` run/lineage metadata columns (#510) stamped onto\nevery row by a connector-agnostic sink decorator (works for any sink).\nOff unless present."
+    },
+    "local_outputs": {
+      "description": "Optional retention policy for the **local files** this pipeline's sinks\nwrite (#587): how long they are kept before the GC reclaims them, and\nwhether faucet records them at all. Without the block, outputs are\ntracked and inherit the runtime's default window (7 days). Recording\nneeds a store — `faucet serve`'s `--history`, or the `catalog:` block for\nthe one-shot runtimes — and is inert (with a warning) without one.\nSee `faucet schema local-outputs`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LocalOutputsSpec"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "additionalProperties": false,
@@ -18782,6 +18793,27 @@
           "const": "Offset"
         }
       ]
+    },
+    "LocalOutputsSpec": {
+      "description": "The top-level `local_outputs:` block: how long the local files this\npipeline's sinks write are kept, and whether faucet records them at all.\n\n```yaml\nlocal_outputs:\n  retention_days: 3   # this pipeline's outputs are collectable after 3 days\n```\n\nThe block is optional. Without it a pipeline still records its local outputs\n(so they can be listed and cleaned) and inherits the runtime's default\nwindow — `--local-output-retention-days` /\n`FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS`, itself 7 days by default.\n\nRecording needs somewhere to record *to*: under `faucet serve` that is the\n`--history` backend; for `faucet run` / `schedule` / `replicate` it is the\n`catalog:` block's store. Without either, tracking is inert and a one-line\nwarning says so rather than failing the run — a pipeline must never break\nbecause a housekeeping ledger was unavailable.",
+      "type": "object",
+      "properties": {
+        "track": {
+          "description": "Record the local files this pipeline's sinks write, so they can be listed\nin the console and reclaimed by the GC. Default `true`.\n\nSetting `false` opts the pipeline out of the ledger entirely: its outputs\nare never listed and — because the GC only ever deletes recorded paths —\nnever automatically deleted either.",
+          "type": "boolean",
+          "default": true
+        },
+        "retention_days": {
+          "description": "Retention window for this pipeline's outputs, in days, overriding the\nruntime default. `0` keeps them forever.\n\nMeasured from the last time faucet wrote the file, so an output a local\nrun keeps refreshing does not expire underneath it.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

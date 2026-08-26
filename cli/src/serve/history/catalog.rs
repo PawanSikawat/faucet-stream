@@ -272,7 +272,7 @@ pub fn schema_hash(schema: &Value) -> String {
     hex_prefix(&digest, 16)
 }
 
-fn hex_prefix(bytes: &[u8], chars: usize) -> String {
+pub(crate) fn hex_prefix(bytes: &[u8], chars: usize) -> String {
     let mut out = String::with_capacity(chars);
     for b in bytes {
         use std::fmt::Write as _;

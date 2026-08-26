@@ -297,6 +297,28 @@ Files produced by this sink are standard Apache Parquet and read back with any P
 
 This connector reports observability metrics under the label `connector="parquet"`.
 
+## Local output retention
+
+The sink records every local file it opens, so faucet's local-output retention GC
+(`faucet cleanup`, the `faucet serve` sweeper, and the console's Datasets page)
+can reclaim them. Provenance is captured at the **first** open, before the file is
+created:
+
+- a path that did not exist is faucet's own output and is collectable;
+- a path that **already existed** is flagged `pre_existing` and is **never**
+  deleted — faucet wrote to a file it did not create, and no retention window
+  makes deleting that acceptable.
+
+In rollover mode each UUID-named part is recorded **individually**, so cleanup is
+always a list of files — the directory holding them is never an output and is
+never removed. An S3 destination records nothing (there is no local file to
+collect); remote-object cleanup is out of scope.
+
+The GC only ever deletes recorded paths — never a glob, never a directory. Set
+`local_outputs.retention_days` in the config to change the window for a
+pipeline's outputs (`0` keeps them forever), or `local_outputs.track: false` to
+keep them out of the ledger entirely.
+
 ## Feature flags
 
 This crate has no optional features of its own; enable it in the CLI/umbrella via the `sink-parquet` feature.

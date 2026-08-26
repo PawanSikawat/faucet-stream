@@ -182,6 +182,17 @@ pub struct PipelineConfig {
     /// Off unless present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_columns: Option<faucet_core::MetadataColumnsSpec>,
+
+    /// Optional retention policy for the **local files** this pipeline's sinks
+    /// write (#587): how long they are kept before the GC reclaims them, and
+    /// whether faucet records them at all. Without the block, outputs are
+    /// tracked and inherit the runtime's default window (7 days). Recording
+    /// needs a store — `faucet serve`'s `--history`, or the `catalog:` block for
+    /// the one-shot runtimes — and is inert (with a warning) without one.
+    /// See `faucet schema local-outputs`.
+    #[cfg(feature = "catalog")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_outputs: Option<crate::local_outputs::LocalOutputsSpec>,
 }
 
 /// The base pipeline definition. Each matrix row is resolved against the

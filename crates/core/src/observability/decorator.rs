@@ -306,6 +306,20 @@ impl<'a, S: Sink + ?Sized> Sink for InstrumentedSink<'a, S> {
         guarded_connector_name(self.inner.connector_name())
     }
 
+    // Identity + provenance passthroughs. Instrumentation must be invisible to
+    // anything asking the sink *what* it is or *what it wrote* — a decorator that
+    // falls back to the trait defaults reports `"<name>://unknown"` and an empty
+    // output list, which for `local_outputs` means the retention GC (#587) never
+    // learns about files this sink created and can never reclaim them. Silent, and
+    // only observable as disk filling up.
+    fn dataset_uri(&self) -> String {
+        self.inner.dataset_uri()
+    }
+
+    async fn local_outputs(&self) -> Vec<crate::local_outputs::LocalOutput> {
+        self.inner.local_outputs().await
+    }
+
     // Columnar fast path (feature `arrow`): forward transparently to the inner
     // sink; the columnar loop in `pipeline.rs` emits the sink metrics (RFC 0002).
     #[cfg(feature = "arrow")]
@@ -1305,5 +1319,60 @@ mod sink_tests {
             }
             other => panic!("expected Custom panic error, got {other:?}"),
         }
+    }
+    /// `InstrumentedSink` must forward the identity + provenance methods.
+    ///
+    /// It wraps every sink whenever observability is active — i.e. the default
+    /// build — and it forwarded neither of these, which review caught. The
+    /// failure mode is silent: `local_outputs()` falling back to the trait
+    /// default hides every file the inner sink created from the retention GC
+    /// (#587), so those files are never reclaimed and nothing logs or errors.
+    /// `dataset_uri()` falling back records `jsonl://unknown` in lineage and the
+    /// catalog.
+    ///
+    /// The sibling decorators are covered in
+    /// `tests/local_output_forwarding.rs`; this one lives here because the
+    /// module is private.
+    #[tokio::test]
+    async fn instrumented_sink_forwards_identity_and_local_outputs() {
+        use crate::local_outputs::{LocalOutput, LocalOutputLog};
+
+        struct FileSink {
+            outputs: LocalOutputLog,
+        }
+
+        #[async_trait]
+        impl Sink for FileSink {
+            async fn write_batch(&self, records: &[Value]) -> Result<usize, FaucetError> {
+                Ok(records.len())
+            }
+            fn connector_name(&self) -> &'static str {
+                "jsonl"
+            }
+            fn dataset_uri(&self) -> String {
+                "file:///tmp/out.jsonl".to_string()
+            }
+            async fn local_outputs(&self) -> Vec<LocalOutput> {
+                self.outputs.snapshot()
+            }
+        }
+
+        let outputs = LocalOutputLog::new();
+        outputs.record_open("/tmp/out.jsonl", false);
+        let inner = FileSink { outputs };
+        let sink = InstrumentedSink::new(&inner, Labels::new("p", "r", "run-1"));
+
+        let reported = sink.local_outputs().await;
+        assert_eq!(
+            reported.len(),
+            1,
+            "InstrumentedSink must not hide the inner sink's files from the GC"
+        );
+        assert_eq!(reported[0].path, std::path::PathBuf::from("/tmp/out.jsonl"));
+        assert!(
+            !reported[0].pre_existing,
+            "classification must survive verbatim"
+        );
+        assert_eq!(sink.dataset_uri(), "file:///tmp/out.jsonl");
     }
 }

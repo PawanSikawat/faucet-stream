@@ -65,6 +65,10 @@ pub struct MemoryHistory {
     template_deprecations: Mutex<std::collections::HashMap<String, templates::DeprecationRecord>>,
     /// Persistent run logs (#529): run_id → lines (append order == seq order).
     run_logs: Mutex<std::collections::HashMap<String, Vec<RunLogLine>>>,
+    /// Local sink output ledger (#587): output id → row. The provenance the
+    /// retention GC deletes from; ephemeral like everything else here, so a
+    /// restart simply forgets (and therefore never collects) earlier files.
+    local_outputs: Mutex<BTreeMap<String, crate::local_outputs::LocalOutputRecord>>,
     /// Retention window for idempotency claims (separate from run retention).
     idem_retention: Duration,
 }
@@ -81,6 +85,7 @@ impl MemoryHistory {
             template_launches: Mutex::new(std::collections::HashMap::new()),
             template_deprecations: Mutex::new(std::collections::HashMap::new()),
             run_logs: Mutex::new(std::collections::HashMap::new()),
+            local_outputs: Mutex::new(BTreeMap::new()),
             idem_retention,
         }
     }
@@ -482,6 +487,85 @@ impl RunHistory for MemoryHistory {
             .lock()
             .map_err(|_| HistoryError::Backend("catalog lock poisoned".into()))?;
         Ok(cat.config_snapshots.get(pipeline).cloned())
+    }
+
+    // ── Local sink output ledger (#587) ──────────────────────────────────────
+
+    async fn local_output_record(
+        &self,
+        obs: &crate::local_outputs::LocalOutputObservation,
+    ) -> Result<(), HistoryError> {
+        use crate::local_outputs::LocalOutputRecord;
+        let mut rows = self
+            .local_outputs
+            .lock()
+            .map_err(|_| HistoryError::Backend("local-output lock poisoned".into()))?;
+        let id = crate::local_outputs::ledger::output_id(&obs.path);
+        match rows.get_mut(&id) {
+            // Upsert by path so a re-run refreshes its row instead of adding a
+            // second one — and `observe` protects the sticky first-open fields.
+            Some(existing) => existing.observe(obs),
+            None => {
+                rows.insert(id, LocalOutputRecord::new(obs));
+            }
+        }
+        Ok(())
+    }
+
+    async fn local_output_list(
+        &self,
+        filter: &crate::local_outputs::LocalOutputFilter,
+    ) -> Result<Vec<crate::local_outputs::LocalOutputRecord>, HistoryError> {
+        let rows = self
+            .local_outputs
+            .lock()
+            .map_err(|_| HistoryError::Backend("local-output lock poisoned".into()))?;
+        let mut out: Vec<_> = rows
+            .values()
+            .filter(|r| crate::local_outputs::ledger::matches(r, filter))
+            .cloned()
+            .collect();
+        // Newest write first — the order the console lists them in.
+        out.sort_by(|a, b| {
+            b.last_written_at
+                .cmp(&a.last_written_at)
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        if filter.limit > 0 {
+            out.truncate(filter.limit);
+        }
+        Ok(out)
+    }
+
+    async fn local_output_get(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::local_outputs::LocalOutputRecord>, HistoryError> {
+        let rows = self
+            .local_outputs
+            .lock()
+            .map_err(|_| HistoryError::Backend("local-output lock poisoned".into()))?;
+        Ok(rows.get(id).cloned())
+    }
+
+    async fn local_output_mark_deleted(
+        &self,
+        id: &str,
+        at: DateTime<Utc>,
+        bytes: u64,
+    ) -> Result<bool, HistoryError> {
+        let mut rows = self
+            .local_outputs
+            .lock()
+            .map_err(|_| HistoryError::Backend("local-output lock poisoned".into()))?;
+        match rows.get_mut(id) {
+            Some(rec) => {
+                rec.deleted_at = Some(at);
+                rec.deleted_bytes = Some(bytes);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     // ── Pipeline-template registry (#444) ────────────────────────────────────
