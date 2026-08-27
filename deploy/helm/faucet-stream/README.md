@@ -208,6 +208,9 @@ See [`values.yaml`](./values.yaml) — every key is commented. Common ones:
 | `serve.history.backend` | `memory` | `memory` \| `sqlite` \| `postgres` |
 | `serve.localOutputs.retentionDays` | `7` | days before local sink output files (jsonl/csv/parquet) are reclaimed; `0` disables the sweep |
 | `serve.localOutputs.inFlightGraceSeconds` | `60` | never delete an output touched within this window (guards against unlinking a file a run is writing); `0` disables |
+| `serve.preview.enabled` | `false` | serve dataset previews of local sink outputs — the console reads a tracked jsonl/csv/parquet file's first rows back over HTTP. Off by default: it exposes file *contents* to anyone with the `LocalOutputRead` scope (viewer and up) |
+| `serve.preview.rows` | `500` | rows a preview loads when the request omits `row_count_to_load` (soft cap); `0` = the whole dataset |
+| `serve.preview.maxRows` | `5000` | ceiling on one preview's rows (hard cap); a larger request — including `row_count_to_load=all` — is clamped to it. `0` lifts the ceiling, letting one request read an entire output file (still bounded by a 64 MiB response budget and a 30s deadline) |
 | `serve.autoscaling.enabled` | `false` | HPA on the Deployment |
 | `serve.persistence.enabled` | `false` | PVC for sqlite history / bookmarks |
 | `job.enabled` | `false` | one-shot `faucet run` |

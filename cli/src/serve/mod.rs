@@ -18,6 +18,7 @@ pub mod logs;
 pub mod mcp_route;
 pub mod metrics;
 pub mod observability;
+pub mod preview;
 pub mod rbac;
 pub mod registry;
 pub mod runner;

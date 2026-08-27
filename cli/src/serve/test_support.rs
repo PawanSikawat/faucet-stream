@@ -31,6 +31,7 @@ pub fn test_config() -> ServeConfig {
         log_max_lines_per_run: 100_000,
         local_output_retention_days: 7,
         local_output_in_flight_grace: Duration::from_secs(60),
+        preview: crate::serve::preview::PreviewConfig::default(),
         lease_ttl: Duration::from_secs(30),
         probe_timeout: Duration::from_secs(10),
         env_file: None,

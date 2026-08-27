@@ -24,7 +24,11 @@ pub struct ApiErrorBody {
 #[derive(Debug)]
 pub enum ServeError {
     Unauthorized,
-    /// 403 — authenticated but the principal's role lacks the required permission.
+    /// 403 — the server refuses to fulfil the request. Either the principal's
+    /// role lacks the required permission, or the capability is switched off on
+    /// this server (e.g. the local-output preview without
+    /// `--preview-local-outputs`, #586) — in which case no role would help, and
+    /// the message names the flag.
     Forbidden(String),
     NotFound,
     BadConfig(String),
