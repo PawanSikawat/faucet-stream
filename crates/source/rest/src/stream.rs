@@ -76,6 +76,18 @@ const DEFAULT_MAX_RETRIES: u32 = 3;
 /// [`DEFAULT_MAX_RETRIES`].
 const DEFAULT_RETRY_BACKOFF: Duration = Duration::from_secs(1);
 
+/// Starting delay for async-job poll backoff (doubles each Pending poll, up to
+/// the configured `poll.interval_secs` cap).
+const POLL_BACKOFF_BASE_SECS: u64 = 1;
+
+/// Next async-job poll delay: exponential backoff (double the current delay),
+/// capped at `cap`. `interval_secs` is the ceiling, so a quick job is noticed in
+/// ~1s while a long job settles at the configured interval. Saturating so a
+/// large current delay never overflows.
+fn next_poll_delay(current: Duration, cap: Duration) -> Duration {
+    std::cmp::min(current.saturating_mul(2), cap)
+}
+
 /// Attach a mutual-TLS client identity (from [`TlsClientConfig`]) to the HTTP
 /// client builder. Only compiled with the `mtls` feature; the non-`mtls` stub
 /// errors so a `tls:` block on a build without the feature fails loudly rather
@@ -192,6 +204,48 @@ fn jsonpath_first_value(v: &Value, path: &str) -> Option<Value> {
 fn is_terminal_locator(value: &str) -> bool {
     let v = value.trim();
     v.is_empty() || v.eq_ignore_ascii_case("null")
+}
+
+/// Derive the queried object name for an async-job source's `dataset_uri` (#640).
+/// Looks for a `query` string in the submit body (Salesforce Bulk SOQL, etc.) and
+/// returns its `FROM <object>`. `None` when there's no query or it can't be parsed
+/// (the caller then falls back to a hash of the submit body).
+fn async_job_object(submit_json: Option<&Value>) -> Option<String> {
+    let query = submit_json?.get("query")?.as_str()?;
+    soql_from_object(query)
+}
+
+/// Extract the driving object from a SOQL/SQL query: the token after the first
+/// top-level `FROM`. Case-insensitive on the keyword; preserves the object's own
+/// casing. Returns `None` if there's no `FROM` or the following token is empty.
+fn soql_from_object(query: &str) -> Option<String> {
+    // Tokenize on any whitespace (spaces, newlines, tabs) so `SELECT …\nFROM X`
+    // parses as well as `SELECT … FROM X`; return the token right after the first
+    // `FROM`, stripped of trailing punctuation (commas, parens).
+    let mut after_from = false;
+    for tok in query.split_whitespace() {
+        if after_from {
+            let obj = tok.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+            return if obj.is_empty() {
+                None
+            } else {
+                Some(obj.to_string())
+            };
+        }
+        if tok.eq_ignore_ascii_case("from") {
+            after_from = true;
+        }
+    }
+    None
+}
+
+/// A short, stable hex hash — used to give distinct async-job queries distinct
+/// dataset URIs when the object name can't be parsed. Deterministic across runs.
+fn stable_short_hash(s: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    format!("{:016x}", h.finish())
 }
 
 /// Read the next result-set locator (#557) from the fetch response header or
@@ -507,11 +561,46 @@ impl RestStream {
         let owned_context: Option<HashMap<String, Value>> = context.cloned();
 
         Box::pin(async_stream::try_stream! {
-            // Async-job lifecycle (#514): submit → poll → fetch replaces the
-            // normal single-GET + pagination flow and yields one result page.
-            if self.config.async_job.is_some() {
-                let records = self.run_async_job().await?;
-                yield faucet_core::StreamPage { records, bookmark: None };
+            // Async-job lifecycle (#514/#623): submit → poll → resolve the fetch
+            // URL once, then stream one `StreamPage` per locator-paged result set
+            // (#557) instead of buffering the entire extract into a single page.
+            if let Some(job) = self.config.async_job.as_ref() {
+                let fetch_url = self.prepare_async_job().await?;
+                let mut locator: Option<String> = None;
+                loop {
+                    // Send the locator (when we have one) as the configured query param.
+                    let mut query = job.fetch.query.clone();
+                    if let (Some(loc), Some(param)) = (&locator, &job.fetch.locator_param) {
+                        query.insert(param.clone(), loc.clone());
+                    }
+                    let (bytes, resp_headers) = self
+                        .job_request_bytes(
+                            &job.fetch.method,
+                            &fetch_url,
+                            &job.fetch.headers,
+                            &query,
+                            job.fetch.json.as_ref(),
+                        )
+                        .await?;
+                    let (records, body_value) = self.parse_fetch_page(&bytes, job).await?;
+                    // Stream this locator page immediately — peak memory is
+                    // O(one page), not O(whole extract). The first fetch always
+                    // yields (so a zero-row job still emits one empty page, as
+                    // before); bookmark stays `None` (async-job sources have no
+                    // incremental replication).
+                    yield faucet_core::StreamPage { records, bookmark: None };
+
+                    // Advance to the next locator; stop when it is absent, empty,
+                    // `"null"`, or repeats (loop guard) — matching the previous
+                    // buffering behavior.
+                    let next = next_locator(&resp_headers, body_value.as_ref(), job);
+                    match next {
+                        Some(loc) if locator.as_deref() != Some(loc.as_str()) => {
+                            locator = Some(loc);
+                        }
+                        _ => break,
+                    }
+                }
                 return;
             }
 
@@ -984,6 +1073,26 @@ impl RestStream {
         query: &HashMap<String, String>,
         json: Option<&Value>,
     ) -> Result<(Vec<u8>, HeaderMap), FaucetError> {
+        let resp = self
+            .job_request_response(method, url, headers, query, json)
+            .await?;
+        let resp_headers = resp.headers().clone();
+        Ok((resp.bytes().await?.to_vec(), resp_headers))
+    }
+
+    /// Send a fetch request and return the raw [`reqwest::Response`] with its body
+    /// **unconsumed** — the caller reads headers (e.g. the `Sforce-Locator`) and
+    /// then streams the body. The shared request-building core of
+    /// [`job_request_bytes`](Self::job_request_bytes) and the native streaming path
+    /// (#633).
+    async fn job_request_response(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &HashMap<String, String>,
+        query: &HashMap<String, String>,
+        json: Option<&Value>,
+    ) -> Result<reqwest::Response, FaucetError> {
         let m = reqwest::Method::from_bytes(method.to_uppercase().as_bytes()).map_err(|_| {
             FaucetError::Config(format!("async_job: invalid HTTP method '{method}'"))
         })?;
@@ -1019,8 +1128,7 @@ impl RestStream {
                 body: format!("async_job: {url} returned HTTP {}", status.as_u16()),
             });
         }
-        let resp_headers = resp.headers().clone();
-        Ok((resp.bytes().await?.to_vec(), resp_headers))
+        Ok(resp)
     }
 
     async fn job_request_json(
@@ -1038,9 +1146,12 @@ impl RestStream {
             .map_err(|e| FaucetError::Source(format!("async_job: {url} returned non-JSON: {e}")))
     }
 
-    /// Run the submit → poll → fetch job lifecycle (#514) and return the
-    /// decoded result records.
-    async fn run_async_job(&self) -> Result<Vec<Value>, FaucetError> {
+    /// Run the async-job lifecycle up to resolving the fetch URL (#514): submit
+    /// → poll-to-terminal → resolve `fetch.url` / `fetch.url_from`. The caller
+    /// then fetches the (possibly locator-paged, #557) result and streams one
+    /// [`faucet_core::StreamPage`] per locator page, rather than buffering the
+    /// whole extract into a single page (#623).
+    async fn prepare_async_job(&self) -> Result<String, FaucetError> {
         use crate::async_job::{JobOutcome, resolve_url, substitute_job_id};
         let job = self
             .config
@@ -1071,6 +1182,14 @@ impl RestStream {
         let poll_url = resolve_url(base, &substitute_job_id(&job.poll.url, &job_id));
         let deadline =
             tokio::time::Instant::now() + std::time::Duration::from_secs(job.poll.timeout_secs);
+        // Exponential poll backoff: start small so a job that finishes seconds
+        // after submit is noticed in ~1s, doubling up to `interval_secs` (the
+        // cap) so a long-running job doesn't hammer the API. `interval_secs` is
+        // the ceiling, not a fixed wait — a fixed 15s made an instant job take
+        // ~15s of dead poll-wait.
+        let poll_cap = std::time::Duration::from_secs(job.poll.interval_secs);
+        let mut poll_delay =
+            std::cmp::min(std::time::Duration::from_secs(POLL_BACKOFF_BASE_SECS), poll_cap);
         // Retain the last poll response so `fetch.url_from` (#543) can source the
         // download URL from the terminal (success) poll body.
         let last_poll_body: Value = loop {
@@ -1098,8 +1217,8 @@ impl RestStream {
                             job.poll.timeout_secs
                         )));
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(job.poll.interval_secs))
-                        .await;
+                    tokio::time::sleep(poll_delay).await;
+                    poll_delay = next_poll_delay(poll_delay, poll_cap);
                 }
             }
         };
@@ -1123,40 +1242,9 @@ impl RestStream {
             }
         };
 
-        // 4) Fetch the result and decode it — looping across locator-paged result
-        // sets (#557) when a `locator_header` / `locator_body` is configured.
-        // Without a locator this runs exactly once (the classic single fetch).
-        let mut all_records = Vec::new();
-        let mut locator: Option<String> = None;
-        loop {
-            // Send the locator (when we have one) as the configured query param.
-            let mut query = job.fetch.query.clone();
-            if let (Some(loc), Some(param)) = (&locator, &job.fetch.locator_param) {
-                query.insert(param.clone(), loc.clone());
-            }
-            let (bytes, resp_headers) = self
-                .job_request_bytes(
-                    &job.fetch.method,
-                    &fetch_url,
-                    &job.fetch.headers,
-                    &query,
-                    job.fetch.json.as_ref(),
-                )
-                .await?;
-            let (records, body_value) = self.parse_fetch_page(&bytes, job).await?;
-            all_records.extend(records);
-
-            // Determine the next locator from the header or the body; stop when
-            // it is absent, empty, `"null"`, or repeats (loop guard).
-            let next = next_locator(&resp_headers, body_value.as_ref(), job);
-            match next {
-                Some(loc) if locator.as_deref() != Some(loc.as_str()) => {
-                    locator = Some(loc);
-                }
-                _ => break,
-            }
-        }
-        Ok(all_records)
+        // Steps 1-3 done; the caller fetches the (locator-paged) result and
+        // streams it page-by-page. See `stream_pages_inner` (#623).
+        Ok(fetch_url)
     }
 
     /// Parse one async-job fetch page into records, returning the parsed JSON
@@ -1258,6 +1346,7 @@ impl RestStream {
                     token_path,
                     expiry_path,
                     expiry_ratio,
+                    encoding,
                     response_validator,
                 }) => {
                     let token = self
@@ -1271,6 +1360,7 @@ impl RestStream {
                             token_path,
                             expiry_path.as_deref(),
                             *expiry_ratio,
+                            *encoding,
                             response_validator.as_ref(),
                         )
                         .await?;
@@ -1420,6 +1510,7 @@ impl RestStream {
                     token_path,
                     expiry_path,
                     expiry_ratio,
+                    encoding,
                     response_validator,
                 }) => {
                     let token = self
@@ -1433,6 +1524,7 @@ impl RestStream {
                             token_path,
                             expiry_path.as_deref(),
                             *expiry_ratio,
+                            *encoding,
                             response_validator.as_ref(),
                         )
                         .await?;
@@ -1852,11 +1944,27 @@ impl faucet_core::Source for RestStream {
     }
 
     fn dataset_uri(&self) -> String {
-        format!(
+        let base = format!(
             "{}{}",
             faucet_core::redact_uri_credentials(&self.config.base_url),
             self.config.path
-        )
+        );
+        // Async-job sources (Salesforce Bulk etc.) address every object through the
+        // *same* endpoint — the object lives in the SOQL query body, not the URL. So
+        // without this, a 21-object matrix collapses to one catalog/lineage dataset
+        // (#640). Derive a per-object URI from the query: the `FROM <SObject>` when
+        // parseable, else a stable hash of the submit body (distinct query → distinct
+        // dataset either way).
+        if let Some(job) = &self.config.async_job {
+            let sep = if base.ends_with('/') { "" } else { "/" };
+            if let Some(obj) = async_job_object(job.submit.json.as_ref()) {
+                return format!("{base}{sep}sobjects/{obj}");
+            }
+            if let Some(j) = &job.submit.json {
+                return format!("{base}{sep}job/{}", stable_short_hash(&j.to_string()));
+            }
+        }
+        base
     }
 
     fn state_key(&self) -> Option<String> {
@@ -1925,6 +2033,99 @@ impl faucet_core::Source for RestStream {
         Ok(())
     }
 
+    /// Native byte-passthrough (#633): an `async_job` (Salesforce Bulk-style)
+    /// source whose fetch pages are CSV can stream straight to a byte-loading sink
+    /// (e.g. BigQuery's load job) as NDJSON, never building `Vec<Value>`. Advertised
+    /// only for the CSV async-job path with no custom `decode` (JSON async jobs and
+    /// the paginated non-job path keep the `Value` path). Emits `NdJson` — the
+    /// converted bytes are identical to the `Value` path's, preserving the
+    /// destination's autodetected schema (see [`crate::format::csv_to_ndjson`]).
+    fn native_output_formats(&self) -> &'static [faucet_core::NativeFormat] {
+        let csv_async_job = self.config.async_job.is_some()
+            && self.config.response_format == crate::config::ResponseFormat::Csv
+            && self.config.decode.is_empty();
+        if csv_async_job {
+            &[faucet_core::NativeFormat::NdJson]
+        } else {
+            &[]
+        }
+    }
+
+    fn stream_native<'a>(
+        &'a self,
+        _context: &'a HashMap<String, Value>,
+        format: faucet_core::NativeFormat,
+        _batch_size: usize,
+    ) -> Pin<
+        Box<dyn Stream<Item = Result<faucet_core::NativeBatch, FaucetError>> + Send + 'a>,
+    > {
+        Box::pin(async_stream::try_stream! {
+            let job = self.config.async_job.as_ref().ok_or_else(|| {
+                FaucetError::Source(
+                    "rest: stream_native invoked without an async_job config".into(),
+                )
+            })?;
+            if format != faucet_core::NativeFormat::NdJson {
+                Err(FaucetError::Source(format!(
+                    "rest: stream_native only emits NdJson, got {format:?}"
+                )))?;
+            }
+            // Mirror the async-job locator loop from `stream_pages_inner`, but
+            // **stream** each CSV page's response body straight into the CSV→NDJSON
+            // converter and emit a `NativePayload::Stream` — the full page is never
+            // buffered on either side (source or sink), so peak memory is O(one
+            // ~256 KiB chunk), independent of page/row count (#633).
+            use futures::TryStreamExt as _;
+            let fetch_url = self.prepare_async_job().await?;
+            let mut locator: Option<String> = None;
+            loop {
+                let mut query = job.fetch.query.clone();
+                if let (Some(loc), Some(param)) = (&locator, &job.fetch.locator_param) {
+                    query.insert(param.clone(), loc.clone());
+                }
+                let resp = self
+                    .job_request_response(
+                        &job.fetch.method,
+                        &fetch_url,
+                        &job.fetch.headers,
+                        &query,
+                        job.fetch.json.as_ref(),
+                    )
+                    .await?;
+                // Read the locator from headers *before* the body is consumed.
+                let resp_headers = resp.headers().clone();
+                let delimiter = self.config.csv_delimiter;
+                let has_headers = self.config.csv_has_headers;
+                // reqwest (tokio) byte stream → AsyncRead → futures AsyncRead (compat)
+                // → the CSV→NDJSON chunk stream. Owns `resp`, so it is `'static`.
+                let body = resp
+                    .bytes_stream()
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+                let reader = tokio_util::io::StreamReader::new(body);
+                let ndjson_chunks =
+                    crate::format::csv_reader_to_ndjson_stream(reader, delimiter, has_headers);
+                yield faucet_core::NativeBatch {
+                    format: faucet_core::NativeFormat::NdJson,
+                    payload: faucet_core::NativePayload::Stream(Box::pin(ndjson_chunks)),
+                    csv: faucet_core::CsvDialect { has_header: has_headers, delimiter },
+                    records: None,
+                    bookmark: None,
+                };
+
+                // async-job sources have no incremental replication → bookmark stays
+                // `None`; advance the locator with the same loop-guard as the
+                // `Value` path.
+                let next = next_locator(&resp_headers, None, job);
+                match next {
+                    Some(loc) if locator.as_deref() != Some(loc.as_str()) => {
+                        locator = Some(loc);
+                    }
+                    _ => break,
+                }
+            }
+        })
+    }
+
     fn supports_discover(&self) -> bool {
         // OData exposes a machine-readable `$metadata` catalog; a plain REST API
         // has none, so discovery is OData-only.
@@ -1971,6 +2172,22 @@ impl faucet_core::Source for RestStream {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn next_poll_delay_doubles_then_caps() {
+        let cap = Duration::from_secs(15);
+        // Exponential doubling below the cap.
+        assert_eq!(next_poll_delay(Duration::from_secs(1), cap), Duration::from_secs(2));
+        assert_eq!(next_poll_delay(Duration::from_secs(2), cap), Duration::from_secs(4));
+        assert_eq!(next_poll_delay(Duration::from_secs(4), cap), Duration::from_secs(8));
+        // Doubling past the cap clamps to the cap.
+        assert_eq!(next_poll_delay(Duration::from_secs(8), cap), cap);
+        assert_eq!(next_poll_delay(cap, cap), cap);
+        // A zero cap (interval_secs: 0) keeps the delay at zero (poll as fast as possible).
+        assert_eq!(next_poll_delay(Duration::ZERO, Duration::ZERO), Duration::ZERO);
+        // Saturating: a huge current delay never overflows.
+        assert_eq!(next_poll_delay(Duration::from_secs(u64::MAX), cap), cap);
+    }
 
     #[test]
     fn value_max_consolidates_partition_bookmarks() {
@@ -2249,6 +2466,55 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(source.dataset_uri(), "https://api.example.com/v1/users");
+    }
+
+    #[test]
+    fn soql_from_object_parses_the_driving_object() {
+        // Common shapes: with WHERE, with a leading newline/whitespace, lowercase
+        // keyword, trailing clause, and a field literally containing "from".
+        assert_eq!(
+            soql_from_object("SELECT Id, Name FROM Account WHERE IsDeleted = false"),
+            Some("Account".to_string())
+        );
+        assert_eq!(
+            soql_from_object("SELECT Id\nFROM SBQQ__Quote__c\nORDER BY Id"),
+            Some("SBQQ__Quote__c".to_string())
+        );
+        assert_eq!(
+            soql_from_object("select id from contact"),
+            Some("contact".to_string())
+        );
+        assert_eq!(
+            soql_from_object("SELECT Id FROM Opportunity_Line_Item"),
+            Some("Opportunity_Line_Item".to_string())
+        );
+        // No FROM → None (caller falls back to a hash).
+        assert_eq!(soql_from_object("SELECT 1"), None);
+    }
+
+    #[test]
+    fn async_job_object_reads_query_field() {
+        assert_eq!(
+            async_job_object(Some(&serde_json::json!({
+                "operation": "queryAll",
+                "query": "SELECT Id FROM Lead"
+            }))),
+            Some("Lead".to_string())
+        );
+        // Missing query / missing body → None.
+        assert_eq!(
+            async_job_object(Some(&serde_json::json!({"operation": "queryAll"}))),
+            None
+        );
+        assert_eq!(async_job_object(None), None);
+    }
+
+    #[test]
+    fn stable_short_hash_is_deterministic_and_distinct() {
+        let a = stable_short_hash("SELECT Id FROM Account");
+        assert_eq!(a, stable_short_hash("SELECT Id FROM Account"));
+        assert_ne!(a, stable_short_hash("SELECT Id FROM Contact"));
+        assert_eq!(a.len(), 16);
     }
 
     #[test]

@@ -2,6 +2,18 @@ import { api, toast } from "../api.js";
 import { streamLogs } from "../sse.js";
 import { navigate } from "../router.js";
 import { fmtTime } from "./runs.js";
+
+/** Human duration between two RFC3339 timestamps; "—" if either is missing. */
+function fmtDur(fromISO, toISO) {
+  if (!fromISO || !toISO) return "—";
+  const ms = Date.parse(toISO) - Date.parse(fromISO);
+  if (!(ms >= 0)) return "—";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
 import { escapeHtml } from "../utils.js";
 
 const TERMINAL = ["completed", "failed", "cancelled"];
@@ -93,7 +105,7 @@ export async function renderDetail(container, { id }) {
       <div class="page-head">
         <button class="btn-ghost" id="back">← Runs</button>
         <div class="detail-actions">
-          <button class="btn-ghost" id="cancel" hidden>Cancel</button>
+          <button class="btn-warn" id="cancel" hidden>Cancel</button>
           <button class="btn-danger" id="delete" hidden>Delete</button>
         </div>
       </div>
@@ -119,7 +131,7 @@ export async function renderDetail(container, { id }) {
             <option value="contract">contract</option>
           </select>
           <button class="btn-ghost" id="dlq-inspect">Inspect</button>
-          <button class="btn-ghost" id="dlq-discard">Discard</button>
+          <button class="btn-warn" id="dlq-discard">Discard</button>
           <label class="dlq-check"><input type="checkbox" id="dlq-delete" /> delete (no archive)</label>
         </div>
         <div id="dlq-result"></div>
@@ -179,6 +191,8 @@ export async function renderDetail(container, { id }) {
         <div>submitted ${fmtTime(rec.submitted_at)}</div>
         <div>started ${fmtTime(rec.started_at)}</div>
         <div>finished ${fmtTime(rec.finished_at)}</div>
+        <div title="submitted → finished (includes time queued)">total ${fmtDur(rec.submitted_at, rec.finished_at)}</div>
+        <div title="started → finished (execution only)">run ${fmtDur(rec.started_at, rec.finished_at)}</div>
         <div>${rec.records_written ?? 0} rows</div>
         ${rec.idempotency_key ? `<div>idem: ${escapeHtml(rec.idempotency_key)}</div>` : ""}
       </div>${errors}`;

@@ -570,7 +570,9 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
             // Build a short-lived sink just for begin, then drop it (closing its
             // pool) before the invocations run — so it never contends with the
             // per-invocation sinks on a single-writer backend.
-            let sink = build_sink(&group.kind, group.cfg.clone(), &opts.auth).await?;
+            let mut cfg = group.cfg.clone();
+            mark_overwrite_staging(&group.kind, &mut cfg, group.members > 1);
+            let sink = build_sink(&group.kind, cfg, &opts.auth).await?;
             sink.begin_overwrite().await.map_err(|e| {
                 CliError::Internal(format!(
                     "overwrite: preparing destination '{}': {e}",
@@ -614,6 +616,11 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
             // overwrite group runs with its per-invocation begin/commit/abort
             // suppressed — the group's single lifecycle is driven here instead.
             let suppress_overwrite = overwrite_task_group.contains_key(&meta);
+            // A *grouped* overwrite (>1 writer → one table) must stage; a solo
+            // one loads directly. Drives the bigquery `_overwrite_staging` flag.
+            let overwrite_grouped = overwrite_task_group
+                .get(&meta)
+                .is_some_and(|gi| overwrite_groups[*gi].members > 1);
             let unit_cancel = level_cancel.clone();
             let handle = joinset.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore not closed");
@@ -626,6 +633,7 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                     &opts2,
                     unit_cancel,
                     suppress_overwrite,
+                    overwrite_grouped,
                 )
                 .await
             });
@@ -725,7 +733,9 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
         let level_cancelled = level_cancel.is_cancelled() || cancel.is_cancelled();
         for (gi, group) in overwrite_groups.iter().enumerate() {
             let must_abort = level_cancelled || failed_overwrite_groups.contains(&gi);
-            let sink = build_sink(&group.kind, group.cfg.clone(), &opts.auth).await?;
+            let mut cfg = group.cfg.clone();
+            mark_overwrite_staging(&group.kind, &mut cfg, group.members > 1);
+            let sink = build_sink(&group.kind, cfg, &opts.auth).await?;
             if must_abort {
                 if let Err(e) = sink.abort_overwrite().await {
                     tracing::warn!(
@@ -841,6 +851,27 @@ struct OverwriteGroup {
     /// deterministic staging target the per-invocation sinks write into.
     kind: String,
     cfg: Value,
+    /// Number of invocations writing to this destination. `> 1` means a true
+    /// fan-out (several writers → one table): a shared staging table is then the
+    /// only safe swap, so the BigQuery sink is told to stage (`_overwrite_staging`)
+    /// rather than load directly. A single-member group is a solo overwrite.
+    members: usize,
+}
+
+/// Inject the internal `_overwrite_staging` flag into a **bigquery** sink config
+/// for a *grouped* overwrite fan-out (>1 writer → one physical table), where a
+/// shared staging table is the only safe swap across the independent writer sink
+/// instances. Solo overwrites (single member) and every non-bigquery kind are
+/// left untouched — the latter would reject an unknown field, and a solo
+/// overwrite loads directly into the target (a WRITE_TRUNCATE load is atomic on
+/// its own).
+fn mark_overwrite_staging(kind: &str, cfg: &mut Value, grouped: bool) {
+    if grouped
+        && crate::registry::sink_supports_direct_overwrite(kind)
+        && let Value::Object(map) = cfg
+    {
+        map.insert("_overwrite_staging".to_string(), Value::Bool(true));
+    }
 }
 
 /// Whether a node's sink is configured for `write_mode: overwrite`. The write
@@ -921,13 +952,17 @@ fn plan_overwrite_groups(units: &[Unit], opts: &ExecuteOptions) -> CliResult<Ove
             serde_json::to_string(&cfg).unwrap_or_default()
         );
         let gi = match index_by_key.get(&key) {
-            Some(gi) => *gi,
+            Some(gi) => {
+                groups[*gi].members += 1;
+                *gi
+            }
             None => {
                 let gi = groups.len();
                 groups.push(OverwriteGroup {
                     dest: describe_sink_dest(&kind, &cfg),
                     kind: kind.clone(),
                     cfg,
+                    members: 1,
                 });
                 index_by_key.insert(key, gi);
                 gi
@@ -948,6 +983,7 @@ async fn run_unit(
     opts: &ExecuteOptions,
     cancel: CancellationToken,
     suppress_overwrite: bool,
+    overwrite_grouped: bool,
 ) -> InvocationOutcome {
     // A discovery row (#501) enumerates a value-set instead of running a
     // source→sink pipeline: build its source, drain it, project + dedup, and
@@ -985,6 +1021,7 @@ async fn run_unit(
         opts,
         cancel,
         suppress_overwrite,
+        overwrite_grouped,
     )
     .await;
     let duration_ms = started.elapsed().as_millis() as u64;
@@ -1470,6 +1507,7 @@ async fn run_one_invocation(
     opts: &ExecuteOptions,
     cancel: CancellationToken,
     suppress_overwrite: bool,
+    overwrite_grouped: bool,
 ) -> CliResult<(Vec<Value>, PipelineStats)> {
     // Observability identity for this invocation — built once, reused by both
     // the Pipeline builder and the transform instrumentation.
@@ -1505,6 +1543,11 @@ async fn run_one_invocation(
     // 1) Resolve `${parent.path}` in the per-row source + sink configs.
     let mut source_cfg = node.source.config.clone();
     let mut sink_cfg = node.sink.config.clone();
+    // For a *grouped* overwrite fan-out (>1 writer → one table), tell a bigquery
+    // sink to stage rather than load directly — the independent writer instances
+    // can't coordinate a direct WRITE_TRUNCATE. A solo overwrite is left to load
+    // directly into the target. No-op for non-bigquery kinds and non-overwrite.
+    mark_overwrite_staging(&node.sink.kind, &mut sink_cfg, overwrite_grouped);
 
     // Resolve `${now.*}` run-clock tokens for every invocation (root + child),
     // before the parent-record pass. Leaves all other tokens verbatim.
@@ -2418,6 +2461,40 @@ impl Source for StateKeyOverride {
     }
     async fn capture_resume_position(&self) -> Result<Option<Value>, FaucetError> {
         self.inner.capture_resume_position().await
+    }
+    // Forward the fast-path capabilities so wrapping the source for a per-row
+    // state key never silently disables the columnar (#375) or native
+    // byte-passthrough (#633) transfer paths.
+    #[cfg(feature = "arrow")]
+    fn supports_columnar(&self) -> bool {
+        self.inner.supports_columnar()
+    }
+    #[cfg(feature = "arrow")]
+    fn stream_batches<'a>(
+        &'a self,
+        ctx: &'a HashMap<String, Value>,
+        batch_size: usize,
+    ) -> std::pin::Pin<
+        Box<
+            dyn faucet_core::Stream<Item = Result<faucet_core::columnar::ColumnarPage, FaucetError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        self.inner.stream_batches(ctx, batch_size)
+    }
+    fn native_output_formats(&self) -> &'static [faucet_core::NativeFormat] {
+        self.inner.native_output_formats()
+    }
+    fn stream_native<'a>(
+        &'a self,
+        ctx: &'a HashMap<String, Value>,
+        format: faucet_core::NativeFormat,
+        batch_size: usize,
+    ) -> std::pin::Pin<
+        Box<dyn faucet_core::Stream<Item = Result<faucet_core::NativeBatch, FaucetError>> + Send + 'a>,
+    > {
+        self.inner.stream_native(ctx, format, batch_size)
     }
 }
 
@@ -4617,6 +4694,56 @@ matrix:
     fn build_state_key_with_and_without_parent() {
         assert_eq!(build_state_key("pipe", "row", None), "pipe::row");
         assert_eq!(build_state_key("pipe", "row", Some("k")), "pipe::row::k");
+    }
+
+    #[test]
+    fn mark_overwrite_staging_only_for_grouped_bigquery() {
+        // Grouped (>1 member) bigquery ⇒ inject the staging flag.
+        let mut cfg = json!({"table_id": "t"});
+        mark_overwrite_staging("bigquery", &mut cfg, true);
+        assert_eq!(cfg.get("_overwrite_staging"), Some(&json!(true)));
+
+        // Solo bigquery ⇒ no flag (loads directly).
+        let mut cfg = json!({"table_id": "t"});
+        mark_overwrite_staging("bigquery", &mut cfg, false);
+        assert!(cfg.get("_overwrite_staging").is_none());
+
+        // Grouped non-bigquery ⇒ never injected (would reject the unknown field).
+        let mut cfg = json!({"connection_url": "postgres://x"});
+        mark_overwrite_staging("postgres", &mut cfg, true);
+        assert!(cfg.get("_overwrite_staging").is_none());
+    }
+
+    #[tokio::test]
+    async fn plan_overwrite_groups_counts_members() {
+        // Two invocations to the same destination ⇒ one group, members == 2
+        // (grouped ⇒ stage); a distinct destination ⇒ its own single-member
+        // group (solo ⇒ direct load).
+        let dir = tempfile::tempdir().unwrap();
+        let opts = exec_opts("t");
+        let mk = |node: &ExpandedNode, pid: &str, id: i64| Unit {
+            node: node.clone(),
+            parent_record: Some(std::sync::Arc::new(json!({ "id": id }))),
+            state_key: format!("t::c::{pid}"),
+            parent_record_key: Some(pid.to_string()),
+            product_ctx: None,
+        };
+        // Shared destination across two parents ⇒ members == 2.
+        let shared = overwrite_child_node(dir.path(), "orders");
+        let units = vec![mk(&shared, "1", 1), mk(&shared, "2", 2)];
+        let (groups, _) = plan_overwrite_groups(&units, &opts).unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].members, 2, "the two shared-dest units group");
+
+        // Per-parent destinations ⇒ two single-member (solo) groups.
+        let per = overwrite_child_node(dir.path(), "orders_${p.id}");
+        let units2 = vec![mk(&per, "1", 1), mk(&per, "2", 2)];
+        let (groups2, _) = plan_overwrite_groups(&units2, &opts).unwrap();
+        assert_eq!(groups2.len(), 2);
+        assert!(
+            groups2.iter().all(|g| g.members == 1),
+            "per-parent destinations are solo"
+        );
     }
 
     #[test]

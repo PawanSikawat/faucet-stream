@@ -3,6 +3,7 @@
 //! Fetches a token from an arbitrary HTTP endpoint, extracts it from the
 //! response via JSONPath, and caches it with optional expiry tracking.
 
+use super::TokenBodyEncoding;
 use faucet_core::FaucetError;
 use jsonpath_rust::JsonPath;
 use reqwest::Client;
@@ -102,6 +103,7 @@ impl TokenEndpointCache {
         token_path: &str,
         expiry_path: Option<&str>,
         expiry_ratio: f64,
+        encoding: TokenBodyEncoding,
         response_validator: Option<&ResponseValidator>,
     ) -> Result<String, FaucetError> {
         let mut guard = self.0.lock().await;
@@ -120,6 +122,7 @@ impl TokenEndpointCache {
             body,
             token_path,
             expiry_path,
+            encoding,
             response_validator,
         )
         .await?;
@@ -159,10 +162,35 @@ pub async fn fetch_token_from_endpoint(
         body,
         token_path,
         None,
+        TokenBodyEncoding::Json,
         response_validator,
     )
     .await?;
     Ok(token)
+}
+
+/// How many times a transient token-endpoint failure is retried before giving up.
+const TOKEN_MAX_ATTEMPTS: u32 = 4;
+/// Base backoff before the first retry; doubled each subsequent attempt.
+const TOKEN_RETRY_BASE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Whether a non-success token response is transient and worth retrying.
+///
+/// `429` and `5xx` are the standard transient statuses. **`400` is included only
+/// when the body signals a retryable condition** — notably Salesforce, which
+/// returns `HTTP 400 {"error":"unknown_error","error_description":"retry your
+/// request"}` on transient token-service hiccups (a permanent `invalid_grant` /
+/// `unsupported_grant_type` 400 is *not* retried, so a real misconfig still fails
+/// fast).
+fn is_transient_token_status(code: u16, body: &str) -> bool {
+    if code == 429 || (500..600).contains(&code) {
+        return true;
+    }
+    if code == 400 {
+        let b = body.to_ascii_lowercase();
+        return b.contains("retry your request") || b.contains("unknown_error");
+    }
+    false
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -174,39 +202,101 @@ async fn fetch_token(
     body: Option<&Value>,
     token_path: &str,
     expiry_path: Option<&str>,
+    encoding: TokenBodyEncoding,
     response_validator: Option<&ResponseValidator>,
 ) -> Result<(String, Option<u64>), FaucetError> {
-    let mut req = client.request(method.clone(), url).headers(headers.clone());
-    if let Some(b) = body {
-        req = req.json(b);
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        let mut req = client.request(method.clone(), url).headers(headers.clone());
+        if let Some(b) = body {
+            // OAuth token endpoints (RFC-6749) require form-urlencoding; a JSON
+            // body yields `unsupported_grant_type` (e.g. Salesforce). Default
+            // stays JSON for back-compat with non-OAuth token endpoints.
+            req = match encoding {
+                TokenBodyEncoding::Json => req.json(b),
+                TokenBodyEncoding::Form => req.form(&form_pairs(b)?),
+            };
+        }
+
+        // A transport error (connect/timeout) is transient — retry it too.
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) if attempt < TOKEN_MAX_ATTEMPTS && (e.is_timeout() || e.is_connect()) => {
+                token_backoff(attempt).await;
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let status = resp.status();
+        let is_success = match response_validator {
+            Some(v) => v.is_success(status.as_u16()),
+            None => status.is_success(),
+        };
+        if !is_success {
+            let status_code = status.as_u16();
+            let body_text = resp.text().await.unwrap_or_default();
+            if attempt < TOKEN_MAX_ATTEMPTS && is_transient_token_status(status_code, &body_text) {
+                tracing::warn!(
+                    status = status_code,
+                    attempt,
+                    "token endpoint transient failure; retrying after backoff"
+                );
+                token_backoff(attempt).await;
+                continue;
+            }
+            return Err(FaucetError::Auth(format!(
+                "token endpoint request failed (HTTP {status_code}): {body_text}"
+            )));
+        }
+
+        let resp_body: Value = resp.json().await?;
+
+        let token = extract_string(&resp_body, token_path).ok_or_else(|| {
+            FaucetError::Auth(format!(
+                "token_path '{token_path}' did not match a string value in the response"
+            ))
+        })?;
+
+        let expires_in = expiry_path.and_then(|ep| extract_u64(&resp_body, ep));
+
+        return Ok((token, expires_in));
     }
+}
 
-    let resp = req.send().await?;
+/// Exponential backoff before token-endpoint retry `attempt` (1-based).
+async fn token_backoff(attempt: u32) {
+    let delay = TOKEN_RETRY_BASE * 2u32.saturating_pow(attempt.saturating_sub(1));
+    tokio::time::sleep(delay).await;
+}
 
-    let status = resp.status();
-    let is_success = match response_validator {
-        Some(v) => v.is_success(status.as_u16()),
-        None => status.is_success(),
-    };
-    if !is_success {
-        let status_code = status.as_u16();
-        let body_text = resp.text().await.unwrap_or_default();
-        return Err(FaucetError::Auth(format!(
-            "token endpoint request failed (HTTP {status_code}): {body_text}"
-        )));
-    }
-
-    let resp_body: Value = resp.json().await?;
-
-    let token = extract_string(&resp_body, token_path).ok_or_else(|| {
-        FaucetError::Auth(format!(
-            "token_path '{token_path}' did not match a string value in the response"
-        ))
+/// Flatten a JSON object body into form-encoded `(key, value)` pairs for
+/// `application/x-www-form-urlencoded` token requests. Values must be scalars
+/// (string / number / bool); a non-object body or a nested/array value is
+/// rejected — form encoding has no representation for them.
+fn form_pairs(body: &Value) -> Result<Vec<(String, String)>, FaucetError> {
+    let obj = body.as_object().ok_or_else(|| {
+        FaucetError::Config(
+            "token_endpoint: `encoding: form` requires a JSON object body".into(),
+        )
     })?;
-
-    let expires_in = expiry_path.and_then(|ep| extract_u64(&resp_body, ep));
-
-    Ok((token, expires_in))
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj {
+        let s = match v {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            _ => {
+                return Err(FaucetError::Config(format!(
+                    "token_endpoint: `encoding: form` body field {k:?} must be a \
+                     string, number, or bool"
+                )));
+            }
+        };
+        pairs.push((k.clone(), s));
+    }
+    Ok(pairs)
 }
 
 /// Extract a single string value from a JSON body using a JSONPath expression.
@@ -350,5 +440,129 @@ mod tests {
     fn extract_u64_returns_none_for_float() {
         let body = json!({"expires_in": 3600.5});
         assert_eq!(extract_u64(&body, "$.expires_in"), None);
+    }
+
+    // ── form_pairs ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn form_pairs_flattens_scalars() {
+        let mut p = form_pairs(&json!({"a": "x", "n": 3, "t": true})).unwrap();
+        p.sort();
+        assert_eq!(
+            p,
+            vec![
+                ("a".to_string(), "x".to_string()),
+                ("n".to_string(), "3".to_string()),
+                ("t".to_string(), "true".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn form_pairs_rejects_non_object() {
+        assert!(form_pairs(&json!([1, 2])).is_err());
+        assert!(form_pairs(&json!("scalar")).is_err());
+    }
+
+    #[test]
+    fn form_pairs_rejects_nested_value() {
+        assert!(form_pairs(&json!({"a": {"nested": 1}})).is_err());
+        assert!(form_pairs(&json!({"a": [1, 2]})).is_err());
+    }
+
+    #[test]
+    fn transient_token_status_classification() {
+        // Standard transient statuses.
+        assert!(is_transient_token_status(429, ""));
+        assert!(is_transient_token_status(500, ""));
+        assert!(is_transient_token_status(503, "gateway"));
+        // Salesforce's retryable 400 (case-insensitive, either marker).
+        assert!(is_transient_token_status(
+            400,
+            r#"{"error":"unknown_error","error_description":"retry your request"}"#
+        ));
+        assert!(is_transient_token_status(400, "Please RETRY YOUR REQUEST"));
+        // A permanent 400 (real misconfig) is NOT retried — fail fast.
+        assert!(!is_transient_token_status(400, r#"{"error":"invalid_grant"}"#));
+        assert!(!is_transient_token_status(
+            400,
+            r#"{"error":"unsupported_grant_type"}"#
+        ));
+        // Other client errors are not retried.
+        assert!(!is_transient_token_status(401, "unauthorized"));
+        assert!(!is_transient_token_status(403, "forbidden"));
+    }
+
+    // ── token request encoding (json default vs form) ────────────────────────
+
+    #[tokio::test]
+    async fn token_endpoint_form_encoding_sends_urlencoded() {
+        use wiremock::matchers::{body_string_contains, header, method as m, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(m("POST"))
+            .and(path("/token"))
+            .and(header("content-type", "application/x-www-form-urlencoded"))
+            .and(body_string_contains("grant_type=refresh_token"))
+            .and(body_string_contains("client_id=abc"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"access_token": "ftok", "expires_in": 3600})),
+            )
+            .mount(&server)
+            .await;
+        let cache = TokenEndpointCache::new();
+        let client = Client::new();
+        let body = json!({
+            "grant_type": "refresh_token", "client_id": "abc", "refresh_token": "r"
+        });
+        let token = cache
+            .get_or_refresh(
+                &client,
+                &format!("{}/token", server.uri()),
+                &reqwest::Method::POST,
+                &HeaderMap::new(),
+                Some(&body),
+                "$.access_token",
+                Some("$.expires_in"),
+                0.9,
+                TokenBodyEncoding::Form,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(token, "ftok");
+    }
+
+    #[tokio::test]
+    async fn token_endpoint_json_encoding_is_default() {
+        use wiremock::matchers::{body_json, method as m, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(m("POST"))
+            .and(path("/token"))
+            .and(body_json(json!({"grant_type": "refresh_token"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"access_token": "jtok"})))
+            .mount(&server)
+            .await;
+        let cache = TokenEndpointCache::new();
+        let client = Client::new();
+        let body = json!({"grant_type": "refresh_token"});
+        let token = cache
+            .get_or_refresh(
+                &client,
+                &format!("{}/token", server.uri()),
+                &reqwest::Method::POST,
+                &HeaderMap::new(),
+                Some(&body),
+                "$.access_token",
+                None,
+                0.9,
+                TokenBodyEncoding::Json,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(token, "jtok");
     }
 }

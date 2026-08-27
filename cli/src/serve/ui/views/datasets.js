@@ -144,7 +144,7 @@ export async function renderLocalOutputs(host, scope = {}) {
           canManage
             ? `<span class="lo-purge">
                  <input type="number" id="lo-days" min="0" value="${retention}" />
-                 <button class="btn-ghost" id="lo-purge-btn">Purge older than N days</button>
+                 <button class="btn-warn" id="lo-purge-btn">Purge older than N days</button>
                </span>
                <button class="btn-danger" id="lo-all">${
                  datasetId ? "Clean this dataset's outputs" : "Clean all local outputs"

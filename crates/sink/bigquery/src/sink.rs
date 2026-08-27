@@ -4,7 +4,7 @@ use crate::config::BigQuerySinkConfig;
 use crate::idempotent;
 use crate::merge;
 use async_trait::async_trait;
-use faucet_common_bigquery::build_client;
+use faucet_common_bigquery::{BigQueryCredentials, build_client};
 use faucet_core::FaucetError;
 use faucet_core::idempotency::COMMIT_TOKEN_TOKEN_COL;
 use gcp_bigquery_client::Client;
@@ -32,6 +32,15 @@ const IDEMPOTENT_JOB_TIMEOUT: Duration = Duration::from_secs(120);
 /// BigQuery holds the connection open up to this long, so we don't busy-wait.
 const JOB_POLL_LONG_POLL_MS: i32 = 10_000;
 
+/// OAuth scope minted for the `media_load` upload endpoint (which is not covered
+/// by the `gcp_bigquery_client` client's own authenticator surface).
+const BQ_OAUTH_SCOPE: &str = "https://www.googleapis.com/auth/bigquery";
+
+/// Max wall-clock spent polling a media-upload **load** job to completion.
+/// A bucket-free page load is a single job; this is a generous safety cap so a
+/// wedged job can't hang the run forever.
+const LOAD_JOB_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// `true` when a `tables.get` error is a 404 (table does not exist) — used by
 /// `current_schema` to report a not-yet-created target as `Ok(None)` rather
 /// than a hard error.
@@ -51,6 +60,18 @@ fn dml_affected_rows(job: &Job) -> u64 {
         .as_ref()
         .and_then(|s| s.query.as_ref())
         .and_then(|q| q.num_dml_affected_rows.as_deref())
+        .and_then(|n| n.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// Rows a **load job** ingested, from `statistics.load.outputRows` (a string).
+/// `0` when absent/unparseable — a metric, never a correctness signal (the load
+/// is already verified committed by the caller).
+fn load_output_rows(job: &Job) -> u64 {
+    job.statistics
+        .as_ref()
+        .and_then(|s| s.load.as_ref())
+        .and_then(|l| l.output_rows.as_deref())
         .and_then(|n| n.parse::<u64>().ok())
         .unwrap_or(0)
 }
@@ -79,6 +100,339 @@ fn deletes_to_payload(deletes: &[faucet_core::KeyTuple]) -> String {
     Value::Array(arr).to_string()
 }
 
+/// Serialize a page of records to newline-delimited JSON (one compact object
+/// per line) for a `NEWLINE_DELIMITED_JSON` load job. Each record must be a
+/// JSON object; a non-object surfaces as a `FaucetError::Sink`.
+fn records_to_ndjson(records: &[Value]) -> Result<String, FaucetError> {
+    let mut out = String::new();
+    for (i, rec) in records.iter().enumerate() {
+        if !rec.is_object() {
+            return Err(FaucetError::Sink(format!(
+                "BigQuery media load: record {i} is not a JSON object"
+            )));
+        }
+        serde_json::to_string(rec)
+            .map_err(|e| FaucetError::Sink(format!("BigQuery media load: serialize record: {e}")))
+            .map(|line| {
+                out.push_str(&line);
+                out.push('\n');
+            })?;
+    }
+    Ok(out)
+}
+
+/// Build the BigQuery load-job resource JSON for a `NEWLINE_DELIMITED_JSON`
+/// media upload into `project.dataset.table`. `ignoreUnknownValues` mirrors the
+/// typed `INSERT … SELECT` path (which projects only the target columns), so a
+/// page carrying an extra field never fails the load.
+fn build_load_job_json(
+    project: &str,
+    dataset: &str,
+    table: &str,
+    write_disposition: &str,
+    location: Option<&str>,
+) -> Value {
+    build_load_job_json_fmt(
+        project,
+        dataset,
+        table,
+        write_disposition,
+        location,
+        "NEWLINE_DELIMITED_JSON",
+        None,
+        false,
+    )
+}
+
+/// Generalized load-job JSON: `source_format` selects NDJSON vs CSV, `skip_rows`
+/// sets `skipLeadingRows` (CSV headers), and `schema`/`autodetect` control typing.
+///
+/// **`schema` (an explicit `{fields:[…]}`) takes precedence over `autodetect`.**
+/// The native byte-passthrough path (#633) always passes an all-`STRING` schema
+/// derived from the payload's own columns, because BigQuery `autodetect` on
+/// all-string JSON *infers* DATE/NUMERIC/etc. from the first rows and then a later
+/// row that doesn't match that inferred type fails the whole load ("JSON table
+/// encountered too many errors"). An explicit all-`STRING` schema matches the
+/// `Value` write path exactly (CSV fields are all strings) and never mis-types.
+/// `autodetect` is the fallback only when no schema can be derived. Keeps
+/// `ignoreUnknownValues` so an extra column never fails a load.
+#[allow(clippy::too_many_arguments)]
+fn build_load_job_json_fmt(
+    project: &str,
+    dataset: &str,
+    table: &str,
+    write_disposition: &str,
+    location: Option<&str>,
+    source_format: &str,
+    skip_rows: Option<u64>,
+    autodetect: bool,
+) -> Value {
+    build_load_job_json_full(
+        project,
+        dataset,
+        table,
+        write_disposition,
+        location,
+        source_format,
+        skip_rows,
+        None,
+        autodetect,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_load_job_json_full(
+    project: &str,
+    dataset: &str,
+    table: &str,
+    write_disposition: &str,
+    location: Option<&str>,
+    source_format: &str,
+    skip_rows: Option<u64>,
+    schema: Option<Value>,
+    autodetect: bool,
+) -> Value {
+    let mut load = serde_json::json!({
+        "destinationTable": {
+            "projectId": project,
+            "datasetId": dataset,
+            "tableId": table,
+        },
+        "sourceFormat": source_format,
+        "writeDisposition": write_disposition,
+        "ignoreUnknownValues": true,
+    });
+    match schema {
+        // Explicit schema wins; autodetect must be off or BigQuery ignores the schema.
+        Some(s) => {
+            load["schema"] = s;
+            load["autodetect"] = serde_json::json!(false);
+        }
+        None => {
+            load["autodetect"] = serde_json::json!(autodetect);
+        }
+    }
+    if let Some(n) = skip_rows {
+        load["skipLeadingRows"] = serde_json::json!(n);
+    }
+    let mut job = serde_json::json!({ "configuration": { "load": load } });
+    if let Some(loc) = location {
+        job["jobReference"] = serde_json::json!({
+            "projectId": project,
+            "location": loc,
+        });
+    }
+    job
+}
+
+/// Build an all-`STRING` BigQuery load schema (`{fields:[{name,type:STRING,mode:NULLABLE}]}`)
+/// from a column-name iterator. Used by the native path so the load never relies
+/// on `autodetect` — every column is `STRING`, matching the `Value` write path
+/// (CSV fields are all strings). Returns `None` for an empty column set.
+fn all_string_schema<I: IntoIterator<Item = String>>(columns: I) -> Option<Value> {
+    let fields: Vec<Value> = columns
+        .into_iter()
+        .map(|name| serde_json::json!({"name": name, "type": "STRING", "mode": "NULLABLE"}))
+        .collect();
+    if fields.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({ "fields": fields }))
+    }
+}
+
+/// Column names in first-appearance order from the first record of a native batch:
+/// the keys of the first NDJSON object, or the header cells of the first CSV line.
+/// Cheap — reads only up to the first newline. Returns `None` if none can be read.
+fn native_batch_columns(
+    raw: &[u8],
+    format: faucet_core::NativeFormat,
+    delimiter: u8,
+) -> Option<Vec<String>> {
+    let end = raw.iter().position(|&b| b == b'\n').unwrap_or(raw.len());
+    let first = &raw[..end];
+    if first.is_empty() {
+        return None;
+    }
+    match format {
+        faucet_core::NativeFormat::NdJson => {
+            let v: Value = serde_json::from_slice(first).ok()?;
+            let obj = v.as_object()?;
+            Some(obj.keys().cloned().collect())
+        }
+        faucet_core::NativeFormat::Csv => {
+            let line = std::str::from_utf8(first).ok()?.trim_end_matches('\r');
+            Some(
+                line.split(delimiter as char)
+                    .map(|s| s.to_string())
+                    .collect(),
+            )
+        }
+        _ => None,
+    }
+}
+
+/// A `multipart/related` boundary that is guaranteed absent from the payload:
+/// derived from a hash of the NDJSON so it is deterministic (testable) yet
+/// effectively never a substring of the data.
+#[cfg(test)]
+fn multipart_boundary(ndjson: &str) -> String {
+    media_boundary(ndjson.as_bytes())
+}
+
+/// Byte-oriented boundary derivation, shared by the `Value` and native load
+/// paths: a hash of the (already gzipped, effectively random) media bytes, so it
+/// is deterministic yet never a substring of the payload.
+fn media_boundary(media: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    media.hash(&mut h);
+    format!("faucetbq{:016x}boundary", h.finish())
+}
+
+/// Assemble the `multipart/related` request body: part 1 is the load-job JSON
+/// (text), part 2 is the media (gzipped NDJSON — arbitrary bytes). Uses CRLF
+/// line endings as the multipart spec requires. The media part is binary, so
+/// the body is assembled byte-wise rather than via `format!`.
+fn build_multipart_related(boundary: &str, job_json: &str, media: &[u8]) -> Vec<u8> {
+    let head = format!(
+        "--{boundary}\r\n\
+         Content-Type: application/json; charset=UTF-8\r\n\r\n\
+         {job_json}\r\n\
+         --{boundary}\r\n\
+         Content-Type: application/octet-stream\r\n\r\n"
+    );
+    let tail = format!("\r\n--{boundary}--\r\n");
+    let mut body = Vec::with_capacity(head.len() + media.len() + tail.len());
+    body.extend_from_slice(head.as_bytes());
+    body.extend_from_slice(media);
+    body.extend_from_slice(tail.as_bytes());
+    body
+}
+
+/// Whether an overwrite run loads directly into the target (no staging table).
+///
+/// True for a **solo** whole-table overwrite via media load: one writer, no
+/// scope. A `WRITE_TRUNCATE` load job is atomic on its own, so staging buys
+/// nothing there — the first page truncates the target, the rest append. The
+/// executor sets `_overwrite_staging` for a *grouped* fan-out (several
+/// independent writer instances → one table), where a shared staging table is
+/// the only safe swap; a scoped/windowed overwrite (`scope`) likewise needs
+/// staging (it replaces only matching rows). The non-media `jobs.query`
+/// overwrite path always stages (`media_load` is false there).
+fn is_direct_overwrite(config: &BigQuerySinkConfig) -> bool {
+    config.media_load && !config.overwrite_staging && config.scope.is_none()
+}
+
+/// Gzip-compress bytes for the BigQuery load media part. BigQuery auto-detects
+/// gzip for `NEWLINE_DELIMITED_JSON` loads, so no source-format flag is needed —
+/// the wire payload just shrinks (often 5–10× for JSON).
+fn gzip(data: &[u8]) -> Result<Vec<u8>, FaucetError> {
+    use flate2::{Compression, write::GzEncoder};
+    use std::io::Write;
+    let mut enc = GzEncoder::new(Vec::with_capacity(data.len() / 4 + 64), Compression::default());
+    enc.write_all(data)
+        .map_err(|e| FaucetError::Sink(format!("gzip NDJSON media: {e}")))?;
+    enc.finish()
+        .map_err(|e| FaucetError::Sink(format!("gzip NDJSON media: {e}")))
+}
+
+/// Upload one intermediate/final chunk to a resumable session and PUT its bytes.
+/// Chunk size the streaming resumable upload flushes at (8 MiB, a multiple of
+/// the 256 KiB alignment the resumable protocol requires for non-final chunks).
+const RESUMABLE_CHUNK: usize = 8 * 1024 * 1024;
+/// Resumable-upload chunk alignment: every non-final `Content-Range` upper bound
+/// must be a multiple of 256 KiB.
+const RESUMABLE_ALIGN: usize = 256 * 1024;
+
+/// An in-flight BigQuery **resumable upload** session for a single load job fed
+/// incrementally across many source pages (so peak memory is O(chunk + one
+/// page), not O(table)). NDJSON is streamed into one gzip member; compressed
+/// bytes are PUT to the session URI in 256-KiB-aligned chunks as they accumulate
+/// past [`RESUMABLE_CHUNK`], and the tail + gzip trailer are PUT on finalize.
+struct UploadSession {
+    /// The `Location` returned by the resumable-initiate POST — the capability
+    /// URI subsequent chunk PUTs address (no re-auth needed).
+    session_uri: String,
+    /// Bytes already committed to the session (next `Content-Range` start).
+    offset: u64,
+    /// Incremental gzip encoder; its inner `Vec<u8>` buffers compressed bytes
+    /// not yet PUT. `None` after [`finish`](Self::finish) consumes it.
+    encoder: Option<flate2::write::GzEncoder<Vec<u8>>>,
+    /// HTTP client with redirects disabled (a 308 "Resume Incomplete" must not
+    /// be auto-followed).
+    http: reqwest::Client,
+    /// Set once the terminating chunk has been accepted, so a second
+    /// flush/commit is a no-op.
+    finalized: bool,
+    /// Compressed-buffer size at which a mid-stream chunk is PUT. Production uses
+    /// [`RESUMABLE_CHUNK`] (8 MiB); tests lower it via `config.resumable_chunk`
+    /// so the multi-chunk path is reachable without an 8 MiB payload.
+    chunk_threshold: usize,
+}
+
+impl UploadSession {
+    /// Feed one page: compress its NDJSON into the gzip stream, then PUT every
+    /// fully-accumulated 256-KiB-aligned chunk (keeps the buffer bounded).
+    async fn feed(&mut self, records: &[Value]) -> Result<(), FaucetError> {
+        let ndjson = records_to_ndjson(records)?;
+        self.feed_bytes(ndjson.as_bytes()).await
+    }
+
+    /// Feed raw NDJSON bytes: compress into the gzip stream, then PUT every
+    /// fully-accumulated 256-KiB-aligned chunk. The shared core of [`feed`](Self::feed)
+    /// (which serializes `Value` rows first) and the native byte path (#633).
+    async fn feed_bytes(&mut self, ndjson: &[u8]) -> Result<(), FaucetError> {
+        use std::io::Write;
+        self.encoder
+            .as_mut()
+            .expect("resumable encoder present before finalize")
+            .write_all(ndjson)
+            .map_err(|e| FaucetError::Sink(format!("resumable gzip write: {e}")))?;
+        // Alignment is capped at the (possibly test-lowered) threshold so a
+        // small threshold still makes forward progress; production keeps the
+        // 256-KiB protocol alignment (threshold 8 MiB ≫ 256 KiB).
+        let align = RESUMABLE_ALIGN.min(self.chunk_threshold).max(1);
+        loop {
+            let avail = self.encoder.as_ref().unwrap().get_ref().len();
+            if avail < self.chunk_threshold {
+                break;
+            }
+            let n = (avail / align) * align;
+            let chunk: Vec<u8> = self.encoder.as_mut().unwrap().get_mut().drain(..n).collect();
+            let end = self.offset + chunk.len() as u64 - 1;
+            let range = format!("bytes {}-{}/*", self.offset, end);
+            let resp = self
+                .http
+                .put(&self.session_uri)
+                .header(reqwest::header::CONTENT_RANGE, range)
+                .body(chunk.clone())
+                .send()
+                .await
+                .map_err(|e| FaucetError::Sink(format!("resumable chunk PUT failed: {e}")))?;
+            if resp.status().as_u16() != 308 {
+                let s = resp.status();
+                let t = resp.text().await.unwrap_or_default();
+                return Err(FaucetError::Sink(format!(
+                    "resumable chunk PUT expected 308 Resume Incomplete, got {s}: {t}"
+                )));
+            }
+            self.offset += chunk.len() as u64;
+        }
+        Ok(())
+    }
+
+    /// Finish the gzip stream, returning the final bytes (remaining buffered
+    /// output + trailer) to PUT as the terminating chunk.
+    fn finish(&mut self) -> Result<Vec<u8>, FaucetError> {
+        self.encoder
+            .take()
+            .expect("resumable encoder present at finalize")
+            .finish()
+            .map_err(|e| FaucetError::Sink(format!("resumable gzip finish: {e}")))
+    }
+}
+
 /// A sink that writes JSON records to a BigQuery table using the streaming
 /// insert API (`tabledata.insertAll`).
 pub struct BigQuerySink {
@@ -93,10 +447,21 @@ pub struct BigQuerySink {
     /// Set once the target table has been confirmed to exist (or been created)
     /// this run, so the existence probe / create runs at most once.
     table_ready: AtomicBool,
-    /// Overwrite-only: set in [`begin_overwrite`](faucet_core::Sink::begin_overwrite)
-    /// when the target was missing and `create_table` is on, so the first written
-    /// page creates the target (from its inferred schema) and the staging clone.
-    overwrite_deferred: AtomicBool,
+    /// Overwrite-only once-gate: has *this* sink instance ensured the target +
+    /// staging clone exist? Set on the first overwrite page. It is per-instance
+    /// on purpose — the executor runs `begin_overwrite`, the page writes, and
+    /// `commit_overwrite` on three *different* sink instances, so the write path
+    /// self-heals (creating a missing target from the first page's sample)
+    /// rather than trusting a flag another instance set. See
+    /// [`insert_overwrite_page`](Self::insert_overwrite_page).
+    overwrite_setup: AtomicBool,
+    /// In-flight streaming resumable-upload load session (`media_load` append and
+    /// solo-direct overwrite). Opened lazily on the first page, fed per page, and
+    /// finalized in [`flush`](faucet_core::Sink::flush) — which runs on the same
+    /// (writer) sink instance that holds it, so it works even though the executor
+    /// drives `begin_overwrite`/`commit_overwrite` on *other* instances. `None`
+    /// on every non-streaming path (staging overwrite, `insertAll`, upsert, EO).
+    upload_session: tokio::sync::Mutex<Option<UploadSession>>,
     /// Lazily-built GCS client for the Arrow columnar load-job staging upload
     /// (#380). Built once from `config.bulk_load.gcs_auth` on the first
     /// columnar write and reused for every staged file.
@@ -118,7 +483,8 @@ impl BigQuerySink {
             client,
             schema_cache: RwLock::new(None),
             table_ready: AtomicBool::new(false),
-            overwrite_deferred: AtomicBool::new(false),
+            overwrite_setup: AtomicBool::new(false),
+            upload_session: tokio::sync::Mutex::new(None),
             #[cfg(feature = "arrow")]
             gcs_store: tokio::sync::OnceCell::new(),
         })
@@ -139,7 +505,8 @@ impl BigQuerySink {
             client,
             schema_cache: RwLock::new(None),
             table_ready: AtomicBool::new(false),
-            overwrite_deferred: AtomicBool::new(false),
+            overwrite_setup: AtomicBool::new(false),
+            upload_session: tokio::sync::Mutex::new(None),
             #[cfg(feature = "arrow")]
             gcs_store: tokio::sync::OnceCell::new(),
         }
@@ -266,7 +633,7 @@ impl BigQuerySink {
                 &self.config.project_id,
                 &self.config.dataset_id,
                 &self.config.table_id,
-                Some(vec!["schema"]),
+                None,
             )
             .await?;
         // Table.schema is TableSchema (not Option); TableSchema.fields is Option<Vec<...>>.
@@ -338,16 +705,68 @@ impl BigQuerySink {
         )
     }
 
+    /// Whether an overwrite run loads directly into the target (no staging).
+    /// See [`is_direct_overwrite`] for the rule.
+    fn direct_overwrite(&self) -> bool {
+        is_direct_overwrite(&self.config)
+    }
+
     /// Load one page into the overwrite staging table via the typed, buffer-free
     /// `INSERT … SELECT FROM UNNEST(JSON_QUERY_ARRAY(@payload))` query path (the
     /// same generator the exactly-once write uses). Streaming `insertAll` is
     /// avoided deliberately: its rows sit in a streaming buffer that the commit
     /// swap's `SELECT` might not see yet.
     async fn insert_overwrite_page(&self, records: &[Value]) -> Result<usize, FaucetError> {
-        // Deferred create: `begin_overwrite` found no target and `create_table`
-        // is on, so the first page provides the schema. Create the target, then
-        // the staging clone, before loading.
-        if self.overwrite_deferred.swap(false, Ordering::AcqRel) {
+        let first_page = !self.overwrite_setup.swap(true, Ordering::AcqRel);
+
+        // Direct mode (solo whole-table overwrite via media load): load straight
+        // into the target — no staging table, no swap, no second data-write. A
+        // BigQuery `WRITE_TRUNCATE` load job is atomic on its own (the target's
+        // prior data survives a failed load), so a single-load refresh is fully
+        // atomic: the first page truncates the target, the rest append. This is
+        // the iPaaS `load_table_from_dataframe(WRITE_TRUNCATE)` shape. Grouped
+        // fan-outs (several writers → one table) set `_overwrite_staging` and
+        // take the staging path below; a scoped/windowed overwrite also stages.
+        if self.direct_overwrite() {
+            if first_page && !self.target_has_schema().await? {
+                if !self.config.create_table {
+                    return Err(FaucetError::Sink(format!(
+                        "BigQuery overwrite target {}.{}.{} does not exist (or has no \
+                         schema) and `create_table` is disabled",
+                        self.config.project_id, self.config.dataset_id, self.config.table_id
+                    )));
+                }
+                self.create_target_from_sample(records).await?;
+                self.table_ready.store(true, Ordering::Release);
+            }
+            // Stream the whole overwrite as ONE `WRITE_TRUNCATE` resumable load
+            // fed across every page; it is finalized in `flush()` (which runs on
+            // this same writer instance — see `finalize_session`). One atomic
+            // load replaces the target at end-of-stream, so a mid-run failure
+            // leaves the prior data intact, and peak memory is O(chunk + page)
+            // rather than O(table). (Overwrite sources are full-refresh with an
+            // end-of-run bookmark, so `flush` finalizes exactly once.)
+            self.feed_session(&self.config.table_id, "WRITE_TRUNCATE", records)
+                .await?;
+            return Ok(records.len());
+        }
+
+        // Staging mode. Self-heal once, on this instance's first page.
+        // `begin_overwrite` may have run on a *different* sink instance (the
+        // executor drives it on a throwaway sink for group-level overwrite), so
+        // this instance can't trust an in-memory flag — it verifies the real
+        // target table instead. A target that already existed had its staging
+        // clone created by `begin_overwrite`; a missing/schemaless one is created
+        // here from this page's sample (the schema `CREATE … LIKE` needs),
+        // followed by its staging clone.
+        if first_page && !self.target_has_schema().await? {
+            if !self.config.create_table {
+                return Err(FaucetError::Sink(format!(
+                    "BigQuery overwrite target {}.{}.{} does not exist (or has no \
+                     schema) and `create_table` is disabled",
+                    self.config.project_id, self.config.dataset_id, self.config.table_id
+                )));
+            }
             self.create_target_from_sample(records).await?;
             self.table_ready.store(true, Ordering::Release);
             self.run_ddl(format!(
@@ -356,6 +775,16 @@ impl BigQuerySink {
                 self.table_ref()
             ))
             .await?;
+        }
+        // Fast path: stream the page straight into staging with one bucket-free
+        // load job (NDJSON media upload) instead of a per-page `jobs.query`
+        // INSERT. The staging table already exists (created above or by
+        // `begin_overwrite`); WRITE_APPEND accumulates pages, and the atomic
+        // swap still runs in `commit_overwrite`.
+        if self.config.media_load {
+            self.load_ndjson(&self.overwrite_temp_id(), records, "WRITE_APPEND")
+                .await?;
+            return Ok(records.len());
         }
         let columns = self.target_schema().await?;
         let payload = serde_json::to_string(records).map_err(|e| {
@@ -381,6 +810,409 @@ impl BigQuerySink {
             })?;
         self.await_query_complete(resp).await?;
         Ok(records.len())
+    }
+
+    /// Mint an OAuth2 access token for the BigQuery scope from the configured
+    /// credentials, reusing `gcp_bigquery_client`'s re-exported `yup-oauth2` (no
+    /// direct dependency). Used only by the `media_load` upload path — the
+    /// `gcp_bigquery_client::Client` handles auth for every other call itself.
+    /// The token value is never logged.
+    async fn access_token(&self) -> Result<String, FaucetError> {
+        use gcp_bigquery_client::yup_oauth2::{
+            self, ApplicationDefaultCredentialsAuthenticator,
+            ApplicationDefaultCredentialsFlowOpts, ServiceAccountAuthenticator,
+            authenticator::ApplicationDefaultCredentialsTypes,
+        };
+
+        let scopes = [BQ_OAUTH_SCOPE];
+        let token = match &self.config.auth {
+            BigQueryCredentials::ServiceAccountKey { json } => {
+                let key = yup_oauth2::parse_service_account_key(json).map_err(|e| {
+                    FaucetError::Auth(format!("invalid service account JSON: {e}"))
+                })?;
+                let auth = ServiceAccountAuthenticator::builder(key)
+                    .build()
+                    .await
+                    .map_err(|e| FaucetError::Auth(format!("BigQuery auth failed: {e}")))?;
+                auth.token(&scopes)
+                    .await
+                    .map_err(|e| FaucetError::Auth(format!("BigQuery token mint failed: {e}")))?
+            }
+            BigQueryCredentials::ServiceAccountKeyPath { path } => {
+                let key = yup_oauth2::read_service_account_key(path)
+                    .await
+                    .map_err(|e| FaucetError::Auth(format!("read service account key: {e}")))?;
+                let auth = ServiceAccountAuthenticator::builder(key)
+                    .build()
+                    .await
+                    .map_err(|e| FaucetError::Auth(format!("BigQuery auth failed: {e}")))?;
+                auth.token(&scopes)
+                    .await
+                    .map_err(|e| FaucetError::Auth(format!("BigQuery token mint failed: {e}")))?
+            }
+            BigQueryCredentials::ApplicationDefault => {
+                let opts = ApplicationDefaultCredentialsFlowOpts::default();
+                let auth = match ApplicationDefaultCredentialsAuthenticator::builder(opts).await {
+                    ApplicationDefaultCredentialsTypes::ServiceAccount(b) => b.build().await,
+                    ApplicationDefaultCredentialsTypes::InstanceMetadata(b) => b.build().await,
+                }
+                .map_err(|e| FaucetError::Auth(format!("BigQuery ADC auth failed: {e}")))?;
+                auth.token(&scopes)
+                    .await
+                    .map_err(|e| FaucetError::Auth(format!("BigQuery token mint failed: {e}")))?
+            }
+        };
+        token
+            .token()
+            .map(str::to_string)
+            .ok_or_else(|| FaucetError::Auth("BigQuery access token had no value".to_string()))
+    }
+
+    /// Load one page into `table_id` via a bucket-free BigQuery **load job**:
+    /// a single `multipart/related` media upload of newline-delimited JSON to
+    /// the upload endpoint, then poll the returned job to completion. This is
+    /// the fast path the `media_load` config selects for overwrite — one load
+    /// job per page instead of one `jobs.query` `INSERT … SELECT` per page.
+    async fn load_ndjson(
+        &self,
+        table_id: &str,
+        records: &[Value],
+        write_disposition: &str,
+    ) -> Result<(), FaucetError> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let ndjson = records_to_ndjson(records)?;
+        let job_json = build_load_job_json(
+            &self.config.project_id,
+            &self.config.dataset_id,
+            table_id,
+            write_disposition,
+            self.config.location.as_deref(),
+        )
+        .to_string();
+        let media = gzip(ndjson.as_bytes())?;
+        self.load_media(&job_json, &media).await.map(|_| ())
+    }
+
+    /// Shared media-upload core: POST a `multipart/related` load-job request
+    /// (part 1 = the load-job JSON, part 2 = the gzipped media bytes) and poll the
+    /// job to completion. Reused by [`load_ndjson`](Self::load_ndjson) (which
+    /// serializes `Value` rows) and by [`load_native`](faucet_core::Sink::load_native)
+    /// (which forwards the source's raw wire bytes, #633).
+    async fn load_media(&self, job_json: &str, media_gzipped: &[u8]) -> Result<u64, FaucetError> {
+        let boundary = media_boundary(media_gzipped);
+        let body = build_multipart_related(&boundary, job_json, media_gzipped);
+
+        let token = self.access_token().await?;
+        let url = format!(
+            "{}/upload/bigquery/v2/projects/{}/jobs?uploadType=multipart",
+            self.upload_base(),
+            self.config.project_id
+        );
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .bearer_auth(&token)
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                format!("multipart/related; boundary={boundary}"),
+            )
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("BigQuery media load upload failed: {e}")))?;
+
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("BigQuery media load: read response: {e}")))?;
+        if !status.is_success() {
+            return Err(FaucetError::Sink(format!(
+                "BigQuery media load upload returned HTTP {status}: {text}"
+            )));
+        }
+        let job: Job = serde_json::from_str(&text).map_err(|e| {
+            FaucetError::Sink(format!("BigQuery media load: parse job response: {e}"))
+        })?;
+        let job_ref = job.job_reference.as_ref().ok_or_else(|| {
+            FaucetError::Sink("BigQuery media load response missing jobReference".to_string())
+        })?;
+        let job_id = job_ref.job_id.clone().ok_or_else(|| {
+            FaucetError::Sink("BigQuery media load jobReference missing jobId".to_string())
+        })?;
+        let location = job_ref.location.clone();
+        self.await_load_job(&job_id, location.as_deref()).await
+    }
+
+    /// Poll a load job by id until it reaches a terminal `DONE` state, then
+    /// verify it committed (no `errorResult`) — the same fail-safe check the
+    /// query path uses. A non-`DONE` terminal state or a present `errorResult`
+    /// is an error, so the overwrite never swaps in a partially-loaded staging
+    /// table.
+    async fn await_load_job(
+        &self,
+        job_id: &str,
+        location: Option<&str>,
+    ) -> Result<u64, FaucetError> {
+        let started = std::time::Instant::now();
+        loop {
+            let job = self
+                .client
+                .job()
+                .get_job(&self.config.project_id, job_id, location)
+                .await
+                .map_err(|e| FaucetError::Sink(format!("BigQuery load jobs.get failed: {e}")))?;
+            let (state, error_result) = {
+                let status = job.status.as_ref().ok_or_else(|| {
+                    FaucetError::Sink(format!(
+                        "BigQuery load job '{job_id}' returned no status; cannot confirm commit"
+                    ))
+                })?;
+                (
+                    status.state.clone(),
+                    status.error_result.as_ref().map(|e| e.to_string()),
+                )
+            };
+            if state.as_deref() == Some("DONE") {
+                if let Some(err) = error_result {
+                    return Err(FaucetError::Sink(format!(
+                        "BigQuery load job '{job_id}' failed: {err}"
+                    )));
+                }
+                return Ok(load_output_rows(&job));
+            }
+            if started.elapsed() >= LOAD_JOB_TIMEOUT {
+                return Err(FaucetError::Sink(format!(
+                    "BigQuery load job '{job_id}' did not complete within {}s",
+                    LOAD_JOB_TIMEOUT.as_secs()
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    /// Base URL for the media/resumable **upload** endpoint. Fixed Google host in
+    /// production; overridable via `config.upload_base_url` so tests can point the
+    /// streaming load at a wiremock server.
+    fn upload_base(&self) -> &str {
+        self.config
+            .upload_base_url
+            .as_deref()
+            .unwrap_or("https://bigquery.googleapis.com")
+    }
+
+    /// Initiate a BigQuery **resumable upload** for one load job into `table_id`
+    /// with `write_disposition`. Returns the open [`UploadSession`] (its
+    /// `Location` header is the session URI). Authenticated once here; the
+    /// per-chunk PUTs address the returned URI without re-auth.
+    async fn initiate_session(
+        &self,
+        table_id: &str,
+        write_disposition: &str,
+        schema: Option<Value>,
+    ) -> Result<UploadSession, FaucetError> {
+        let job_json = build_load_job_json_full(
+            &self.config.project_id,
+            &self.config.dataset_id,
+            table_id,
+            write_disposition,
+            self.config.location.as_deref(),
+            "NEWLINE_DELIMITED_JSON",
+            None,
+            schema,
+            false,
+        )
+        .to_string();
+        let token = self.access_token().await?;
+        let url = format!(
+            "{}/upload/bigquery/v2/projects/{}/jobs?uploadType=resumable",
+            self.upload_base(),
+            self.config.project_id
+        );
+        // Redirects disabled: a 308 "Resume Incomplete" must not be auto-followed.
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| FaucetError::Sink(format!("resumable HTTP client: {e}")))?;
+        let resp = http
+            .post(&url)
+            .bearer_auth(&token)
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "application/json; charset=UTF-8",
+            )
+            .header("X-Upload-Content-Type", "application/octet-stream")
+            .body(job_json)
+            .send()
+            .await
+            .map_err(|e| FaucetError::Sink(format!("resumable init failed: {e}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let t = resp.text().await.unwrap_or_default();
+            return Err(FaucetError::Sink(format!(
+                "resumable init returned HTTP {status}: {t}"
+            )));
+        }
+        let session_uri = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                FaucetError::Sink("resumable init response had no Location header".to_string())
+            })?;
+        Ok(UploadSession {
+            session_uri,
+            offset: 0,
+            encoder: Some(flate2::write::GzEncoder::new(
+                Vec::new(),
+                flate2::Compression::default(),
+            )),
+            http,
+            finalized: false,
+            chunk_threshold: self.config.resumable_chunk.unwrap_or(RESUMABLE_CHUNK),
+        })
+    }
+
+    /// Feed one page into the streaming resumable session, opening (or
+    /// re-opening, after a prior finalize) the session on demand. Empty pages
+    /// are a no-op (never open a session for zero rows — an empty source leaves
+    /// the destination untouched, matching the non-streaming path).
+    async fn feed_session(
+        &self,
+        table_id: &str,
+        write_disposition: &str,
+        records: &[Value],
+    ) -> Result<(), FaucetError> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let need_open = {
+            let guard = self.upload_session.lock().await;
+            guard.as_ref().is_none_or(|s| s.finalized)
+        };
+        if need_open {
+            let sess = self.initiate_session(table_id, write_disposition, None).await?;
+            let mut guard = self.upload_session.lock().await;
+            *guard = Some(sess);
+        }
+        let mut guard = self.upload_session.lock().await;
+        guard
+            .as_mut()
+            .expect("resumable session opened")
+            .feed(records)
+            .await
+    }
+
+    /// Feed raw NDJSON **bytes** into the streaming resumable session — the native
+    /// byte-passthrough path (#633). Identical lifecycle to [`feed_session`](Self::feed_session)
+    /// (one load job per object, ~8 MiB bounded memory, finalized in `flush`), but
+    /// the bytes come straight from the source (no `Value` round-trip). `schema` is
+    /// the all-STRING schema applied when the session opens (first batch); on later
+    /// batches it is ignored (the session is already open with its disposition +
+    /// schema). Empty input is a no-op.
+    async fn feed_session_bytes(
+        &self,
+        table_id: &str,
+        write_disposition: &str,
+        schema: Option<Value>,
+        ndjson: &[u8],
+    ) -> Result<(), FaucetError> {
+        if ndjson.is_empty() {
+            return Ok(());
+        }
+        let need_open = {
+            let guard = self.upload_session.lock().await;
+            guard.as_ref().is_none_or(|s| s.finalized)
+        };
+        if need_open {
+            let sess = self
+                .initiate_session(table_id, write_disposition, schema)
+                .await?;
+            let mut guard = self.upload_session.lock().await;
+            *guard = Some(sess);
+        }
+        let mut guard = self.upload_session.lock().await;
+        guard
+            .as_mut()
+            .expect("resumable session opened")
+            .feed_bytes(ndjson)
+            .await
+    }
+
+    /// Finalize the open resumable session (if any): flush the gzip trailer,
+    /// PUT the terminating chunk, then poll the resulting load job to `DONE`.
+    /// A no-op when no session is open or it is already finalized, so it is safe
+    /// to call from `flush` on every path. Runs on the writer sink instance,
+    /// which is the one that holds the session.
+    async fn finalize_session(&self) -> Result<(), FaucetError> {
+        let (job_id, location) = {
+            let mut guard = self.upload_session.lock().await;
+            let Some(sess) = guard.as_mut() else {
+                return Ok(());
+            };
+            if sess.finalized {
+                return Ok(());
+            }
+            let remaining = sess.finish()?;
+            let total = sess.offset + remaining.len() as u64;
+            let range = if remaining.is_empty() {
+                format!("bytes */{total}")
+            } else {
+                format!("bytes {}-{}/{}", sess.offset, total - 1, total)
+            };
+            let resp = sess
+                .http
+                .put(&sess.session_uri)
+                .header(reqwest::header::CONTENT_RANGE, range)
+                .body(remaining)
+                .send()
+                .await
+                .map_err(|e| FaucetError::Sink(format!("resumable finalize PUT failed: {e}")))?;
+            let status = resp.status();
+            let text = resp.text().await.map_err(|e| {
+                FaucetError::Sink(format!("resumable finalize: read response: {e}"))
+            })?;
+            if !status.is_success() {
+                return Err(FaucetError::Sink(format!(
+                    "resumable finalize returned HTTP {status}: {text}"
+                )));
+            }
+            sess.finalized = true;
+            let job: Job = serde_json::from_str(&text).map_err(|e| {
+                FaucetError::Sink(format!("resumable finalize: parse job response: {e}"))
+            })?;
+            let job_ref = job.job_reference.as_ref().ok_or_else(|| {
+                FaucetError::Sink("resumable finalize response missing jobReference".to_string())
+            })?;
+            let job_id = job_ref.job_id.clone().ok_or_else(|| {
+                FaucetError::Sink("resumable finalize jobReference missing jobId".to_string())
+            })?;
+            (job_id, job_ref.location.clone())
+        };
+        self.await_load_job(&job_id, location.as_deref())
+            .await
+            .map(|_| ())
+    }
+
+    /// Best-effort cancel of an un-finalized resumable session (DELETE the
+    /// session URI) so an aborted run doesn't leave a dangling upload. BigQuery
+    /// also garbage-collects incomplete resumable sessions, so a failure here is
+    /// only logged.
+    async fn cancel_session(&self) {
+        let sess = { self.upload_session.lock().await.take() };
+        if let Some(sess) = sess
+            && !sess.finalized
+        {
+            let _ = sess
+                .http
+                .delete(&sess.session_uri)
+                .header(reqwest::header::CONTENT_LENGTH, "0")
+                .send()
+                .await;
+        }
     }
 
     /// Run one schema-evolution / DDL statement through the same `jobs.query` +
@@ -411,6 +1243,34 @@ impl BigQuerySink {
             Err(e) if is_table_not_found(&e) => Ok(false),
             Err(e) => Err(FaucetError::Sink(format!(
                 "BigQuery tables.get (schema probe) failed: {e}"
+            ))),
+        }
+    }
+
+    /// Whether `table_id` exists in the configured project/dataset. A `tables.get`
+    /// 404 → `Ok(false)`; any other error is surfaced. Used by
+    /// [`commit_overwrite`](faucet_core::Sink::commit_overwrite) to decide whether
+    /// there is anything staged to swap — keyed off the real table, not an
+    /// in-memory flag, since begin/write/commit run on different sink instances.
+    async fn table_exists(&self, table_id: &str) -> Result<bool, FaucetError> {
+        // Request the `schema` field (as `fetch_schema_fields` does): the client's
+        // `Table` type has a non-optional `schema`, so a narrower field mask would
+        // yield a response it can't deserialize.
+        match self
+            .client
+            .table()
+            .get(
+                &self.config.project_id,
+                &self.config.dataset_id,
+                table_id,
+                None,
+            )
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(e) if is_table_not_found(&e) => Ok(false),
+            Err(e) => Err(FaucetError::Sink(format!(
+                "BigQuery tables.get on {table_id} failed: {e}"
             ))),
         }
     }
@@ -873,6 +1733,17 @@ impl faucet_core::Sink for BigQuerySink {
 
         self.ensure_table_ready(records).await?;
 
+        // Append via a bucket-free load job when `media_load` is on: stream the
+        // page into one `WRITE_APPEND` resumable load job (finalized in `flush`)
+        // instead of the streaming `insertAll` chunk loop — no streaming buffer,
+        // no per-row insertAll quota, gzip-compressed, and peak memory O(chunk +
+        // page) regardless of table size.
+        if self.config.media_load {
+            self.feed_session(&self.config.table_id, "WRITE_APPEND", records)
+                .await?;
+            return Ok(records.len());
+        }
+
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
             // Sentinel: pass the entire upstream page through in a single
             // insertAll call. Subject to BigQuery's ~10MB request limit.
@@ -947,6 +1818,16 @@ impl faucet_core::Sink for BigQuerySink {
 
         self.ensure_table_ready(records).await?;
 
+        // Append via a bucket-free streaming resumable load when `media_load` is
+        // on. A load job is all-or-nothing, so either every row commits (all
+        // `Ok`, finalized in `flush`) or the whole page/load fails (outer `Err` —
+        // no partial per-row outcomes).
+        if self.config.media_load {
+            self.feed_session(&self.config.table_id, "WRITE_APPEND", records)
+                .await?;
+            return Ok(records.iter().map(|_| Ok(())).collect());
+        }
+
         let chunks: Vec<&[Value]> = if self.config.batch_size == 0 {
             vec![records]
         } else {
@@ -994,6 +1875,152 @@ impl faucet_core::Sink for BigQuerySink {
         Ok(outcomes)
     }
 
+    /// Finalize a streaming `media_load` resumable session, if one is open
+    /// (append or solo-direct overwrite). Runs on the writer sink instance that
+    /// holds the session — the reliable place to finalize, since the executor
+    /// drives `begin_overwrite`/`commit_overwrite` on *other* instances. For an
+    /// overwrite this commits the single `WRITE_TRUNCATE` load atomically at
+    /// end-of-stream (so `commit_overwrite` is a no-op); a no-op on every
+    /// non-streaming path.
+    async fn flush(&self) -> Result<(), FaucetError> {
+        self.finalize_session().await
+    }
+
+    /// Native byte-passthrough load (#633): BigQuery can bulk-load NDJSON or CSV
+    /// bytes directly via a load job, so a source that emits either format
+    /// streams straight in without ever building `Value` rows. Passthrough-only
+    /// (no transforms/governance), at-least-once, append or overwrite, no DLQ.
+    fn native_load_capabilities(&self) -> Vec<faucet_core::NativeLoadCapability> {
+        // Upsert/delete need per-row keys, so they are not passthrough-eligible;
+        // advertise only when the configured write mode is append or overwrite.
+        if matches!(
+            self.config.write.write_mode,
+            faucet_core::WriteMode::Upsert | faucet_core::WriteMode::Delete
+        ) {
+            return Vec::new();
+        }
+        let prerequisites = faucet_core::NativePrerequisites {
+            requires_passthrough: true,
+            delivery: &[faucet_core::DeliveryMode::AtLeastOnce],
+            write_modes: &[
+                faucet_core::WriteMode::Append,
+                faucet_core::WriteMode::Overwrite,
+            ],
+            forbids_dlq: true,
+        };
+        vec![
+            faucet_core::NativeLoadCapability {
+                format: faucet_core::NativeFormat::NdJson,
+                mechanism: "bigquery-load-job",
+                prerequisites: prerequisites.clone(),
+            },
+            faucet_core::NativeLoadCapability {
+                format: faucet_core::NativeFormat::Csv,
+                mechanism: "bigquery-load-job",
+                prerequisites,
+            },
+        ]
+    }
+
+    async fn load_native(
+        &self,
+        batch: faucet_core::NativeBatch,
+        scope: &str,
+        ctx: faucet_core::NativeLoadContext,
+    ) -> Result<usize, FaucetError> {
+        let _ = scope; // v1: no per-scope isolation on the native load path.
+        // Overwrite truncates on the first batch (which opens the session), appends
+        // thereafter. Because every page of an object feeds ONE resumable session
+        // finalized in `flush`, this is one atomic WRITE_TRUNCATE load per object —
+        // not a truncate-then-append across pages.
+        let write_disposition = if ctx.write_mode == faucet_core::WriteMode::Overwrite
+            && ctx.first_batch
+        {
+            "WRITE_TRUNCATE"
+        } else {
+            "WRITE_APPEND"
+        };
+        let table = self.config.table_id.clone();
+        let csv = batch.csv;
+
+        match (batch.format, batch.payload) {
+            // NDJSON **streaming** — the memory-optimal path (#633). Feed each
+            // ~256 KiB chunk into the per-object resumable session as it arrives;
+            // the full page is never buffered on either side. Schema is derived
+            // from the first chunk; the row count is the NDJSON line count.
+            (faucet_core::NativeFormat::NdJson, faucet_core::NativePayload::Stream(mut s)) => {
+                use futures::StreamExt;
+                let mut rows = 0usize;
+                let mut first = true;
+                while let Some(chunk) = s.next().await {
+                    let chunk = chunk?;
+                    if chunk.is_empty() {
+                        continue;
+                    }
+                    // The explicit all-STRING schema (from the first chunk) opens the
+                    // session; later chunks pass `None` (session already open).
+                    let schema = if first {
+                        native_batch_columns(&chunk, faucet_core::NativeFormat::NdJson, b',')
+                            .and_then(all_string_schema)
+                    } else {
+                        None
+                    };
+                    rows += chunk.iter().filter(|&&b| b == b'\n').count();
+                    self.feed_session_bytes(&table, write_disposition, schema, &chunk)
+                        .await?;
+                    first = false;
+                }
+                Ok(rows)
+            }
+            // NDJSON already buffered — feed the whole batch into the same resumable
+            // session (used by tests / any source that emits `Bytes`).
+            (faucet_core::NativeFormat::NdJson, faucet_core::NativePayload::Bytes(raw)) => {
+                if raw.is_empty() {
+                    return Ok(0);
+                }
+                let rows = batch
+                    .records
+                    .map(|r| r as usize)
+                    .unwrap_or_else(|| raw.iter().filter(|&&b| b == b'\n').count());
+                let schema = native_batch_columns(&raw, faucet_core::NativeFormat::NdJson, b',')
+                    .and_then(all_string_schema);
+                self.feed_session_bytes(&table, write_disposition, schema, &raw)
+                    .await?;
+                Ok(rows)
+            }
+            // CSV isn't NDJSON-shaped for the resumable session, so it takes a
+            // discrete CSV load job per batch (no built-in source emits this today).
+            (faucet_core::NativeFormat::Csv, faucet_core::NativePayload::Bytes(raw)) => {
+                if raw.is_empty() {
+                    return Ok(0);
+                }
+                let rows = batch.records.unwrap_or(0) as usize;
+                let skip_rows = if csv.has_header { Some(1) } else { None };
+                let schema = native_batch_columns(&raw, faucet_core::NativeFormat::Csv, csv.delimiter)
+                    .and_then(all_string_schema);
+                let autodetect_fallback = schema.is_none();
+                let media = gzip(&raw)?;
+                let job_json = build_load_job_json_full(
+                    &self.config.project_id,
+                    &self.config.dataset_id,
+                    &table,
+                    write_disposition,
+                    self.config.location.as_deref(),
+                    "CSV",
+                    skip_rows,
+                    schema,
+                    autodetect_fallback,
+                )
+                .to_string();
+                self.load_media(&job_json, &media).await?;
+                Ok(rows)
+            }
+            (other, _) => Err(FaucetError::Sink(format!(
+                "bigquery load_native: unsupported format {other:?} for this payload"
+            ))),
+        }
+    }
+
     fn supported_write_modes(&self) -> &'static [faucet_core::WriteMode] {
         &[
             faucet_core::WriteMode::Append,
@@ -1013,6 +2040,15 @@ impl faucet_core::Sink for BigQuerySink {
     /// run. Bucket-free: no GCS staging is involved. The target must already
     /// exist (LIKE requires it) — overwrite replaces its rows, not its schema.
     async fn begin_overwrite(&self) -> Result<(), FaucetError> {
+        // Direct mode: no staging table to prepare. The first write truncates the
+        // target (or creates it from the sample), so all begin has to do is make
+        // sure the dataset exists when we're allowed to create it.
+        if self.direct_overwrite() {
+            if self.config.create_table {
+                self.ensure_dataset().await?;
+            }
+            return Ok(());
+        }
         if self.target_has_schema().await? {
             self.table_ready.store(true, Ordering::Release);
             return self
@@ -1024,12 +2060,13 @@ impl faucet_core::Sink for BigQuerySink {
                 .await;
         }
         if self.config.create_table {
-            // Nothing usable to overwrite — the target is missing or schemaless.
-            // Ensure the dataset and defer target + staging creation to the first
-            // page, which supplies the schema to infer (`LIKE` needs a schema'd
-            // target).
+            // Nothing usable to overwrite yet — the target is missing or
+            // schemaless. Ensure the dataset exists; the target and staging clone
+            // are created by the first page's write (which supplies the schema
+            // `CREATE … LIKE` needs), on whichever sink instance handles it — see
+            // `insert_overwrite_page`'s self-heal. No in-memory flag is set here
+            // because begin and write run on different instances.
             self.ensure_dataset().await?;
-            self.overwrite_deferred.store(true, Ordering::Release);
             return Ok(());
         }
         Err(FaucetError::Sink(format!(
@@ -1047,17 +2084,26 @@ impl faucet_core::Sink for BigQuerySink {
     /// staging table is dropped afterwards. Staging was loaded via the query
     /// path, so there is no streaming buffer to miss.
     async fn commit_overwrite(&self) -> Result<(), FaucetError> {
-        if self.overwrite_deferred.load(Ordering::Acquire) {
-            // The target was missing and no page was ever written (empty
-            // source), so there is no schema to create from and nothing to
-            // swap. Leave nothing behind rather than fail the run.
+        // Direct mode wrote straight into the target (WRITE_TRUNCATE first page +
+        // WRITE_APPEND rest); a completed load is already durable, so there is
+        // nothing to swap or drop.
+        if self.direct_overwrite() {
+            return Ok(());
+        }
+        // Key off the real staging table, not an in-memory flag: begin, write,
+        // and commit may each run on a different sink instance (the executor uses
+        // throwaway sinks), so only the BQ objects are reliable cross-instance.
+        // No staging table means no page was ever written (empty source) — for a
+        // previously-missing target there is nothing to create or swap, so leave
+        // the destination exactly as it was rather than failing the run.
+        if !self.table_exists(&self.overwrite_temp_id()).await? {
             tracing::warn!(
                 table = %format!(
                     "{}.{}.{}",
                     self.config.project_id, self.config.dataset_id, self.config.table_id
                 ),
-                "BigQuery overwrite: source produced no rows and the target did not exist; \
-                 table not created"
+                "BigQuery overwrite: no staging table (source produced no rows); \
+                 destination left unchanged"
             );
             return Ok(());
         }
@@ -1081,6 +2127,18 @@ impl faucet_core::Sink for BigQuerySink {
     /// Drop the staging table so a failed/cancelled overwrite leaves nothing
     /// behind. Best-effort — the destination was never touched.
     async fn abort_overwrite(&self) -> Result<(), FaucetError> {
+        // Direct mode has no staging table to drop. A solo direct overwrite
+        // can't roll back a completed WRITE_TRUNCATE — a single-page refresh is
+        // atomic (the truncate+load is one job), but a multi-page failure may
+        // leave a partially-loaded target. Nothing to clean up here.
+        if self.direct_overwrite() {
+            // Cancel an un-finalized resumable session so a failed run leaves no
+            // dangling upload (BigQuery also GCs incomplete sessions). No staging
+            // table exists in direct mode.
+            self.cancel_session().await;
+            tracing::debug!("BigQuery direct overwrite abort: cancelled resumable session (if any)");
+            return Ok(());
+        }
         self.run_ddl(format!(
             "DROP TABLE IF EXISTS {}",
             self.overwrite_temp_ref()
@@ -1327,8 +2385,13 @@ impl faucet_core::Sink for BigQuerySink {
 
 #[cfg(test)]
 mod tests {
-    use super::{Job, deletes_to_payload, dml_affected_rows, scope_to_payload};
-    use faucet_core::KeyTuple;
+    use super::{
+        Job, BigQueryCredentials, BigQuerySinkConfig, all_string_schema, build_load_job_json,
+        build_load_job_json_fmt, build_load_job_json_full, build_multipart_related,
+        deletes_to_payload, dml_affected_rows, gzip, is_direct_overwrite, media_boundary,
+        multipart_boundary, native_batch_columns, records_to_ndjson, scope_to_payload,
+    };
+    use faucet_core::{FaucetError, KeyTuple};
     use serde_json::json;
 
     // dataset_uri test is skipped: BigQuerySink::new() requires GCP credentials
@@ -1400,6 +2463,233 @@ mod tests {
         assert_eq!(dml_affected_rows(&job(None)), 0);
         assert_eq!(dml_affected_rows(&job(Some("not-a-number"))), 0);
         assert_eq!(dml_affected_rows(&Job::default()), 0);
+    }
+
+    // --- media-upload load job (`media_load`) ---
+
+    #[test]
+    fn records_to_ndjson_emits_one_compact_object_per_line() {
+        let ndjson = records_to_ndjson(&[json!({"a": 1}), json!({"b": "x"})]).expect("ndjson");
+        assert_eq!(ndjson, "{\"a\":1}\n{\"b\":\"x\"}\n");
+    }
+
+    #[test]
+    fn records_to_ndjson_rejects_non_object_record() {
+        let err = records_to_ndjson(&[json!({"a": 1}), json!(5)]).unwrap_err();
+        assert!(matches!(err, FaucetError::Sink(m) if m.contains("record 1")));
+    }
+
+    #[test]
+    fn records_to_ndjson_empty_is_empty_string() {
+        assert_eq!(records_to_ndjson(&[]).expect("ndjson"), "");
+    }
+
+    #[test]
+    fn build_load_job_json_shape_ndjson_append() {
+        let job = build_load_job_json("proj", "ds", "tbl", "WRITE_APPEND", None);
+        let load = &job["configuration"]["load"];
+        assert_eq!(load["sourceFormat"], "NEWLINE_DELIMITED_JSON");
+        assert_eq!(load["writeDisposition"], "WRITE_APPEND");
+        assert_eq!(load["ignoreUnknownValues"], true);
+        assert_eq!(load["destinationTable"]["projectId"], "proj");
+        assert_eq!(load["destinationTable"]["datasetId"], "ds");
+        assert_eq!(load["destinationTable"]["tableId"], "tbl");
+        // No location → no jobReference.
+        assert!(job.get("jobReference").is_none());
+    }
+
+    #[test]
+    fn build_load_job_json_includes_location_when_set() {
+        let job = build_load_job_json("proj", "ds", "tbl", "WRITE_APPEND", Some("EU"));
+        assert_eq!(job["jobReference"]["location"], "EU");
+        assert_eq!(job["jobReference"]["projectId"], "proj");
+    }
+
+    #[test]
+    fn build_load_job_json_fmt_csv_with_header_and_autodetect() {
+        // The native byte-passthrough path (#633): CSV source format, skip the
+        // header row, and let BigQuery autodetect the schema.
+        let job = build_load_job_json_fmt(
+            "proj",
+            "ds",
+            "tbl",
+            "WRITE_TRUNCATE",
+            None,
+            "CSV",
+            Some(1),
+            true,
+        );
+        let load = &job["configuration"]["load"];
+        assert_eq!(load["sourceFormat"], "CSV");
+        assert_eq!(load["writeDisposition"], "WRITE_TRUNCATE");
+        assert_eq!(load["skipLeadingRows"], 1);
+        assert_eq!(load["autodetect"], true);
+        assert_eq!(load["ignoreUnknownValues"], true);
+    }
+
+    #[test]
+    fn build_load_job_json_fmt_ndjson_no_skip_rows_key() {
+        let job = build_load_job_json_fmt(
+            "p", "d", "t", "WRITE_APPEND", None, "NEWLINE_DELIMITED_JSON", None, true,
+        );
+        let load = &job["configuration"]["load"];
+        assert_eq!(load["sourceFormat"], "NEWLINE_DELIMITED_JSON");
+        assert_eq!(load["autodetect"], true);
+        // No CSV header → the key is absent, not null.
+        assert!(load.get("skipLeadingRows").is_none());
+    }
+
+    #[test]
+    fn all_string_schema_builds_nullable_string_fields() {
+        let s = all_string_schema(["Id".to_string(), "Name".to_string()]).unwrap();
+        let fields = s["fields"].as_array().unwrap();
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0]["name"], "Id");
+        assert_eq!(fields[0]["type"], "STRING");
+        assert_eq!(fields[0]["mode"], "NULLABLE");
+        assert_eq!(fields[1]["name"], "Name");
+        // Empty column set → no schema (fall back to autodetect).
+        assert!(all_string_schema(Vec::<String>::new()).is_none());
+    }
+
+    #[test]
+    fn native_batch_columns_reads_first_ndjson_and_csv_line() {
+        let nd = b"{\"Id\":\"1\",\"Name\":\"a\"}\n{\"Id\":\"2\"}\n";
+        let cols = native_batch_columns(nd, faucet_core::NativeFormat::NdJson, b',').unwrap();
+        assert_eq!(cols, vec!["Id".to_string(), "Name".to_string()]);
+        let csv = b"Id,Name\r\n1,a\n";
+        let cols = native_batch_columns(csv, faucet_core::NativeFormat::Csv, b',').unwrap();
+        assert_eq!(cols, vec!["Id".to_string(), "Name".to_string()]);
+        // Empty input → None.
+        assert!(native_batch_columns(b"", faucet_core::NativeFormat::NdJson, b',').is_none());
+    }
+
+    #[test]
+    fn load_job_with_explicit_schema_disables_autodetect() {
+        // The native path passes an all-STRING schema; it must win over autodetect
+        // (the bug that broke the first native run was autodetect type-inference).
+        let schema = all_string_schema(["Id".to_string(), "Amount".to_string()]);
+        let job = build_load_job_json_full(
+            "p",
+            "d",
+            "t",
+            "WRITE_TRUNCATE",
+            None,
+            "NEWLINE_DELIMITED_JSON",
+            None,
+            schema,
+            true, // even with autodetect requested, an explicit schema forces it off
+        );
+        let load = &job["configuration"]["load"];
+        assert_eq!(load["autodetect"], false);
+        assert_eq!(load["schema"]["fields"][1]["name"], "Amount");
+        assert_eq!(load["schema"]["fields"][1]["type"], "STRING");
+    }
+
+    #[test]
+    fn media_boundary_matches_str_wrapper_and_is_absent() {
+        let payload = b"{\"a\":1}\n";
+        let b = media_boundary(payload);
+        assert_eq!(b, multipart_boundary("{\"a\":1}\n"));
+        assert!(b.starts_with("faucetbq") && b.ends_with("boundary"));
+        assert!(!String::from_utf8_lossy(payload).contains(&b));
+    }
+
+    #[test]
+    fn multipart_boundary_is_deterministic_and_absent_from_payload() {
+        let ndjson = "{\"a\":1}\n";
+        let b1 = multipart_boundary(ndjson);
+        let b2 = multipart_boundary(ndjson);
+        assert_eq!(b1, b2, "same payload → same boundary");
+        assert!(!ndjson.contains(&b1), "boundary must not appear in payload");
+        assert!(b1.starts_with("faucetbq") && b1.ends_with("boundary"));
+    }
+
+    #[test]
+    fn build_multipart_related_has_both_parts_and_closing_delimiter() {
+        let ndjson = "{\"a\":1}\n";
+        let boundary = multipart_boundary(ndjson);
+        let job_json = build_load_job_json("p", "d", "t", "WRITE_APPEND", None).to_string();
+        // Media part is raw bytes (uncompressed here so the assertions can read it).
+        let body = build_multipart_related(&boundary, &job_json, ndjson.as_bytes());
+        let text = String::from_utf8(body).expect("utf8");
+        // Two opening delimiters + one closing delimiter.
+        assert_eq!(text.matches(&format!("--{boundary}\r\n")).count(), 2);
+        assert!(text.ends_with(&format!("--{boundary}--\r\n")));
+        assert!(text.contains("Content-Type: application/json; charset=UTF-8"));
+        assert!(text.contains("Content-Type: application/octet-stream"));
+        assert!(text.contains("NEWLINE_DELIMITED_JSON"));
+        assert!(text.contains("{\"a\":1}"));
+    }
+
+    #[test]
+    fn is_direct_overwrite_matrix() {
+        let base = || {
+            let mut c = BigQuerySinkConfig::new(
+                "p",
+                "d",
+                "t",
+                BigQueryCredentials::ApplicationDefault,
+            );
+            c.write.write_mode = faucet_core::WriteMode::Overwrite;
+            c
+        };
+
+        // Solo media-load overwrite ⇒ direct (no staging).
+        let mut c = base();
+        c.media_load = true;
+        assert!(is_direct_overwrite(&c));
+
+        // Grouped (executor set `_overwrite_staging`) ⇒ stage.
+        let mut c = base();
+        c.media_load = true;
+        c.overwrite_staging = true;
+        assert!(!is_direct_overwrite(&c));
+
+        // Scoped/windowed overwrite ⇒ stage (partial replace can't truncate).
+        let mut c = base();
+        c.media_load = true;
+        c.scope = Some(faucet_core::OverwriteScope::Window {
+            column: "d".into(),
+            from: json!("2024-01-01"),
+            to: json!("2024-02-01"),
+        });
+        assert!(!is_direct_overwrite(&c));
+
+        // Non-media overwrite (jobs.query path) ⇒ always stage.
+        let c = base();
+        assert!(!is_direct_overwrite(&c));
+    }
+
+    #[test]
+    fn gzip_media_round_trips_to_original_ndjson() {
+        use std::io::Read;
+        let ndjson =
+            records_to_ndjson(&[json!({"a": 1, "b": "x"}), json!({"a": 2, "b": "y"})]).unwrap();
+        let compressed = gzip(ndjson.as_bytes()).expect("gzip");
+        // Compressed bytes are not the raw payload (a real gzip stream).
+        assert_ne!(compressed.as_slice(), ndjson.as_bytes());
+        assert_eq!(&compressed[..2], &[0x1f, 0x8b], "gzip magic bytes");
+        let mut dec = flate2::read::GzDecoder::new(&compressed[..]);
+        let mut out = String::new();
+        dec.read_to_string(&mut out).expect("gunzip");
+        assert_eq!(out, ndjson);
+    }
+
+    #[test]
+    fn build_multipart_related_embeds_binary_media_verbatim() {
+        // A gzip stream contains bytes like 0x00 that must survive the byte-wise
+        // assembly (a `format!`-based body would corrupt them).
+        let media = gzip(b"{\"a\":1}\n").expect("gzip");
+        let boundary = "faucetbqTESTboundary";
+        let job_json = build_load_job_json("p", "d", "t", "WRITE_TRUNCATE", None).to_string();
+        let body = build_multipart_related(boundary, &job_json, &media);
+        // The exact gzip bytes appear contiguously in the assembled body.
+        assert!(
+            body.windows(media.len()).any(|w| w == media.as_slice()),
+            "gzip media must be embedded verbatim"
+        );
+        assert!(body.ends_with(format!("\r\n--{boundary}--\r\n").as_bytes()));
     }
 
     #[test]

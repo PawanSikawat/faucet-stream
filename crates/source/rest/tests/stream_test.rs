@@ -1445,6 +1445,7 @@ async fn test_token_endpoint_auth_fetches_and_uses_token() {
 
     let stream = RestStream::new(RestStreamConfig::new(&server.uri(), "/api/data").auth(
         Auth::TokenEndpoint {
+            encoding: Default::default(),
             url: format!("{}/auth/token", server.uri()),
             method: reqwest::Method::POST,
             headers: HeaderMap::new(),
@@ -1499,6 +1500,7 @@ async fn test_token_endpoint_auth_with_custom_headers_and_body() {
 
     let stream = RestStream::new(RestStreamConfig::new(&server.uri(), "/api/items").auth(
         Auth::TokenEndpoint {
+            encoding: Default::default(),
             url: format!("{}/auth/login", server.uri()),
             method: reqwest::Method::POST,
             headers: token_headers,
@@ -1566,6 +1568,7 @@ async fn test_token_endpoint_auth_caches_token_across_pages() {
                 param_name: "cursor".into(),
             })
             .auth(Auth::TokenEndpoint {
+                encoding: Default::default(),
                 url: format!("{}/auth/token", server.uri()),
                 method: reqwest::Method::POST,
                 headers: HeaderMap::new(),
@@ -1597,6 +1600,7 @@ async fn test_token_endpoint_auth_error_on_failed_fetch() {
 
     let stream = RestStream::new(RestStreamConfig::new(&server.uri(), "/api/data").auth(
         Auth::TokenEndpoint {
+            encoding: Default::default(),
             url: format!("{}/auth/token", server.uri()),
             method: reqwest::Method::POST,
             headers: HeaderMap::new(),
@@ -1644,6 +1648,7 @@ async fn test_token_endpoint_custom_response_validator() {
 
     let stream = RestStream::new(RestStreamConfig::new(&server.uri(), "/api/data").auth(
         Auth::TokenEndpoint {
+            encoding: Default::default(),
             url: format!("{}/auth/token", server.uri()),
             method: reqwest::Method::POST,
             headers: HeaderMap::new(),
@@ -1677,6 +1682,7 @@ async fn test_token_endpoint_custom_validator_rejects_response() {
 
     let stream = RestStream::new(RestStreamConfig::new(&server.uri(), "/api/data").auth(
         Auth::TokenEndpoint {
+            encoding: Default::default(),
             url: format!("{}/auth/token", server.uri()),
             method: reqwest::Method::POST,
             headers: HeaderMap::new(),

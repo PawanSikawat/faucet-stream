@@ -70,6 +70,51 @@ pub struct BigQuerySinkConfig {
     /// job's default location. Ignored once the dataset exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
+    /// Bucket-free bulk load for the **overwrite** write path: instead of one
+    /// `jobs.query` `INSERT … SELECT FROM UNNEST(@payload)` per page (job-latency
+    /// bound — dozens of sequential jobs for a large table), stream each page
+    /// straight into the staging table with a single BigQuery **load job** via a
+    /// `multipart/related` media upload of newline-delimited JSON. No GCS bucket
+    /// is involved (unlike the Arrow `bulk_load` path). This mirrors how the
+    /// legacy iPaaS loader wrote to BigQuery (`load_table_from_dataframe`,
+    /// CSV/JSON media upload) and collapses a 60-page run into a handful of load
+    /// jobs. Only consulted on the `write_mode: overwrite` path; append /
+    /// upsert / delete / exactly-once are unaffected. Default `false`.
+    #[serde(default)]
+    pub media_load: bool,
+    /// Internal: set by the CLI executor for a *grouped* overwrite fan-out
+    /// (several matrix rows → one physical table), where a shared staging table
+    /// is the only safe swap across the independent writer sink instances.
+    ///
+    /// Absent/`false` ⇒ a **solo** overwrite (the common one-table-per-run case)
+    /// loads directly into the target — `WRITE_TRUNCATE` on the first page,
+    /// `WRITE_APPEND` on the rest — with no staging table, no swap, and no
+    /// second data-write. A BigQuery load job with `WRITE_TRUNCATE` is atomic on
+    /// its own (the target's prior data survives a failed load), so a
+    /// single-load refresh is fully atomic without staging.
+    ///
+    /// Only consulted on the `media_load` overwrite path (and only when `scope`
+    /// is `None`); the `jobs.query` overwrite path always stages. Not a
+    /// user-facing knob — the key is `_overwrite_staging`.
+    #[serde(default, rename = "_overwrite_staging")]
+    #[schemars(skip)]
+    pub overwrite_staging: bool,
+    /// Internal test hook: base URL for the media/resumable **upload** endpoint
+    /// (`{base}/upload/bigquery/v2/…`), which is a fixed Google host the
+    /// `gcp_bigquery_client` client does not route. Defaults to the real
+    /// endpoint; overridden in tests to point the streaming load at a wiremock
+    /// server. Not user-facing.
+    #[serde(default, skip_serializing)]
+    #[schemars(skip)]
+    pub upload_base_url: Option<String>,
+    /// Resumable-upload chunk threshold in bytes (compressed) — the accumulated
+    /// gzip buffer size at which the streaming load flushes a mid-stream chunk
+    /// PUT. Defaults to the production 8 MiB when `None`; overridden to a small
+    /// value in tests so the multi-chunk PUT path is reachable without an 8 MiB
+    /// payload. Not user-facing.
+    #[serde(default, skip_serializing)]
+    #[schemars(skip)]
+    pub resumable_chunk: Option<usize>,
     /// Arrow columnar **load-job** mode (#380): buffer Arrow `RecordBatch`es to
     /// Parquet, stage them on a GCS bucket, then run a BigQuery `PARQUET` load
     /// job (`jobs.insert`) instead of the per-row `insertAll` path. Only
@@ -145,6 +190,10 @@ impl BigQuerySinkConfig {
             scope: None,
             create_table: default_create_table(),
             location: None,
+            media_load: false,
+            overwrite_staging: false,
+            upload_base_url: None,
+            resumable_chunk: None,
             #[cfg(feature = "arrow")]
             bulk_load: None,
         }
@@ -162,6 +211,13 @@ impl BigQuerySinkConfig {
     /// dataset (e.g. `US`, `EU`, `us-central1`).
     pub fn with_location(mut self, location: impl Into<String>) -> Self {
         self.location = Some(location.into());
+        self
+    }
+
+    /// Enable the bucket-free media-upload load-job path for the `overwrite`
+    /// write mode. See [`media_load`](Self::media_load).
+    pub fn with_media_load(mut self, media_load: bool) -> Self {
+        self.media_load = media_load;
         self
     }
 
@@ -399,6 +455,55 @@ mod tests {
                 .with_location("us-central1");
         assert!(!config.create_table);
         assert_eq!(config.location.as_deref(), Some("us-central1"));
+    }
+
+    #[test]
+    fn media_load_defaults_false_and_builder_sets_it() {
+        let config =
+            BigQuerySinkConfig::new("p", "d", "t", BigQueryCredentials::ApplicationDefault);
+        assert!(!config.media_load);
+        let config = config.with_media_load(true);
+        assert!(config.media_load);
+    }
+
+    #[test]
+    fn media_load_deserializes_from_json_and_defaults_false() {
+        let with = r#"{
+            "project_id": "p", "dataset_id": "d", "table_id": "t",
+            "auth": {"type": "application_default"}, "media_load": true
+        }"#;
+        let config: BigQuerySinkConfig = serde_json::from_str(with).unwrap();
+        assert!(config.media_load);
+
+        let without = r#"{
+            "project_id": "p", "dataset_id": "d", "table_id": "t",
+            "auth": {"type": "application_default"}
+        }"#;
+        let config: BigQuerySinkConfig = serde_json::from_str(without).unwrap();
+        assert!(!config.media_load);
+    }
+
+    #[test]
+    fn overwrite_staging_defaults_false_and_deserializes_from_injected_key() {
+        let config =
+            BigQuerySinkConfig::new("p", "d", "t", BigQueryCredentials::ApplicationDefault);
+        assert!(!config.overwrite_staging);
+
+        // The executor injects `_overwrite_staging` for grouped overwrites.
+        let with = r#"{
+            "project_id": "p", "dataset_id": "d", "table_id": "t",
+            "auth": {"type": "application_default"}, "_overwrite_staging": true
+        }"#;
+        let config: BigQuerySinkConfig = serde_json::from_str(with).unwrap();
+        assert!(config.overwrite_staging);
+
+        // Absent ⇒ solo ⇒ direct load.
+        let without = r#"{
+            "project_id": "p", "dataset_id": "d", "table_id": "t",
+            "auth": {"type": "application_default"}
+        }"#;
+        let config: BigQuerySinkConfig = serde_json::from_str(without).unwrap();
+        assert!(!config.overwrite_staging);
     }
 
     #[test]

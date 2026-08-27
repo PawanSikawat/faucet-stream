@@ -20,6 +20,15 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
 async-trait.workspace = true
+futures.workspace = true
+# Bucket-free media-upload load-job path (`media_load` config): a
+# `multipart/related` POST to the BigQuery upload endpoint, authenticated with a
+# token minted via `gcp_bigquery_client`'s re-exported `yup-oauth2` (no direct
+# yup-oauth2 dependency needed).
+reqwest = { workspace = true }
+# Gzip the NDJSON media part of the load-job upload (BigQuery auto-detects gzip
+# for NEWLINE_DELIMITED_JSON), shrinking the wire payload several-fold.
+flate2 = { workspace = true }
 
 # Arrow columnar load-job path (#380, `arrow` feature): buffer RecordBatches to
 # Parquet, stage on GCS, then `jobs.insert` a PARQUET load job.
@@ -52,9 +61,6 @@ tokio = { version = "1", features = ["full", "test-util"] }
 wiremock = "0.6"
 tempfile = "3"
 serde = { workspace = true }
-# Tests only: gunzip captured insertAll request bodies (the client gzips them
-# via gcp-bigquery-client's default `gzip` feature) to assert skipInvalidRows.
-flate2 = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true

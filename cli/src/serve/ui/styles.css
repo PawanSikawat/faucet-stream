@@ -257,7 +257,7 @@ button { font-family: inherit; }
 /* ============================================================================
    buttons
    ========================================================================== */
-.btn-primary, .btn-ghost, .btn-danger {
+.btn-primary, .btn-ghost, .btn-danger, .btn-warn {
   appearance: none;
   font-size: 0.88rem;
   font-weight: 600;
@@ -292,7 +292,19 @@ button { font-family: inherit; }
 }
 .btn-danger:hover { background: var(--fail); color: #fff; }
 
-.btn-primary:disabled, .btn-ghost:disabled, .btn-danger:disabled {
+/* Warning: recoverable-but-disruptive actions (cancel a run, discard DLQ,
+   deprecate a template) — amber outline that fills on hover. Sits between the
+   neutral ghost and the destructive (red) danger button so consequential
+   actions read as "careful" without implying irreversible data loss. */
+.btn-warn {
+  background: transparent;
+  color: var(--queued);
+  border-color: color-mix(in srgb, var(--queued) 45%, transparent);
+}
+.btn-warn:hover { background: var(--queued); color: #fff; }
+.btn-warn:active { transform: translateY(1px); }
+
+.btn-primary:disabled, .btn-ghost:disabled, .btn-danger:disabled, .btn-warn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
   transform: none;

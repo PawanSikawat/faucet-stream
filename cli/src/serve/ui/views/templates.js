@@ -268,7 +268,7 @@ export async function renderTemplateDetail(container, { id }) {
         <div class="detail-actions">
           <button class="btn-ghost" id="t-rollback" ${st.previous == null ? "disabled" : ""}
             title="${st.previous == null ? "no earlier launch to roll back to" : `re-launch v${st.previous}`}">Roll back</button>
-          <button class="btn-ghost" id="t-deprecate">${st.status === "deprecated" ? "Revive" : "Deprecate"}</button>
+          <button class="${st.status === "deprecated" ? "btn-ghost" : "btn-warn"}" id="t-deprecate">${st.status === "deprecated" ? "Revive" : "Deprecate"}</button>
         </div>
       </div>
 
