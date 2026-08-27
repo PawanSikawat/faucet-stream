@@ -9,6 +9,8 @@ pub mod health;
 #[cfg(feature = "catalog")]
 pub mod local_outputs;
 pub mod logs;
+#[cfg(feature = "catalog")]
+pub mod preview;
 pub mod reload;
 pub mod runs;
 pub mod schemas;

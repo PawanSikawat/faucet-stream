@@ -1085,7 +1085,8 @@ select {
 .lo-list { display: flex; flex-direction: column; gap: 6px; }
 .lo-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto auto;
+  /* kind · path · state · age · last-written · preview · delete */
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto auto auto;
   align-items: center;
   gap: 10px;
   cursor: default;
@@ -1107,6 +1108,73 @@ select {
   border-color: color-mix(in srgb, var(--ok) 40%, transparent);
   background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
+
+
+/* ── Dataset preview (#586) ───────────────────────────────────────────────────
+   The rows an output actually holds, read back through the matching source
+   connector. Expands below its output row; the table scrolls on its own axis so
+   a 40-column parquet part can never widen the page. */
+.lo-item { display: flex; flex-direction: column; gap: 6px; }
+.lo-preview {
+  padding: 10px 12px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+.dp-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.dp-rows-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--ink-dim);
+}
+.dp-rows { width: 84px; }
+.dp-bar .btn-ghost { padding: 5px 11px; font-size: 0.8rem; }
+.dp-scroll { overflow-x: auto; }
+.dp-table {
+  /* Auto layout (not the fixed widths of `.tbl`): the column set is whatever
+     the data has, so nothing sensible can be hardcoded. */
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+.dp-table th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+  font-weight: 600;
+  padding: 7px 10px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.dp-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  color: var(--ink-dim);
+  vertical-align: top;
+  max-width: 320px;
+  overflow-wrap: anywhere;
+}
+.dp-table tbody tr:last-child td { border-bottom: 0; }
+.dp-table tbody tr:hover td { background: var(--surface-2); }
+/* A missing / null field reads as absent, not as an empty string. */
+.dp-absent { color: var(--ink-faint); }
+.dp-raw { white-space: pre-wrap; }
 
 @media (max-width: 760px) {
   .lo-row { grid-template-columns: auto minmax(0, 1fr) auto; row-gap: 8px; }

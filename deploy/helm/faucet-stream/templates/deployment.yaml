@@ -101,6 +101,15 @@ spec:
               value: {{ .Values.serve.localOutputs.retentionDays | quote }}
             - name: FAUCET_LOCAL_SINK_OUTPUT_IN_FLIGHT_GRACE_SECS
               value: {{ .Values.serve.localOutputs.inFlightGraceSeconds | quote }}
+            # Dataset preview of local sink outputs (#586). Off unless explicitly
+            # enabled: it reads file contents back over HTTP. The two caps ride
+            # along so they can be tuned per environment without a rebuild.
+            - name: FAUCET_SERVE_PREVIEW_LOCAL_OUTPUTS
+              value: {{ .Values.serve.preview.enabled | quote }}
+            - name: FAUCET_SERVE_PREVIEW_DEFAULT_ROWS
+              value: {{ .Values.serve.preview.rows | quote }}
+            - name: FAUCET_SERVE_PREVIEW_MAX_ROWS
+              value: {{ .Values.serve.preview.maxRows | quote }}
             {{- if eq .Values.serve.auth.mode "token" }}
             - name: FAUCET_SERVE_AUTH_TOKEN
               valueFrom:
