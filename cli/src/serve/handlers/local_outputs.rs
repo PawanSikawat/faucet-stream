@@ -9,6 +9,9 @@
 //! | `DELETE /v1/local-outputs/{id}` | one output, now | `LocalOutputManage` (operator+) |
 //! | `POST /v1/local-outputs/cleanup` | older-than-N / expired / all | `LocalOutputManage` |
 //!
+//! The Datasets page's other control on these rows — *preview* the file's first
+//! N rows (#586) — lives in [`super::preview`]: reading, not reclaiming.
+//!
 //! Every deletion goes through [`crate::local_outputs::sweep`], so the guardrail
 //! is the same one the background sweeper obeys: **only paths the ledger records
 //! as faucet's own sink outputs**, never a glob or a directory, and never a file
@@ -78,6 +81,19 @@ pub struct ListResponse {
     /// the destructive controls at all, rather than offering a viewer buttons
     /// that can only ever 403.
     pub can_manage: bool,
+    /// Whether this server serves dataset previews of these files (#586,
+    /// `--preview-local-outputs`). Same reasoning as `can_manage`: the console
+    /// renders a Preview control only where it can work.
+    pub preview_enabled: bool,
+    /// Rows a preview loads when `row_count_to_load` is omitted — the soft cap,
+    /// so the console can pre-fill its row input with the server's own default.
+    /// `null` = the whole dataset by default.
+    pub preview_default_rows: Option<usize>,
+    /// Hard ceiling on a preview's rows. The console bounds its input by this
+    /// rather than letting a user type a number that will be silently clamped.
+    /// `null` = no ceiling, which is what lets the console offer "load every
+    /// row" as something that will actually load every row.
+    pub preview_max_rows: Option<usize>,
 }
 
 /// `GET /v1/local-outputs` → 200.
@@ -107,11 +123,15 @@ pub async fn list_outputs(
             record,
         })
         .collect();
+    let preview = *state.preview();
     Ok(Json(ListResponse {
         outputs,
         retention_days,
         gc_enabled: retention_days > 0,
         can_manage: actor.role.grants(Permission::LocalOutputManage),
+        preview_enabled: preview.enabled,
+        preview_default_rows: preview.default_rows(),
+        preview_max_rows: preview.max_rows(),
     }))
 }
 

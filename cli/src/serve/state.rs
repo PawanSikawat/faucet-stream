@@ -40,6 +40,8 @@ struct Inner {
     local_output_retention_days: u32,
     /// Mid-write guard window for local-output deletion (#587).
     local_output_in_flight_grace: Duration,
+    /// Dataset-preview policy for local sink outputs (#586).
+    preview: crate::serve::preview::PreviewConfig,
     /// Allowlist of hosts a per-run completion callback may target (#481).
     callback_allow_hosts: Vec<String>,
     cluster: crate::serve::cluster::ClusterHandle,
@@ -73,6 +75,7 @@ impl ServerState {
                 probe_timeout: config.probe_timeout,
                 local_output_retention_days: config.local_output_retention_days,
                 local_output_in_flight_grace: config.local_output_in_flight_grace,
+                preview: config.preview,
                 callback_allow_hosts: config.callback_allow_hosts.clone(),
                 cluster: crate::serve::cluster::ClusterHandle::from_config(config),
                 #[cfg(feature = "triggers")]
@@ -118,6 +121,11 @@ impl ServerState {
     /// Window within which a recently-written local output is left alone (#587).
     pub fn local_output_in_flight_grace(&self) -> Duration {
         self.inner.local_output_in_flight_grace
+    }
+
+    /// The server's dataset-preview policy (#586): the opt-in gate + row caps.
+    pub fn preview(&self) -> &crate::serve::preview::PreviewConfig {
+        &self.inner.preview
     }
 
     pub fn history(&self) -> Arc<dyn RunHistory> {
@@ -193,6 +201,7 @@ mod tests {
             log_max_lines_per_run: 100_000,
             local_output_retention_days: 7,
             local_output_in_flight_grace: Duration::from_secs(60),
+            preview: crate::serve::preview::PreviewConfig::default(),
             lease_ttl: Duration::from_secs(30),
             probe_timeout: Duration::from_secs(10),
             env_file: None,

@@ -281,6 +281,13 @@ pub fn required_permission(method: &Method, matched_path: &str) -> Option<Permis
         (&Method::GET, "/v1/local-outputs") => Some(LocalOutputRead),
         (&Method::DELETE, "/v1/local-outputs/{id}") => Some(LocalOutputManage),
         (&Method::POST, "/v1/local-outputs/cleanup") => Some(LocalOutputManage),
+        // Dataset preview (#586) is a *read* of an output's contents, so it rides
+        // `LocalOutputRead` (viewer+) rather than earning a scope of its own: a
+        // viewer can already read run logs, which carry record data, and the real
+        // gate on this endpoint is the server-level `--preview-local-outputs`
+        // opt-in — a permission split would suggest per-principal control the
+        // fixed role ladder does not offer.
+        (&Method::GET, "/v1/local-outputs/{id}/preview") => Some(LocalOutputRead),
         // Pipeline templates (#444). Triggering maps to `RunWrite` — it starts a
         // run, which is the privileged half; `operator` holds both scopes, so a
         // single check suffices and a `viewer` can browse but never trigger.
@@ -326,6 +333,7 @@ pub fn audit_action(method: &Method, matched_path: &str) -> &'static str {
         (&Method::GET, "/v1/local-outputs") => "local_output.list",
         (&Method::DELETE, "/v1/local-outputs/{id}") => "local_output.delete",
         (&Method::POST, "/v1/local-outputs/cleanup") => "local_output.cleanup",
+        (&Method::GET, "/v1/local-outputs/{id}/preview") => "local_output.preview",
         (&Method::POST, "/v1/templates") => "template.register",
         (&Method::GET, "/v1/templates") => "template.list",
         (&Method::GET, "/v1/templates/{id}") => "template.get",
@@ -478,6 +486,11 @@ mod tests {
             (Method::GET, "/v1/local-outputs", LocalOutputRead),
             (Method::DELETE, "/v1/local-outputs/{id}", LocalOutputManage),
             (Method::POST, "/v1/local-outputs/cleanup", LocalOutputManage),
+            (
+                Method::GET,
+                "/v1/local-outputs/{id}/preview",
+                LocalOutputRead,
+            ),
             (Method::POST, "/v1/templates", TemplateWrite),
             (Method::GET, "/v1/templates", TemplateRead),
             (Method::GET, "/v1/templates/{id}", TemplateRead),
@@ -515,13 +528,15 @@ mod tests {
             audit_action(&Method::GET, "/v1/local-outputs"),
             audit_action(&Method::DELETE, "/v1/local-outputs/{id}"),
             audit_action(&Method::POST, "/v1/local-outputs/cleanup"),
+            audit_action(&Method::GET, "/v1/local-outputs/{id}/preview"),
         ];
         assert_eq!(
             actions,
             [
                 "local_output.list",
                 "local_output.delete",
-                "local_output.cleanup"
+                "local_output.cleanup",
+                "local_output.preview"
             ]
         );
         assert!(actions.iter().all(|a| *a != "unknown"));

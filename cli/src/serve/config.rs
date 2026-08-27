@@ -5,6 +5,7 @@
 use crate::cli::ServeArgs;
 use crate::error::{CliError, CliResult};
 use crate::serve::cluster::ClusterConfig;
+use crate::serve::preview::PreviewConfig;
 use crate::serve::rbac::{AuthContext, RbacConfig, Role};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -101,6 +102,9 @@ pub struct ServeConfig {
     /// Never delete a local sink output touched within this window — the guard
     /// against unlinking a file a live run is still writing (#587). `0` disables.
     pub local_output_in_flight_grace: Duration,
+    /// Dataset-preview policy for local sink outputs (#586): the opt-in gate
+    /// plus the soft/hard row caps every request is resolved against.
+    pub preview: PreviewConfig,
     /// Run-ownership lease TTL for multi-instance orphan fencing (#146 H7).
     pub lease_ttl: Duration,
     pub probe_timeout: Duration,
@@ -243,6 +247,19 @@ impl ServeConfig {
             ClusterConfig::disabled()
         };
 
+        // `0` on either preview cap means "no limit" — the same convention as
+        // `batch_size: 0` and `retention_days: 0` — so neither is rejected here.
+        // A lifted ceiling is a deliberate local-testing choice, and worth a line
+        // in the log: it is the difference between "a client may read 5000 rows"
+        // and "a client may read the file".
+        if args.preview_local_outputs && args.preview_max_rows == 0 {
+            tracing::warn!(
+                "--preview-max-rows 0: local-output previews have no row ceiling, so a \
+                 request may read an entire output file into one response (still bounded \
+                 by the preview byte budget and deadline)"
+            );
+        }
+
         let max_concurrent_runs = args
             .max_concurrent_runs
             .unwrap_or_else(default_max_concurrent)
@@ -269,6 +286,11 @@ impl ServeConfig {
             local_output_retention_days: args.local_output_retention_days,
             local_output_in_flight_grace: Duration::from_secs(
                 args.local_output_in_flight_grace_secs,
+            ),
+            preview: PreviewConfig::new(
+                args.preview_local_outputs,
+                args.preview_default_rows,
+                args.preview_max_rows,
             ),
             lease_ttl: Duration::from_secs(args.lease_ttl_secs),
             probe_timeout: Duration::from_secs(args.probe_timeout_secs),
@@ -307,6 +329,9 @@ mod tests {
             log_max_lines_per_run: 100_000,
             local_output_retention_days: 7,
             local_output_in_flight_grace_secs: 60,
+            preview_local_outputs: false,
+            preview_default_rows: crate::serve::preview::DEFAULT_PREVIEW_ROWS,
+            preview_max_rows: crate::serve::preview::MAX_PREVIEW_ROWS,
             lease_ttl_secs: 30,
             probe_timeout_secs: 10,
             env_file: None,
@@ -560,6 +585,96 @@ mod tests {
         let cfg = ServeConfig::from_args(a).unwrap();
         assert!(cfg.cluster.enabled);
         assert_eq!(cfg.cluster.max_attempts, 3);
+    }
+
+    #[test]
+    fn preview_is_off_by_default_with_the_documented_caps() {
+        let mut a = base_args();
+        a.no_auth = true;
+        let cfg = ServeConfig::from_args(a).unwrap();
+        assert!(!cfg.preview.enabled, "preview must be opt-in");
+        assert_eq!(cfg.preview.default_rows, 500);
+        assert_eq!(cfg.preview.max_rows, 5_000);
+    }
+
+    #[test]
+    fn preview_flag_and_caps_reach_the_config() {
+        let mut a = base_args();
+        a.no_auth = true;
+        a.preview_local_outputs = true;
+        a.preview_default_rows = 25;
+        a.preview_max_rows = 250;
+        let cfg = ServeConfig::from_args(a).unwrap();
+        assert!(cfg.preview.enabled);
+        assert_eq!(cfg.preview.default_rows, 25);
+        assert_eq!(cfg.preview.max_rows, 250);
+    }
+
+    #[test]
+    fn a_soft_cap_above_the_hard_cap_boots_clamped_rather_than_failing() {
+        // Lowering only the hard cap must not turn a running deployment into a
+        // crash loop; the ceiling wins and the server starts.
+        let mut a = base_args();
+        a.no_auth = true;
+        a.preview_default_rows = 100;
+        a.preview_max_rows = 20;
+        let cfg = ServeConfig::from_args(a).unwrap();
+        assert_eq!(cfg.preview.default_rows, 20);
+        assert_eq!(cfg.preview.max_rows, 20);
+    }
+
+    #[test]
+    fn a_zero_hard_cap_lifts_the_ceiling_rather_than_failing_to_boot() {
+        // `0` = no limit, the same convention as `batch_size` / `retention_days`.
+        // It is how an operator allows a whole-dataset preview.
+        use crate::serve::preview::{RowCap, RowRequest};
+        let mut a = base_args();
+        a.no_auth = true;
+        a.preview_local_outputs = true;
+        a.preview_max_rows = 0;
+        let cfg = ServeConfig::from_args(a).unwrap();
+        assert_eq!(cfg.preview.max_rows, 0);
+        assert_eq!(cfg.preview.max_rows(), None);
+        assert_eq!(
+            cfg.preview.resolve_rows(Some(RowRequest::All)),
+            RowCap::Unlimited
+        );
+    }
+
+    #[test]
+    fn a_zero_soft_cap_previews_everything_by_default() {
+        use crate::serve::preview::RowCap;
+        let mut a = base_args();
+        a.no_auth = true;
+        a.preview_default_rows = 0;
+        a.preview_max_rows = 0;
+        let cfg = ServeConfig::from_args(a).unwrap();
+        assert_eq!(cfg.preview.resolve_rows(None), RowCap::Unlimited);
+    }
+
+    #[test]
+    fn the_preview_flag_parses_from_the_command_line() {
+        use clap::Parser;
+        // The gate is a bool flag with an `env`, so clap gives it the strict
+        // `bool` value parser: `FAUCET_SERVE_PREVIEW_LOCAL_OUTPUTS=false` is off
+        // (what the Helm chart emits when disabled) and a garbage value is a
+        // startup error rather than a silent "on".
+        let args = crate::cli::ServeArgs::try_parse_from([
+            "serve",
+            "--no-auth",
+            "--preview-local-outputs",
+            "--preview-default-rows",
+            "7",
+            "--preview-max-rows",
+            "9",
+        ])
+        .expect("flags parse");
+        assert!(args.preview_local_outputs);
+        assert_eq!(args.preview_default_rows, 7);
+        assert_eq!(args.preview_max_rows, 9);
+
+        let off = crate::cli::ServeArgs::try_parse_from(["serve", "--no-auth"]).unwrap();
+        assert!(!off.preview_local_outputs);
     }
 
     #[test]

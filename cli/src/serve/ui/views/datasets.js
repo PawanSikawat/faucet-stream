@@ -2,7 +2,9 @@
 // every dataset the server's pipelines have touched, plus a per-dataset
 // detail view (schema timeline with diffs, recent volume, lineage edges).
 //
-// Also the control surface for local-output retention (#587/#588). Cleanup of
+// Also the control surface for local-output retention (#587/#588) and the
+// dataset **preview** of those outputs (#586) — the rows a run actually wrote,
+// read back through the matching source connector. Cleanup of
 // *data artifacts* belongs next to the data artifacts, not on the Runs tab,
 // which is about execution history. The model the UI has to convey:
 // **data artifacts are disposable; run history is durable** — cleaning an output
@@ -129,7 +131,17 @@ export async function renderLocalOutputs(host, scope = {}) {
   }
 
   function paint(data) {
-    const { outputs, retention_days: retention, gc_enabled: gcOn, can_manage: canManage } = data;
+    const {
+      outputs,
+      retention_days: retention,
+      gc_enabled: gcOn,
+      can_manage: canManage,
+      preview_enabled: canPreview,
+      preview_default_rows: previewDefault,
+      preview_max_rows: previewMax,
+    } = data;
+    // Either cap may be null — the server's way of saying "no limit".
+    const caps = { defaultRows: previewDefault, maxRows: previewMax };
     body.innerHTML = `
       <div class="lo-bar">
         <span class="run-meta">${outputs.length} tracked${
@@ -155,7 +167,7 @@ export async function renderLocalOutputs(host, scope = {}) {
       </div>
       <div class="lo-list">${
         outputs.length
-          ? outputs.map((o) => outputRow(o, canManage)).join("")
+          ? outputs.map((o) => outputRow(o, canManage, canPreview)).join("")
           : `<div class="empty">No local output files tracked${
               datasetId ? " for this dataset" : ""
             } yet — run a pipeline with a jsonl, csv, or parquet sink.</div>`
@@ -166,6 +178,10 @@ export async function renderLocalOutputs(host, scope = {}) {
       load();
     };
     body.querySelector("#lo-refresh").onclick = () => load();
+
+    body.querySelectorAll(".lo-preview-btn").forEach((btn) => {
+      btn.onclick = () => togglePreview(btn, caps);
+    });
 
     if (!canManage) return;
     body.querySelector("#lo-purge-btn").onclick = () => {
@@ -243,22 +259,204 @@ export async function renderLocalOutputs(host, scope = {}) {
   await load();
 }
 
-function outputRow(o, canManage) {
+function outputRow(o, canManage, canPreview) {
+  // The row and its preview panel are wrapped together so the panel can expand
+  // *below* the row instead of becoming another grid cell inside it.
   return `
-    <div class="run-row lo-row lo-${escapeHtml(o.state)}">
-      <span class="pill">${escapeHtml(o.kind)}</span>
-      <span class="run-name mono" title="${escapeHtml(o.path)}">${escapeHtml(o.path)}</span>
-      <span class="pill lo-state" title="${escapeHtml(STATE_HINT[o.state] || "")}">${escapeHtml(
-        o.state,
-      )}</span>
-      <span class="run-meta">${escapeHtml(fmtAge(o.age_secs))}</span>
-      <span class="run-meta run-time" title="last written">${fmtTime(o.last_written_at)}</span>
-      ${
-        canManage && o.state === "present"
-          ? `<button class="btn-danger lo-del" data-id="${escapeHtml(o.id)}">Delete now</button>`
-          : `<span class="run-meta"></span>`
-      }
+    <div class="lo-item" data-id="${escapeHtml(o.id)}">
+      <div class="run-row lo-row lo-${escapeHtml(o.state)}">
+        <span class="pill">${escapeHtml(o.kind)}</span>
+        <span class="run-name mono" title="${escapeHtml(o.path)}">${escapeHtml(o.path)}</span>
+        <span class="pill lo-state" title="${escapeHtml(STATE_HINT[o.state] || "")}">${escapeHtml(
+          o.state,
+        )}</span>
+        <span class="run-meta">${escapeHtml(fmtAge(o.age_secs))}</span>
+        <span class="run-meta run-time" title="last written">${fmtTime(o.last_written_at)}</span>
+        ${
+          canPreview && PREVIEWABLE.has(o.kind) && o.state !== "expired"
+            ? `<button class="btn-ghost lo-preview-btn">Preview</button>`
+            : `<span class="run-meta"></span>`
+        }
+        ${
+          canManage && o.state === "present"
+            ? `<button class="btn-danger lo-del" data-id="${escapeHtml(o.id)}">Delete now</button>`
+            : `<span class="run-meta"></span>`
+        }
+      </div>
+      <div class="lo-preview" hidden></div>
     </div>`;
+}
+
+// ── Dataset preview (#586) ──────────────────────────────────────────────────
+//
+// "N records written" is not the same information as "here are the records". A
+// preview is a **source-backed capped read**: the server reads the output back
+// through the matching source connector (csv → source-csv, parquet →
+// source-parquet, jsonl → its reader) and returns the first N rows. The client
+// never names a path — only the ledger id of an output the server already
+// tracks — so there is nothing here that could point the read somewhere else.
+//
+// The server owns the caps; this panel only *reflects* them (`max` on the input,
+// the pre-filled default), so a typed number is never silently clamped without
+// the user having been told the ceiling.
+
+/** Sink kinds that have a reader on the server. Anything else gets no button. */
+const PREVIEWABLE = new Set(["jsonl", "csv", "parquet"]);
+
+/** Truncation point for one cell's rendered text. */
+const CELL_MAX = 240;
+
+/**
+ * Why a read stopped short, in the user's words. A partial answer that does not
+ * say it is partial is the one genuinely dangerous thing a preview can do —
+ * every one of these must read as "there is more", not as an error.
+ */
+const CAPPED_HINT = {
+  rows: "stopped at the row limit — the dataset has more",
+  bytes: "stopped at this server's response-size budget — the dataset has more",
+  time: "stopped at this server's read deadline — the dataset has more",
+};
+
+/**
+ * Expand / collapse an output's preview panel. The first expansion builds the
+ * panel and loads; later ones just re-show what was already fetched, so
+ * collapsing is not a reason to re-read the file.
+ */
+function togglePreview(btn, caps) {
+  const item = btn.closest(".lo-item");
+  const panel = item.querySelector(".lo-preview");
+  if (!panel.hidden) {
+    panel.hidden = true;
+    btn.textContent = "Preview";
+    return;
+  }
+  panel.hidden = false;
+  btn.textContent = "Hide";
+  if (panel.dataset.ready) return;
+  panel.dataset.ready = "1";
+  // The ceiling is the server's, so the input advertises it rather than letting
+  // someone type a number that comes back quietly clamped.
+  const ceiling = caps.maxRows
+    ? ` max="${caps.maxRows}" title="this server caps a preview at ${caps.maxRows} rows"`
+    : ` title="this server sets no row ceiling"`;
+  panel.innerHTML = `
+    <div class="dp-bar">
+      <label class="dp-rows-label">rows
+        <input type="number" class="dp-rows" min="1"${ceiling} value="${
+          caps.defaultRows ?? ""
+        }" placeholder="all" />
+      </label>
+      <button class="btn-ghost dp-load">Load</button>
+      <button class="btn-ghost dp-load-all" title="${
+        caps.maxRows
+          ? `every row, up to this server's ceiling of ${caps.maxRows}`
+          : "every row in the dataset"
+      }">All rows</button>
+      <span class="run-meta dp-status"></span>
+    </div>
+    <div class="dp-body"></div>`;
+  const load = (all) => loadPreview(item.dataset.id, panel, caps, all);
+  panel.querySelector(".dp-load").onclick = () => load(false);
+  panel.querySelector(".dp-load-all").onclick = () => load(true);
+  panel.querySelector(".dp-rows").onkeydown = (e) => {
+    if (e.key === "Enter") load(false);
+  };
+  load(false);
+}
+
+/**
+ * Fetch one page and render it. Errors land in the panel, not a toast.
+ *
+ * `all` asks for the whole dataset (`row_count_to_load=all`). The server decides
+ * what that means: with a ceiling configured it comes back clamped and the status
+ * line says so, which is why this asks rather than computing a big number.
+ */
+async function loadPreview(id, panel, caps, all) {
+  const input = panel.querySelector(".dp-rows");
+  const want = all ? "all" : rowsParam(input.value, caps);
+  const status = panel.querySelector(".dp-status");
+  const out = panel.querySelector(".dp-body");
+  status.textContent = "loading…";
+  try {
+    const data = await api(
+      `/v1/local-outputs/${encodeURIComponent(id)}/preview?row_count_to_load=${want}`,
+    );
+    // Reflect what the server actually resolved to — an out-of-range entry (or
+    // "all" against a ceiling) visibly becomes the number that was really used.
+    input.value = data.row_limit === null ? "" : String(data.row_limit);
+    status.textContent = previewStatus(data);
+    out.innerHTML = previewTable(data);
+  } catch (e) {
+    // Every documented failure here is expected and explainable — the file was
+    // cleaned (#587), previews are disabled, the last line is half-written — so
+    // the server's message is the useful thing to show.
+    status.textContent = "";
+    out.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+/**
+ * The `row_count_to_load` value for a typed row count. An empty or nonsensical
+ * entry falls back to the server's default (or `all` where that *is* the
+ * default) rather than being sent as-is for the server to reject.
+ */
+function rowsParam(raw, caps) {
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n < 1) return caps.defaultRows ?? "all";
+  return caps.maxRows ? Math.min(n, caps.maxRows) : n;
+}
+
+function previewStatus(d) {
+  const n = d.row_count;
+  const base = `${n} row${n === 1 ? "" : "s"} · ${d.elapsed_ms} ms`;
+  // A capped read must say so — "500 rows" next to a million-row file would read
+  // as the whole file — and a complete one should say that too, so "no warning"
+  // is never something the reader has to infer.
+  return d.truncated
+    ? `${base} · ${CAPPED_HINT[d.capped_by] || "stopped early — the dataset has more"}`
+    : `${base} · whole dataset`;
+}
+
+function previewTable(d) {
+  if (!d.row_count) return `<div class="empty">This output has no rows.</div>`;
+  const cols = d.columns.length ? d.columns : null;
+  const head = cols
+    ? cols.map((c) => `<th>${escapeHtml(c)}</th>`).join("")
+    : `<th>value</th>`;
+  const body = d.rows.map((r) => bodyRow(r, cols)).join("");
+  return `<div class="dp-scroll"><table class="dp-table">
+      <thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+function bodyRow(r, cols) {
+  // A record that is not an object has no columns to slot into. Rendering it
+  // across the row keeps its value visible instead of showing a line of blanks.
+  if (!cols || !isPlainObject(r)) {
+    return `<tr><td class="dp-raw"${cols ? ` colspan="${cols.length}"` : ""}>${cell(r)}</td></tr>`;
+  }
+  return `<tr>${cols.map((c) => `<td>${cell(r[c])}</td>`).join("")}</tr>`;
+}
+
+function isPlainObject(v) {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+/**
+ * Render one cell. A *missing* field and a `null` one are different facts about
+ * the record, so they must not render identically.
+ */
+function cell(v) {
+  if (v === undefined) {
+    return `<span class="dp-absent" title="this record has no such field">—</span>`;
+  }
+  if (v === null) return `<span class="dp-absent">null</span>`;
+  const text = typeof v === "string" ? v : JSON.stringify(v);
+  if (text.length <= CELL_MAX) return escapeHtml(text);
+  // One enormous value (a blob, an embedded document) must not blow up the
+  // table; the full text stays reachable in the tooltip.
+  return `<span title="${escapeHtml(text.slice(0, 2000))}">${escapeHtml(
+    text.slice(0, CELL_MAX),
+  )}…</span>`;
 }
 
 /** Why a file was left alone, in the user's words rather than the enum's. */

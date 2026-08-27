@@ -64,6 +64,9 @@ fn serve_args_with_retention(
         // guard itself is covered by unit tests in `local_outputs::sweep`; what
         // these tests exercise is the plumbing around it.
         local_output_in_flight_grace_secs: 0,
+        preview_local_outputs: false,
+        preview_default_rows: 500,
+        preview_max_rows: 5_000,
         lease_ttl_secs: 30,
         probe_timeout_secs: 5,
         env_file: None,

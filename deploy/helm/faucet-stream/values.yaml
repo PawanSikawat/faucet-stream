@@ -167,6 +167,36 @@ serve:
     # 0 disables it. Surfaced as FAUCET_LOCAL_SINK_OUTPUT_IN_FLIGHT_GRACE_SECS.
     inFlightGraceSeconds: 60
 
+  # Dataset preview of those local outputs (#586): the console's Datasets page
+  # can read back the first N rows of a tracked jsonl / csv / parquet file.
+  #
+  # OFF by default, and it should usually stay off in a cluster: it returns the
+  # *contents* of files on the pod's disk over HTTP. It is a local-testing
+  # convenience. Only paths the local-output ledger recorded as faucet's own sink
+  # outputs can ever be read — never a path from the request — and reading needs
+  # the LocalOutputRead scope (viewer and up), so enabling it grants every viewer
+  # sight of the data those pipelines wrote. Enable it only where that is
+  # intended (a dev/staging namespace).
+  #
+  # The two caps are surfaced as env so a deployment can raise or lower them
+  # without a rebuild: `rows` loads when the request omits `row_count_to_load`,
+  # and `maxRows` is the ceiling a larger request is clamped to.
+  preview:
+    enabled: false
+    # FAUCET_SERVE_PREVIEW_DEFAULT_ROWS — the soft cap. 0 = the whole dataset by
+    # default.
+    rows: 500
+    # FAUCET_SERVE_PREVIEW_MAX_ROWS — the hard cap. A larger `row_count_to_load`
+    # (including `all`) is clamped to it, so this is the number that decides how
+    # much of a file one request can pull.
+    #
+    # 0 LIFTS THE CEILING: `row_count_to_load=all` then reads an entire output
+    # file into one HTTP response. That is a local/dev choice — the read is still
+    # bounded by a 64 MiB response budget and a 30s deadline, and returns a
+    # partial answer that says which bound stopped it, but it is not something to
+    # leave open on a shared deployment.
+    maxRows: 5000
+
   # Multi-instance clustered execution (requires history.backend != memory).
   cluster:
     enabled: false

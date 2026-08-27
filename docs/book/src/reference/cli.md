@@ -859,6 +859,9 @@ Selected flags (`faucet serve --help` for the full list):
 | `--no-ui` | Disable the embedded web console at runtime even when the binary was built with `serve-ui`. |
 | `--local-output-retention-days <n>` | How long the local files a run's sinks wrote (jsonl/csv/parquet) are kept before the retention GC reclaims them (default `7`; env `FAUCET_LOCAL_SINK_OUTPUT_RETENTION_DAYS`). `0` disables the automatic sweep. See [Local output retention](#local-output-retention). |
 | `--local-output-in-flight-grace-secs <n>` | Never delete a local output touched within this many seconds — the guard against unlinking a file a run is still writing (default `60`; env `FAUCET_LOCAL_SINK_OUTPUT_IN_FLIGHT_GRACE_SECS`). Raise it above the longest expected gap between a slow source's pages; `0` disables it. |
+| `--preview-local-outputs` | Serve **dataset previews** of the local files this server's sinks wrote — read their first N rows back into the console (env `FAUCET_SERVE_PREVIEW_LOCAL_OUTPUTS`). **Off by default**: it returns file *contents* over HTTP, so it is a local-testing convenience. See [Dataset preview](#dataset-preview-of-local-outputs). |
+| `--preview-default-rows <n>` | Rows a preview loads when the request omits `row_count_to_load` — the soft cap (default `500`; env `FAUCET_SERVE_PREVIEW_DEFAULT_ROWS`). `0` = the whole dataset by default. |
+| `--preview-max-rows <n>` | Ceiling on one preview's rows — the hard cap (default `5000`; env `FAUCET_SERVE_PREVIEW_MAX_ROWS`). A larger `row_count_to_load` is clamped to it, never honoured. **`0` lifts the ceiling**, which is what makes `row_count_to_load=all` load an entire dataset. |
 | `--triggers <path>` | Path to a YAML triggers file that defines event-driven watchers (object-arrival / webhook / queue-depth). Requires the `triggers` Cargo feature. See [Triggers reference](./triggers.md). |
 | `--callback-allow-host <host>` | Restrict per-run completion callbacks to these hosts. Repeatable. Unset = any host except link-local / cloud-metadata addresses, which are always refused unless named here. See [Completion callbacks](./http-api.md#completion-callbacks). |
 
@@ -928,6 +931,96 @@ On-demand cleanup is available three ways:
 | Console → **Datasets** → *Local outputs* | Per-output "delete now", "purge older than N days", and "clean all" (confirmed). Read for `viewer`; deleting needs `operator`. |
 | `POST /v1/local-outputs/cleanup`, `DELETE /v1/local-outputs/{id}` | The same, over HTTP — see the [HTTP API reference](./http-api.md#local-sink-outputs). |
 | [`faucet cleanup`](#cleanup) | The same, from the CLI, against a `catalog:` store. |
+
+### Dataset preview of local outputs
+
+"12 records written" and "here are the 12 records" are different pieces of
+information, and only one of them tells you whether the transform did what you
+meant. With `--preview-local-outputs`, the console's **Datasets → Local outputs**
+panel grows a *Preview* control on each tracked jsonl / csv / parquet file: it
+reads the first N rows back and renders them as a table, so a local iteration loop
+never leaves the browser.
+
+It is a **source-backed capped read**, not a file reader. The server builds the
+matching *source* connector for the output's kind (`csv` → `source-csv`,
+`parquet` → `source-parquet`, `jsonl` → its JSON Lines reader), pulls one page,
+and stops — so previewing a 4 GiB `out.jsonl` reads its first few kilobytes.
+Rows past the cap are never decoded, and a preview always says when it capped.
+Each source is given the connector's defaults, which are the matching sink's
+defaults — so faucet reads its own output back exactly. (jsonl and parquet are
+self-describing; a CSV file does not carry its delimiter or whether row 1 is a
+header, so a csv output is read comma-delimited with a header row, as the csv
+sink writes it.) `.gz` / `.zst` outputs are decompressed on the way in.
+
+**Local testing only, and off by default.** The endpoint is inert unless the flag
+is set; without it every request is a `403` naming the flag, for every role. Two
+properties make it safe to switch on locally:
+
+- **No path ever comes from the request.** A preview names the *ledger id* of an
+  output the server already tracks; the path comes from the row the sink wrote —
+  so pointing the read at another file is not blocked, it is unrepresentable.
+- **Every read is bounded**, by the two caps below and by a 30-second ceiling.
+
+| Knob | Env | Default | Meaning |
+|---|---|---|---|
+| `--preview-default-rows` | `FAUCET_SERVE_PREVIEW_DEFAULT_ROWS` | 500 | Rows loaded when `row_count_to_load` is omitted (soft cap). |
+| `--preview-max-rows` | `FAUCET_SERVE_PREVIEW_MAX_ROWS` | 5000 | Ceiling; a larger `row_count_to_load` is **clamped**, never honoured. |
+
+Both are surfaced in the Helm chart (`serve.preview.*`), so a deployment can raise
+or lower them without a rebuild, and both are reported on
+`GET /v1/local-outputs` so the console labels its own control with the server's
+real limits. Setting the soft cap above the hard cap clamps it with a warning
+rather than refusing to boot — the ceiling always wins.
+
+#### Limit, not limit/offset
+
+There is no `offset` and no cursor, and that is a reading of what these sources
+are rather than a missing feature. A `.jsonl` or `.csv` file is a sequential byte
+stream with no row index, so `OFFSET 500` can only be implemented as *read the
+first 500 records and throw them away* — exactly what asking for 1000 records and
+keeping the tail costs. Paging would add a cursor, a state contract, and a "did
+the file change between pages?" problem while buying nothing. **"Show me more" is
+spelled "raise the limit"**, and because the engine *stops* rather than
+truncating, raising it is cheap.
+
+#### Reading a whole dataset
+
+`row_count_to_load=all` (or `0`) asks for every row. Whether that is served in
+full is the operator's call, not the client's:
+
+```bash
+# Previews capped at 5000 rows — a client cannot ask for more.
+faucet serve --preview-local-outputs
+
+# No ceiling: `all` really means all. The console's "All rows" button then
+# loads the whole file.
+faucet serve --preview-local-outputs --preview-max-rows 0
+```
+
+With a ceiling configured, `all` resolves *to the ceiling* — which is the point of
+having one. With `--preview-max-rows 0` the response reports `row_limit: null`
+and `preview_max_rows: null`, and the console offers "All rows" as something that
+will genuinely load everything.
+
+**Unlimited is not unbounded.** An uncapped read still stops at a response-size
+budget (64 MiB) and a 30-second deadline, and a read stopped by any of the three
+bounds comes back as a *partial answer that names the bound* — `capped_by` is
+`rows`, `bytes`, or `time`, and absent when the response is the whole dataset. So
+asking for a dataset larger than the server can hold gets you as much of it as
+fits plus the reason it stopped, never an out-of-memory or a silently clipped
+table. (Only a single page that never returns at all — 60s — fails the request,
+as a `503`.)
+
+These caps govern the **serve** preview only. `faucet preview` is a local,
+deliberate, single-user command with its own `--limit` flag: a different trust
+model, deliberately not sharing a knob.
+
+Reading needs `LocalOutputRead` (`viewer` and up) — the same scope that already
+lists these files. That means enabling the flag lets every viewer see the data
+those pipelines wrote, which is the other reason it is opt-in. An output cleaned
+by retention previews as a `409` explaining that the file is gone and the run
+record was kept, never a 500. See
+[`GET /v1/local-outputs/{id}/preview`](./http-api.md#local-sink-outputs).
 
 > ⚠️ `serve` executes arbitrary client-supplied configs with the server's identity (secrets, files,
 > network egress). Run single-tenant, authenticated, behind egress controls. See the

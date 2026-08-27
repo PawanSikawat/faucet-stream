@@ -57,7 +57,7 @@ pub fn build_router(
     }
     #[cfg(feature = "catalog")]
     {
-        use crate::serve::handlers::{catalog, local_outputs};
+        use crate::serve::handlers::{catalog, local_outputs, preview};
         api = api
             .route("/v1/catalog/datasets", get(catalog::list_datasets))
             .route("/v1/catalog/datasets/{id}", get(catalog::get_dataset))
@@ -69,7 +69,14 @@ pub fn build_router(
                 "/v1/local-outputs/{id}",
                 axum::routing::delete(local_outputs::delete_output),
             )
-            .route("/v1/local-outputs/cleanup", post(local_outputs::cleanup));
+            .route("/v1/local-outputs/cleanup", post(local_outputs::cleanup))
+            // Dataset preview of a tracked local output (#586). Always routed —
+            // the opt-in gate is enforced in the handler so a disabled server
+            // answers "not enabled, here is the flag" instead of a bare 404.
+            .route(
+                "/v1/local-outputs/{id}/preview",
+                get(preview::preview_output),
+            );
     }
     // Pipeline template registry + parameterized trigger API (#444).
     #[cfg(feature = "templates")]

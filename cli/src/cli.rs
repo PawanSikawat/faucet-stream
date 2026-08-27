@@ -1020,6 +1020,40 @@ pub struct ServeArgs {
         default_value_t = 60
     )]
     pub local_output_in_flight_grace_secs: u64,
+    /// Serve **dataset previews** of the local files this server's sinks wrote
+    /// — read the first N rows of a tracked jsonl / csv / parquet output back
+    /// into the console's Datasets page (#586).
+    ///
+    /// Off by default, and deliberately so: it returns the *contents* of files
+    /// on the server's disk over HTTP. It is a local-testing convenience, not
+    /// something a normally-exposed `serve` should offer. Only paths the
+    /// local-output ledger recorded as faucet's own sink outputs can ever be
+    /// read — never a path from the request.
+    #[arg(long, env = "FAUCET_SERVE_PREVIEW_LOCAL_OUTPUTS")]
+    pub preview_local_outputs: bool,
+    /// Rows a preview loads when the request omits `row_count_to_load` (#586) —
+    /// the *soft* cap. `0` = the whole dataset by default. Bounded by
+    /// `--preview-max-rows`.
+    #[arg(
+        long,
+        env = "FAUCET_SERVE_PREVIEW_DEFAULT_ROWS",
+        default_value_t = crate::serve::preview::DEFAULT_PREVIEW_ROWS
+    )]
+    pub preview_default_rows: usize,
+    /// Ceiling on the rows one preview request may load (#586) — the *hard* cap.
+    /// A larger `row_count_to_load` is clamped to it, never honoured.
+    ///
+    /// `0` lifts the ceiling, which is what makes `row_count_to_load=all`
+    /// actually load an entire dataset. Do that only where reading a whole output
+    /// file into one HTTP response is acceptable — the read is still bounded by a
+    /// response-size budget and a deadline, and a dataset that exceeds either
+    /// comes back as a partial answer that says so.
+    #[arg(
+        long,
+        env = "FAUCET_SERVE_PREVIEW_MAX_ROWS",
+        default_value_t = crate::serve::preview::MAX_PREVIEW_ROWS
+    )]
+    pub preview_max_rows: usize,
     /// Run-ownership lease TTL in seconds (multi-instance orphan fencing). A run
     /// is owned by the instance executing it and its lease is heartbeated at
     /// ~⅓ of this interval; only a run whose lease has expired (owner presumed
