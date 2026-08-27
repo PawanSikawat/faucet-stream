@@ -73,9 +73,9 @@ pub const PREVIEW_HARD_TIMEOUT: Duration = Duration::from_secs(60);
 ///
 /// The real bound on an unlimited read: 64 MiB of JSON is already far past what
 /// a browser will render usefully, and it keeps a "preview the whole dataset" on
-/// a 40 GiB file from trying to buffer 40 GiB. Measured with [`approx_bytes`],
-/// which is an estimate — the intent is a bound of the right order, not an exact
-/// content-length.
+/// a 40 GiB file from trying to buffer 40 GiB. Measured with a structural size
+/// estimate rather than by serializing each record, so the intent is a bound of
+/// the right order of magnitude, not an exact content-length.
 pub const PREVIEW_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 /// What to read: a source spec plus the bound, already resolved against the

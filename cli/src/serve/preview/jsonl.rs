@@ -4,7 +4,7 @@
 //! connector: `csv` → `faucet-source-csv`, `parquet` → `faucet-source-parquet`.
 //! The `jsonl` sink has no counterpart — there is no `faucet-source-jsonl`
 //! crate — so this is that counterpart, implemented as a real
-//! [`Source`](faucet_core::Source) rather than as a special case inside the
+//! [`Source`] rather than as a special case inside the
 //! engine. The engine therefore stays one code path for every format, and this
 //! reader could be lifted into a connector crate unchanged.
 //!
