@@ -1,0 +1,64 @@
+{
+  "cli_version": "0.10.2",
+  "checkpoint_id": "01M119BJ2YXZDYZFDCB73KTZRJ",
+  "strategy": "manual-commit",
+  "branch": "feat/native-byte-passthrough-633",
+  "checkpoints_count": 204,
+  "files_touched": [
+    "Cargo.lock",
+    "cli/src/executor.rs",
+    "cli/src/registry.rs",
+    "cli/src/serve/logs.rs",
+    "cli/src/serve/ui/styles.css",
+    "cli/src/serve/ui/views/datasets.js",
+    "cli/src/serve/ui/views/detail.js",
+    "cli/src/serve/ui/views/templates.js",
+    "cli/src/transforms.rs",
+    "crates/core/src/lib.rs",
+    "crates/core/src/native.rs",
+    "crates/core/src/observability/decorator.rs",
+    "crates/core/src/observability/transform.rs",
+    "crates/core/src/pipeline.rs",
+    "crates/core/src/stage.rs",
+    "crates/core/src/topology.rs",
+    "crates/core/src/traits.rs",
+    "crates/core/src/transform.rs",
+    "crates/core/src/transforming_source.rs",
+    "crates/sink/bigquery/Cargo.toml",
+    "crates/sink/bigquery/src/config.rs",
+    "crates/sink/bigquery/src/sink.rs",
+    "crates/sink/bigquery/tests/native.rs",
+    "crates/sink/bigquery/tests/overwrite.rs",
+    "crates/source/rest/Cargo.toml",
+    "crates/source/rest/src/auth/mod.rs",
+    "crates/source/rest/src/auth/token_endpoint.rs",
+    "crates/source/rest/src/format.rs",
+    "crates/source/rest/src/stream.rs",
+    "crates/source/rest/tests/async_job_test.rs",
+    "crates/source/rest/tests/auth_test.rs",
+    "crates/source/rest/tests/stream_test.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2138,
+    "cache_creation_tokens": 10348083,
+    "cache_read_tokens": 594636724,
+    "output_tokens": 1753043,
+    "api_call_count": 1075,
+    "subagent_tokens": {
+      "input_tokens": 620,
+      "cache_creation_tokens": 2762062,
+      "cache_read_tokens": 149212734,
+      "output_tokens": 395733,
+      "api_call_count": 310
+    }
+  }
+}

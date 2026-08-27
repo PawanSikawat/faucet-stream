@@ -1,0 +1,2318 @@
+{
+  "cli_version": "0.10.2",
+  "checkpoint_id": "01M119BJ2YXZDYZFDCB73KTZRJ",
+  "session_id": "55398c64-7c65-40db-9b68-886111a86d7f",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-27T09:38:50.406394Z",
+  "branch": "feat/native-byte-passthrough-633",
+  "checkpoints_count": 204,
+  "save_step_count": 204,
+  "files_touched": [
+    "Cargo.lock",
+    "cli/src/executor.rs",
+    "cli/src/registry.rs",
+    "cli/src/serve/logs.rs",
+    "cli/src/serve/ui/styles.css",
+    "cli/src/serve/ui/views/datasets.js",
+    "cli/src/serve/ui/views/detail.js",
+    "cli/src/serve/ui/views/templates.js",
+    "cli/src/transforms.rs",
+    "crates/core/src/lib.rs",
+    "crates/core/src/native.rs",
+    "crates/core/src/observability/decorator.rs",
+    "crates/core/src/observability/transform.rs",
+    "crates/core/src/pipeline.rs",
+    "crates/core/src/stage.rs",
+    "crates/core/src/topology.rs",
+    "crates/core/src/traits.rs",
+    "crates/core/src/transform.rs",
+    "crates/core/src/transforming_source.rs",
+    "crates/sink/bigquery/Cargo.toml",
+    "crates/sink/bigquery/src/config.rs",
+    "crates/sink/bigquery/src/sink.rs",
+    "crates/sink/bigquery/tests/native.rs",
+    "crates/sink/bigquery/tests/overwrite.rs",
+    "crates/source/rest/Cargo.toml",
+    "crates/source/rest/src/auth/mod.rs",
+    "crates/source/rest/src/auth/token_endpoint.rs",
+    "crates/source/rest/src/format.rs",
+    "crates/source/rest/src/stream.rs",
+    "crates/source/rest/tests/async_job_test.rs",
+    "crates/source/rest/tests/auth_test.rs",
+    "crates/source/rest/tests/stream_test.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8",
+  "turn_id": "04f1facad940",
+  "checkpoint_transcript_start": 31619,
+  "transcript_lines_at_start": 31619,
+  "compact_transcript_start": 4201,
+  "token_usage": {
+    "input_tokens": 2138,
+    "cache_creation_tokens": 10348083,
+    "cache_read_tokens": 594636724,
+    "output_tokens": 1753043,
+    "api_call_count": 1075,
+    "subagent_tokens": {
+      "input_tokens": 620,
+      "cache_creation_tokens": 2762062,
+      "cache_read_tokens": 149212734,
+      "output_tokens": 395733,
+      "api_call_count": 310
+    }
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_017ZfRgSytScg56gq1T9UQPE",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "artifact-design"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "04f1facad940",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 7917,
+        "end": 7918,
+        "entry_ids": [
+          "77fc9a79-96ea-4356-a27c-a75ba0299ea3"
+        ],
+        "tool_use_id": "toolu_017ZfRgSytScg56gq1T9UQPE"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_017ZfRgSytScg56gq1T9UQPE"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: artifact-design",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01MJQ8Y6HmbmGqKCCexDcdHR",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "artifact-design"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "04f1facad940",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 21427,
+        "end": 21428,
+        "entry_ids": [
+          "71548694-66ab-42a0-9606-4771e135588e"
+        ],
+        "tool_use_id": "toolu_01MJQ8Y6HmbmGqKCCexDcdHR"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01MJQ8Y6HmbmGqKCCexDcdHR"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: artifact-design",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_017asfQCcZaMKX3JWdwmjpEh",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "code-review"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "04f1facad940",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 31762,
+        "end": 31763,
+        "entry_ids": [
+          "f5c37f7a-f2a5-45b4-847f-82e5a1eea868"
+        ],
+        "tool_use_id": "toolu_017asfQCcZaMKX3JWdwmjpEh"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_017asfQCcZaMKX3JWdwmjpEh"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: code-review",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 458
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-27T09:38:46.0718Z",
+    "agent_lines": 3220,
+    "agent_removed": 67,
+    "human_added": 2269,
+    "human_modified": 118,
+    "human_removed": 0,
+    "total_committed": 5607,
+    "total_lines_changed": 5674,
+    "agent_percentage": 57.93091293620021,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 59,
+      "user_lines_removed": 14,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1,
+        "Cargo.lock": 7,
+        "cli/CHANGELOG.md": 7,
+        "cli/Cargo.toml": 1,
+        "crates/auth/CHANGELOG.md": 6,
+        "crates/auth/Cargo.toml": 1,
+        "crates/core/CHANGELOG.md": 7,
+        "crates/core/Cargo.toml": 1,
+        "crates/sink/bigquery/CHANGELOG.md": 6,
+        "crates/sink/bigquery/Cargo.toml": 1,
+        "crates/source/graphql/CHANGELOG.md": 6,
+        "crates/source/graphql/Cargo.toml": 1,
+        "crates/source/rest/CHANGELOG.md": 6,
+        "crates/source/rest/Cargo.toml": 1,
+        "crates/source/xml/CHANGELOG.md": 6,
+        "crates/source/xml/Cargo.toml": 1
+      },
+      "user_removed_per_file": {
+        "Cargo.lock": 7,
+        "cli/Cargo.toml": 1,
+        "crates/auth/Cargo.toml": 1,
+        "crates/core/Cargo.toml": 1,
+        "crates/sink/bigquery/Cargo.toml": 1,
+        "crates/source/graphql/Cargo.toml": 1,
+        "crates/source/rest/Cargo.toml": 1,
+        "crates/source/xml/Cargo.toml": 1
+      }
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 7,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 8,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 9,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 10,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 11,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 12,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 13,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 14,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 15,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 16,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 17,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 6,
+      "agent_lines_removed": 3,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 18,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 6,
+      "agent_lines_removed": 3,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 19,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 148,
+      "agent_lines_removed": 36,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 20,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 148,
+      "agent_lines_removed": 36,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 21,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 148,
+      "agent_lines_removed": 36,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 22,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 148,
+      "agent_lines_removed": 36,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 23,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 148,
+      "agent_lines_removed": 36,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 24,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 148,
+      "agent_lines_removed": 36,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 25,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 148,
+      "agent_lines_removed": 36,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 26,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 148,
+      "agent_lines_removed": 36,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 27,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 303,
+      "agent_lines_removed": 63,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 28,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 29,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 30,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 31,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 32,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 33,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 34,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 35,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 36,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 37,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 38,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 39,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 40,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 41,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 42,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 43,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 44,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 45,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 46,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 47,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 48,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 49,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 50,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 51,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 52,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 53,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 155,
+      "agent_lines_removed": 27,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 54,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 156,
+      "agent_lines_removed": 28,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 55,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 170,
+      "agent_lines_removed": 28,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 56,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 170,
+      "agent_lines_removed": 28,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 57,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 170,
+      "agent_lines_removed": 28,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 58,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 170,
+      "agent_lines_removed": 28,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 59,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 170,
+      "agent_lines_removed": 28,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 60,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 170,
+      "agent_lines_removed": 28,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 61,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 170,
+      "agent_lines_removed": 28,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 62,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 170,
+      "agent_lines_removed": 28,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 63,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 170,
+      "agent_lines_removed": 28,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 64,
+      "user_lines_added": 403,
+      "user_lines_removed": 11,
+      "agent_lines_added": 178,
+      "agent_lines_removed": 36,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1,
+        "Cargo.lock": 8,
+        "crates/sink/bigquery/Cargo.toml": 6,
+        "crates/sink/bigquery/src/config.rs": 46,
+        "crates/sink/bigquery/src/sink.rs": 342
+      },
+      "user_removed_per_file": {
+        "Cargo.lock": 7,
+        "crates/sink/bigquery/Cargo.toml": 1,
+        "crates/sink/bigquery/src/sink.rs": 3
+      }
+    },
+    {
+      "checkpoint_number": 65,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 564,
+      "agent_lines_removed": 31,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 66,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 564,
+      "agent_lines_removed": 31,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 67,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 564,
+      "agent_lines_removed": 31,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 68,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 564,
+      "agent_lines_removed": 31,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 69,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 610,
+      "agent_lines_removed": 32,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 70,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 610,
+      "agent_lines_removed": 32,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 71,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 610,
+      "agent_lines_removed": 32,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 72,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 610,
+      "agent_lines_removed": 32,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 73,
+      "user_lines_added": 203,
+      "user_lines_removed": 19,
+      "agent_lines_added": 610,
+      "agent_lines_removed": 32,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1,
+        "crates/sink/bigquery/src/config.rs": 41,
+        "crates/sink/bigquery/src/sink.rs": 161
+      },
+      "user_removed_per_file": {
+        "crates/sink/bigquery/src/sink.rs": 19
+      }
+    },
+    {
+      "checkpoint_number": 74,
+      "user_lines_added": 185,
+      "user_lines_removed": 16,
+      "agent_lines_added": 817,
+      "agent_lines_removed": 35,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1,
+        "cli/src/executor.rs": 75,
+        "crates/sink/bigquery/src/sink.rs": 58,
+        "crates/sink/bigquery/tests/overwrite.rs": 51
+      },
+      "user_removed_per_file": {
+        "cli/src/executor.rs": 3,
+        "crates/sink/bigquery/src/sink.rs": 13
+      }
+    },
+    {
+      "checkpoint_number": 75,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 988,
+      "agent_lines_removed": 38,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 76,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 988,
+      "agent_lines_removed": 38,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 77,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 988,
+      "agent_lines_removed": 38,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 78,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 988,
+      "agent_lines_removed": 38,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 79,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 988,
+      "agent_lines_removed": 38,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 80,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 988,
+      "agent_lines_removed": 38,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 81,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 988,
+      "agent_lines_removed": 38,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 82,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 988,
+      "agent_lines_removed": 38,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 83,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 988,
+      "agent_lines_removed": 38,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 84,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1003,
+      "agent_lines_removed": 38,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 85,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1003,
+      "agent_lines_removed": 38,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 86,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1003,
+      "agent_lines_removed": 38,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 87,
+      "user_lines_added": 258,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1003,
+      "agent_lines_removed": 38,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1,
+        "crates/sink/bigquery/src/sink.rs": 257
+      }
+    },
+    {
+      "checkpoint_number": 88,
+      "user_lines_added": 25,
+      "user_lines_removed": 3,
+      "agent_lines_added": 1264,
+      "agent_lines_removed": 38,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1,
+        "crates/sink/bigquery/src/config.rs": 8,
+        "crates/sink/bigquery/src/sink.rs": 16
+      },
+      "user_removed_per_file": {
+        "crates/sink/bigquery/src/sink.rs": 3
+      }
+    },
+    {
+      "checkpoint_number": 89,
+      "user_lines_added": 190,
+      "user_lines_removed": 1,
+      "agent_lines_added": 1298,
+      "agent_lines_removed": 38,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1,
+        "crates/sink/bigquery/tests/overwrite.rs": 189
+      },
+      "user_removed_per_file": {
+        "crates/sink/bigquery/tests/overwrite.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 90,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1501,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 91,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1501,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 92,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1501,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 93,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1501,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 94,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1501,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 95,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1501,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 96,
+      "user_lines_added": 475,
+      "user_lines_removed": 2,
+      "agent_lines_added": 1501,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1,
+        "crates/sink/bigquery/src/config.rs": 9,
+        "crates/sink/bigquery/src/sink.rs": 11,
+        "crates/sink/bigquery/tests/overwrite.rs": 454
+      },
+      "user_removed_per_file": {
+        "crates/sink/bigquery/src/sink.rs": 2
+      }
+    },
+    {
+      "checkpoint_number": 97,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1973,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 98,
+      "user_lines_added": 124,
+      "user_lines_removed": 3,
+      "agent_lines_added": 1973,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1,
+        "crates/sink/bigquery/tests/overwrite.rs": 123
+      },
+      "user_removed_per_file": {
+        "crates/sink/bigquery/tests/overwrite.rs": 3
+      }
+    },
+    {
+      "checkpoint_number": 99,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 100,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 101,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 102,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2092,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 103,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 104,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 105,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 106,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 107,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 108,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 109,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 110,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 111,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 112,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 113,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 114,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 115,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 116,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 117,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 118,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 119,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 120,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 121,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 122,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 123,
+      "user_lines_added": 194,
+      "user_lines_removed": 43,
+      "agent_lines_added": 2093,
+      "agent_lines_removed": 39,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1,
+        "crates/source/rest/src/stream.rs": 49,
+        "crates/source/rest/tests/async_job_test.rs": 144
+      },
+      "user_removed_per_file": {
+        "crates/source/rest/src/stream.rs": 42,
+        "crates/source/rest/tests/async_job_test.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 124,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2286,
+      "agent_lines_removed": 82,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 125,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2286,
+      "agent_lines_removed": 82,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 126,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2286,
+      "agent_lines_removed": 82,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 127,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2286,
+      "agent_lines_removed": 82,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 128,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2286,
+      "agent_lines_removed": 82,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 129,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2286,
+      "agent_lines_removed": 82,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 130,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2286,
+      "agent_lines_removed": 82,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 131,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2286,
+      "agent_lines_removed": 82,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 132,
+      "user_lines_added": 165,
+      "user_lines_removed": 1,
+      "agent_lines_added": 2286,
+      "agent_lines_removed": 82,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1,
+        "crates/source/rest/src/auth/mod.rs": 19,
+        "crates/source/rest/src/auth/token_endpoint.rs": 141,
+        "crates/source/rest/src/stream.rs": 4
+      },
+      "user_removed_per_file": {
+        "crates/source/rest/src/auth/token_endpoint.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 133,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2450,
+      "agent_lines_removed": 83,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 134,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2450,
+      "agent_lines_removed": 83,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 135,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2459,
+      "agent_lines_removed": 83,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 136,
+      "user_lines_added": 15,
+      "user_lines_removed": 2,
+      "agent_lines_added": 2467,
+      "agent_lines_removed": 83,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1,
+        "crates/source/rest/src/stream.rs": 14
+      },
+      "user_removed_per_file": {
+        "crates/source/rest/src/stream.rs": 2
+      }
+    },
+    {
+      "checkpoint_number": 137,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 138,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 139,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 140,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 141,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 142,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 143,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 144,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 145,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 146,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 147,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 148,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 149,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 150,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 151,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 152,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 153,
+      "user_lines_added": 49,
+      "user_lines_removed": 6,
+      "agent_lines_added": 2550,
+      "agent_lines_removed": 85,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1,
+        "crates/core/src/transform.rs": 48
+      },
+      "user_removed_per_file": {
+        "crates/core/src/transform.rs": 6
+      }
+    },
+    {
+      "checkpoint_number": 154,
+      "user_lines_added": 23,
+      "user_lines_removed": 2,
+      "agent_lines_added": 2641,
+      "agent_lines_removed": 103,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1,
+        "cli/src/transforms.rs": 4,
+        "crates/core/src/observability/transform.rs": 1,
+        "crates/core/src/stage.rs": 7,
+        "crates/core/src/topology.rs": 1,
+        "crates/core/src/transform.rs": 2,
+        "crates/core/src/transforming_source.rs": 7
+      },
+      "user_removed_per_file": {
+        "crates/core/src/stage.rs": 1,
+        "crates/core/src/transform.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 155,
+      "user_lines_added": 83,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2665,
+      "agent_lines_removed": 106,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1,
+        "crates/core/src/transform.rs": 82
+      }
+    },
+    {
+      "checkpoint_number": 156,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2747,
+      "agent_lines_removed": 106,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 157,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2747,
+      "agent_lines_removed": 106,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 158,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2747,
+      "agent_lines_removed": 106,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 159,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2747,
+      "agent_lines_removed": 106,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 160,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2747,
+      "agent_lines_removed": 106,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 161,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2747,
+      "agent_lines_removed": 106,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 162,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2747,
+      "agent_lines_removed": 106,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 163,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2747,
+      "agent_lines_removed": 106,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 164,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4136,
+      "agent_lines_removed": 112,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 165,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4136,
+      "agent_lines_removed": 112,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 166,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4143,
+      "agent_lines_removed": 112,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 167,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4143,
+      "agent_lines_removed": 112,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 168,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4487,
+      "agent_lines_removed": 112,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 169,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4487,
+      "agent_lines_removed": 112,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 170,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4487,
+      "agent_lines_removed": 112,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 171,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4557,
+      "agent_lines_removed": 112,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 172,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4655,
+      "agent_lines_removed": 136,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 173,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4843,
+      "agent_lines_removed": 139,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 174,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4843,
+      "agent_lines_removed": 139,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 175,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4843,
+      "agent_lines_removed": 139,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 176,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4843,
+      "agent_lines_removed": 139,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 177,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4843,
+      "agent_lines_removed": 139,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 178,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4843,
+      "agent_lines_removed": 139,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 179,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4843,
+      "agent_lines_removed": 139,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 180,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4843,
+      "agent_lines_removed": 139,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 181,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4843,
+      "agent_lines_removed": 139,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 182,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 183,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 184,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 185,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 186,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 187,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 188,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 189,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 190,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 191,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 192,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 193,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 194,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 195,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 196,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 197,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 198,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 199,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 200,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 201,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 202,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4861,
+      "agent_lines_removed": 145,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 203,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4970,
+      "agent_lines_removed": 147,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 204,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4970,
+      "agent_lines_removed": 147,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    },
+    {
+      "checkpoint_number": 205,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 4970,
+      "agent_lines_removed": 147,
+      "user_added_per_file": {
+        ".claire/worktrees/serve-http-control-plane/cli/src/serve/auth.rs": 1
+      }
+    }
+  ]
+}
