@@ -32,6 +32,7 @@ pub mod init_template;
 pub mod interpolate;
 #[cfg(feature = "lineage")]
 pub mod lineage_glue;
+pub mod memstat;
 /// Shared live-view metrics plumbing (recorder install + Prometheus-text
 /// sampler), compiled when either live-view feature is on.
 #[cfg(any(feature = "cli-tui", feature = "cli-progress"))]

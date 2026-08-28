@@ -506,6 +506,8 @@ chrono = { workspace = true }
 # Base dep (not optional): `faucet backfill` (#282) computes window boundaries
 # timezone-correctly in every build; `faucet schedule` reuses it.
 chrono-tz = { workspace = true }
+# Process peak-RSS reporting (#631) via getrusage — reliable process-level memory.
+libc = "0.2"
 croner = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }

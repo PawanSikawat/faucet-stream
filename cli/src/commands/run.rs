@@ -340,6 +340,14 @@ pub(crate) async fn execute(
         records_written = total_written,
         "pipeline completed"
     );
+    // Reliable process-level peak RSS (#631). For a one-shot `faucet run` this
+    // process runs exactly this sync, so it is the sync's true memory high-water
+    // mark (not the in-flight serialized proxy). Emitted as a metric always;
+    // printed after the summary for text output.
+    let peak_rss = crate::memstat::process_peak_rss_bytes();
+    if let Some(bytes) = peak_rss {
+        metrics::gauge!("faucet_process_peak_rss_bytes").set(bytes as f64);
+    }
     // End-of-run summary. `text` is the human line (default); `json` / `ndjson`
     // emit a machine-readable summary and keep stdout otherwise clean so
     // `faucet run` is scriptable in CI / cron / Slack (#390). Logs are on stderr.
@@ -374,6 +382,15 @@ pub(crate) async fn execute(
                 println!("{}", crate::secrets::registry::redact(&line));
             }
         }
+    }
+
+    if matches!(args.output, RunOutput::Text)
+        && let Some(bytes) = peak_rss
+    {
+        eprintln!(
+            "  peak process RSS {} (whole process; exact for a one-shot run)",
+            crate::memstat::fmt_mb(bytes)
+        );
     }
 
     // Flush any buffered OTLP telemetry before the process exits (no-op without
