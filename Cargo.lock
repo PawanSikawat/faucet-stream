@@ -4269,6 +4269,7 @@ dependencies = [
  "indicatif",
  "inquire",
  "jsonschema",
+ "libc",
  "metrics",
  "metrics-exporter-prometheus",
  "metrics-util",
@@ -4599,6 +4600,7 @@ dependencies = [
 name = "faucet-lineage"
 version = "2.1.0"
 dependencies = [
+ "arrow",
  "async-trait",
  "chrono",
  "faucet-core",

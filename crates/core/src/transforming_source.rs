@@ -798,6 +798,7 @@ mod columnar_tests {
             vec![TransformStage::Map(
                 crate::transform::RecordTransform::KeysCase {
                     mode: crate::transform::KeyCaseMode::Snake,
+                    on_collision: crate::transform::KeyCollision::Error,
                 },
             )],
             Labels::for_named("t"),

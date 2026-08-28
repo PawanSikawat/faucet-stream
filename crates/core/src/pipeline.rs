@@ -838,6 +838,7 @@ where
 /// carries bytes, not `Value` rows — so a sink that cannot own overwrite simply
 /// omits `Overwrite` from `write_modes`, and the negotiation falls through to the
 /// `Value` path.
+#[allow(clippy::too_many_arguments)]
 async fn run_stream_native<S, Si>(
     source: &S,
     sink: &Si,
