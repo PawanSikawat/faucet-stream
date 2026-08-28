@@ -239,6 +239,97 @@ fn soql_from_object(query: &str) -> Option<String> {
     None
 }
 
+/// Whitespace-split tokens of a query with their byte offsets — used by the SOQL
+/// predicate injector to locate clause keywords regardless of spacing/newlines.
+fn tokens_with_pos(s: &str) -> Vec<(usize, &str)> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let start = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i > start {
+            out.push((start, &s[start..i]));
+        }
+    }
+    out
+}
+
+/// Inject an incremental-replication predicate into a SOQL/SQL query (#630).
+///
+/// Adds `WHERE <predicate>` when there is no existing `WHERE`, or wraps the
+/// existing condition as `WHERE (<existing>) AND (<predicate>)` — the parens keep
+/// operator precedence correct when the existing filter contains `OR`. The
+/// predicate is placed *before* any trailing clause (`GROUP BY` / `HAVING` /
+/// `ORDER BY` / `LIMIT` / `OFFSET` / `WITH` / `FOR`), which is where a SOQL/SQL
+/// `WHERE` must sit. Clause detection is whitespace-tolerant (handles newlines).
+fn inject_soql_predicate(query: &str, predicate: &str) -> String {
+    let toks = tokens_with_pos(query);
+    let kw = |t: &str, k: &str| t.eq_ignore_ascii_case(k);
+    let mut where_at: Option<usize> = None;
+    let mut boundary: Option<usize> = None;
+    let mut i = 0;
+    while i < toks.len() {
+        let (pos, t) = toks[i];
+        let two = |a: &str, b: &str| kw(t, a) && i + 1 < toks.len() && kw(toks[i + 1].1, b);
+        if where_at.is_none() && kw(t, "where") {
+            where_at = Some(pos);
+        } else if two("order", "by")
+            || two("group", "by")
+            || kw(t, "having")
+            || kw(t, "limit")
+            || kw(t, "offset")
+            || kw(t, "with")
+            || kw(t, "for")
+        {
+            boundary = Some(pos);
+            break;
+        }
+        i += 1;
+    }
+    let boundary = boundary.unwrap_or(query.len());
+    match where_at {
+        Some(w) => {
+            let head = query[..w + "where".len()].trim_end(); // "… WHERE"
+            let cond = query[w + "where".len()..boundary].trim();
+            let tail = query[boundary..].trim_start();
+            let sep = if tail.is_empty() { "" } else { " " };
+            format!("{head} ({cond}) AND ({predicate}){sep}{tail}")
+        }
+        None => {
+            let head = query[..boundary].trim_end();
+            let tail = query[boundary..].trim_start();
+            let sep = if tail.is_empty() { "" } else { " " };
+            format!("{head} WHERE {predicate}{sep}{tail}")
+        }
+    }
+}
+
+/// Render a bookmark value as a SOQL literal for the incremental predicate:
+/// datetime/date values are **unquoted** (SOQL datetime literals), everything
+/// else is single-quoted (with `'` escaped). Salesforce replication keys
+/// (`SystemModstamp`/`LastModifiedDate`) are datetimes → unquoted.
+fn soql_literal(v: &Value) -> String {
+    match v {
+        Value::String(s) if is_soql_datetime(s) => s.clone(),
+        Value::String(s) => format!("'{}'", s.replace('\'', "\\'")),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        other => format!("'{}'", other.to_string().replace('\'', "\\'")),
+    }
+}
+
+/// Whether a string is a SOQL datetime/date literal (RFC3339 or `YYYY-MM-DD`).
+fn is_soql_datetime(s: &str) -> bool {
+    chrono::DateTime::parse_from_rfc3339(s).is_ok()
+        || chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
+}
+
 /// A short, stable hex hash — used to give distinct async-job queries distinct
 /// dataset URIs when the object name can't be parsed. Deterministic across runs.
 fn stable_short_hash(s: &str) -> String {
@@ -565,6 +656,10 @@ impl RestStream {
             // URL once, then stream one `StreamPage` per locator-paged result set
             // (#557) instead of buffering the entire extract into a single page.
             if let Some(job) = self.config.async_job.as_ref() {
+                // Capture the incremental bookmark (#630) BEFORE submitting, so it
+                // reflects the query's start time (conservative — a small re-read
+                // overlap next run, deduped by an upsert sink). `None` for full-table.
+                let new_bookmark = self.async_job_new_bookmark();
                 let fetch_url = self.prepare_async_job().await?;
                 let mut locator: Option<String> = None;
                 loop {
@@ -584,10 +679,8 @@ impl RestStream {
                         .await?;
                     let (records, body_value) = self.parse_fetch_page(&bytes, job).await?;
                     // Stream this locator page immediately — peak memory is
-                    // O(one page), not O(whole extract). The first fetch always
-                    // yields (so a zero-row job still emits one empty page, as
-                    // before); bookmark stays `None` (async-job sources have no
-                    // incremental replication).
+                    // O(one page), not O(whole extract). Per-page bookmark stays
+                    // `None`; the incremental bookmark is emitted once at the end.
                     yield faucet_core::StreamPage { records, bookmark: None };
 
                     // Advance to the next locator; stop when it is absent, empty,
@@ -600,6 +693,12 @@ impl RestStream {
                         }
                         _ => break,
                     }
+                }
+                // Incremental (#630): emit the run-start bookmark on a final empty
+                // page so the pipeline persists it after the sink confirms — the
+                // next run injects `WHERE <key> > <this>` and pulls only the delta.
+                if let Some(bm) = new_bookmark {
+                    yield faucet_core::StreamPage { records: Vec::new(), bookmark: Some(bm) };
                 }
                 return;
             }
@@ -1151,6 +1250,51 @@ impl RestStream {
     /// then fetches the (possibly locator-paged, #557) result and streams one
     /// [`faucet_core::StreamPage`] per locator page, rather than buffering the
     /// whole extract into a single page (#623).
+    /// Incremental replication for the async-job path (#630): if replicating
+    /// incrementally with a start bookmark (from the state store via
+    /// `apply_start_bookmark`, else `start_replication_value`), return a clone of
+    /// the submit body with `WHERE <replication_key> > <bookmark>` injected into
+    /// its `query`. Returns `None` (→ unmodified submit, full export) on the first
+    /// run, for full-table replication, or when there is no `query` to amend.
+    async fn incremental_submit_json(
+        &self,
+        job: &crate::async_job::AsyncJobConfig,
+    ) -> Option<Value> {
+        if self.config.replication_method != ReplicationMethod::Incremental {
+            return None;
+        }
+        let key = self.config.replication_key.as_ref()?;
+        let start = {
+            let guard = self.runtime_start.lock().await;
+            guard
+                .clone()
+                .or_else(|| self.config.start_replication_value.clone())
+        }?;
+        let submit = job.submit.json.as_ref()?;
+        let query = submit.get("query")?.as_str()?;
+        let predicate = format!("{key} > {}", soql_literal(&start));
+        let mut cloned = submit.clone();
+        cloned["query"] = Value::String(inject_soql_predicate(query, &predicate));
+        Some(cloned)
+    }
+
+    /// The bookmark to persist after an incremental async-job run: the run's start
+    /// time (RFC3339). Using the *start* time (not `max(replication_key)` scraped
+    /// from the rows) keeps this native/streaming-compatible — no row parsing —
+    /// and is conservative (a small re-read overlap on the next run, deduped by an
+    /// upsert sink). `None` for full-table replication.
+    fn async_job_new_bookmark(&self) -> Option<Value> {
+        if self.config.replication_method != ReplicationMethod::Incremental
+            || self.config.replication_key.is_none()
+        {
+            return None;
+        }
+        let now = self.now_override.unwrap_or_else(chrono::Utc::now);
+        Some(Value::String(
+            now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        ))
+    }
+
     async fn prepare_async_job(&self) -> Result<String, FaucetError> {
         use crate::async_job::{JobOutcome, resolve_url, substitute_job_id};
         let job = self
@@ -1160,15 +1304,20 @@ impl RestStream {
             .expect("run_async_job called with async_job set");
         let base = &self.config.base_url;
 
-        // 1) Submit → capture the job id.
+        // 1) Submit → capture the job id. Incremental (#630): inject a
+        // `WHERE <replication_key> > <bookmark>` predicate into the submit SOQL
+        // when replicating incrementally with a start bookmark; falls back to the
+        // unmodified submit body on the first run / full-table.
         let submit_url = resolve_url(base, job.submit.url.as_deref().unwrap_or_default());
+        let injected = self.incremental_submit_json(job).await;
+        let submit_json = injected.as_ref().or(job.submit.json.as_ref());
         let submit_body = self
             .job_request_json(
                 &job.submit.method,
                 &submit_url,
                 &job.submit.headers,
                 &job.submit.query,
-                job.submit.json.as_ref(),
+                submit_json,
             )
             .await?;
         let job_id = jsonpath_first_string(&submit_body, &job.job_id).ok_or_else(|| {
@@ -1968,7 +2117,18 @@ impl faucet_core::Source for RestStream {
     }
 
     fn state_key(&self) -> Option<String> {
-        self.config.state_key.clone()
+        // A source is only made resumable (executor wraps it + persists the
+        // bookmark) when it reports a state key. Incremental replication (#630)
+        // is meaningless without persistence, so opt in automatically when
+        // replicating incrementally — otherwise `replication_method: incremental`
+        // + a `state:` block would silently full-refresh every run. The concrete
+        // key is assigned per-invocation by the executor (StateKeyOverride), so
+        // this placeholder only needs to be `Some`.
+        self.config.state_key.clone().or_else(|| {
+            (self.config.replication_method == ReplicationMethod::Incremental
+                && self.config.replication_key.is_some())
+            .then(|| "rest-incremental".to_string())
+        })
     }
 
     fn stream_pages<'a>(
@@ -2076,6 +2236,9 @@ impl faucet_core::Source for RestStream {
             // buffered on either side (source or sink), so peak memory is O(one
             // ~256 KiB chunk), independent of page/row count (#633).
             use futures::TryStreamExt as _;
+            // Incremental bookmark (#630) captured before submit — same semantics
+            // as the Value path; emitted on a final empty batch below.
+            let new_bookmark = self.async_job_new_bookmark();
             let fetch_url = self.prepare_async_job().await?;
             let mut locator: Option<String> = None;
             loop {
@@ -2112,9 +2275,9 @@ impl faucet_core::Source for RestStream {
                     bookmark: None,
                 };
 
-                // async-job sources have no incremental replication → bookmark stays
-                // `None`; advance the locator with the same loop-guard as the
-                // `Value` path.
+                // Per-page bookmark stays `None`; the incremental bookmark (#630)
+                // is emitted once at the end. Advance the locator (same guard as
+                // the Value path).
                 let next = next_locator(&resp_headers, None, job);
                 match next {
                     Some(loc) if locator.as_deref() != Some(loc.as_str()) => {
@@ -2122,6 +2285,13 @@ impl faucet_core::Source for RestStream {
                     }
                     _ => break,
                 }
+            }
+            // Incremental (#630): final empty batch carrying the run-start bookmark
+            // (load_native no-ops on empty bytes, then the pipeline flushes the
+            // session + persists this bookmark). Native/streaming-compatible.
+            if let Some(bm) = new_bookmark {
+                yield faucet_core::NativeBatch::bytes(faucet_core::NativeFormat::NdJson, Vec::new())
+                    .with_bookmark(Some(bm));
             }
         })
     }
@@ -2507,6 +2677,67 @@ mod tests {
             None
         );
         assert_eq!(async_job_object(None), None);
+    }
+
+    #[test]
+    fn inject_soql_predicate_adds_or_wraps_where() {
+        // No WHERE, no trailing clause → append WHERE.
+        assert_eq!(
+            inject_soql_predicate("SELECT Id FROM Account", "SystemModstamp > 2026-01-01T00:00:00Z"),
+            "SELECT Id FROM Account WHERE SystemModstamp > 2026-01-01T00:00:00Z"
+        );
+        // Existing WHERE → wrap in parens + AND (keeps OR precedence correct).
+        assert_eq!(
+            inject_soql_predicate(
+                "SELECT Id FROM Account WHERE IsActive = true OR Rating = 'Hot'",
+                "SystemModstamp > 2026-01-01T00:00:00Z"
+            ),
+            "SELECT Id FROM Account WHERE (IsActive = true OR Rating = 'Hot') AND (SystemModstamp > 2026-01-01T00:00:00Z)"
+        );
+        // Trailing ORDER BY → predicate goes before it.
+        assert_eq!(
+            inject_soql_predicate("SELECT Id FROM Account ORDER BY Id", "X > 1"),
+            "SELECT Id FROM Account WHERE X > 1 ORDER BY Id"
+        );
+        // WHERE + trailing LIMIT (newline-tolerant).
+        assert_eq!(
+            inject_soql_predicate("SELECT Id\nFROM Account\nWHERE A = 1\nLIMIT 10", "X > 1"),
+            "SELECT Id\nFROM Account\nWHERE (A = 1) AND (X > 1) LIMIT 10"
+        );
+    }
+
+    #[test]
+    fn incremental_source_auto_opts_into_state_key() {
+        use faucet_core::{ReplicationMethod, Source};
+        // Full-table + no explicit key → not resumable.
+        let ft = RestStream::new(RestStreamConfig::new("https://api.example.com", "/x")).unwrap();
+        assert_eq!(ft.state_key(), None);
+        // Incremental + replication_key → auto-opts-in (Some), so the executor
+        // wraps it and persists the bookmark (#630).
+        let mut cfg = RestStreamConfig::new("https://api.example.com", "/x");
+        cfg.replication_method = ReplicationMethod::Incremental;
+        cfg.replication_key = Some("SystemModstamp".into());
+        let inc = RestStream::new(cfg).unwrap();
+        assert!(inc.state_key().is_some());
+        // An explicit key always wins.
+        let mut cfg2 = RestStreamConfig::new("https://api.example.com", "/x");
+        cfg2.state_key = Some("mykey".into());
+        let ex = RestStream::new(cfg2).unwrap();
+        assert_eq!(ex.state_key().as_deref(), Some("mykey"));
+    }
+
+    #[test]
+    fn soql_literal_quotes_by_type() {
+        use serde_json::json;
+        // Datetime / date → unquoted (SOQL datetime literal).
+        assert_eq!(soql_literal(&json!("2026-08-28T12:00:00Z")), "2026-08-28T12:00:00Z");
+        assert_eq!(soql_literal(&json!("2026-08-28")), "2026-08-28");
+        // Plain string → single-quoted.
+        assert_eq!(soql_literal(&json!("Hot")), "'Hot'");
+        // Number → bare.
+        assert_eq!(soql_literal(&json!(42)), "42");
+        assert!(is_soql_datetime("2026-08-28T00:00:00+05:30"));
+        assert!(!is_soql_datetime("not-a-date"));
     }
 
     #[test]
