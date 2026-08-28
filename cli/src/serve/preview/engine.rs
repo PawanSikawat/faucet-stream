@@ -34,14 +34,31 @@
 //! | bound | limit | on hit |
 //! |---|---|---|
 //! | rows | [`RowCap`] | [`Capped::Rows`] |
-//! | response size | [`PREVIEW_MAX_BYTES`] | [`Capped::Bytes`] |
-//! | wall clock | [`PREVIEW_DEADLINE`] | [`Capped::Time`] |
+//! | response size | [`Bounds::max_bytes`] | [`Capped::Bytes`] |
+//! | wall clock | [`Bounds::deadline`] | [`Capped::Time`] |
 //!
 //! All three produce a **partial answer that says it is partial**, never an
-//! error and never an OOM: asking for a whole dataset that does not fit gets you
-//! as much of it as fits, plus the reason it stopped. Only
-//! [`PREVIEW_HARD_TIMEOUT`] — a single page that never returns at all — fails
-//! the request outright, because there is nothing partial to hand back.
+//! error: asking for a whole dataset that does not fit gets you as much of it as
+//! fits, plus the reason it stopped. Only [`Bounds::hard_timeout`] — a single
+//! page that never returns at all — fails the request outright, because there is
+//! nothing partial to hand back.
+//!
+//! ### The bounds only work if every page is bounded
+//!
+//! Both are checked *as pages arrive*, so they can only interrupt a read that
+//! arrives in pieces. Ask a source for one unbounded page and it will hand back
+//! the whole file in a single `Vec` before either bound is ever consulted —
+//! which is precisely what this engine used to do on the unlimited path
+//! (`batch_size: 0`, every source's "drain into one page" sentinel), turning a
+//! 40 GiB `out.jsonl` into an OOM while the docs promised a truncated answer.
+//!
+//! So the engine **never requests an unbounded page**: an unlimited read is
+//! unlimited in *rows*, paged at [`PREVIEW_UNLIMITED_PAGE_ROWS`]. The residual,
+//! stated plainly because it is not something this layer can fix: a source that
+//! ignores the page-size hint and materializes its whole result set anyway (the
+//! default [`Source::stream_pages`] does exactly that, via `fetch_with_context`)
+//! is bounded by that source, not by us. It matters for #591's remote sources,
+//! not for the three file readers here, all of which page lazily.
 
 use crate::auth_catalog::AuthCatalog;
 use crate::error::{CliError, CliResult};
@@ -77,6 +94,44 @@ pub const PREVIEW_HARD_TIMEOUT: Duration = Duration::from_secs(60);
 /// estimate rather than by serializing each record, so the intent is a bound of
 /// the right order of magnitude, not an exact content-length.
 pub const PREVIEW_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+/// Page size for an [unlimited](RowCap::Unlimited) read.
+///
+/// An unlimited preview is unlimited in **rows**, not in page size. Requesting
+/// one unbounded page (`batch_size: 0`) would hand the engine the entire file in
+/// a single `Vec` before the byte budget or the deadline could look at it, so
+/// "unlimited" has to mean "paged, without a row ceiling".
+/// [`faucet_core::DEFAULT_BATCH_SIZE`] is the same cadence the pipeline itself
+/// streams at.
+pub const PREVIEW_UNLIMITED_PAGE_ROWS: usize = faucet_core::DEFAULT_BATCH_SIZE;
+
+/// The non-row bounds on one read.
+///
+/// Separated from the constants above, and passed in rather than read from them,
+/// so every bound has a test that exercises the **real** loop: a 30-second
+/// deadline and a 64 MiB budget are not things a unit test can reach otherwise,
+/// and an untested bound is a bound that quietly stops working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bounds {
+    /// Approximate response-size budget for the returned rows.
+    pub max_bytes: usize,
+    /// Wall-clock budget. On expiry the read returns what it has, as
+    /// [`Capped::Time`].
+    pub deadline: Duration,
+    /// Ceiling on the whole read, after which it fails rather than returning a
+    /// partial answer. Guards a single page that never completes.
+    pub hard_timeout: Duration,
+}
+
+impl Default for Bounds {
+    fn default() -> Self {
+        Self {
+            max_bytes: PREVIEW_MAX_BYTES,
+            deadline: PREVIEW_DEADLINE,
+            hard_timeout: PREVIEW_HARD_TIMEOUT,
+        }
+    }
+}
 
 /// What to read: a source spec plus the bound, already resolved against the
 /// server's caps by the caller ([`super::PreviewConfig::resolve_rows`]).
@@ -142,17 +197,26 @@ impl PreviewPage {
 }
 
 /// Read through the source `req.kind` describes, under `req.rows` and the
-/// engine's byte/time bounds.
+/// engine's default [`Bounds`].
 pub async fn read_capped(req: &PreviewRequest, auth: &AuthCatalog) -> CliResult<PreviewPage> {
+    read_capped_with(req, auth, Bounds::default()).await
+}
+
+/// [`read_capped`] with explicit bounds — the form the bound tests drive, so
+/// each of the three is exercised in the real loop rather than by inspection.
+pub async fn read_capped_with(
+    req: &PreviewRequest,
+    auth: &AuthCatalog,
+    bounds: Bounds,
+) -> CliResult<PreviewPage> {
     let started = Instant::now();
-    let page = tokio::time::timeout(PREVIEW_HARD_TIMEOUT, read_inner(req, auth, started))
+    let page = tokio::time::timeout(bounds.hard_timeout, read_inner(req, auth, started, bounds))
         .await
         .map_err(|_| {
             CliError::Serve(format!(
-                "preview abandoned after {}s reading a `{}` source — a single page never \
+                "preview abandoned after {:?} reading a `{}` source — a single page never \
                  returned",
-                PREVIEW_HARD_TIMEOUT.as_secs(),
-                req.kind
+                bounds.hard_timeout, req.kind
             ))
         })??;
     Ok(PreviewPage {
@@ -165,6 +229,7 @@ async fn read_inner(
     req: &PreviewRequest,
     auth: &AuthCatalog,
     started: Instant,
+    bounds: Bounds,
 ) -> CliResult<PreviewPage> {
     // One past the cap: enough to *know* whether more rows exist. An unlimited
     // read has no such number — the byte and time bounds are what stop it.
@@ -185,11 +250,10 @@ async fn read_inner(
     let mut capped_by = None;
     {
         let context = HashMap::new();
-        // The per-page hint. Every file source in the workspace takes its page
-        // size from its own config (see the callers in `handlers::preview`), so
-        // this is advisory; `0` is the "do not batch" sentinel, which is what an
-        // unlimited read wants.
-        let hint = want.unwrap_or(0);
+        // The per-page hint. Never `0` ("drain into one page"): a bound that is
+        // checked as pages arrive cannot interrupt a read that arrives all at
+        // once. An unlimited read is unlimited in rows, paged all the same.
+        let hint = want.unwrap_or(PREVIEW_UNLIMITED_PAGE_ROWS);
         let mut pages = source.stream_pages(&context, hint);
         'outer: while let Some(page) = pages.next().await {
             let page = page?;
@@ -202,7 +266,7 @@ async fn read_inner(
                 if want.is_some_and(|want| rows.len() >= want) {
                     break 'outer;
                 }
-                if bytes >= PREVIEW_MAX_BYTES {
+                if bytes >= bounds.max_bytes {
                     capped_by = Some(Capped::Bytes);
                     break 'outer;
                 }
@@ -212,7 +276,7 @@ async fn read_inner(
             // Checked between pages: a bound that can only be observed after a
             // page completes is still a bound, and it keeps the check off the
             // per-record path.
-            if started.elapsed() >= PREVIEW_DEADLINE {
+            if started.elapsed() >= bounds.deadline {
                 capped_by = Some(Capped::Time);
                 break;
             }
@@ -277,7 +341,14 @@ fn approx_bytes(value: &Value) -> usize {
     }
 }
 
-/// Column names across `rows`, first-seen order, de-duplicated.
+/// Column names across `rows`, de-duplicated, in the order the records present
+/// them.
+///
+/// "The order the records present them" is `serde_json::Map`'s iteration order,
+/// which is alphabetical unless something in the dependency tree turns on
+/// `preserve_order`. Nothing here depends on which: the union is stable and
+/// complete either way, and the header always matches the keys the rows actually
+/// carry, because it is computed from those rows.
 ///
 /// Ragged records (a field only some rows carry) contribute their extra keys at
 /// the end rather than being dropped — a preview that hid a column would be
@@ -492,30 +563,121 @@ mod tests {
         assert!(approx_bytes(&nested) > approx_bytes(&small));
     }
 
+    /// The spec the **handler** builds for an unlimited read, so these tests
+    /// exercise the page size production actually uses rather than a convenient
+    /// one. Mirrors `handlers::preview::source_spec`.
+    fn unlimited_request(path: &str) -> PreviewRequest {
+        PreviewRequest {
+            kind: "jsonl".into(),
+            config: serde_json::json!({
+                "path": path,
+                "batch_size": PREVIEW_UNLIMITED_PAGE_ROWS,
+                "limit": 0,
+            }),
+            rows: RowCap::Unlimited,
+        }
+    }
+
     #[tokio::test]
     async fn the_byte_budget_bounds_an_unlimited_read() {
         // The property that makes "preview the whole dataset" safe to offer: a
-        // dataset larger than the budget comes back as a partial answer that
-        // says so, not as an OOM.
+        // dataset past the budget comes back as a partial answer that says so.
+        //
+        // Driven through the *handler's* page size and a small budget, rather
+        // than through `batch_size: 1` and the real 64 MiB — the previous version
+        // of this test did the latter and so passed green while production, which
+        // sent `batch_size: 0`, materialized the whole file before the budget was
+        // ever consulted.
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("fat.jsonl");
-        // ~1 MiB per record, so the 64 MiB budget trips well before EOF.
-        let blob = "x".repeat(1024 * 1024);
-        let mut body = String::new();
-        for _ in 0..80 {
-            body.push_str(&format!("{{\"blob\":\"{blob}\"}}\n"));
-        }
+        let blob = "x".repeat(4096);
+        let body: String = (0..500)
+            .map(|i| format!("{{\"i\":{i},\"blob\":\"{blob}\"}}\n"))
+            .collect();
+        std::fs::write(&p, body).unwrap();
+
+        let bounds = Bounds {
+            max_bytes: 64 * 1024,
+            ..Bounds::default()
+        };
+        let page = read_capped_with(
+            &unlimited_request(&p.to_string_lossy()),
+            &AuthCatalog::new(),
+            bounds,
+        )
+        .await
+        .unwrap();
+        assert_eq!(page.capped_by, Some(Capped::Bytes), "{:?}", page.capped_by);
+        assert!(page.rows.len() < 500, "the read must stop before EOF");
+        assert!(!page.rows.is_empty(), "…but still return what it read");
+        assert!(page.truncated());
+    }
+
+    #[tokio::test]
+    async fn an_unbounded_page_would_defeat_the_byte_budget() {
+        // Why `PREVIEW_UNLIMITED_PAGE_ROWS` exists, pinned as a test rather than
+        // as a comment. `batch_size: 0` makes the jsonl reader hand over the
+        // whole file in one page; the budget is checked as pages arrive, so it
+        // cannot stop what has already arrived. Nothing in production sends 0 —
+        // `every_kind_is_paged_under_an_unlimited_read` holds that line — and
+        // this documents the consequence if it ever did.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("all-at-once.jsonl");
+        let body: String = (0..500).map(|i| format!("{{\"i\":{i}}}\n")).collect();
         std::fs::write(&p, body).unwrap();
 
         let req = PreviewRequest {
             kind: "jsonl".into(),
-            config: serde_json::json!({ "path": p.to_string_lossy(), "batch_size": 1 }),
+            // The sentinel the handler must never send.
+            config: serde_json::json!({ "path": p.to_string_lossy(), "batch_size": 0 }),
             rows: RowCap::Unlimited,
         };
-        let page = read_capped(&req, &AuthCatalog::new()).await.unwrap();
-        assert_eq!(page.capped_by, Some(Capped::Bytes), "{:?}", page.capped_by);
-        assert!(page.rows.len() < 80, "the read must stop before EOF");
-        assert!(!page.rows.is_empty(), "…but still return what it read");
+        let page = read_capped_with(
+            &req,
+            &AuthCatalog::new(),
+            Bounds {
+                max_bytes: 64,
+                ..Bounds::default()
+            },
+        )
+        .await
+        .unwrap();
+        // The budget did stop *accumulation* mid-page, but the source had already
+        // built all 500 records — the memory the budget was meant to bound.
+        assert_eq!(page.pages_read, 1, "one page: the whole file");
+        assert!(page.rows.len() < 500);
+    }
+
+    #[tokio::test]
+    async fn the_deadline_returns_a_partial_answer_rather_than_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_jsonl(dir.path(), 5_000);
+        let bounds = Bounds {
+            deadline: Duration::ZERO,
+            ..Bounds::default()
+        };
+        let page = read_capped_with(&unlimited_request(&path), &AuthCatalog::new(), bounds)
+            .await
+            .unwrap();
+        assert_eq!(page.capped_by, Some(Capped::Time));
+        assert!(page.truncated());
+        // One page's worth, not zero rows and not the file: the deadline is
+        // checked *after* a page, so the caller always gets something back.
+        assert_eq!(page.rows.len(), PREVIEW_UNLIMITED_PAGE_ROWS);
+    }
+
+    // The hard timeout itself (the `tokio::time::timeout` wrapper) has no unit
+    // test here: making it fire deterministically needs a source that never
+    // yields, and the only injection point — `PluginRegistry::install` — is a
+    // process-wide `OnceLock` that a lib-test binary cannot claim without
+    // poisoning it for every other test. Racing it against a real file read
+    // (`hard_timeout: ZERO`) passes or fails on timer granularity, which is worse
+    // than no test. What it maps to over HTTP *is* covered, deterministically:
+    // see `handlers::preview::tests::an_abandoned_read_is_unavailable_not_a_500`.
+
+    #[test]
+    fn the_unlimited_page_size_is_never_the_drain_everything_sentinel() {
+        assert_ne!(PREVIEW_UNLIMITED_PAGE_ROWS, 0);
     }
 
     #[test]

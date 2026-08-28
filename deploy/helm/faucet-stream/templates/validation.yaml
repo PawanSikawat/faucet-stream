@@ -21,3 +21,9 @@
 {{- if and .Values.serve.enabled (lt (int .Values.serve.localOutputs.inFlightGraceSeconds) 0) -}}
 {{- fail (printf "serve.localOutputs.inFlightGraceSeconds must be 0 (disabled) or a positive number of seconds (got %v)." .Values.serve.localOutputs.inFlightGraceSeconds) -}}
 {{- end -}}
+{{- if and .Values.serve.enabled (lt (int .Values.serve.preview.rows) 0) -}}
+{{- fail (printf "serve.preview.rows must be 0 (preview the whole dataset by default) or a positive number of rows (got %v)." .Values.serve.preview.rows) -}}
+{{- end -}}
+{{- if and .Values.serve.enabled (lt (int .Values.serve.preview.maxRows) 0) -}}
+{{- fail (printf "serve.preview.maxRows must be 0 (no ceiling) or a positive number of rows (got %v)." .Values.serve.preview.maxRows) -}}
+{{- end -}}

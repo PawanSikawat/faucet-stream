@@ -18,6 +18,10 @@
 //! 5. **Retention interaction (#587)**: once an output is cleaned, previewing it
 //!    is a `409` explaining that the file is gone and the run record is kept —
 //!    never a 500 from a failed open.
+//! 6. **Every readable format is actually read back**, parquet included — and in
+//!    the rolled multi-part shape the handler is built for, where one UUID-named
+//!    part is one ledger row. A spec-inspection test cannot catch an Arrow
+//!    regression; only a real read can.
 #![cfg(all(
     feature = "catalog",
     feature = "source-csv",
@@ -440,6 +444,209 @@ async fn a_server_with_no_ceiling_serves_the_whole_dataset() {
     let (status, body) = preview(&base, &client, "admin-tok", &id, "row_count_to_load=0").await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["rows"].as_array().unwrap().len(), 1_500);
+}
+
+/// A csv → parquet pipeline. `dest` is a file for single-file mode, or a
+/// directory when `max_rows_per_file` rolls parts over.
+#[cfg(all(feature = "source-parquet", feature = "sink-parquet"))]
+fn csv_to_parquet(input: &str, dest: &str, max_rows_per_file: Option<usize>) -> String {
+    let rollover = match max_rows_per_file {
+        // `batch_size` matters as much as the threshold: rollover is evaluated
+        // after each batch, so a single 10-row page would otherwise land in one
+        // file regardless of `max_rows_per_file`. Slicing the page is what makes
+        // the sink actually roll.
+        Some(n) => format!(", max_rows_per_file: {n}, batch_size: {n}"),
+        None => String::new(),
+    };
+    format!(
+        "version: 1\nname: preview-e2e\npipeline:\n  \
+         source: {{ type: csv, config: {{ path: {input} }} }}\n  \
+         sink: {{ type: parquet, config: {{ destination: {{ type: local_path, path: {dest} }}{rollover} }} }}\n",
+    )
+}
+
+#[cfg(all(feature = "source-parquet", feature = "sink-parquet"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn previews_a_parquet_output_through_the_parquet_source() {
+    // Finding #3 of the post-merge review: parquet was only ever checked by
+    // inspecting the generated spec JSON, so an Arrow read-back regression would
+    // have shipped green. This reads the file.
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.csv");
+    let output = dir.path().join("out.parquet");
+    write_input(&input, 6);
+
+    let port = free_port();
+    spawn_server(port, dir.path(), true, 100, 1000).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+
+    run_pipeline(
+        &base,
+        &client,
+        &csv_to_parquet(
+            &input.display().to_string(),
+            &output.display().to_string(),
+            None,
+        ),
+    )
+    .await;
+    assert!(output.exists(), "the sink should have written the file");
+
+    let id = id_of(&list_outputs(&base, &client).await, "out.parquet");
+    let (status, body) = preview(&base, &client, "admin-tok", &id, "").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["kind"], "parquet");
+    assert_eq!(body["rows"].as_array().unwrap().len(), 6);
+    assert_eq!(body["row_count"], 6);
+    assert_eq!(body["truncated"], false);
+    assert_eq!(body["capped_by"], Value::Null);
+    assert_eq!(body["columns"], serde_json::json!(["id", "name"]));
+    // Values come back through Arrow, so this also pins the decode.
+    assert_eq!(body["rows"][0]["name"], "name-0");
+    assert_eq!(body["rows"][5]["name"], "name-5");
+}
+
+#[cfg(all(feature = "source-parquet", feature = "sink-parquet"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn previews_each_part_of_a_rolled_parquet_output_independently() {
+    // The shape the handler's `local_path` (never a glob) choice exists for: a
+    // rolling parquet sink names each part with a fresh UUID and the ledger
+    // records one row per part, so each preview must read exactly its own part —
+    // not the directory, and not the other parts.
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.csv");
+    let out_dir = dir.path().join("parts");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    write_input(&input, 10);
+
+    let port = free_port();
+    spawn_server(port, dir.path(), true, 100, 1000).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+
+    run_pipeline(
+        &base,
+        &client,
+        &csv_to_parquet(
+            &input.display().to_string(),
+            &out_dir.display().to_string(),
+            Some(4),
+        ),
+    )
+    .await;
+
+    let listed = list_outputs(&base, &client).await;
+    let parts: Vec<&Value> = listed["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|o| o["path"].as_str().unwrap().ends_with(".parquet"))
+        .collect();
+    assert!(
+        parts.len() > 1,
+        "expected the sink to roll over into several parts, got {}: {listed}",
+        parts.len()
+    );
+
+    // Every part previews on its own, and the parts together account for all 10
+    // rows — which is what proves each read was scoped to one file.
+    let mut total = 0usize;
+    for part in &parts {
+        let id = part["id"].as_str().unwrap();
+        let (status, body) = preview(&base, &client, "admin-tok", id, "").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["kind"], "parquet");
+        let n = body["rows"].as_array().unwrap().len();
+        assert!(
+            n > 0 && n <= 4,
+            "part should hold 1..=4 rows, got {n}: {body}"
+        );
+        assert_eq!(body["columns"], serde_json::json!(["id", "name"]));
+        total += n;
+    }
+    assert_eq!(
+        total, 10,
+        "the parts must partition the dataset, not repeat it"
+    );
+}
+
+#[cfg(feature = "compression")]
+#[tokio::test(flavor = "multi_thread")]
+async fn previews_a_compressed_output_by_decompressing_it() {
+    // Both sides auto-detect from the `.gz` suffix — the jsonl sink writes gzip,
+    // the preview reader decompresses — so a compressed output must round-trip.
+    // Untested until now, which meant a compressed preview could have been
+    // silently reported as a malformed file.
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.csv");
+    let output = dir.path().join("out.jsonl.gz");
+    write_input(&input, 5);
+
+    let port = free_port();
+    spawn_server(port, dir.path(), true, 100, 1000).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+
+    run_pipeline(
+        &base,
+        &client,
+        &csv_to(
+            "jsonl",
+            &input.display().to_string(),
+            &output.display().to_string(),
+        ),
+    )
+    .await;
+    // Confirm it really is gzip, or the test proves nothing about decompression.
+    let bytes = std::fs::read(&output).unwrap();
+    assert_eq!(&bytes[..2], &[0x1f, 0x8b], "sink should have written gzip");
+
+    let id = id_of(&list_outputs(&base, &client).await, "out.jsonl.gz");
+    let (status, body) = preview(&base, &client, "admin-tok", &id, "").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["rows"].as_array().unwrap().len(), 5);
+    assert_eq!(body["columns"], serde_json::json!(["id", "name"]));
+    assert_eq!(body["rows"][4]["name"], "name-4");
+    assert_eq!(body["truncated"], false);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_malformed_output_is_unprocessable_rather_than_a_server_error() {
+    // A run that died mid-flush leaves a half-written last line. The file is
+    // there, so this is a fact about the data, not a server fault.
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.csv");
+    let output = dir.path().join("out.jsonl");
+    write_input(&input, 3);
+
+    let port = free_port();
+    spawn_server(port, dir.path(), true, 100, 1000).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+
+    run_pipeline(
+        &base,
+        &client,
+        &csv_to(
+            "jsonl",
+            &input.display().to_string(),
+            &output.display().to_string(),
+        ),
+    )
+    .await;
+    let id = id_of(&list_outputs(&base, &client).await, "out.jsonl");
+
+    // Truncate the last record the way an interrupted flush would.
+    let mut body = std::fs::read_to_string(&output).unwrap();
+    body.push_str("{\"id\": \"9\", \"name\"");
+    std::fs::write(&output, body).unwrap();
+
+    let (status, body) = preview(&base, &client, "admin-tok", &id, "").await;
+    assert_eq!(status, 422, "{body}");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("line 4"), "names the bad line: {message}");
+    assert!(message.contains("out.jsonl"), "{message}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

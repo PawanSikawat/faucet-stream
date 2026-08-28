@@ -1002,14 +1002,27 @@ having one. With `--preview-max-rows 0` the response reports `row_limit: null`
 and `preview_max_rows: null`, and the console offers "All rows" as something that
 will genuinely load everything.
 
-**Unlimited is not unbounded.** An uncapped read still stops at a response-size
-budget (64 MiB) and a 30-second deadline, and a read stopped by any of the three
-bounds comes back as a *partial answer that names the bound* — `capped_by` is
-`rows`, `bytes`, or `time`, and absent when the response is the whole dataset. So
-asking for a dataset larger than the server can hold gets you as much of it as
-fits plus the reason it stopped, never an out-of-memory or a silently clipped
-table. (Only a single page that never returns at all — 60s — fails the request,
-as a `503`.)
+**Unlimited is not unbounded.** An uncapped read is unlimited in *rows* only: it
+is still paged, and still stops at a response-size budget (64 MiB) and a
+30-second deadline. A read stopped by any of the three bounds comes back as a
+*partial answer that names the bound* — `capped_by` is `rows`, `bytes`, or
+`time`, and absent when the response is the whole dataset. So asking for a
+dataset larger than the server can hold gets you as much of it as fits plus the
+reason it stopped, never an out-of-memory or a silently clipped table. (Only a
+single page that never returns at all — 60s — fails the request, as a `503`.)
+
+The paging is what makes those bounds work, and it is not incidental: both are
+checked as pages arrive, so a read that arrives all at once cannot be
+interrupted. That is why an unlimited preview asks its source for pages of 1000
+rows rather than for one unbounded page.
+
+**An `external` output is never previewed.** faucet wrote to that file but did not
+create it, so its contents are not faucet's to serve — the read-side twin of the
+retention GC's refusal to delete it. The output stays listed, with state
+`external`, and the console renders no Preview control for it. Every served
+preview also writes a `local_output.preview` audit entry (principal, output, row
+count): this is the one read on the control plane that returns pipeline *data*
+rather than metadata, so it is the one read worth recording.
 
 These caps govern the **serve** preview only. `faucet preview` is a local,
 deliberate, single-user command with its own `--limit` flag: a different trust
