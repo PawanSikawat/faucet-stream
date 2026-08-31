@@ -1045,6 +1045,26 @@ select {
 .lineage-edge:hover { stroke: var(--brand-strong); }
 .lineage-node rect { fill: var(--surface-2, #f4f6f8); stroke: var(--border); stroke-width: 1; transition: stroke 0.15s, fill 0.15s, opacity 0.15s; }
 .lineage-node text { fill: var(--ink-dim); font-family: var(--font-mono); font-size: 11px; transition: fill 0.15s; }
+/* Label lives in a foreignObject and scrolls horizontally *inside* the box, so
+   the full path is reachable by scrolling the box itself (like .ds-uri-in). The
+   scrollbar is hidden (trackpad / shift-wheel still scroll) with a right-edge
+   fade hinting there is more to the right. */
+.lnode-label {
+  height: 100%;
+  line-height: 30px; /* NODE_H (32) − 2 border */
+  padding: 0 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-dim);
+  cursor: pointer;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+}
+.lnode-label::-webkit-scrollbar { display: none; }
 .lineage-node:hover rect { stroke: var(--brand-strong); }
 .lineage-root rect { stroke: var(--ok); stroke-width: 2.5; }
 /* Click-to-highlight: the selected node, its neighbours, and their edges stay
@@ -1052,6 +1072,7 @@ select {
    Selected = solid brand; neighbour = brand tint; active edge = brand line. */
 .lineage-node.is-selected rect { fill: var(--brand-strong); stroke: var(--brand-strong); }
 .lineage-node.is-selected text { fill: #fff; }
+.lineage-node.is-selected .lnode-label { color: #fff; }
 .lineage-node.is-neighbour rect { fill: color-mix(in srgb, var(--brand-strong) 22%, var(--surface)); stroke: var(--brand-strong); }
 .lineage-edge.is-active { stroke: var(--brand-strong); stroke-width: 2.5; }
 .lineage-svg.has-selection .lineage-node:not(.is-selected):not(.is-neighbour) { opacity: 0.32; }

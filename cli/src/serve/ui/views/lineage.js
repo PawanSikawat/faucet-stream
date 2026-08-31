@@ -33,7 +33,7 @@ export async function renderLineage(container, params = {}) {
         <button class="btn-ghost" id="l-datasets">← Datasets</button>
         ${params.root ? `<button class="btn-ghost" id="l-all">Whole graph</button>` : ""}
       </div>
-      <p class="lineage-hint">Click a dataset to highlight its connections · double-click to open it · scroll to pan wide graphs.</p>
+      <p class="lineage-hint">Click a dataset to highlight its connections · double-click to open it · scroll inside a box to read the full name.</p>
       <div id="graph" class="lineage-graph"></div>
     </div>`;
   container.querySelector("#l-datasets").onclick = () => navigate("#/catalog");
@@ -135,14 +135,11 @@ function buildSvg({ nodes, edges }, rootId) {
   const layers = Math.max(...[...nodes.values()].map((n) => n.layer)) + 1;
   const rows = Math.max(...[...nodes.values()].map((n) => n.row)) + 1;
 
-  // Uniform node width sized to the longest label (so columns still line up),
-  // capped at MAX_W. Labels longer than the node truncate from the left (the
-  // tail — the file/table name — is the useful part); the full value is in the
-  // title tooltip, and the whole graph scrolls when it overflows the container.
-  const maxChars = Math.floor((MAX_W - LABEL_PAD) / CHAR_W);
-  const longest = Math.max(0, ...[...nodes.values()].map((n) => n.uri.length));
-  const NODE_W = Math.min(MAX_W, Math.max(MIN_W, Math.round(Math.min(longest, maxChars) * CHAR_W) + LABEL_PAD));
-  const fitChars = Math.floor((NODE_W - LABEL_PAD) / CHAR_W);
+  // Fixed, comfortable node width so the 2-column source→sink graph fits the
+  // card without the whole graph scrolling. The full dataset name lives *inside*
+  // each box and scrolls left/right within it (the foreignObject label below),
+  // mirroring the URI cells in the datasets table — no truncation.
+  const NODE_W = 340;
 
   const width = layers * NODE_W + (layers - 1) * GAP_X + 32;
   const height = rows * (NODE_H + GAP_Y) + 32;
@@ -191,14 +188,23 @@ function buildSvg({ nodes, edges }, rootId) {
     rect.setAttribute("width", NODE_W);
     rect.setAttribute("height", NODE_H);
     rect.setAttribute("rx", 8);
-    const label = document.createElementNS(ns, "text");
-    label.setAttribute("x", 12);
-    label.setAttribute("y", NODE_H / 2 + 4);
-    label.textContent = shorten(n.uri, fitChars);
+    // The label is an HTML div inside a foreignObject so it can scroll
+    // horizontally *within the fixed-width box* — the full path is always
+    // reachable by scrolling the box, never truncated.
+    const fo = document.createElementNS(ns, "foreignObject");
+    fo.setAttribute("x", 1);
+    fo.setAttribute("y", 1);
+    fo.setAttribute("width", NODE_W - 2);
+    fo.setAttribute("height", NODE_H - 2);
+    const div = document.createElementNS("http://www.w3.org/1999/xhtml", "div");
+    div.setAttribute("class", "lnode-label");
+    div.setAttribute("title", n.uri);
+    div.textContent = n.uri;
+    fo.appendChild(div);
     const title = document.createElementNS(ns, "title");
-    title.textContent = `${n.uri}\n(click to highlight connections · double-click to open)`;
+    title.textContent = `${n.uri}\n(click to highlight connections · double-click to open · scroll the box to read the full name)`;
     g.appendChild(rect);
-    g.appendChild(label);
+    g.appendChild(fo);
     g.appendChild(title);
     svg.appendChild(g);
     nodeEls.set(n.id, g);
