@@ -33,6 +33,7 @@ export async function renderLineage(container, params = {}) {
         <button class="btn-ghost" id="l-datasets">← Datasets</button>
         ${params.root ? `<button class="btn-ghost" id="l-all">Whole graph</button>` : ""}
       </div>
+      <p class="lineage-hint">Click a dataset to highlight its connections · double-click to open it · scroll to pan wide graphs.</p>
       <div id="graph" class="lineage-graph"></div>
     </div>`;
   container.querySelector("#l-datasets").onclick = () => navigate("#/catalog");
@@ -116,25 +117,53 @@ export function layout(edges) {
   return { nodes, edges };
 }
 
-const NODE_W = 210;
-const NODE_H = 30;
-const GAP_X = 110;
+const NODE_H = 32;
+const GAP_X = 120;
 const GAP_Y = 14;
+const FONT_PX = 11;
+const CHAR_W = 6.7; // ≈ px per char at 11px mono
+const LABEL_PAD = 24; // text inset left+right
+const MIN_W = 240;
+const MAX_W = 620; // cap so one huge path can't blow the layout out — the rest is in the tooltip
 
+/** Build the interactive lineage SVG. Nodes are as wide as needed to show the
+ *  full dataset name (capped at MAX_W, then the graph scrolls horizontally);
+ *  clicking a node selects it and highlights every directly-connected node and
+ *  edge, dimming the rest. A double-click opens the dataset. */
 function buildSvg({ nodes, edges }, rootId) {
   const ns = "http://www.w3.org/2000/svg";
   const layers = Math.max(...[...nodes.values()].map((n) => n.layer)) + 1;
   const rows = Math.max(...[...nodes.values()].map((n) => n.row)) + 1;
+
+  // Uniform node width sized to the longest label (so columns still line up),
+  // capped at MAX_W. Labels longer than the node truncate from the left (the
+  // tail — the file/table name — is the useful part); the full value is in the
+  // title tooltip, and the whole graph scrolls when it overflows the container.
+  const maxChars = Math.floor((MAX_W - LABEL_PAD) / CHAR_W);
+  const longest = Math.max(0, ...[...nodes.values()].map((n) => n.uri.length));
+  const NODE_W = Math.min(MAX_W, Math.max(MIN_W, Math.round(Math.min(longest, maxChars) * CHAR_W) + LABEL_PAD));
+  const fitChars = Math.floor((NODE_W - LABEL_PAD) / CHAR_W);
+
   const width = layers * NODE_W + (layers - 1) * GAP_X + 32;
   const height = rows * (NODE_H + GAP_Y) + 32;
   const svg = document.createElementNS(ns, "svg");
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", width);
+  svg.setAttribute("height", height);
   svg.setAttribute("class", "lineage-svg");
 
   const x = (n) => 16 + n.layer * (NODE_W + GAP_X);
   const y = (n) => 16 + n.row * (NODE_H + GAP_Y);
 
+  // Adjacency, so a click can light up a node's whole neighbourhood.
+  const neighbours = new Map(); // id → Set(neighbour id)
+  const link = (a, b) => { (neighbours.get(a) || neighbours.set(a, new Set()).get(a)).add(b); };
+  const edgeEls = []; // { el, src, dst }
+  const nodeEls = new Map(); // id → <g>
+
   for (const e of edges) {
+    link(e.src_id, e.dst_id);
+    link(e.dst_id, e.src_id);
     const s = nodes.get(e.src_id);
     const d = nodes.get(e.dst_id);
     const x1 = x(s) + NODE_W;
@@ -149,14 +178,15 @@ function buildSvg({ nodes, edges }, rootId) {
     title.textContent = `${e.pipeline} (row ${e.row}) — ${e.runs} run(s), ${e.last_records} row(s) last`;
     path.appendChild(title);
     svg.appendChild(path);
+    edgeEls.push({ el: path, src: e.src_id, dst: e.dst_id });
   }
 
   for (const n of nodes.values()) {
     const g = document.createElementNS(ns, "g");
     g.setAttribute("class", `lineage-node${n.id === rootId ? " lineage-root" : ""}`);
     g.setAttribute("transform", `translate(${x(n)}, ${y(n)})`);
+    g.dataset.id = n.id;
     g.style.cursor = "pointer";
-    g.onclick = () => navigate(`#/catalog/${n.id}`);
     const rect = document.createElementNS(ns, "rect");
     rect.setAttribute("width", NODE_W);
     rect.setAttribute("height", NODE_H);
@@ -164,14 +194,41 @@ function buildSvg({ nodes, edges }, rootId) {
     const label = document.createElementNS(ns, "text");
     label.setAttribute("x", 12);
     label.setAttribute("y", NODE_H / 2 + 4);
-    label.textContent = shorten(n.uri, 34);
+    label.textContent = shorten(n.uri, fitChars);
     const title = document.createElementNS(ns, "title");
-    title.textContent = n.uri;
+    title.textContent = `${n.uri}\n(click to highlight connections · double-click to open)`;
     g.appendChild(rect);
     g.appendChild(label);
     g.appendChild(title);
     svg.appendChild(g);
+    nodeEls.set(n.id, g);
   }
+
+  // Selection: single click highlights the node + its neighbours + their edges
+  // and dims everything else; clicking it again (or the background) clears.
+  // Double-click opens the dataset.
+  let selected = null;
+  const clear = () => {
+    selected = null;
+    svg.classList.remove("has-selection");
+    for (const g of nodeEls.values()) g.classList.remove("is-selected", "is-neighbour");
+    for (const { el } of edgeEls) el.classList.remove("is-active");
+  };
+  const select = (id) => {
+    if (selected === id) { clear(); return; }
+    clear();
+    selected = id;
+    svg.classList.add("has-selection");
+    nodeEls.get(id)?.classList.add("is-selected");
+    for (const nb of neighbours.get(id) || []) nodeEls.get(nb)?.classList.add("is-neighbour");
+    for (const e of edgeEls) if (e.src === id || e.dst === id) el_active(e.el);
+  };
+  const el_active = (el) => el.classList.add("is-active");
+  for (const [id, g] of nodeEls) {
+    g.addEventListener("click", (ev) => { ev.stopPropagation(); select(id); });
+    g.addEventListener("dblclick", (ev) => { ev.stopPropagation(); navigate(`#/catalog/${id}`); });
+  }
+  svg.addEventListener("click", clear); // click empty space to clear
   return svg;
 }
 

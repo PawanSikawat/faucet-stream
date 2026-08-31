@@ -1014,14 +1014,48 @@ select {
 .diff-removed { color: var(--cancelled); border-color: color-mix(in srgb, var(--cancelled) 40%, transparent); }
 .edge-lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 12px; }
 .edge-lists h3 { margin: 4px 0; font-size: 0.85rem; color: var(--ink-dim); }
-.lineage-graph { overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 8px; }
-.lineage-svg { min-width: 640px; width: 100%; height: auto; }
-.lineage-edge { fill: none; stroke: var(--border); stroke-width: 2; }
-.lineage-edge:hover { stroke: var(--running, #4a9eda); }
-.lineage-node rect { fill: var(--bg, #fff); stroke: var(--border); stroke-width: 1; }
-.lineage-node text { fill: var(--ink-dim); font-family: var(--font-mono); font-size: 9px; }
-.lineage-node:hover rect { stroke: var(--running, #4a9eda); }
+/* The graph scrolls both ways inside its card. The SVG keeps its natural pixel
+   size (set as width/height attributes) rather than stretching to 100% — that
+   is what lets wide labels overflow and scroll left/right instead of squashing. */
+.lineage-graph { overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 8px; max-height: 78vh; }
+.lineage-svg { display: block; }
+.lineage-hint { margin: -4px 0 12px; font-size: 0.8rem; color: var(--ink-faint); }
+
+/* "Load more" — a centred, intentional affordance rather than a stray ghost
+   button pinned to the left edge under the last row. */
+.load-more {
+  display: block;
+  margin: 16px auto 4px;
+  min-width: 220px;
+  padding: 10px 22px;
+  font-weight: 550;
+  color: var(--ink-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.load-more:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+  border-color: var(--brand-strong);
+  box-shadow: var(--shadow-1);
+}
+.lineage-edge { fill: none; stroke: var(--border); stroke-width: 2; transition: stroke 0.15s, opacity 0.15s; }
+.lineage-edge:hover { stroke: var(--brand-strong); }
+.lineage-node rect { fill: var(--surface-2, #f4f6f8); stroke: var(--border); stroke-width: 1; transition: stroke 0.15s, fill 0.15s, opacity 0.15s; }
+.lineage-node text { fill: var(--ink-dim); font-family: var(--font-mono); font-size: 11px; transition: fill 0.15s; }
+.lineage-node:hover rect { stroke: var(--brand-strong); }
 .lineage-root rect { stroke: var(--ok); stroke-width: 2.5; }
+/* Click-to-highlight: the selected node, its neighbours, and their edges stay
+   bright while everything else dims, so a dataset's connections read at a glance.
+   Selected = solid brand; neighbour = brand tint; active edge = brand line. */
+.lineage-node.is-selected rect { fill: var(--brand-strong); stroke: var(--brand-strong); }
+.lineage-node.is-selected text { fill: #fff; }
+.lineage-node.is-neighbour rect { fill: color-mix(in srgb, var(--brand-strong) 22%, var(--surface)); stroke: var(--brand-strong); }
+.lineage-edge.is-active { stroke: var(--brand-strong); stroke-width: 2.5; }
+.lineage-svg.has-selection .lineage-node:not(.is-selected):not(.is-neighbour) { opacity: 0.32; }
+.lineage-svg.has-selection .lineage-edge:not(.is-active) { opacity: 0.18; }
 
 /* ============================================================================
    pipeline templates (#444)

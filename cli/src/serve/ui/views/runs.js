@@ -31,7 +31,7 @@ export async function renderRuns(container) {
         </tr></thead>
         <tbody id="runs-list"></tbody>
       </table>
-      <button class="btn-ghost" id="r-more" hidden>Load more</button>
+      <button class="btn-ghost load-more" id="r-more" hidden>Load more</button>
     </div>`;
 
   const list = container.querySelector("#runs-list");

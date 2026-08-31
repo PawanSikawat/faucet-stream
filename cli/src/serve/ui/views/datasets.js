@@ -53,7 +53,7 @@ export async function renderDatasets(container) {
         </tr></thead>
         <tbody id="ds-list"></tbody>
       </table>
-      <button class="btn-ghost" id="d-more" hidden>Load more</button>
+      <button class="btn-ghost load-more" id="d-more" hidden>Load more</button>
       <div id="lo-section"></div>
     </div>`;
 
