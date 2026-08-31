@@ -52,6 +52,7 @@ export async function renderRuns(container) {
   }
 
   async function load(reset) {
+    if (!reset && !cursor) return; // no next page — don't re-fetch page 1 into the list
     try {
       const data = await api(`/v1/runs?${query(reset)}`);
       if (reset) list.innerHTML = "";

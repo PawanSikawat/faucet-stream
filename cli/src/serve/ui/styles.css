@@ -240,6 +240,9 @@ button { font-family: inherit; }
   padding: 28px 24px 64px;
   animation: rise 0.28s ease both;
 }
+/* The lineage graph is the one view that genuinely uses horizontal space — let
+   it grow wider than the standard reading-width page on large screens. */
+.page-wide { max-width: 1600px; }
 /* Opacity-only — animating `transform` here (even ending at none) makes `.page`
    a containing block for the whole fill, which breaks `position: sticky` on any
    descendant table header (it would stick to `.page` and scroll away, not to the
@@ -1018,7 +1021,7 @@ select {
    size (set as width/height attributes) rather than stretching to 100% — that
    is what lets wide labels overflow and scroll left/right instead of squashing. */
 .lineage-graph { overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 8px; max-height: 78vh; }
-.lineage-svg { display: block; }
+.lineage-svg { display: block; margin: 0 auto; }
 .lineage-hint { margin: -4px 0 12px; font-size: 0.8rem; color: var(--ink-faint); }
 
 /* "Load more" — a centred, intentional affordance rather than a stray ghost

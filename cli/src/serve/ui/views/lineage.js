@@ -27,7 +27,7 @@ export async function renderLineage(container, params = {}) {
   }
 
   container.innerHTML = `
-    <div class="page">
+    <div class="page page-wide">
       <div class="page-head">
         <h1>Lineage${params.root ? " (rooted)" : ""}</h1>
         <button class="btn-ghost" id="l-datasets">← Datasets</button>
@@ -45,7 +45,18 @@ export async function renderLineage(container, params = {}) {
     graph.innerHTML = `<div class="empty">No lineage edges recorded yet — run a pipeline first.</div>`;
     return;
   }
-  graph.appendChild(buildSvg(layout(data.edges), params.root));
+  // Lay out once; repaint on resize so nodes always fill the available width
+  // (they size to the container, so a wide screen doesn't leave dead space).
+  const laid = layout(data.edges);
+  const paint = () => {
+    graph.innerHTML = "";
+    graph.appendChild(buildSvg(laid, params.root, graph.clientWidth));
+  };
+  paint();
+  let rt;
+  const onResize = () => { clearTimeout(rt); rt = setTimeout(paint, 150); };
+  window.addEventListener("resize", onResize);
+  return () => { clearTimeout(rt); window.removeEventListener("resize", onResize); };
 }
 
 /** Compute topological layers: a node's layer is 1 + max layer of its inputs
@@ -130,16 +141,19 @@ const MAX_W = 620; // cap so one huge path can't blow the layout out — the res
  *  full dataset name (capped at MAX_W, then the graph scrolls horizontally);
  *  clicking a node selects it and highlights every directly-connected node and
  *  edge, dimming the rest. A double-click opens the dataset. */
-function buildSvg({ nodes, edges }, rootId) {
+function buildSvg({ nodes, edges }, rootId, containerWidth = 1000) {
   const ns = "http://www.w3.org/2000/svg";
   const layers = Math.max(...[...nodes.values()].map((n) => n.layer)) + 1;
   const rows = Math.max(...[...nodes.values()].map((n) => n.row)) + 1;
 
-  // Fixed, comfortable node width so the 2-column source→sink graph fits the
-  // card without the whole graph scrolling. The full dataset name lives *inside*
-  // each box and scrolls left/right within it (the foreignObject label below),
-  // mirroring the URI cells in the datasets table — no truncation.
-  const NODE_W = 340;
+  // Node width is responsive: the columns fill the card's width (no dead space
+  // on the right), capped so boxes don't get absurdly wide on an ultra-wide
+  // screen — any remainder past the cap is centred (see .lineage-svg margin).
+  // The full dataset name lives *inside* each box and scrolls left/right within
+  // it (the foreignObject label below), mirroring the datasets-table URI cells.
+  const avail = Math.max(560, containerWidth - 16); // minus .lineage-graph padding
+  let NODE_W = Math.floor((avail - 32 - (layers - 1) * GAP_X) / layers);
+  NODE_W = Math.max(320, Math.min(NODE_W, 720));
 
   const width = layers * NODE_W + (layers - 1) * GAP_X + 32;
   const height = rows * (NODE_H + GAP_Y) + 32;

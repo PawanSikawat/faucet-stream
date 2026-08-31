@@ -121,6 +121,8 @@ export async function renderDatasets(container) {
     if (reset) {
       cursor = null;
       all = [];
+    } else if (!cursor) {
+      return; // no next page — never re-fetch page 1 into `all` (that duplicated it)
     }
     const p = new URLSearchParams();
     const q = container.querySelector("#f-q").value.trim();
@@ -129,8 +131,15 @@ export async function renderDatasets(container) {
     if (cursor) p.set("cursor", cursor);
     try {
       const data = await api(`/v1/catalog/datasets?${p}`);
-      all.push(...data.datasets);
+      // Dedupe by id: concurrent writes can shift the server-side sort between
+      // pages, so a page may re-list a dataset already held — never add it twice.
+      const seen = new Set(all.map((d) => d.id));
+      const fresh = data.datasets.filter((d) => !seen.has(d.id));
+      all.push(...fresh);
       cursor = data.next_cursor || null;
+      // If a "next" page brought nothing new, stop offering more — otherwise a
+      // cursor that never terminates (set shifting underfoot) loops forever.
+      if (!reset && fresh.length === 0) cursor = null;
       container.querySelector("#d-more").hidden = !cursor;
       populateKinds();
       render();
