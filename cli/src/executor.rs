@@ -718,6 +718,7 @@ pub async fn run_expanded(nodes: Vec<ExpandedNode>, opts: ExecuteOptions) -> Cli
                 tracing::info!(
                     row = %outcome.row_id,
                     records_written = outcome.records_written,
+                    elapsed_ms = outcome.metrics.as_ref().map(|m| m.duration_ms).unwrap_or(0),
                     "pipeline invocation completed"
                 );
             }
@@ -1027,6 +1028,16 @@ async fn run_unit(
     let duration_ms = started.elapsed().as_millis() as u64;
     let row_id = unit.node.id.clone();
     let parent_record_key = unit.parent_record_key.clone();
+    // Per-row timing metric: the pipeline already measured `duration_ms`; surface
+    // it as a histogram so per-matrix-row time is observable on a scrape, not just
+    // in `--output json`.
+    crate::exec_metrics::record_invocation(
+        &opts.pipeline_name,
+        &row_id,
+        &unit.node.source.kind,
+        &unit.node.sink.kind,
+        duration_ms,
+    );
     let base_metrics = || InvocationMetrics {
         source_kind: unit.node.source.kind.clone(),
         sink_kind: unit.node.sink.kind.clone(),

@@ -26,6 +26,7 @@ pub mod dlq_replay;
 pub mod env_config;
 pub mod env_loader;
 pub mod error;
+pub mod exec_metrics;
 pub mod executor;
 pub mod expand;
 pub mod init_template;

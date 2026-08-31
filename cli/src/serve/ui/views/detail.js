@@ -14,6 +14,16 @@ function fmtDur(fromISO, toISO) {
   if (m < 60) return `${m}m ${s % 60}s`;
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
+
+/** Human duration from a millisecond count (per-row invocation timing, #645). */
+function fmtMs(ms) {
+  if (ms == null) return "—";
+  if (ms < 1000) return `${ms} ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)} s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${Math.round(s % 60)}s`;
+}
 import { escapeHtml } from "../utils.js";
 
 const TERMINAL = ["completed", "failed", "cancelled"];
@@ -197,13 +207,33 @@ export async function renderDetail(container, { id }) {
         ${rec.idempotency_key ? `<div>idem: ${escapeHtml(rec.idempotency_key)}</div>` : ""}
       </div>${errors}`;
     const inv = container.querySelector("#invocations");
+    // Per-row timing (#645): sort slowest-first so the object dominating the
+    // run's makespan is obvious, and draw a proportional bar next to each.
+    const invs = (rec.invocations || [])
+      .slice()
+      .sort((a, b) => (b.duration_ms || 0) - (a.duration_ms || 0));
+    const maxMs = Math.max(1, ...invs.map((i) => i.duration_ms || 0));
     inv.innerHTML =
-      `<table class="tbl"><thead><tr><th>row</th><th>parent key</th><th>rows</th><th>error</th></tr></thead><tbody>` +
-      (rec.invocations || [])
-        .map(
-          (i) =>
-            `<tr><td>${escapeHtml(i.row_id)}</td><td>${escapeHtml(i.parent_record_key || "—")}</td><td>${i.records_written ?? 0}</td><td>${escapeHtml(i.error || "")}</td></tr>`,
-        )
+      `<table class="tbl"><thead><tr><th>row</th><th>parent key</th><th>rows</th><th style="min-width:160px">duration</th><th>error</th></tr></thead><tbody>` +
+      invs
+        .map((i) => {
+          const ms = i.duration_ms || 0;
+          const pct = Math.round((ms / maxMs) * 100);
+          // A recessed neutral track (groove) with a glossy 3D pill fill
+          // proportional to the time — the slowest row fills it completely. The
+          // fill layers a white top-sheen over a light→dark teal gradient, with a
+          // drop shadow + inner highlight for depth. Lives inside the duration
+          // cell so it reads as a duration visual, not the error column. Track
+          // uses a translucent neutral so it works on light+dark.
+          const fill =
+            `<div style="height:100%;width:${pct}%;min-width:3px;border-radius:4px;` +
+            `background:linear-gradient(to bottom, #3bb5a3, #26907f);` +
+            `box-shadow:inset 0 1px 0 rgba(255,255,255,0.25), 0 1px 1px rgba(0,0,0,0.12)"></div>`;
+          const bar =
+            `<div style="height:9px;width:100%;max-width:180px;border-radius:4px;background:rgba(120,120,120,0.14);` +
+            `box-shadow:inset 0 1px 1px rgba(0,0,0,0.12);margin-top:5px">${fill}</div>`;
+          return `<tr><td>${escapeHtml(i.row_id)}</td><td>${escapeHtml(i.parent_record_key || "—")}</td><td>${i.records_written ?? 0}</td><td><div style="white-space:nowrap">${fmtMs(ms)}</div>${bar}</td><td>${escapeHtml(i.error || "")}</td></tr>`;
+        })
         .join("") +
       `</tbody></table>`;
   }

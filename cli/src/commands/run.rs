@@ -355,20 +355,49 @@ pub(crate) async fn execute(
         // Human status → stderr, so stdout belongs exclusively to the sink /
         // the machine-readable json|ndjson contract (#424). Piping a
         // stdout-sink run stays clean.
-        RunOutput::Text => eprintln!(
-            "{}: {} invocation{}, {} ok, {} failed, wrote {} record{}",
-            pipeline_name,
-            summary.invocations.len(),
-            if summary.invocations.len() == 1 {
-                ""
-            } else {
-                "s"
-            },
-            success,
-            failed,
-            total_written,
-            if total_written == 1 { "" } else { "s" }
-        ),
+        RunOutput::Text => {
+            eprintln!(
+                "{}: {} invocation{}, {} ok, {} failed, wrote {} record{}",
+                pipeline_name,
+                summary.invocations.len(),
+                if summary.invocations.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                },
+                success,
+                failed,
+                total_written,
+                if total_written == 1 { "" } else { "s" }
+            );
+            // Per-row timing breakdown (slowest first) — the wall-clock each
+            // matrix row's work took. Only for multi-row runs, where the
+            // scheduling tail matters; a single invocation adds no signal.
+            if summary.invocations.len() > 1 {
+                let mut rows: Vec<(u64, &str, usize)> = summary
+                    .invocations
+                    .iter()
+                    .map(|i| {
+                        (
+                            i.metrics.as_ref().map(|m| m.duration_ms).unwrap_or(0),
+                            i.row_id.as_str(),
+                            i.records_written,
+                        )
+                    })
+                    .collect();
+                rows.sort_by(|a, b| b.0.cmp(&a.0));
+                eprintln!("  per-row timing (slowest first):");
+                for (ms, row, recs) in rows {
+                    eprintln!(
+                        "    {:<30} {:>8.1}s  {:>12} record{}",
+                        row,
+                        ms as f64 / 1000.0,
+                        recs,
+                        if recs == 1 { "" } else { "s" }
+                    );
+                }
+            }
+        }
         RunOutput::Json => {
             let doc = summary_document(&pipeline_name, started_at, finished_at, &summary);
             let rendered = serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_string());
