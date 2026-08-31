@@ -1044,6 +1044,10 @@ select {
   border-color: var(--brand-strong);
   box-shadow: var(--shadow-1);
 }
+/* `display:block` above outranks the UA `[hidden]{display:none}` (same
+   specificity, author wins), so the button stayed visible even when hidden was
+   set. This restores it: at the end of the list the button truly disappears. */
+.load-more[hidden] { display: none; }
 .lineage-edge { fill: none; stroke: var(--border); stroke-width: 2; transition: stroke 0.15s, opacity 0.15s; }
 .lineage-edge:hover { stroke: var(--brand-strong); }
 .lineage-node rect { fill: var(--surface-2, #f4f6f8); stroke: var(--border); stroke-width: 1; transition: stroke 0.15s, fill 0.15s, opacity 0.15s; }
