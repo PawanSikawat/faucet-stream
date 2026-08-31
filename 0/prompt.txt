@@ -1,0 +1,21 @@
+[Image #35]
+
+Rather, we should show 500 out of X rows, where X is the actual count. Also, when I click on the preview and the hide button, the size of the button decreases, and there is an alignment that comes up. Rather, it should be a proper tabular format. Even the top UI that we have on the datasets page should have a proper tabular format. That means it should, of course, have an invisible boundary, but it should have a boundary.
+
+If you look at the screenshot, the size of the source and sync text is different. That's why the size of the file name also differs up until the point we are showing. It should rather be uniform. Go with the table format, the invisible table format. I hope you are able to get that point.
+
+---
+
+[Image #38]
+
+Maybe you can use a cleaner font and text size, like box sizes over here, so that it doesn't look so chunky.
+
+---
+
+Also, the datapits changes that I mentioned to you: can you file a ticket for it, file a GitHub issue for it, and do the changes as well, please?
+
+---
+
+[Image #42]
+
+Maybe the kind could be a dropdown where I can select check and check. This is going on two lines. I want it to be one line. Let's figure out a way.
