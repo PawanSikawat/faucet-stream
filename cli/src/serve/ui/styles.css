@@ -240,9 +240,9 @@ button { font-family: inherit; }
   padding: 28px 24px 64px;
   animation: rise 0.28s ease both;
 }
-/* The lineage graph is the one view that genuinely uses horizontal space — let
-   it grow wider than the standard reading-width page on large screens. */
-.page-wide { max-width: 1600px; }
+/* The lineage graph uses a little more width than the standard reading-width
+   page, but not the full screen — 1280 keeps the two columns comfortable. */
+.page-wide { max-width: 1280px; }
 /* Opacity-only — animating `transform` here (even ending at none) makes `.page`
    a containing block for the whole fill, which breaks `position: sticky` on any
    descendant table header (it would stick to `.page` and scroll away, not to the
