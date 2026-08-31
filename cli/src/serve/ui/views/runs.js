@@ -1,6 +1,6 @@
 import { api, toast } from "../api.js";
 import { navigate } from "../router.js";
-import { escapeHtml, fmtInt } from "../utils.js";
+import { escapeHtml, fmtInt, fmtDuration, fmtCompact } from "../utils.js";
 import { attachDatePicker } from "./date-picker.js";
 import { formatTs } from "../tz.js";
 
@@ -93,12 +93,15 @@ function row(r) {
   const el = document.createElement("tr");
   el.className = "ds-tr";
   el.onclick = () => navigate(`#/runs/${r.run_id}`);
-  const elapsed = r.elapsed_secs != null ? `${r.elapsed_secs.toFixed(1)}s` : "—";
+  const secs = r.elapsed_secs;
+  const elapsed = secs != null ? fmtDuration(secs) : "—";
+  const elapsedExact = secs != null ? `${secs.toFixed(1)}s` : "";
+  const recs = r.records_written ?? 0;
   el.innerHTML = `
     <td><span class="pill pill-${r.status}">${r.status}</span></td>
     <td class="ds-uri"><div class="ds-uri-in">${escapeHtml(r.name || r.run_id)}</div></td>
-    <td class="ds-meta ds-num">${elapsed}</td>
-    <td class="ds-meta ds-num">${fmtInt(r.records_written ?? 0)}</td>
+    <td class="ds-meta ds-num" title="${elapsedExact}">${elapsed}</td>
+    <td class="ds-meta ds-num" title="${fmtInt(recs)}">${fmtCompact(recs)}</td>
     <td class="ds-meta ds-time">${fmtTime(r.submitted_at)}</td>`;
   return el;
 }
