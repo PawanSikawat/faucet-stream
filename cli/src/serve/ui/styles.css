@@ -120,7 +120,13 @@
 *::before,
 *::after { box-sizing: border-box; }
 
-html, body { height: 100%; }
+/* `min-height` (not `height`) on body: `height: 100%` caps <body>'s box at one
+   viewport, and a `position: sticky` element's containing block is its parent —
+   so the sticky topbar could only stick within that one-viewport-tall box and
+   scrolled away once the page grew past a screen. `min-height` lets <body> grow
+   to the full content height, so the topbar sticks the whole way down. */
+html { height: 100%; }
+body { min-height: 100%; }
 
 body {
   margin: 0;
