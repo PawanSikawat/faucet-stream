@@ -12,7 +12,7 @@
 // as `expired`, never as a broken row.
 import { api, toast } from "../api.js";
 import { navigate } from "../router.js";
-import { escapeHtml } from "../utils.js";
+import { escapeHtml, fmtCompact } from "../utils.js";
 import { attachDatePicker } from "./date-picker.js";
 import { fmtTime } from "./runs.js";
 
@@ -53,16 +53,18 @@ export async function renderDatasets(container) {
         </tr></thead>
         <tbody id="ds-list"></tbody>
       </table>
-      <button class="btn-ghost load-more" id="d-more" hidden>Load more</button>
+      <nav id="ds-pager" class="pager" aria-label="Dataset pages"></nav>
       <div id="lo-section"></div>
     </div>`;
 
   const list = container.querySelector("#ds-list");
+  const pager = container.querySelector("#ds-pager");
   container.querySelector("#d-lineage").onclick = () => navigate("#/lineage");
-  let cursor = null;
-  let all = []; // everything fetched so far
+  const PAGE_SIZE = 50;
+  let page = 1; // 1-based current page over the *filtered* set
+  let all = []; // the whole catalog, fetched once; filtered + paginated client-side
   let role = ""; // "", "source", or "sink"
-  const kinds = new Set(); // selected kinds (empty = all). URL search stays server-side.
+  const kinds = new Set(); // selected kinds (empty = all)
 
   // Datasets matching every filter EXCEPT kind — the base the kind facet and
   // the final table are both computed from, so the kind options only ever list
@@ -79,17 +81,72 @@ export async function renderDatasets(container) {
     });
   }
 
+  // The fully-filtered set (role/date + kind + URI search), sorted as the server
+  // returned it. Pagination slices this — so the page count always reflects the
+  // active filters.
+  function filtered() {
+    const q = container.querySelector("#f-q").value.trim().toLowerCase();
+    return baseFiltered()
+      .filter((d) => !kinds.size || kinds.has(d.kind))
+      .filter((d) => !q || (d.uri || "").toLowerCase().includes(q));
+  }
+
   function render() {
     populateKinds(); // keep the kind facet in sync with role/date
-    const rows = baseFiltered().filter((d) => !kinds.size || kinds.has(d.kind));
+    const rows = filtered();
+    const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+    if (page > pageCount) page = pageCount;
+    if (page < 1) page = 1;
     list.innerHTML = "";
     if (!rows.length) {
       list.innerHTML = `<tr><td colspan="6" class="empty">${
         all.length ? "No datasets match the filters." : "No datasets catalogued yet — run a pipeline first."
       }</td></tr>`;
+      renderPager(0, 0);
       return;
     }
-    for (const d of rows) list.appendChild(row(d));
+    const start = (page - 1) * PAGE_SIZE;
+    for (const d of rows.slice(start, start + PAGE_SIZE)) list.appendChild(row(d));
+    renderPager(pageCount, rows.length);
+  }
+
+  // « ‹ 1 … 4 [5] 6 … 20 › » — numbered pages with ellipses; a single page hides
+  // the pager entirely. A count summary ("51–58 of 58") sits alongside.
+  function renderPager(pageCount, total) {
+    pager.innerHTML = "";
+    if (pageCount <= 1) return;
+    const go = (p) => { page = Math.min(Math.max(1, p), pageCount); render(); };
+    const btn = (label, target, opts = {}) => {
+      const b = document.createElement("button");
+      b.className = "pager-btn" + (opts.current ? " is-current" : "");
+      b.textContent = label;
+      if (opts.disabled) b.disabled = true;
+      else b.onclick = () => go(target);
+      return b;
+    };
+    const gap = () => {
+      const s = document.createElement("span");
+      s.className = "pager-gap";
+      s.textContent = "…";
+      return s;
+    };
+    // window of page numbers around the current page
+    const nums = new Set([1, pageCount, page, page - 1, page + 1]);
+    const shown = [...nums].filter((n) => n >= 1 && n <= pageCount).sort((a, b) => a - b);
+    pager.appendChild(btn("‹", page - 1, { disabled: page === 1 }));
+    let prev = 0;
+    for (const n of shown) {
+      if (n - prev > 1) pager.appendChild(gap());
+      pager.appendChild(btn(String(n), n, { current: n === page }));
+      prev = n;
+    }
+    pager.appendChild(btn("›", page + 1, { disabled: page === pageCount }));
+    const info = document.createElement("span");
+    info.className = "pager-info";
+    const from = (page - 1) * PAGE_SIZE + 1;
+    const to = Math.min(page * PAGE_SIZE, total);
+    info.textContent = `${from}–${to} of ${total}`;
+    pager.appendChild(info);
   }
 
   // Populate the kind multi-select from the kinds reachable under the *other*
@@ -112,35 +169,34 @@ export async function renderDatasets(container) {
         if (cb.checked) kinds.add(cb.value);
         else kinds.delete(cb.value);
         container.querySelector("#f-kind-sum").textContent = kinds.size ? `kind (${kinds.size}) ▾` : "kind ▾";
+        page = 1;
         render();
       };
     });
   }
 
-  async function load(reset) {
-    if (reset) {
-      cursor = null;
-      all = [];
-    } else if (!cursor) {
-      return; // no next page — never re-fetch page 1 into `all` (that duplicated it)
-    }
-    const p = new URLSearchParams();
-    const q = container.querySelector("#f-q").value.trim();
-    if (q) p.set("q", q);
-    p.set("limit", "50");
-    if (cursor) p.set("cursor", cursor);
+  // The catalog is a bounded set (the datasets a pipeline touches), so we fetch
+  // it all once by walking the server's cursor, then filter + paginate in the
+  // client — which is what makes true numbered pages (jump to any page, a page
+  // count that tracks the filters) possible. Deduped by id in case a concurrent
+  // write shifts the server sort between cursor pages.
+  const MAX_FETCH_PAGES = 100; // safety backstop (~5000 datasets)
+  async function loadAll() {
     try {
-      const data = await api(`/v1/catalog/datasets?${p}`);
-      // Dedupe by id: concurrent writes can shift the server-side sort between
-      // pages, so a page may re-list a dataset already held — never add it twice.
-      const seen = new Set(all.map((d) => d.id));
-      const fresh = data.datasets.filter((d) => !seen.has(d.id));
-      all.push(...fresh);
-      cursor = data.next_cursor || null;
-      // If a "next" page brought nothing new, stop offering more — otherwise a
-      // cursor that never terminates (set shifting underfoot) loops forever.
-      if (!reset && fresh.length === 0) cursor = null;
-      container.querySelector("#d-more").hidden = !cursor;
+      const acc = [];
+      const seen = new Set();
+      let cursor = null;
+      for (let i = 0; i < MAX_FETCH_PAGES; i++) {
+        const p = new URLSearchParams();
+        p.set("limit", "200");
+        if (cursor) p.set("cursor", cursor);
+        const data = await api(`/v1/catalog/datasets?${p}`);
+        for (const d of data.datasets) if (!seen.has(d.id)) { seen.add(d.id); acc.push(d); }
+        cursor = data.next_cursor || null;
+        if (!cursor) break;
+      }
+      all = acc;
+      page = 1;
       populateKinds();
       render();
     } catch (e) {
@@ -149,20 +205,19 @@ export async function renderDatasets(container) {
     }
   }
 
-  container.querySelector("#f-refresh").onclick = () => load(true);
-  container.querySelector("#d-more").onclick = () => load(false);
-  container.querySelector("#f-q").onkeydown = (e) => {
-    if (e.key === "Enter") load(true);
-  };
+  // Any filter change re-filters the already-fetched set and jumps back to page 1.
+  const refilter = () => { page = 1; render(); };
+  container.querySelector("#f-refresh").onclick = () => loadAll();
+  container.querySelector("#f-q").oninput = refilter;
   attachDatePicker(container.querySelector("#f-from"));
   attachDatePicker(container.querySelector("#f-to"));
-  container.querySelector("#f-from").addEventListener("change", render);
-  container.querySelector("#f-to").addEventListener("change", render);
+  container.querySelector("#f-from").addEventListener("change", refilter);
+  container.querySelector("#f-to").addEventListener("change", refilter);
   container.querySelectorAll("#f-roles .chip").forEach((c) => {
     c.onclick = () => {
       role = c.dataset.role;
       container.querySelectorAll("#f-roles .chip").forEach((x) => x.classList.toggle("chip-on", x === c));
-      render();
+      refilter();
     };
   });
   // Collapse the kind dropdown when clicking anywhere outside it.
@@ -170,7 +225,7 @@ export async function renderDatasets(container) {
   document.addEventListener("click", (e) => {
     if (kindDd.open && !kindDd.contains(e.target)) kindDd.open = false;
   });
-  await load(true);
+  await loadAll();
   await renderLocalOutputs(container.querySelector("#lo-section"), {});
 }
 
@@ -640,7 +695,7 @@ function row(d) {
     <td class="ds-uri"><div class="ds-uri-in mono" title="${escapeHtml(d.uri)}">${escapeHtml(d.uri)}</div></td>
     <td class="ds-meta">${escapeHtml(d.roles.join("+"))}</td>
     <td class="ds-meta ds-num">${fmtInt(d.runs)}</td>
-    <td class="ds-meta ds-num">${fmtInt(d.last_records)}</td>
+    <td class="ds-meta ds-num" title="${fmtInt(d.last_records)}">${fmtCompact(d.last_records)}</td>
     <td class="ds-meta ds-time" title="last success">${fmtTime(d.last_success)}</td>`;
   return el;
 }

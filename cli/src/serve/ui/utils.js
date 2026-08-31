@@ -41,8 +41,11 @@ export function fmtCompact(v) {
   for (const [base, suf] of units) {
     if (abs >= base) {
       const val = n / base;
-      // up to 2 sig-fig decimals, trailing zeros trimmed (4.80 → 4.8, 4.00 → 4)
-      const str = val.toFixed(val >= 100 ? 0 : val >= 10 ? 1 : 2).replace(/\.?0+$/, "");
+      // Fewer decimals as the value grows; trim trailing zeros ONLY after a
+      // decimal point (4.80→4.8, 4.00→4) — never from an integer (200 must stay
+      // 200, not become 2).
+      let str = val.toFixed(val >= 100 ? 0 : val >= 10 ? 1 : 2);
+      if (str.includes(".")) str = str.replace(/0+$/, "").replace(/\.$/, "");
       return `${str}${suf}`;
     }
   }

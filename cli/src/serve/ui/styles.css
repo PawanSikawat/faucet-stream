@@ -1048,6 +1048,49 @@ select {
    specificity, author wins), so the button stayed visible even when hidden was
    set. This restores it: at the end of the list the button truly disappears. */
 .load-more[hidden] { display: none; }
+
+/* Numbered pager (datasets): « ‹ 1 … 4 [5] 6 … 20 › » + a count summary. */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 16px 0 4px;
+}
+.pager:empty { display: none; }
+.pager-btn {
+  min-width: 34px;
+  padding: 6px 10px;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.pager-btn:hover:not(:disabled):not(.is-current) {
+  background: var(--surface-2);
+  color: var(--ink);
+  border-color: var(--brand-strong);
+}
+.pager-btn.is-current {
+  background: var(--brand-strong);
+  border-color: var(--brand-strong);
+  color: #fff;
+  font-weight: 600;
+  cursor: default;
+}
+.pager-btn:disabled { opacity: 0.4; cursor: default; }
+.pager-gap { color: var(--ink-faint); padding: 0 2px; }
+.pager-info {
+  margin-left: 10px;
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
 .lineage-edge { fill: none; stroke: var(--border); stroke-width: 2; transition: stroke 0.15s, opacity 0.15s; }
 .lineage-edge:hover { stroke: var(--brand-strong); }
 .lineage-node rect { fill: var(--surface-2, #f4f6f8); stroke: var(--border); stroke-width: 1; transition: stroke 0.15s, fill 0.15s, opacity 0.15s; }
