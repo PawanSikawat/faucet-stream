@@ -56,6 +56,11 @@ const ROUTES_CATALOG: &[(&str, &str)] = &[
     ("GET", "/v1/local-outputs"),
     ("DELETE", "/v1/local-outputs/{id}"),
     ("POST", "/v1/local-outputs/cleanup"),
+    // Dataset preview of a tracked local output (#586). Always routed; the
+    // `--preview-local-outputs` opt-in is enforced inside the handler (a
+    // disabled server answers 403, never a bare 404), which is also what keeps
+    // this probe meaningful.
+    ("GET", "/v1/local-outputs/{id}/preview"),
 ];
 
 /// Routes that are only registered when the `templates` feature is compiled in.
@@ -180,6 +185,9 @@ async fn every_documented_route_is_wired_on_the_live_server() {
         log_max_lines_per_run: 100_000,
         local_output_retention_days: 7,
         local_output_in_flight_grace_secs: 60,
+        preview_local_outputs: false,
+        preview_default_rows: 500,
+        preview_max_rows: 5_000,
         lease_ttl_secs: 30,
         probe_timeout_secs: 5,
         env_file: None,

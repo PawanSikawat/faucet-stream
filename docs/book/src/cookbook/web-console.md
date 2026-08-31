@@ -187,6 +187,68 @@ files" result never looks like a broken button. The same operations run
 automatically on a timer — see
 [Local output retention](../reference/cli.md#local-output-retention).
 
+### Previewing what a run actually wrote
+
+"12 records written" tells you the run finished. It does not tell you whether the
+transform did what you meant. On a server started with
+`--preview-local-outputs`, each tracked jsonl / csv / parquet output in the
+**Local outputs** panel grows a **Preview** button: it expands inline and renders
+the file's first rows as a table, with a row-count input bounded by the server's
+own cap.
+
+500 rows load by default; the row box takes any number up to the server's
+ceiling, and **All rows** asks for the whole dataset:
+
+```bash
+# Local iteration loop: previews on, 500 rows by default, ceiling at 5000.
+FAUCET_SERVE_AUTH_TOKEN=s3cret faucet serve --preview-local-outputs
+
+# …and with no ceiling, so "All rows" really loads the whole file.
+FAUCET_SERVE_AUTH_TOKEN=s3cret faucet serve \
+  --preview-local-outputs --preview-max-rows 0
+```
+
+What the table shows:
+
+- **Columns** are the union of the records' fields, so a field only some records
+  carry still gets a column — a preview never hides something that was written.
+- A **missing** field renders `—` and a `null` one renders `null`; they are
+  different facts about the record.
+- The status line always says which it is: "*whole dataset*", or "*stopped at the
+  row limit — the dataset has more*". 500 rows of a million-row file can never be
+  mistaken for the file, and a complete read says so rather than leaving you to
+  infer it from the absence of a warning.
+- A record that is not a JSON object (a bare scalar or array per line — legal
+  NDJSON) is rendered across the row rather than as a line of blanks.
+
+Under the hood it is a **source-backed capped read**: the server reads the output
+back through the matching *source* connector and stops once it has enough rows,
+so previewing a huge file touches only its first pages. There is no paging —
+these files are sequential streams with no row index, so "show me more" is just a
+larger limit, which is why the panel has a row box and an **All rows** button
+instead of *Next page*.
+
+**On a server with a ceiling, "All rows" gives you the ceiling** (the status line
+says it stopped at the row limit). An uncapped server gives you everything — and
+still stops at a 64 MiB response budget or a 30-second deadline if the dataset is
+larger than that, saying which. A partial answer always names the bound that
+produced it.
+
+Only a `present` output gets a Preview button. An `expired` one has no file left,
+and an **`external`** one — a file faucet wrote to but did not create — is never
+previewed: its contents are not faucet's to serve, which is the read-side twin of
+the retention GC's refusal to delete it. Each served preview is recorded in the
+audit log as `local_output.preview`.
+
+**It is off by default and intended for local testing** — it returns file
+*contents* over HTTP, and reading needs only `LocalOutputRead` (`viewer` and up),
+so enabling it lets every viewer see the data those pipelines wrote. Without the
+flag no Preview button is rendered at all (the list response says the capability
+is off), and a direct API call is refused with a `403` naming the flag. A preview
+of an output that retention already cleaned shows the "cleaned up — the run
+record is kept" message in place of the table, never an error toast. Full detail:
+[Dataset preview](../reference/cli.md#dataset-preview-of-local-outputs).
+
 ## Disabling the console at runtime
 
 If you built with `serve-ui` but want to serve only the API (no static assets),
@@ -211,8 +273,9 @@ The `serve-ui` feature ships three new bearer-gated endpoints that the console
 | `POST` | `/v1/doctor` | Validate and probe a submitted config without running it. Returns 200 (all probes pass) or 422 (any probe fails) with a probe report. Request body: `{ "config": "<yaml-or-json>", "config_format": "yaml" }`. |
 
 With the `catalog` feature the console also drives the local-output endpoints —
-`GET /v1/local-outputs`, `DELETE /v1/local-outputs/{id}`, and
-`POST /v1/local-outputs/cleanup` — documented in the
+`GET /v1/local-outputs`, `DELETE /v1/local-outputs/{id}`,
+`POST /v1/local-outputs/cleanup`, and (with `--preview-local-outputs`)
+`GET /v1/local-outputs/{id}/preview` — documented in the
 [HTTP API reference](../reference/http-api.md#local-sink-outputs).
 
 These endpoints require the `serve` feature and are available at runtime

@@ -272,6 +272,8 @@ Auth is mandatory: without `--auth-token`/`FAUCET_SERVE_AUTH_TOKEN` **and** with
 | `--cluster-poll-secs <n>` | Claim-loop poll interval in seconds (default `2`). Also the maximum cross-instance cancel propagation lag. |
 | `--cluster-max-attempts <n>` | Maximum attempts per run (including crash-failovers) before it is poisoned as `failed` (default `3`). |
 | `--triggers <path>` | Path to a triggers file (YAML) defining event-driven watchers. Requires the `triggers` Cargo feature. See [Event-driven triggers](#event-driven-triggers-triggers). |
+| `--local-output-retention-days <n>` / `--local-output-in-flight-grace-secs <n>` | Retention GC for the local files a run's sinks wrote (jsonl/csv/parquet): the window (default `7`; `0` disables the sweep) and the mid-write guard (default `60`). Only files faucet recorded as its own sink outputs are ever deleted. Requires the `catalog` feature. |
+| `--preview-local-outputs` | Serve **dataset previews** of those local files — the console reads a tracked output's first N rows back (`FAUCET_SERVE_PREVIEW_LOCAL_OUTPUTS`). **Off by default**: it returns file contents over HTTP, so it is a local-testing convenience. Caps: `--preview-default-rows` (soft, default `500`) and `--preview-max-rows` (hard, default `5000`; a larger `row_count_to_load` — including `all` — is clamped to it). `--preview-max-rows 0` lifts the ceiling so `row_count_to_load=all` reads a whole dataset; the read is still bounded by a response-size budget and a deadline, and a partial answer names the bound that stopped it. |
 | `--body-limit-bytes`, `--shutdown-grace-secs`, `--retain-terminal-runs-secs`, `--idempotency-retention-secs`, `--probe-timeout-secs` | Tuning knobs. |
 
 #### Event-driven triggers (`--triggers`)
@@ -407,6 +409,17 @@ feature also adds three bearer-gated endpoints: `GET /v1/schemas` (connector
 catalog), `GET /v1/schemas/{kind}/{name}` (one JSON Schema), and `POST /v1/doctor`
 (validate + probe a config without running it). These endpoints are available
 regardless of `--no-ui`.
+
+With the `catalog` feature the console's **Datasets** page also lists the local
+files the server's sinks wrote, with per-output cleanup controls — and, on a server
+started with `--preview-local-outputs`, a **Preview** that renders each tracked
+jsonl / csv / parquet output's rows as a table — 500 by default, any number up to
+the server's ceiling, or **All rows**. The preview is a *source-backed capped
+read* (the file is read back through the matching source connector and the read
+stops at the bound rather than truncating afterwards), there is no paging
+(sequential files have no row index, so "more" is just a larger limit), it never
+accepts a path from the request — only the id of an output the server already
+tracks — and it is off by default because it returns file contents over HTTP.
 
 See the [web console guide](https://faucet-hq.github.io/faucet-stream/cookbook/web-console.html)
 for the full walkthrough.

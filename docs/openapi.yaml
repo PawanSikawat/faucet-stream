@@ -537,7 +537,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [outputs, retention_days, gc_enabled, can_manage]
+                required: [outputs, retention_days, gc_enabled, can_manage, preview_enabled, preview_default_rows, preview_max_rows]
                 properties:
                   outputs:
                     type: array
@@ -554,6 +554,28 @@ paths:
                       Whether the calling principal holds `LocalOutputManage`, so a
                       client can hide destructive controls instead of offering
                       buttons that can only 403.
+                  preview_enabled:
+                    type: boolean
+                    description: >
+                      Whether this server serves dataset previews of these files
+                      (`--preview-local-outputs`, #586). Same reasoning as
+                      `can_manage`: a client renders a Preview control only where
+                      it can work.
+                  preview_default_rows:
+                    type: [integer, "null"]
+                    description: >
+                      Rows a preview loads when `row_count_to_load` is omitted —
+                      the soft cap (`FAUCET_SERVE_PREVIEW_DEFAULT_ROWS`). `null`
+                      = the whole dataset by default.
+                  preview_max_rows:
+                    type: [integer, "null"]
+                    description: >
+                      Hard ceiling on a preview's rows
+                      (`FAUCET_SERVE_PREVIEW_MAX_ROWS`). A client should bound its
+                      own input by this rather than letting a user type a number
+                      that will be silently clamped. `null` = no ceiling, which is
+                      what lets a client offer "load every row" as something that
+                      will actually load every row.
         "401": { $ref: "#/components/responses/Error" }
         "403": { description: Principal's role lacks the required permission }
   /v1/local-outputs/{id}:
@@ -581,6 +603,161 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { description: Principal's role lacks the required permission }
         "404": { description: No such tracked output }
+  /v1/local-outputs/{id}/preview:
+    get:
+      summary: Preview the rows a local sink output holds
+      description: >
+        Reads back the first N rows of a tracked local output (jsonl / csv /
+        parquet) and returns them with their column names — "here are the
+        records", next to the "N records written" the run report already gives.
+
+
+        Implemented as a **source-backed capped read**: the server builds the
+        matching *source* connector (csv → source-csv, parquet → source-parquet,
+        jsonl → its JSON Lines reader) and stops as soon as it has enough rows,
+        so a capped preview of a huge file reads only its first pages and never
+        loads it fully.
+
+
+        **Local testing only, and opt-in.** The endpoint is inert unless the
+        server was started with `--preview-local-outputs`
+        (`FAUCET_SERVE_PREVIEW_LOCAL_OUTPUTS`); without it every request is a
+        `403` naming the flag. The request names a ledger `id`, never a path:
+        only files the local-output ledger recorded as faucet's own sink outputs
+        can be read, so there is no request field that could address another
+        file. Requires the `LocalOutputRead` permission (viewer) and the
+        `catalog` Cargo feature.
+
+
+        Row bounds are the server's, and there is **no offset or cursor** — these
+        sources are sequential streams with no row index, so "show me more" is
+        spelled "raise the limit". `row_count_to_load` overrides the soft cap
+        (`FAUCET_SERVE_PREVIEW_DEFAULT_ROWS`, default 500) and is clamped to the
+        hard cap (`FAUCET_SERVE_PREVIEW_MAX_ROWS`, default 5000) — never honoured
+        above it. Both are surfaced on `GET /v1/local-outputs` so a client can
+        label its own control.
+
+
+        `row_count_to_load=all` (or `0`) asks for the **whole dataset**. It is
+        served in full only when the operator lifted the ceiling
+        (`--preview-max-rows 0`, reported as `preview_max_rows: null`);
+        otherwise it resolves to the ceiling, which is the point of having one.
+        An unlimited read is unlimited in *rows* only — it is still paged, and
+        still bounded by a response-size budget (64 MiB) and a 30s deadline, both
+        of which are checked as pages arrive. A dataset that exceeds either comes
+        back as a **partial answer whose `capped_by` says which bound stopped
+        it**, never as an error and never as an unbounded buffer.
+
+
+        A served preview writes a `local_output.preview` audit entry (principal,
+        output, row count) — the one read on this control plane that returns
+        pipeline data rather than metadata about a pipeline.
+      operationId: previewLocalOutput
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: "Output id from the list endpoint." }
+        - name: row_count_to_load
+          in: query
+          required: false
+          schema: { type: string, pattern: "^([0-9]+|[Aa][Ll][Ll])$" }
+          description: >
+            Rows to load: a count, or `all` (or `0`) for the whole dataset.
+            Omitted → the server's soft cap. Above the hard cap → clamped to it.
+            The bound actually used comes back as `row_limit`. A value that is
+            neither a number nor `all` is a `400` naming the parameter, never a
+            silent fall back to the default.
+      responses:
+        "200":
+          description: The capped page of rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [output_id, path, kind, dataset_id, pipeline, run_id, rows, columns, row_count, row_limit, max_rows, truncated, elapsed_ms]
+                properties:
+                  output_id: { type: string, description: "The ledger id that was previewed." }
+                  path: { type: string, description: "The file that was read." }
+                  kind: { type: string, enum: [jsonl, csv, parquet], description: "Connector kind of the writing sink." }
+                  dataset_id: { type: string }
+                  pipeline: { type: string }
+                  run_id: { type: string, description: "The run that most recently wrote this file." }
+                  rows:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+                    description: >
+                      The records, at most `row_limit` of them. Records that are
+                      not JSON objects (a scalar or array per line is legal
+                      NDJSON) come back as-is.
+                  columns:
+                    type: array
+                    items: { type: string }
+                    description: >
+                      Column names across `rows`, in source order — the table
+                      header. Empty when the records are not JSON objects. A
+                      field only some records carry still appears, so a preview
+                      never hides a written column.
+                  row_count:
+                    type: integer
+                    description: >
+                      Rows returned. Explicit so a client never has to decide
+                      whether `rows.length` is the answer.
+                  row_limit:
+                    type: [integer, "null"]
+                    description: >
+                      The bound this request resolved to, after clamping. `null`
+                      = unlimited (the caller asked for everything and this
+                      server has no ceiling).
+                  max_rows:
+                    type: [integer, "null"]
+                    description: The server's hard cap; `null` = no ceiling.
+                  truncated:
+                    type: boolean
+                    description: >
+                      More of the dataset exists beyond what was returned.
+                      Observed (one row past the cap is read), not inferred from
+                      `rows.length`.
+                  capped_by:
+                    type: string
+                    enum: [rows, bytes, time]
+                    description: >
+                      Which bound stopped the read: the row limit, the
+                      response-size budget, or the deadline. **Absent when the
+                      response is the whole dataset** — a whole-dataset request
+                      that came back partial must say why, or a clipped answer is
+                      indistinguishable from a complete one.
+                  elapsed_ms: { type: integer }
+        "400":
+          description: >
+            The output's kind has no reader (e.g. a sink that is not one of
+            jsonl / csv / parquet), this build of faucet lacks the source
+            connector for it, or `row_count_to_load` was neither a number nor
+            `all`.
+        "401": { $ref: "#/components/responses/Error" }
+        "403":
+          description: >
+            Previews are disabled on this server (`--preview-local-outputs` was
+            not passed); the principal's role lacks `LocalOutputRead`; or the
+            output is `external` — a file faucet wrote to but did not create,
+            whose contents are not faucet's to serve, for the same reason the
+            retention GC refuses to delete it.
+        "404": { description: No such tracked output }
+        "409":
+          description: >
+            The file is gone — collected by local-output retention (#587) or
+            removed out of band. The ledger row and the run record are kept; the
+            message says which. Reported as a conflict rather than a 500 from a
+            failed open.
+        "422":
+          description: >
+            The file is present but could not be parsed — e.g. a partially
+            written last line from a run that died mid-flush. The message carries
+            the connector's own diagnostic (line number, byte offset).
+        "503":
+          description: >
+            The read was abandoned after the server's 60s hard timeout — a single
+            page that never returned, rather than a verdict on the file's
+            contents. (The ordinary 30s deadline yields a partial answer with
+            `capped_by: time` instead of an error.)
   /v1/local-outputs/cleanup:
     post:
       summary: Bulk-clean local sink outputs

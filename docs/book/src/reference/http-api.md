@@ -253,6 +253,10 @@ the `catalog` feature.
   the **caller** may delete (`can_manage`), so a client can hide destructive
   controls rather than offer buttons that only 403.
 - `DELETE /v1/local-outputs/{id}` — delete one file now.
+- `GET /v1/local-outputs/{id}/preview?row_count_to_load=N` — the **first N rows
+  of the file**, with their column names. Opt-in: inert (`403`, naming the flag)
+  unless the server was started with `--preview-local-outputs`. See
+  [Preview](#preview) below.
 - `POST /v1/local-outputs/cleanup` — bulk clean. Exactly one scope:
   `{"older_than_days": N}`, `{"expired": true}` (each output's own window),
   `{"dataset_id": "…"}`, `{"run_id": "…"}` ("clean up after that run" — its
@@ -292,6 +296,83 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
 curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"older_than_days": 3}' \
   http://127.0.0.1:8080/v1/local-outputs/cleanup
+```
+
+#### Preview
+
+`GET /v1/local-outputs/{id}/preview` reads a tracked output back and returns its
+first rows — the other half of "N records written". It is a **source-backed capped
+read**: the server builds the matching *source* connector for the output's kind
+(`csv` → `source-csv`, `parquet` → `source-parquet`, `jsonl` → its JSON Lines
+reader), pulls one page, and stops. A 100-row preview of a 4 GiB file reads its
+first few kilobytes; nothing past the cap is decoded.
+
+**It is off by default.** Without `--preview-local-outputs`
+(`FAUCET_SERVE_PREVIEW_LOCAL_OUTPUTS`) every request is a `403` naming the flag,
+for every role — it is a server capability, not a permission. Reading needs
+`LocalOutputRead` (`viewer` and up), the same scope that lists these files, and a
+served preview writes a `local_output.preview` **audit** entry naming the
+principal, the output, and the row count: it is the one read on this control plane
+that returns pipeline *data* rather than metadata about a pipeline, and "who read
+this file" cannot be reconstructed after the fact.
+
+An output in state `external` is **never** previewed (`403`). faucet wrote to that
+file but did not create it, so its contents are not faucet's to hand out — the
+read-side twin of the retention GC's refusal to delete it.
+
+The request names a **ledger id**, never a path: the path comes from the row the
+sink wrote, so a preview cannot be aimed at another file.
+
+There is **no offset and no cursor** — these sources are sequential streams with
+no row index, so `OFFSET N` could only mean "read N records and discard them",
+which costs exactly what a larger limit costs. "Show me more" is spelled "raise
+the limit", and the engine makes that cheap by stopping rather than truncating.
+
+| Parameter | Behaviour |
+|---|---|
+| `row_count_to_load` omitted | The soft cap — `--preview-default-rows` / `FAUCET_SERVE_PREVIEW_DEFAULT_ROWS` (default 500). |
+| `row_count_to_load=N` | `N`, clamped to the hard cap — `--preview-max-rows` / `FAUCET_SERVE_PREVIEW_MAX_ROWS` (default 5000). Never honoured above it. |
+| `row_count_to_load=all` (or `0`) | The whole dataset — served in full only where the operator lifted the ceiling with `--preview-max-rows 0` (`preview_max_rows: null`); otherwise it resolves to the ceiling. |
+| anything else | `400` naming the parameter — never a silent fall back to the default, which would let a capped read pass for a whole file. |
+
+The response carries the rows, the `columns` across them (the table header; empty
+when the records are not JSON objects), `row_count` (rows returned), the
+`row_limit` the request resolved to (`null` = unlimited), the server's `max_rows`
+(`null` = no ceiling), and `truncated` — which is *observed* (one row past the cap
+is read) rather than inferred, so "exactly 500 rows" is distinguishable from
+"capped at 500".
+
+When `truncated` is true, **`capped_by` says which bound stopped the read**:
+`rows` (the row limit), `bytes` (a 64 MiB response-size budget), or `time` (a 30s
+deadline). The last two are what make an uncapped read safe to offer: a dataset
+larger than the server can hold comes back as as much of it as fits, plus the
+reason — never an out-of-memory, and never a clipped table that looks complete.
+`capped_by` is absent when the response *is* the whole dataset.
+
+Failure modes are all typed, and none of them is a 500:
+
+| Status | Meaning |
+|---|---|
+| `403` | Previews disabled on this server; the role lacks `LocalOutputRead`; or the output is `external` — a file faucet wrote to but did not create, whose contents are not faucet's to serve (the same reason the retention GC will not delete it). |
+| `404` | No such tracked output. |
+| `409` | The file is gone — collected by retention, or removed out of band. The ledger row and the run record are kept; the message says so. |
+| `422` | The file is there but unparseable (e.g. a half-written last line from a run that died mid-flush). The message carries the connector's own line/offset diagnostic. |
+| `400` | The output's kind has no reader, or this build lacks the source connector for it. |
+| `503` | The read was abandoned after the 60-second hard timeout — a single page that never returned, not a verdict on the file's contents. (The 30-second deadline is different: it yields a partial `200` with `capped_by: "time"`.) |
+
+```bash
+# The first 20 rows of a tracked output.
+ID=$(curl -sH "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8080/v1/local-outputs | jq -r '.outputs[0].id')
+curl -sH "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:8080/v1/local-outputs/$ID/preview?row_count_to_load=20" \
+  | jq '{columns, row_count, truncated, capped_by}'
+
+# Every row (needs a server started with --preview-max-rows 0; otherwise this
+# comes back clamped to the ceiling, with capped_by: "rows").
+curl -sH "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:8080/v1/local-outputs/$ID/preview?row_count_to_load=all" \
+  | jq '{row_count, row_limit, truncated, capped_by}'
 ```
 
 ### `/v1/templates*` (pipeline template registry)
