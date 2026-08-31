@@ -1100,7 +1100,7 @@ async fn test_flatten_transform_applied_to_records() {
 #[cfg(feature = "transform-keys-case")]
 #[tokio::test]
 async fn test_keys_case_snake_transform() {
-    use faucet_core::KeyCaseMode;
+    use faucet_core::{KeyCaseMode, KeyCollision};
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
@@ -1121,6 +1121,7 @@ async fn test_keys_case_snake_transform() {
         inner,
         vec![TransformStage::Map(RecordTransform::KeysCase {
             mode: KeyCaseMode::Snake,
+            on_collision: KeyCollision::Error,
         })],
         Labels::for_named("rest"),
     )
@@ -1169,7 +1170,7 @@ async fn test_rename_keys_transform() {
 #[cfg(all(feature = "transform-keys-case", feature = "transform-flatten"))]
 #[tokio::test]
 async fn test_chained_transforms_keys_case_then_flatten() {
-    use faucet_core::KeyCaseMode;
+    use faucet_core::{KeyCaseMode, KeyCollision};
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
@@ -1191,6 +1192,7 @@ async fn test_chained_transforms_keys_case_then_flatten() {
         vec![
             TransformStage::Map(RecordTransform::KeysCase {
                 mode: KeyCaseMode::Snake,
+            on_collision: KeyCollision::Error,
             }),
             TransformStage::Map(RecordTransform::Flatten {
                 separator: "_".into(),

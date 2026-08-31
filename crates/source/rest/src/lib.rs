@@ -14,6 +14,7 @@ pub mod format;
 pub mod odata;
 pub mod pagination;
 pub mod retry;
+pub mod salesforce;
 pub mod serde_helpers;
 pub mod stream;
 
@@ -28,7 +29,8 @@ pub use auth::oauth2::DEFAULT_EXPIRY_RATIO;
 pub use auth::token_endpoint::DEFAULT_TOKEN_ENDPOINT_EXPIRY_RATIO;
 pub use auth::{Auth, ResponseValidator, fetch_oauth2_token, fetch_token_from_endpoint};
 pub use config::{
-    ODataConfig, ODataVersion, RecordsMultiSpec, ResponseFormat, RestStreamConfig, TlsClientConfig,
+    ODataConfig, ODataVersion, RecordsMultiSpec, ResponseFormat, RestStreamConfig,
+    SalesforceDiscovery, TlsClientConfig,
 };
 pub use decode::{DecodeStep, ParseFormat, ParseSpec, SimpleStep, UnzipSpec};
 pub use pagination::PaginationStyle;

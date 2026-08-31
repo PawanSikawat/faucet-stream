@@ -3867,6 +3867,56 @@
               }
             }
           }
+        },
+        {
+          "description": "Fetch a token from an arbitrary HTTP endpoint.\n\nThe endpoint is called, the token is extracted from the JSON response\nusing `token_path` (a JSONPath expression), and then used as a Bearer\ntoken (or in a custom header if `header_name` is set).\n\nTokens are cached and refreshed automatically when `expiry_path`\nis provided and the server returns an expiry value.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "token_endpoint"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "description": "URL of the token endpoint.",
+                  "type": "string"
+                },
+                "method": {
+                  "description": "HTTP method for the token request (e.g. GET, POST).",
+                  "type": "string"
+                },
+                "body": {
+                  "description": "Optional JSON body for the token request."
+                },
+                "token_path": {
+                  "description": "JSONPath expression to extract the token string from the response.",
+                  "type": "string"
+                },
+                "expiry_path": {
+                  "description": "Optional JSONPath expression to extract the expiry (in seconds)\nfrom the response. When absent, the token is cached indefinitely.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "expiry_ratio": {
+                  "description": "Fraction of the expiry after which the token is proactively refreshed.\nMust be in `(0.0, 1.0]`. Defaults to `0.9`.",
+                  "type": [
+                    "number",
+                    "string"
+                  ],
+                  "format": "double"
+                },
+                "encoding": {
+                  "description": "Body encoding: `json` (default) or `form`\n(`application/x-www-form-urlencoded`, required by RFC-6749 OAuth\ntoken endpoints like Salesforce/Google).",
+                  "$ref": "#/$defs/source_rest__TokenBodyEncoding",
+                  "default": "json"
+                }
+              }
+            }
+          }
         }
       ]
     },
@@ -14591,6 +14641,359 @@
             "type"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "rest",
+          "properties": {
+            "type": {
+              "const": "rest"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "base_url": {
+                      "type": "string"
+                    },
+                    "path": {
+                      "description": "URL path, relative to `base_url`. May contain `{key}` placeholders that\nare substituted per-partition (e.g. `\"/orgs/{org_id}/users\"`).",
+                      "type": "string"
+                    },
+                    "method": {
+                      "type": "string"
+                    },
+                    "auth": {
+                      "description": "Authentication: either inline (`{ type, config }`) or a `{ ref: <name> }`\npointer to a shared provider in the CLI's top-level `auth:` catalog.",
+                      "$ref": "#/$defs/source_rest__AuthSpec"
+                    },
+                    "headers": {
+                      "description": "Static request headers sent on **every** request (data pages, async-job\nsubmit/poll/fetch requests, and OData `$metadata` discovery probes).\nApplied *before* the auth provider's header placements, so an auth\nheader of the same name always wins on a clash. Values honor\n`${env:}` / `${param.*}` load-time interpolation and pass through the\nsecrets/redaction boundary like other config strings. Invalid header\nnames/values are rejected at config load\n([`FaucetError::Config`](faucet_core::FaucetError::Config)), never a\nmid-run panic.\n\n```yaml\nheaders:\n  Prefer: transient\n  Accept: application/json\n```",
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "query_params": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "query_params_multi": {
+                      "description": "Repeated / array-valued query params (#536), rendered as repeated keys —\ne.g. `{ \"group_by[]\": [\"api_key_id\", \"model\"] }` → `?group_by[]=api_key_id&group_by[]=model`.\nApplied alongside (in addition to) [`query_params`](Self::query_params);\nuse this for APIs that need a key to appear more than once (`group_by[]`,\nrepeated `expand`/`fields`). Values honor `{placeholder}` context\nsubstitution for child sources, like `query_params`. Empty by default.",
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "body": true,
+                    "pagination": {
+                      "$ref": "#/$defs/source_rest__PaginationStyle"
+                    },
+                    "records_path": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "max_pages": {
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0
+                    },
+                    "request_delay": {
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint64",
+                      "minimum": 0,
+                      "default": null
+                    },
+                    "timeout": {
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint64",
+                      "minimum": 0,
+                      "default": null
+                    },
+                    "max_retries": {
+                      "description": "Number of retries (after the first attempt) for transient request\nfailures. Default `3`.\n\n**Precedence note:** the REST source predates the unified pipeline\n`resilience:` policy. When this field (or [`retry_backoff`](Self::retry_backoff))\nis left at its default, an injected `RetryPolicy` (e.g. from a\npipeline-level `resilience:` block, via\n[`RestStream::with_retry_policy`](crate::RestStream::with_retry_policy))\ngoverns the retry budget. Setting this field away from its default makes\nit win — an explicit per-connector value is never silently overridden by\na pipeline-wide default.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint32",
+                      "minimum": 0
+                    },
+                    "retry_backoff": {
+                      "description": "Base exponential-backoff delay between retries. Default `1s`. Shares the\nlegacy-field precedence rule documented on [`max_retries`](Self::max_retries).",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint64",
+                      "minimum": 0
+                    },
+                    "tolerated_http_errors": {
+                      "description": "HTTP status codes that should **not** cause an error. Responses with\nthese codes are treated as empty pages (no records, no further pages).",
+                      "type": "array",
+                      "items": {
+                        "type": [
+                          "integer",
+                          "string"
+                        ],
+                        "format": "uint16",
+                        "minimum": 0,
+                        "maximum": 65535
+                      }
+                    },
+                    "replication_method": {
+                      "$ref": "#/$defs/source_rest__ReplicationMethod"
+                    },
+                    "replication_key": {
+                      "description": "Field name (not a JSONPath) used for incremental replication bookmarking.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "start_replication_value": {
+                      "description": "Bookmark value: records where `record[replication_key] <= start_replication_value`\nare filtered out when `replication_method` is `Incremental`."
+                    },
+                    "state_key": {
+                      "description": "Opt-in identifier used by [`Pipeline::with_state_store`](faucet_core::Pipeline::with_state_store)\nto persist this stream's bookmark across runs. When set, the pipeline\nwill load any previously-stored bookmark before fetching and write the\nnew bookmark only after the sink confirms the batch.\n\nKeys must satisfy [`faucet_core::state::validate_state_key`].",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "name": {
+                      "description": "Human-readable stream name (used in logging and Singer SCHEMA messages).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "primary_keys": {
+                      "description": "Field names that uniquely identify a record (Singer `key_properties`).",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "schema": {
+                      "description": "JSON Schema describing the structure of each record."
+                    },
+                    "schema_sample_size": {
+                      "description": "Maximum number of records to sample when inferring the schema via\n[`crate::stream::RestStream::infer_schema`].  `0` means sample all\navailable records (up to `max_pages`).  Defaults to `100`.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0
+                    },
+                    "partitions": {
+                      "description": "Each entry is a context map whose values are substituted into `path`\nplaceholders. The stream is executed once per partition and results are\nconcatenated.  Empty means run once with no substitution.",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": true
+                      }
+                    },
+                    "partition_concurrency": {
+                      "description": "Maximum number of partitions to fetch concurrently.\n`None` means sequential processing (backward compatible default).",
+                      "type": [
+                        "integer",
+                        "null",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0
+                    },
+                    "tls": {
+                      "description": "Optional client-certificate (mutual TLS) config. When set, the source\npresents a client certificate on **every** request — data requests and\nany inline auth token request (both go through the same HTTP client).\nRequires the crate's `mtls` feature; a `tls` block on a build without it\nis a load-time error rather than being silently ignored.",
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_rest__TlsClientConfig"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "response_format": {
+                      "description": "How to parse the response body. `json` (default) uses JSONPath\nextraction (`records_path`); `csv` / `excel` parse a tabular **file**\nbody into records — for authenticated file endpoints such as a Microsoft\nGraph / OneDrive / SharePoint `…/content` download or any signed export\nURL. In file mode a single response is fetched (pagination must be\n`none`) and `records_path` does not apply. `excel` requires the crate's\n`excel` feature.",
+                      "$ref": "#/$defs/source_rest__ResponseFormat",
+                      "default": "json"
+                    },
+                    "csv_delimiter": {
+                      "description": "CSV field delimiter byte (default `,`). Used only when\n`response_format: csv`.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint8",
+                      "minimum": 0,
+                      "maximum": 255,
+                      "default": 44
+                    },
+                    "csv_has_headers": {
+                      "description": "Whether the first CSV row is a header row supplying field names\n(default `true`). When `false`, fields are named `column_0`, `column_1`, …",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": true
+                    },
+                    "excel_sheet": {
+                      "description": "Excel worksheet to read: a sheet name, or a 0-based index as a string.\nWhen omitted, the first worksheet is used. `response_format: excel` only.",
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "excel_header_row": {
+                      "description": "0-based index of the Excel header row (default `0`). Rows above it are\nskipped; the header row supplies field names. `response_format: excel` only.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 0
+                    },
+                    "replication_bind": {
+                      "description": "Bind the stored bookmark into the outgoing request (query param / header /\nbody field / path) so the server returns only new rows. Composes with the\nexisting `replication_key` client-side filter, which stays active as a\nsafety net. Requires `replication_method: incremental` + `replication_key`.",
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_rest__ReplicationBind"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "odata": {
+                      "description": "Speak the OData protocol: `@odata.nextLink` paging, the `$.value`\nenvelope, `$select`/`$filter`/`$expand`/`$orderby` sugar, and\n`$metadata` (EDMX) → schema discovery. When set, it derives the\npagination, `records_path`, query params, and `Prefer` header at load\ntime (explicit values still win). See [`ODataConfig`].",
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_rest__ODataConfig"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "decode": {
+                      "description": "Decode the response body before record extraction: a chain of\n`extract` (JSONPath) / `base64` / `gunzip` / `unzip` / `parse`\n(json|csv|xlsx|xml) steps. Lets a source consume base64/compressed/file\npayloads (e.g. a base64 XLSX inside a SOAP body, or a gzipped-CSV export).\nWhen set, it replaces the `response_format` body parsing, and pagination\nmust be `none`. See [`DecodeStep`](crate::decode::DecodeStep).",
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/source_rest__DecodeStep"
+                      }
+                    },
+                    "async_job": {
+                      "description": "Run a submit→poll→fetch job lifecycle instead of a single GET, for\nbulk/export/report-run APIs (Salesforce Bulk, Stripe Reporting, …). The\nfetched result flows through `decode:` / `response_format`. When set,\npagination must be `none`. See [`AsyncJobConfig`](crate::async_job::AsyncJobConfig).",
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_rest__AsyncJobConfig"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "window": {
+                      "description": "Bound each request to a rolling `[start, end)` window between the stored\nbookmark and `now`, iterating the windows within one run (each `step`\nwide) with per-window bookmark durability. For APIs that require — or cap —\na bounded date range (analytics/ads/reporting feeds). Parity with Airbyte's\n`DatetimeBasedCursor`. Requires `replication_method: incremental` +\n`replication_key`, and a start bookmark (from state, or\n`start_replication_value`). See [`WindowSpec`](faucet_core::WindowSpec).",
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_rest__WindowSpec"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "record_ancestors": {
+                      "description": "When `records_path` selects a **nested** array element (e.g.\n`$.data[*].data.object`), copy fields from the enclosing `[*]`\narray-element ancestor onto each emitted record. The map is\n`dest_field: ancestor_relative_path` — for each matched leaf, the source\nwalks up to the array-element ancestor and copies the named path onto the\nrecord under `dest_field`. Absent ⇒ records are emitted unchanged.\n\n```yaml\nrecords_path: \"$.data[*].data.object\"\nrecord_ancestors: { event_id: \"id\", event_created: \"created\" }\n```\n\nRequires `records_path` to contain an array wildcard `[*]`; mutually\nexclusive with [`records_multi`](Self::records_multi).",
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "records_multi": {
+                      "description": "Emit several record arrays from one response in a single page (sharing one\npagination advance), each stamped with a user-defined op marker under\n[`op_field`](Self::op_field). Composes with a downstream\n`write_mode: upsert` + `delete_marker` so added/modified/removed feeds\nroute correctly. Mutually exclusive with `records_path` /\n`record_ancestors`, and requires `response_format: json` with no\n`decode:` pipeline.\n\n```yaml\nrecords_multi:\n  - { path: \"$.added[*]\",    op: upsert }\n  - { path: \"$.modified[*]\", op: upsert }\n  - { path: \"$.removed[*]\",  op: delete }\nop_field: _op\n```",
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/source_rest__RecordsMultiSpec"
+                      }
+                    },
+                    "op_field": {
+                      "description": "Field name each [`records_multi`](Self::records_multi) record is stamped\nwith its spec's `op` value. Defaults to `_op` when omitted.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "persist_cursor": {
+                      "description": "Persist the terminal pagination cursor as this run's bookmark (riding the\nexisting `StreamPage.bookmark` / `StateStore` path — no core trait change)\nand, on resume, seed the stored bookmark back into the first request\n(query param for `cursor`, request body field for `cursor_in_body`) before\npaging. Only meaningful with `pagination: cursor` / `cursor_in_body`;\nmutually exclusive with `window` slicing. Default `false`.",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": false
+                    },
+                    "salesforce": {
+                      "description": "Enable `faucet discover` for a Salesforce org: introspect `/sobjects`\n(global describe) + per-object describe and emit one dataset per queryable\nobject, each with a **field-complete** `SELECT … FROM <Object>` (built from\nthe object's describe, excluding compound/non-queryable types) — so you\ndeclare the connection once instead of hand-listing every object's fields.\n`base_url` must be the Salesforce instance URL and `auth` must resolve.\nOnly affects discovery; a normal run still uses the `async_job` (Bulk API)\nconfig. See [`SalesforceDiscovery`].",
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/source_rest__SalesforceDiscovery"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "title": "RestStreamConfig",
+                  "description": "Configuration for a RestStream.",
+                  "type": "object"
+                },
+                true
+              ]
+            },
+            "transforms": {
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "inherit_transforms": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -17425,6 +17828,182 @@
             "type"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "bigquery",
+          "properties": {
+            "type": {
+              "const": "bigquery"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "project_id": {
+                      "description": "GCP project ID.",
+                      "type": "string"
+                    },
+                    "dataset_id": {
+                      "description": "BigQuery dataset ID.",
+                      "type": "string"
+                    },
+                    "table_id": {
+                      "description": "BigQuery table ID.",
+                      "type": "string"
+                    },
+                    "auth": {
+                      "description": "Authentication credentials. YAML/JSON key is `auth` for consistency with\nevery other connector's auth block.",
+                      "$ref": "#/$defs/sink_bigquery__BigQueryCredentials"
+                    },
+                    "batch_size": {
+                      "description": "Maximum rows per `tabledata.insertAll` request. Defaults to\n[`DEFAULT_BATCH_SIZE`].\n\nWhen the upstream `StreamPage` carries more records than `batch_size`,\nthe sink slices the page into `batch_size`-row chunks and issues one\n`insertAll` HTTP call per chunk. When `batch_size = 0`, the page is\nsent as a single request — useful when the source already chunks to\nBigQuery's preferred size (e.g. ~500 rows for streaming inserts).\n\n`batch_size = 0` is the \"no batching\" sentinel: the entire upstream\npage is forwarded in one `insertAll` call, subject to BigQuery's\nnatural per-request limits (~10MB body, ~500 rows recommended).\nLarger pages may exceed those limits — keep the default unless the\nupstream `StreamPage` size is already tuned for BigQuery.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    },
+                    "insert_id_field": {
+                      "description": "Optional record field whose value is sent as the BigQuery streaming\n`insertId` for each row. BigQuery uses `insertId` for best-effort\nde-duplication over a short window, so a stable per-row key here makes\nstreaming inserts resilient to transport retries (which are otherwise\nat-least-once and can produce duplicate rows) (#78/#31). When `None`\n(the default) no `insertId` is sent. A row missing the field is\ninserted without an `insertId` (no dedup for that row).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "write_mode": {
+                      "description": "Append (default), upsert, or delete.",
+                      "$ref": "#/$defs/sink_bigquery__WriteMode",
+                      "default": "append"
+                    },
+                    "key": {
+                      "description": "Key columns. Required and non-empty for upsert/delete; ignored for append.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": []
+                    },
+                    "delete_marker": {
+                      "description": "Optional. Upsert only: rows whose `field` matches one of `values` are\ndeletes; all others are upserts. The marker field is stripped from\nupsert rows before writing.",
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/sink_bigquery__DeleteMarker"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "scope": {
+                      "description": "Scoped/windowed overwrite (#518): with `write_mode: overwrite`, replace\nonly the rows matching this scope (e.g. a partition/date window) instead\nof the whole table — the out-of-scope rows are preserved.",
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/sink_bigquery__OverwriteScope"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "create_table": {
+                      "description": "Create the target table (and its dataset) if it does not exist, inferring\nthe schema from the first written page. Enabled by default: a first-ever\nsync cannot assume the destination table already exists. Set to `false` to\nrequire the table to pre-exist and fail fast when it is missing (e.g. the\nschema is managed externally and a missing table signals a typo).",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": true
+                    },
+                    "location": {
+                      "description": "Location (region or multi-region, e.g. `US`, `EU`, `us-central1`) used only\nwhen `create_table` has to create the dataset. `None` uses the BigQuery\njob's default location. Ignored once the dataset exists.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "media_load": {
+                      "description": "Bucket-free bulk load for the **overwrite** write path: instead of one\n`jobs.query` `INSERT … SELECT FROM UNNEST(@payload)` per page (job-latency\nbound — dozens of sequential jobs for a large table), stream each page\nstraight into the staging table with a single BigQuery **load job** via a\n`multipart/related` media upload of newline-delimited JSON. No GCS bucket\nis involved (unlike the Arrow `bulk_load` path). This mirrors how the\nlegacy iPaaS loader wrote to BigQuery (`load_table_from_dataframe`,\nCSV/JSON media upload) and collapses a 60-page run into a handful of load\njobs. Only consulted on the `write_mode: overwrite` path; append /\nupsert / delete / exactly-once are unaffected. Default `false`.",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": false
+                    }
+                  },
+                  "title": "BigQuerySinkConfig",
+                  "description": "Configuration for the BigQuery streaming insert sink.",
+                  "type": "object"
+                },
+                true
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "jsonl",
+          "properties": {
+            "type": {
+              "const": "jsonl"
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "path": {
+                      "description": "Path to the output file.",
+                      "type": "string"
+                    },
+                    "append": {
+                      "description": "Whether to append to an existing file (default: false, truncates).",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": false
+                    },
+                    "pretty": {
+                      "description": "Whether to pretty-print each JSON record (default: false, compact).",
+                      "type": [
+                        "boolean",
+                        "string"
+                      ],
+                      "default": false
+                    },
+                    "batch_size": {
+                      "description": "Records per upstream [`StreamPage`](faucet_core::StreamPage). The JSONL\nsink writes records to disk one at a time through a buffered async\nwriter, so this field has **no behavioural impact** at the sink — it is\nexposed purely for config parity across every sink in the workspace.\nDefaults to [`DEFAULT_BATCH_SIZE`].\n\n`batch_size = 0` (the \"no batching\" sentinel) and any positive value\nproduce byte-for-byte identical output for this sink: each record is\nserialised and appended individually regardless of how upstream chunked\nthe page.",
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "format": "uint",
+                      "minimum": 0,
+                      "default": 1000
+                    },
+                    "compression": {
+                      "description": "Compression codec for the output file. Defaults to\n[`CompressionConfig::Auto`](faucet_core::CompressionConfig::Auto) —\n`.gz` / `.zst` suffix selects gzip / zstd, anything else writes\nuncompressed. Requires the crate-local `compression` feature.",
+                      "$ref": "#/$defs/sink_jsonl__CompressionConfig",
+                      "default": "auto"
+                    }
+                  },
+                  "title": "JsonlSinkConfig",
+                  "description": "Configuration for the JSON Lines file sink.",
+                  "type": "object"
+                },
+                true
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -18814,6 +19393,53 @@
         }
       },
       "additionalProperties": false
+    },
+    "source_rest__TokenBodyEncoding": {
+      "description": "Body encoding for the token-endpoint request.",
+      "oneOf": [
+        {
+          "description": "JSON body (`application/json`) — the default (back-compat).",
+          "type": "string",
+          "const": "json"
+        },
+        {
+          "description": "Form-urlencoded body (`application/x-www-form-urlencoded`) — required by\nRFC-6749 OAuth token endpoints (Salesforce, Google, most OAuth servers),\nwhich reject a JSON body with `unsupported_grant_type`.",
+          "type": "string",
+          "const": "form"
+        }
+      ]
+    },
+    "source_rest__SalesforceDiscovery": {
+      "description": "Salesforce object-discovery options (#647). Presence on\n[`RestStreamConfig::salesforce`] opts the source into `faucet discover`.",
+      "type": "object",
+      "properties": {
+        "objects": {
+          "description": "Explicit list of objects to discover (e.g. `[Account, Contact, Churn__c]`).\nWhen set, only these are described — the connection template stays generic\nand the object selection lives in config. When empty (the default), the\nglobal describe (`/sobjects`) is scanned and every *queryable* object is\ndiscovered (still narrowable with `faucet discover --include/--exclude`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "api_version": {
+          "description": "Salesforce REST API version used for the describe calls and baked into the\ngenerated Bulk-query path. Default `v60.0`.",
+          "type": "string",
+          "default": "v60.0"
+        },
+        "operation": {
+          "description": "Bulk-query operation baked into each generated object's SOQL job:\n`queryAll` (includes soft-deleted/archived rows) or `query`. Default\n`queryAll`.",
+          "type": "string",
+          "default": "queryAll"
+        },
+        "route_by_table_id": {
+          "description": "Also emit a per-object sink override (`{ table_id: <snake object> }`) so a\nfan-out lands one table per object on a table-based sink (BigQuery,\nSnowflake, the SQL sinks). Default `true`. Set `false` when the sink is\nfile-based (it would reject an unknown `table_id`).",
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "default": true
+        }
+      },
+      "additionalProperties": true
     }
   }
 }

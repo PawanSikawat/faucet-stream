@@ -298,6 +298,40 @@ source:
     odata: { version: v4, entity: Orders, select: [DocEntry, DocDate], page_size: 500 }
 ```
 
+### Salesforce object discovery (`salesforce`)
+
+`faucet discover` for a Salesforce org, so you never hand-list a SObject's
+fields. It introspects `/sobjects` (global describe) + per-object describe and
+emits one dataset per **queryable** object, each with a **field-complete**
+`SELECT … FROM <Object>` — compound/blob types (`address`, `location`,
+`base64`) excluded so the SOQL is valid — a typed schema, and (by default) a
+per-object sink `table_id`. It stays a `rest` source (no new crate); a normal
+run still uses the `async_job` (Bulk API 2.0) config. SOQL has no `SELECT *`
+and Bulk API 2.0 forbids `FIELDS()`, so describe-built field lists are the only
+way to select every field at bulk volume.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `objects` | array<string> | `[]` | Explicit objects to discover (e.g. `[Account, Contact, Churn__c]`). Empty ⇒ scan the global describe and take every queryable object. Naming them keeps the connection template generic. |
+| `api_version` | string | `v60.0` | REST API version for the describe calls. |
+| `operation` | `queryAll \| query` | `queryAll` | Bulk-query operation baked into each object's SOQL (`queryAll` includes soft-deleted rows). |
+| `route_by_table_id` | bool | `true` | Also emit `sink: { config: { table_id: <snake object> } }` per row so a fan-out lands one table per object (table-based sinks). Set `false` for file sinks. |
+
+```yaml
+source:
+  type: rest
+  config:
+    base_url: "https://acme.my.salesforce.com"
+    auth: { type: token_endpoint, config: { … } }
+    salesforce: { objects: [Account, Contact, Opportunity] }
+```
+
+```console
+$ faucet discover salesforce.yaml --sink bigquery -o generated.yaml
+# → one matrix row per object, each with its full SELECT and table_id.
+$ faucet run generated.yaml
+```
+
 ### Response-decode pipeline (`decode`)
 
 Consume payloads that aren't plain JSON — including files embedded in a JSON/SOAP

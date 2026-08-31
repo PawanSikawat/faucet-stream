@@ -89,8 +89,15 @@ listing, never a data scan.
 | `spanner` | base tables (default schema) | `INFORMATION_SCHEMA.COLUMNS` | — | `query` |
 | `s3` | common prefixes under the configured prefix (one delimiter listing; falls back to per-object entries) | — | — | `prefix` |
 | `gcs` | same as s3 | — | — | `prefix` (objects: `object_keys`) |
+| `rest` + `odata:` | OData entity sets (from `$metadata` EDMX) | EDM property types | — | `odata.entity` |
+| `rest` + `salesforce:` | queryable SObjects (from `/sobjects` describe) | per-object describe field types | — | `async_job` SOQL (+ per-object sink `table_id`) |
 
-Any other source kind fails with a typed error naming the supported set. Library
+The `rest` source discovers only when an `odata:` or `salesforce:` block is set.
+The Salesforce mode builds a **field-complete** `SELECT … FROM <Object>` from each
+object's describe (SOQL has no `SELECT *` and Bulk API 2.0 forbids `FIELDS()`),
+excluding compound/blob types; name the objects in `salesforce.objects` (or leave
+it empty to take every queryable object) and pass `--sink <template>` so each
+object routes to its own table. Any other source kind fails with a typed error naming the supported set. Library
 users can call `Source::discover()` directly — it returns the same
 `DatasetDescriptor` list.
 

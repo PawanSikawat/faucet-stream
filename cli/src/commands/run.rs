@@ -385,7 +385,7 @@ pub(crate) async fn execute(
                         )
                     })
                     .collect();
-                rows.sort_by(|a, b| b.0.cmp(&a.0));
+                rows.sort_by_key(|r| std::cmp::Reverse(r.0));
                 eprintln!("  per-row timing (slowest first):");
                 for (ms, row, recs) in rows {
                     eprintln!(

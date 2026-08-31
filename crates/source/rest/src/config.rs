@@ -280,6 +280,18 @@ pub struct RestStreamConfig {
     /// mutually exclusive with `window` slicing. Default `false`.
     #[serde(default)]
     pub persist_cursor: bool,
+
+    // ── Salesforce object discovery (#647) ──────────────────────────────────────
+    /// Enable `faucet discover` for a Salesforce org: introspect `/sobjects`
+    /// (global describe) + per-object describe and emit one dataset per queryable
+    /// object, each with a **field-complete** `SELECT … FROM <Object>` (built from
+    /// the object's describe, excluding compound/non-queryable types) — so you
+    /// declare the connection once instead of hand-listing every object's fields.
+    /// `base_url` must be the Salesforce instance URL and `auth` must resolve.
+    /// Only affects discovery; a normal run still uses the `async_job` (Bulk API)
+    /// config. See [`SalesforceDiscovery`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub salesforce: Option<SalesforceDiscovery>,
 }
 
 /// One entry in a [`RestStreamConfig::records_multi`] fan-out (#548): a JSONPath
@@ -348,6 +360,56 @@ pub struct ODataConfig {
     /// Server page size, sent as `Prefer: odata.maxpagesize=<n>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_size: Option<usize>,
+}
+
+/// Salesforce object-discovery options (#647). Presence on
+/// [`RestStreamConfig::salesforce`] opts the source into `faucet discover`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SalesforceDiscovery {
+    /// Explicit list of objects to discover (e.g. `[Account, Contact, Churn__c]`).
+    /// When set, only these are described — the connection template stays generic
+    /// and the object selection lives in config. When empty (the default), the
+    /// global describe (`/sobjects`) is scanned and every *queryable* object is
+    /// discovered (still narrowable with `faucet discover --include/--exclude`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objects: Vec<String>,
+    /// Salesforce REST API version used for the describe calls and baked into the
+    /// generated Bulk-query path. Default `v60.0`.
+    #[serde(default = "default_sf_api_version")]
+    pub api_version: String,
+    /// Bulk-query operation baked into each generated object's SOQL job:
+    /// `queryAll` (includes soft-deleted/archived rows) or `query`. Default
+    /// `queryAll`.
+    #[serde(default = "default_sf_operation")]
+    pub operation: String,
+    /// Also emit a per-object sink override (`{ table_id: <snake object> }`) so a
+    /// fan-out lands one table per object on a table-based sink (BigQuery,
+    /// Snowflake, the SQL sinks). Default `true`. Set `false` when the sink is
+    /// file-based (it would reject an unknown `table_id`).
+    #[serde(default = "default_true")]
+    pub route_by_table_id: bool,
+}
+
+impl Default for SalesforceDiscovery {
+    fn default() -> Self {
+        Self {
+            objects: Vec::new(),
+            api_version: default_sf_api_version(),
+            operation: default_sf_operation(),
+            route_by_table_id: true,
+        }
+    }
+}
+
+fn default_sf_api_version() -> String {
+    "v60.0".to_string()
+}
+fn default_sf_operation() -> String {
+    "queryAll".to_string()
+}
+fn default_true() -> bool {
+    true
 }
 
 pub use faucet_core::TlsClientConfig;
@@ -421,6 +483,7 @@ impl Default for RestStreamConfig {
             records_multi: Vec::new(),
             op_field: None,
             persist_cursor: false,
+            salesforce: None,
         }
     }
 }

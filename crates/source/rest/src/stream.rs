@@ -2263,7 +2263,7 @@ impl faucet_core::Source for RestStream {
                 // → the CSV→NDJSON chunk stream. Owns `resp`, so it is `'static`.
                 let body = resp
                     .bytes_stream()
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+                    .map_err(std::io::Error::other);
                 let reader = tokio_util::io::StreamReader::new(body);
                 let ndjson_chunks =
                     crate::format::csv_reader_to_ndjson_stream(reader, delimiter, has_headers);
@@ -2297,44 +2297,101 @@ impl faucet_core::Source for RestStream {
     }
 
     fn supports_discover(&self) -> bool {
-        // OData exposes a machine-readable `$metadata` catalog; a plain REST API
-        // has none, so discovery is OData-only.
-        self.config.odata.is_some()
+        // OData exposes a machine-readable `$metadata` catalog and Salesforce a
+        // `/sobjects` describe API; a plain REST API has neither.
+        self.config.odata.is_some() || self.config.salesforce.is_some()
     }
 
     async fn discover(&self) -> Result<Vec<faucet_core::DatasetDescriptor>, FaucetError> {
+        if let Some(sf) = self.config.salesforce.clone() {
+            return self.discover_salesforce(&sf).await;
+        }
         if self.config.odata.is_none() {
             return Err(FaucetError::Source(
-                "rest: discovery is only supported for OData sources — set an `odata:` block"
+                "rest: discovery needs an `odata:` block (OData `$metadata`) or a `salesforce:` \
+                 block (Salesforce `/sobjects`)"
                     .into(),
             ));
         }
         let url = format!("{}/$metadata", self.config.base_url.trim_end_matches('/'));
+        let xml = self.discover_get_text(&url, "OData $metadata").await?;
+        crate::odata::descriptors_from_edmx(&xml)
+    }
+}
+
+impl RestStream {
+    /// Authed GET for a discovery probe, returning the response body as text.
+    /// Shared by the OData `$metadata` and Salesforce `/sobjects` paths.
+    async fn discover_get_text(&self, url: &str, what: &str) -> Result<String, FaucetError> {
         // Static config headers (#539) form the base; auth is applied on top.
         let mut headers = self.static_headers.clone();
-        for (k, v) in self.metadata_headers(&url).await?.iter() {
+        for (k, v) in self.metadata_headers(url).await?.iter() {
             headers.insert(k.clone(), v.clone());
         }
         let resp = self
             .client
-            .get(&url)
+            .get(url)
             .headers(headers)
             .send()
             .await
-            .map_err(|e| {
-                FaucetError::Source(format!("rest: OData $metadata request failed: {e}"))
-            })?;
+            .map_err(|e| FaucetError::Source(format!("rest: {what} request failed: {e}")))?;
         let status = resp.status();
         if !status.is_success() {
             return Err(FaucetError::Source(format!(
-                "rest: OData $metadata returned HTTP {}",
+                "rest: {what} returned HTTP {}",
                 status.as_u16()
             )));
         }
-        let xml = resp.text().await.map_err(|e| {
-            FaucetError::Source(format!("rest: reading OData $metadata failed: {e}"))
-        })?;
-        crate::odata::descriptors_from_edmx(&xml)
+        resp.text()
+            .await
+            .map_err(|e| FaucetError::Source(format!("rest: reading {what} failed: {e}")))
+    }
+
+    /// Salesforce discovery (#647): global describe → per-object describe → one
+    /// [`DatasetDescriptor`](faucet_core::DatasetDescriptor) per queryable object.
+    async fn discover_salesforce(
+        &self,
+        sf: &crate::config::SalesforceDiscovery,
+    ) -> Result<Vec<faucet_core::DatasetDescriptor>, FaucetError> {
+        let base = self.config.base_url.trim_end_matches('/');
+        let ver = sf.api_version.trim_matches('/');
+        // Explicit `objects:` list skips the global-describe scan entirely; else
+        // scan `/sobjects` and take every queryable object.
+        let objects = if sf.objects.is_empty() {
+            let global_url = format!("{base}/services/data/{ver}/sobjects");
+            let global_txt = self
+                .discover_get_text(&global_url, "Salesforce /sobjects")
+                .await?;
+            let global: serde_json::Value = serde_json::from_str(&global_txt).map_err(|e| {
+                FaucetError::Source(format!(
+                    "rest: Salesforce /sobjects returned invalid JSON: {e}"
+                ))
+            })?;
+            crate::salesforce::queryable_objects(&global)
+        } else {
+            sf.objects.clone()
+        };
+        let mut out = Vec::with_capacity(objects.len());
+        for obj in objects {
+            let url = format!("{base}/services/data/{ver}/sobjects/{obj}/describe");
+            let txt = self
+                .discover_get_text(&url, "Salesforce object describe")
+                .await?;
+            let describe: serde_json::Value = serde_json::from_str(&txt).map_err(|e| {
+                FaucetError::Source(format!(
+                    "rest: Salesforce describe for {obj} returned invalid JSON: {e}"
+                ))
+            })?;
+            if let Some(d) = crate::salesforce::descriptor_for_object(
+                &obj,
+                &describe,
+                &sf.operation,
+                sf.route_by_table_id,
+            ) {
+                out.push(d);
+            }
+        }
+        Ok(out)
     }
 }
 
