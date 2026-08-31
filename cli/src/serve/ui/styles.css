@@ -1073,13 +1073,21 @@ select {
 /* Click-to-highlight: the selected node, its neighbours, and their edges stay
    bright while everything else dims, so a dataset's connections read at a glance.
    Selected = solid brand; neighbour = brand tint; active edge = brand line. */
-.lineage-node.is-selected rect { fill: var(--brand-strong); stroke: var(--brand-strong); }
+.lineage-node.is-selected rect { fill: var(--brand-strong); stroke: var(--brand-strong); stroke-width: 2.5; }
 .lineage-node.is-selected text { fill: #fff; }
-.lineage-node.is-selected .lnode-label { color: #fff; }
-.lineage-node.is-neighbour rect { fill: color-mix(in srgb, var(--brand-strong) 22%, var(--surface)); stroke: var(--brand-strong); }
-.lineage-edge.is-active { stroke: var(--brand-strong); stroke-width: 2.5; }
-.lineage-svg.has-selection .lineage-node:not(.is-selected):not(.is-neighbour) { opacity: 0.32; }
-.lineage-svg.has-selection .lineage-edge:not(.is-active) { opacity: 0.18; }
+.lineage-node.is-selected .lnode-label { color: #fff; font-weight: 600; }
+.lineage-node.is-neighbour rect { fill: color-mix(in srgb, var(--brand-strong) 34%, var(--surface)); stroke: var(--brand-strong); stroke-width: 2; }
+.lineage-node.is-neighbour .lnode-label { color: var(--ink); }
+.lineage-edge.is-active { stroke: var(--brand-strong); stroke-width: 3; }
+/* Non-highlighted nodes clearly recede: opacity alone barely fades an already
+   pale box on a pale ground, so also wash the fill toward the background and
+   grey the text — the highlighted set then reads unmistakably. */
+.lineage-svg.has-selection .lineage-node:not(.is-selected):not(.is-neighbour) rect {
+  fill: color-mix(in srgb, var(--border) 22%, var(--surface));
+  stroke: color-mix(in srgb, var(--border) 55%, transparent);
+}
+.lineage-svg.has-selection .lineage-node:not(.is-selected):not(.is-neighbour) .lnode-label { color: var(--ink-faint); opacity: 0.55; }
+.lineage-svg.has-selection .lineage-edge:not(.is-active) { opacity: 0.12; }
 
 /* ============================================================================
    pipeline templates (#444)
