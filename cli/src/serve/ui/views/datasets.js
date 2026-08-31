@@ -646,7 +646,7 @@ export async function renderDatasetDetail(container, params) {
         <div><label>Roles</label>${escapeHtml(d.roles.join(", "))}</div>
         <div><label>Pipeline</label>${escapeHtml(d.pipeline)}</div>
         <div><label>Runs</label>${d.runs}</div>
-        <div><label>Rows (last / total)</label>${d.last_records} / ${d.total_records}</div>
+        <div><label>Rows (last / total)</label>${fmtInt(d.last_records)} / ${fmtInt(d.total_records)}</div>
         <div><label>First seen</label>${fmtTime(d.first_seen)}</div>
         <div><label>Last success</label>${fmtTime(d.last_success)}</div>
         <div><label>Id</label><span class="mono">${escapeHtml(d.id)}</span></div>
@@ -661,7 +661,7 @@ export async function renderDatasetDetail(container, params) {
                 .reverse()
                 .map(
                   (s) =>
-                    `<div class="volume-bar" title="${escapeHtml(`${s.records} rows — ${fmtTime(s.recorded_at)} (run ${s.run_id})`)}"
+                    `<div class="volume-bar" title="${escapeHtml(`${fmtInt(s.records)} rows — ${fmtTime(s.recorded_at)} (run ${s.run_id})`)}"
                       style="height:${Math.max(4, Math.round((s.records / maxRows) * 64))}px"></div>`,
                 )
                 .join("")
@@ -714,8 +714,8 @@ function edgeList(edges, idOf, uriOf) {
       (e) =>
         `<div class="run-row edge-link" data-id="${escapeHtml(idOf(e))}">
           <span class="run-name mono">${escapeHtml(uriOf(e))}</span>
-          <span class="run-meta">${e.runs} run${e.runs === 1 ? "" : "s"}</span>
-          <span class="run-meta">${e.last_records} rows</span>
+          <span class="run-meta">${fmtInt(e.runs)} run${e.runs === 1 ? "" : "s"}</span>
+          <span class="run-meta">${fmtInt(e.last_records)} rows</span>
         </div>`,
     )
     .join("");

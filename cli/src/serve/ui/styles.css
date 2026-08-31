@@ -167,8 +167,9 @@ button { font-family: inherit; }
   gap: 18px;
   height: 56px;
   padding: 0 20px;
-  background: color-mix(in srgb, var(--surface) 80%, transparent);
-  backdrop-filter: saturate(140%) blur(10px);
+  /* Opaque so content scrolling underneath never bleeds through the bar (which
+     otherwise reads as a stray row floating above a sticky table header). */
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 /* a thin "flow" line of brand color under the bar */
@@ -346,7 +347,10 @@ input:focus, select:focus, textarea:focus {
 input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 
 /* Timezone selector in the topbar — compact; inherits the themed chevron below. */
-.tz-select { font-size: 0.8rem; max-width: 190px; padding-top: 5px; padding-bottom: 5px; background: transparent; }
+/* `background-color` (not the `background` shorthand) so it never resets
+   background-repeat/position — otherwise the dark-mode chevron image re-added by
+   `[data-theme=dark] select` tiles into a row of overlapping chevrons. */
+.tz-select { font-size: 0.8rem; max-width: 190px; padding-top: 5px; padding-bottom: 5px; background-color: transparent; }
 
 /* Themed select: drop the native arrow for a custom chevron with real breathing
    room on the right, so it stops crowding the border. */
@@ -462,7 +466,7 @@ select {
 .ds-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
 /* Sticky header so the column labels stay visible while scrolling the list. */
 .ds-table thead th {
-  position: sticky; top: 56px; z-index: 2; background: var(--bg, #fff);
+  position: sticky; top: 0; z-index: 25; background: var(--surface);
   text-align: left; font-size: 0.68rem; letter-spacing: 0.07em; text-transform: uppercase;
   color: var(--ink-faint); font-weight: 600; padding: 10px 18px; border-bottom: 1px solid var(--border);
 }
@@ -471,19 +475,23 @@ select {
 .ds-table tbody tr:last-child td { border-bottom: none; }
 .ds-tr { cursor: pointer; }
 .ds-tr:hover td { background: color-mix(in srgb, var(--ink-faint) 8%, transparent); }
-/* URI cell scrolls horizontally to reveal the full path (no truncation). */
-.ds-uri { padding-top: 10px; padding-bottom: 10px; }
+/* URI cell scrolls horizontally to reveal the full path. The scrollbar is hidden
+   (scroll still works via trackpad / shift-wheel; full value is in the tooltip)
+   so it never overlaps the single line of text, and a right-edge fade signals
+   there is more to the right. */
 .ds-uri-in {
   overflow-x: auto; white-space: nowrap; font-weight: 600;
-  scrollbar-width: thin; padding-bottom: 2px;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
 }
-.ds-uri-in::-webkit-scrollbar { height: 6px; }
-.ds-uri-in::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.ds-uri-in::-webkit-scrollbar { display: none; }
 .ds-meta { font-family: var(--font-mono); font-size: 0.8rem; color: var(--ink-dim); white-space: nowrap; }
 .ds-num { text-align: right; }
 .ds-time { color: var(--ink-faint); }
 /* Fixed widths; column 2 (URI) takes the rest and ellipsises uniformly. */
-.ds-table th:nth-child(1), .ds-table td:nth-child(1) { width: 96px; }
+/* KIND column: extra right padding guarantees a clear gap before DATASET. */
+.ds-table th:nth-child(1), .ds-table td:nth-child(1) { width: 124px; padding-right: 28px; }
 .ds-table th:nth-child(3), .ds-table td:nth-child(3) { width: 96px; }
 .ds-table th:nth-child(4), .ds-table td:nth-child(4) { width: 78px; text-align: right; }
 .ds-table th:nth-child(5), .ds-table td:nth-child(5) { width: 124px; text-align: right; }
@@ -519,6 +527,13 @@ select {
   border: 1px solid var(--border); background: var(--surface); color: var(--ink-dim);
 }
 .chip-on { border-color: var(--brand-strong); color: var(--brand-strong); font-weight: 600; }
+
+/* Runs list reuses the shared table; its columns differ from datasets. */
+.ds-table.runs-table th:nth-child(1), .ds-table.runs-table td:nth-child(1) { width: 132px; padding-right: 16px; }
+.ds-table.runs-table th:nth-child(3), .ds-table.runs-table td:nth-child(3) { width: 92px; }
+.ds-table.runs-table th:nth-child(4), .ds-table.runs-table td:nth-child(4) { width: 118px; text-align: right; }
+.ds-table.runs-table th:nth-child(5), .ds-table.runs-table td:nth-child(5) { width: 190px; text-align: left; }
+.ds-table.runs-table td:nth-child(6), .ds-table.runs-table th:nth-child(6) { display: none; }
 
 /* Preview toggle: fixed width so switching Preview↔Hide never shifts the row. */
 .lo-preview-btn { min-width: 68px; }
@@ -1163,12 +1178,15 @@ select {
 .lo-list { display: flex; flex-direction: column; gap: 6px; }
 .lo-row {
   display: grid;
-  /* kind · path · state · age · last-written · preview · delete */
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto auto auto;
+  /* kind · path · state · age · last-written · preview · delete — FIXED widths so
+     every independent row grid lines up (badge/age/time/buttons align). */
+  grid-template-columns: 84px minmax(0, 1fr) 92px 72px 190px 82px 96px;
   align-items: center;
   gap: 10px;
   cursor: default;
 }
+.lo-row .lo-state, .lo-row .run-meta { justify-self: start; }
+.lo-row .lo-preview-btn, .lo-row .btn-danger { justify-self: stretch; text-align: center; }
 .lo-row .run-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lo-row .btn-danger { padding: 5px 11px; font-size: 0.8rem; }
 /* An expired output is a normal, expected end state — dimmed, never an error. */

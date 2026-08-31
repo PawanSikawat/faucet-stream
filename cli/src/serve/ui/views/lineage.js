@@ -164,7 +164,7 @@ function buildSvg({ nodes, edges }, rootId) {
     const label = document.createElementNS(ns, "text");
     label.setAttribute("x", 12);
     label.setAttribute("y", NODE_H / 2 + 4);
-    label.textContent = shorten(n.uri, 34);
+    label.textContent = shorten(n.uri, 28);
     const title = document.createElementNS(ns, "title");
     title.textContent = n.uri;
     g.appendChild(rect);
