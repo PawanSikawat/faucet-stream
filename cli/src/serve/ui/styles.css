@@ -456,6 +456,72 @@ select {
   text-align: right;
 }
 .run-time { color: var(--ink-faint); min-width: 150px; }
+/* Datasets list as one aligned ("invisible") table — every column shares a
+   width across all rows via table-layout:fixed, so roles/rows/time line up and
+   the URI truncates at the same x on every row (#646). */
+.ds-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+/* Sticky header so the column labels stay visible while scrolling the list. */
+.ds-table thead th {
+  position: sticky; top: 56px; z-index: 2; background: var(--bg, #fff);
+  text-align: left; font-size: 0.68rem; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--ink-faint); font-weight: 600; padding: 10px 18px; border-bottom: 1px solid var(--border);
+}
+/* Airier rows + generous column padding so nothing looks clumped. */
+.ds-table tbody td { padding: 15px 18px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.ds-table tbody tr:last-child td { border-bottom: none; }
+.ds-tr { cursor: pointer; }
+.ds-tr:hover td { background: color-mix(in srgb, var(--ink-faint) 8%, transparent); }
+/* URI cell scrolls horizontally to reveal the full path (no truncation). */
+.ds-uri { padding-top: 10px; padding-bottom: 10px; }
+.ds-uri-in {
+  overflow-x: auto; white-space: nowrap; font-weight: 600;
+  scrollbar-width: thin; padding-bottom: 2px;
+}
+.ds-uri-in::-webkit-scrollbar { height: 6px; }
+.ds-uri-in::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.ds-meta { font-family: var(--font-mono); font-size: 0.8rem; color: var(--ink-dim); white-space: nowrap; }
+.ds-num { text-align: right; }
+.ds-time { color: var(--ink-faint); }
+/* Fixed widths; column 2 (URI) takes the rest and ellipsises uniformly. */
+.ds-table th:nth-child(1), .ds-table td:nth-child(1) { width: 96px; }
+.ds-table th:nth-child(3), .ds-table td:nth-child(3) { width: 96px; }
+.ds-table th:nth-child(4), .ds-table td:nth-child(4) { width: 78px; text-align: right; }
+.ds-table th:nth-child(5), .ds-table td:nth-child(5) { width: 124px; text-align: right; }
+.ds-table th:nth-child(6), .ds-table td:nth-child(6) { width: 196px; }
+
+/* Filter bar: keep it on one line; the URI search flexes to fill the gap. */
+.filters-1line { display: flex; flex-wrap: nowrap; align-items: center; gap: 10px; }
+.filters-1line #f-q { flex: 1 1 auto; min-width: 90px; }
+.filters-1line .date-input { width: 120px; flex: 0 0 auto; }
+
+/* Kind multi-select dropdown (native <details> — no extra open/close JS). */
+.dd { position: relative; flex: 0 0 auto; }
+.dd > summary {
+  list-style: none; cursor: pointer; user-select: none; white-space: nowrap;
+  font-size: 0.85rem; padding: 7px 12px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--ink-dim);
+}
+.dd > summary::-webkit-details-marker { display: none; }
+.dd[open] > summary { border-color: var(--brand-strong); color: var(--brand-strong); }
+.dd-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 20; min-width: 150px;
+  display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-1);
+}
+.dd-opt { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; font-size: 0.85rem; cursor: pointer; }
+.dd-opt:hover { background: color-mix(in srgb, var(--ink-faint) 10%, transparent); }
+.dd-empty { color: var(--ink-faint); font-size: 0.8rem; padding: 4px 8px; }
+
+/* Filter chips (role). */
+.filter-chips { display: inline-flex; gap: 6px; flex: 0 0 auto; }
+.chip {
+  font-size: 0.8rem; padding: 5px 12px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+  border: 1px solid var(--border); background: var(--surface); color: var(--ink-dim);
+}
+.chip-on { border-color: var(--brand-strong); color: var(--brand-strong); font-weight: 600; }
+
+/* Preview toggle: fixed width so switching Preview↔Hide never shifts the row. */
+.lo-preview-btn { min-width: 68px; }
 
 #r-more { align-self: center; margin: 16px auto 0; }
 
@@ -915,8 +981,8 @@ select {
 .lineage-svg { min-width: 640px; width: 100%; height: auto; }
 .lineage-edge { fill: none; stroke: var(--border); stroke-width: 2; }
 .lineage-edge:hover { stroke: var(--running, #4a9eda); }
-.lineage-node rect { fill: var(--bg, #fff); stroke: var(--border); stroke-width: 1.5; }
-.lineage-node text { fill: var(--ink); font-family: var(--font-mono); font-size: 12px; }
+.lineage-node rect { fill: var(--bg, #fff); stroke: var(--border); stroke-width: 1; }
+.lineage-node text { fill: var(--ink-dim); font-family: var(--font-mono); font-size: 10.5px; }
 .lineage-node:hover rect { stroke: var(--running, #4a9eda); }
 .lineage-root rect { stroke: var(--ok); stroke-width: 2.5; }
 

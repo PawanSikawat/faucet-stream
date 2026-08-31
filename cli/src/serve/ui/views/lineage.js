@@ -68,7 +68,10 @@ export function layout(edges) {
     }
     if (!changed) break;
   }
-  // Row index within each layer, ordered by URI for stability.
+  // Row order within each layer: minimize edge crossings with the median
+  // heuristic (the core of Sugiyama layout). Seed alphabetically for
+  // determinism, then sweep forward (order each layer by the median row of its
+  // predecessors) and backward (by successors) a few times.
   const byLayer = new Map();
   for (const n of [...nodes.values()].sort((a, b) => a.uri.localeCompare(b.uri))) {
     const rows = byLayer.get(n.layer) || [];
@@ -76,13 +79,47 @@ export function layout(edges) {
     rows.push(n);
     byLayer.set(n.layer, rows);
   }
+  const preds = new Map();
+  const succs = new Map();
+  const push = (m, k, v) => {
+    const a = m.get(k) || [];
+    a.push(v);
+    m.set(k, a);
+  };
+  for (const e of edges) {
+    push(succs, e.src_id, e.dst_id);
+    push(preds, e.dst_id, e.src_id);
+  }
+  const maxLayer = Math.max(0, ...[...nodes.values()].map((n) => n.layer));
+  const median = (arr) => {
+    if (!arr.length) return -1; // no fixed neighbours → keep current position
+    const s = arr.slice().sort((a, b) => a - b);
+    const m = Math.floor(s.length / 2);
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  };
+  const reorder = (layer, neighbours) => {
+    const rows = byLayer.get(layer);
+    if (!rows || rows.length < 2) return;
+    const key = new Map();
+    rows.forEach((n, i) => {
+      const nb = (neighbours.get(n.id) || []).map((id) => nodes.get(id).row).filter((r) => r >= 0);
+      const md = median(nb);
+      key.set(n.id, md < 0 ? i : md);
+    });
+    rows.sort((a, b) => key.get(a.id) - key.get(b.id) || a.uri.localeCompare(b.uri));
+    rows.forEach((n, i) => (n.row = i));
+  };
+  for (let sweep = 0; sweep < 4; sweep++) {
+    for (let L = 1; L <= maxLayer; L++) reorder(L, preds);
+    for (let L = maxLayer - 1; L >= 0; L--) reorder(L, succs);
+  }
   return { nodes, edges };
 }
 
-const NODE_W = 260;
-const NODE_H = 44;
-const GAP_X = 120;
-const GAP_Y = 24;
+const NODE_W = 210;
+const NODE_H = 30;
+const GAP_X = 110;
+const GAP_Y = 14;
 
 function buildSvg({ nodes, edges }, rootId) {
   const ns = "http://www.w3.org/2000/svg";
