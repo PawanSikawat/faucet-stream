@@ -24,9 +24,19 @@ function fmtMs(ms) {
   const m = Math.floor(s / 60);
   return `${m}m ${Math.round(s % 60)}s`;
 }
-import { escapeHtml } from "../utils.js";
+import { escapeHtml, fmtInt, fmtCompact } from "../utils.js";
 
 const TERMINAL = ["completed", "failed", "cancelled"];
+
+/** Provenance line for a run triggered from a template: its labels carry the
+ *  template id + the numeric version it resolved to. Links to the template.
+ *  Empty for non-template runs. */
+function templateProvenance(rec) {
+  const l = rec.labels || {};
+  if (!l.template) return "";
+  const ver = l.template_version ? ` <b>v${escapeHtml(String(l.template_version))}</b>` : "";
+  return `<div title="run triggered from a registered template">template: <a href="#/templates/${encodeURIComponent(l.template)}">${escapeHtml(l.template)}</a>${ver}</div>`;
+}
 
 // Location-driven DLQ panel: inspect / replay / discard envelopes at a
 // server-local path. The DLQ is not run-scoped, so the location is entered
@@ -203,7 +213,8 @@ export async function renderDetail(container, { id }) {
         <div>finished ${fmtTime(rec.finished_at)}</div>
         <div title="submitted → finished (includes time queued)">total ${fmtDur(rec.submitted_at, rec.finished_at)}</div>
         <div title="started → finished (execution only)">run ${fmtDur(rec.started_at, rec.finished_at)}</div>
-        <div>${rec.records_written ?? 0} rows</div>
+        <div title="${fmtInt(rec.records_written ?? 0)} rows">${fmtCompact(rec.records_written ?? 0)} rows</div>
+        ${templateProvenance(rec)}
         ${rec.idempotency_key ? `<div>idem: ${escapeHtml(rec.idempotency_key)}</div>` : ""}
       </div>${errors}`;
     const inv = container.querySelector("#invocations");
