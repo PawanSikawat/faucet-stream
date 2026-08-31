@@ -1,0 +1,14 @@
+[Image #51]
+
+One of the rows is getting above the header. The header should be aligned at the top of the window if I scroll it down. Since that is not the case, when scrolling past it, one of the rows is coming on top of the header.
+
+---
+
+[Image #53]
+
+Okay, what is this? 
+
+
+Your point is fair. I don't have to keep on giving you issues again and again. Rather, I should give you all the issues at one go. You fix this one for now, then I'll check it properly and thoroughly, and give you all the issues that are coming up on the UI.
+
+If you want, maybe you can do a live scan of the UI yourself and figure out if you see any issues by yourself as well. Once you figure out those issues, don't fix them directly. Just tell me in plain English what those issues are, and I'll give you a go-ahead on what needs to be fixed and how.
