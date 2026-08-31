@@ -1295,8 +1295,12 @@ select {
   font-family: var(--font-mono);
   color: var(--ink-dim);
   vertical-align: top;
+  /* Keep each value on one line — the table scrolls horizontally for wide
+     column sets; a single oversized value is ellipsised, not wrapped. */
+  white-space: nowrap;
   max-width: 320px;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .dp-table tbody tr:last-child td { border-bottom: 0; }
 .dp-table tbody tr:hover td { background: var(--surface-2); }

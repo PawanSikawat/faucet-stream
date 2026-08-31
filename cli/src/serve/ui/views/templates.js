@@ -281,7 +281,7 @@ export async function renderTemplateDetail(container, { id }) {
         <div><label>previous</label><b>${st.previous == null ? "—" : `v${st.previous}`}</b></div>
         <div><label>newest</label><b>${st.newest == null ? "—" : `v${st.newest}`}</b></div>
         <div><label>versions</label><b>${st.versions.length}</b></div>
-        ${d.name ? `<div><label>config name</label><b>${escapeHtml(d.name)}</b></div>` : ""}
+        ${d.name && d.name !== d.id ? `<div><label>config name</label><b>${escapeHtml(d.name)}</b></div>` : ""}
       </div>
       ${d.description ? `<p class="tpl-desc">${escapeHtml(d.description)}</p>` : ""}
 

@@ -273,6 +273,14 @@ export async function renderLocalOutputs(host, scope = {}) {
     };
     body.querySelector("#lo-refresh").onclick = () => load();
 
+    // Collapse the Manage disclosure when clicking anywhere outside it.
+    const manage = body.querySelector(".lo-manage");
+    if (manage) {
+      document.addEventListener("click", (e) => {
+        if (manage.open && !manage.contains(e.target)) manage.open = false;
+      });
+    }
+
     body.querySelectorAll(".lo-preview-btn").forEach((btn) => {
       btn.onclick = () => togglePreview(btn, caps);
     });
