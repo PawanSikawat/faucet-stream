@@ -310,7 +310,15 @@ first few kilobytes; nothing past the cap is decoded.
 **It is off by default.** Without `--preview-local-outputs`
 (`FAUCET_SERVE_PREVIEW_LOCAL_OUTPUTS`) every request is a `403` naming the flag,
 for every role — it is a server capability, not a permission. Reading needs
-`LocalOutputRead` (`viewer` and up), the same scope that lists these files.
+`LocalOutputRead` (`viewer` and up), the same scope that lists these files, and a
+served preview writes a `local_output.preview` **audit** entry naming the
+principal, the output, and the row count: it is the one read on this control plane
+that returns pipeline *data* rather than metadata about a pipeline, and "who read
+this file" cannot be reconstructed after the fact.
+
+An output in state `external` is **never** previewed (`403`). faucet wrote to that
+file but did not create it, so its contents are not faucet's to hand out — the
+read-side twin of the retention GC's refusal to delete it.
 
 The request names a **ledger id**, never a path: the path comes from the row the
 sink wrote, so a preview cannot be aimed at another file.
@@ -345,12 +353,12 @@ Failure modes are all typed, and none of them is a 500:
 
 | Status | Meaning |
 |---|---|
-| `403` | Previews disabled on this server, or the role lacks `LocalOutputRead`. |
+| `403` | Previews disabled on this server; the role lacks `LocalOutputRead`; or the output is `external` — a file faucet wrote to but did not create, whose contents are not faucet's to serve (the same reason the retention GC will not delete it). |
 | `404` | No such tracked output. |
 | `409` | The file is gone — collected by retention, or removed out of band. The ledger row and the run record are kept; the message says so. |
 | `422` | The file is there but unparseable (e.g. a half-written last line from a run that died mid-flush). The message carries the connector's own line/offset diagnostic. |
 | `400` | The output's kind has no reader, or this build lacks the source connector for it. |
-| `503` | The read was abandoned after the 30-second preview ceiling — a pathological file, not a verdict on its contents. |
+| `503` | The read was abandoned after the 60-second hard timeout — a single page that never returned, not a verdict on the file's contents. (The 30-second deadline is different: it yields a partial `200` with `capped_by: "time"`.) |
 
 ```bash
 # The first 20 rows of a tracked output.

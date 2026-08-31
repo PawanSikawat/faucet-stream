@@ -234,6 +234,12 @@ still stops at a 64 MiB response budget or a 30-second deadline if the dataset i
 larger than that, saying which. A partial answer always names the bound that
 produced it.
 
+Only a `present` output gets a Preview button. An `expired` one has no file left,
+and an **`external`** one — a file faucet wrote to but did not create — is never
+previewed: its contents are not faucet's to serve, which is the read-side twin of
+the retention GC's refusal to delete it. Each served preview is recorded in the
+audit log as `local_output.preview`.
+
 **It is off by default and intended for local testing** — it returns file
 *contents* over HTTP, and reading needs only `LocalOutputRead` (`viewer` and up),
 so enabling it lets every viewer see the data those pipelines wrote. Without the

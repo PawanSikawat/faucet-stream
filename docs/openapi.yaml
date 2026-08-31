@@ -642,10 +642,16 @@ paths:
         served in full only when the operator lifted the ceiling
         (`--preview-max-rows 0`, reported as `preview_max_rows: null`);
         otherwise it resolves to the ceiling, which is the point of having one.
-        An unlimited read is still bounded by a response-size budget (64 MiB) and
-        a 30s deadline: a dataset that exceeds either comes back as a **partial
-        answer whose `capped_by` says which bound stopped it**, never as an error
-        and never as an unbounded buffer.
+        An unlimited read is unlimited in *rows* only — it is still paged, and
+        still bounded by a response-size budget (64 MiB) and a 30s deadline, both
+        of which are checked as pages arrive. A dataset that exceeds either comes
+        back as a **partial answer whose `capped_by` says which bound stopped
+        it**, never as an error and never as an unbounded buffer.
+
+
+        A served preview writes a `local_output.preview` audit entry (principal,
+        output, row count) — the one read on this control plane that returns
+        pipeline data rather than metadata about a pipeline.
       operationId: previewLocalOutput
       security: [{ bearerAuth: [] }]
       parameters:
@@ -730,7 +736,10 @@ paths:
         "403":
           description: >
             Previews are disabled on this server (`--preview-local-outputs` was
-            not passed), or the principal's role lacks `LocalOutputRead`.
+            not passed); the principal's role lacks `LocalOutputRead`; or the
+            output is `external` — a file faucet wrote to but did not create,
+            whose contents are not faucet's to serve, for the same reason the
+            retention GC refuses to delete it.
         "404": { description: No such tracked output }
         "409":
           description: >

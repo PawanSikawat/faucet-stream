@@ -93,7 +93,8 @@ const CLEAN_ALL_PROMPT = (what) =>
 const STATE_HINT = {
   present: "on disk",
   expired: "cleaned — the run record is kept",
-  external: "faucet wrote this file but did not create it, so it is never cleaned",
+  external:
+    "faucet wrote this file but did not create it, so it is never cleaned — and not previewed either",
 };
 
 /**
@@ -273,7 +274,7 @@ function outputRow(o, canManage, canPreview) {
         <span class="run-meta">${escapeHtml(fmtAge(o.age_secs))}</span>
         <span class="run-meta run-time" title="last written">${fmtTime(o.last_written_at)}</span>
         ${
-          canPreview && PREVIEWABLE.has(o.kind) && o.state !== "expired"
+          canPreview && PREVIEWABLE.has(o.kind) && o.state === "present"
             ? `<button class="btn-ghost lo-preview-btn">Preview</button>`
             : `<span class="run-meta"></span>`
         }
@@ -299,6 +300,11 @@ function outputRow(o, canManage, canPreview) {
 // The server owns the caps; this panel only *reflects* them (`max` on the input,
 // the pre-filled default), so a typed number is never silently clamped without
 // the user having been told the ceiling.
+//
+// Only a `present` output gets a button. An `expired` one has no file left, and an
+// `external` one is a file faucet wrote to but did not create — the server refuses
+// to serve its contents for the same reason the GC refuses to delete it — so
+// offering either would be offering a button that can only fail.
 
 /** Sink kinds that have a reader on the server. Anything else gets no button. */
 const PREVIEWABLE = new Set(["jsonl", "csv", "parquet"]);
