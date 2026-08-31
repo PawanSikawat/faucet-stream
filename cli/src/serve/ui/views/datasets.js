@@ -27,7 +27,7 @@ export function catalogUnavailable(e) {
 
 export async function renderDatasets(container) {
   container.innerHTML = `
-    <div class="page">
+    <div class="page page-wide">
       <div class="page-head">
         <h1>Datasets</h1>
         <button class="btn-ghost" id="d-lineage">Lineage graph →</button>
