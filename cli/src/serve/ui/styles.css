@@ -1022,15 +1022,31 @@ select {
    ========================================================================== */
 /* status · name · updated · live · newest · params — fixed meta widths so the
    column header (a separate grid) lines up with the rows below it. */
-.tpl-row { grid-template-columns: 120px 1fr 205px 56px 64px 60px; }
+/* Borderless rows with a bottom separator so Templates reads as the same table
+   as Runs/Datasets (its columns are fixed-width, so they already align). */
+.tpl-row {
+  grid-template-columns: 120px 1fr 205px 56px 64px 60px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 14px 16px;
+}
+.tpl-row:hover { background: color-mix(in srgb, var(--ink-faint) 8%, transparent); border-left: none; box-shadow: none; transform: none; }
 .tpl-row .run-meta { white-space: nowrap; } /* keep the timestamp (incl. AM/PM) on one line */
 .tpl-list-head {
   display: grid;
   grid-template-columns: 120px 1fr 205px 56px 64px 60px;
   align-items: center;
   gap: 14px;
+  position: sticky;
+  top: 56px;
+  z-index: 15;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
   /* match .run-row content inset: 16px padding + 3px transparent left border */
-  padding: 2px 16px 6px;
+  padding: 10px 16px;
   border-left: 3px solid transparent;
   font-family: var(--font-mono);
   font-size: 0.7rem;
