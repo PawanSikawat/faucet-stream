@@ -238,21 +238,26 @@ export async function renderLocalOutputs(host, scope = {}) {
             ? ` · auto-cleaned after ${retention} day${retention === 1 ? "" : "s"}`
             : " · automatic cleanup disabled"
         }</span>
-        <label class="lo-toggle"><input type="checkbox" id="lo-expired" ${
-          showExpired ? "checked" : ""
-        } /> show cleaned</label>
-        ${
-          canManage
-            ? `<span class="lo-purge">
-                 <input type="number" id="lo-days" min="0" value="${retention}" />
-                 <button class="btn-warn" id="lo-purge-btn">Purge older than ${retention} day${retention === 1 ? "" : "s"}</button>
-               </span>
-               <button class="btn-danger" id="lo-all">${
-                 datasetId ? "Clean this dataset's outputs" : "Clean all local outputs"
-               }</button>`
-            : ""
-        }
-        <button class="btn-ghost" id="lo-refresh">↻</button>
+        <details class="lo-manage">
+          <summary>Manage ▾</summary>
+          <div class="lo-manage-menu">
+            <label class="lo-toggle"><input type="checkbox" id="lo-expired" ${
+              showExpired ? "checked" : ""
+            } /> show cleaned</label>
+            ${
+              canManage
+                ? `<span class="lo-purge">
+                     <input type="number" id="lo-days" min="0" value="${retention}" />
+                     <button class="btn-warn" id="lo-purge-btn">Purge older than ${retention} day${retention === 1 ? "" : "s"}</button>
+                   </span>
+                   <button class="btn-danger" id="lo-all">${
+                     datasetId ? "Clean this dataset's outputs" : "Clean all local outputs"
+                   }</button>`
+                : ""
+            }
+            <button class="btn-ghost" id="lo-refresh">↻ refresh</button>
+          </div>
+        </details>
       </div>
       <div class="lo-list">${
         outputs.length
@@ -653,21 +658,23 @@ export async function renderDatasetDetail(container, params) {
       </div>
 
       <h2>Volume (recent runs)</h2>
-      <div class="volume-bars">
-        ${
-          d.stats.length
-            ? d.stats
-                .slice()
-                .reverse()
-                .map(
-                  (s) =>
-                    `<div class="volume-bar" title="${escapeHtml(`${fmtInt(s.records)} rows — ${fmtTime(s.recorded_at)} (run ${s.run_id})`)}"
-                      style="height:${Math.max(4, Math.round((s.records / maxRows) * 64))}px"></div>`,
-                )
-                .join("")
+      ${
+        d.stats.length >= 3
+          ? `<div class="volume-bars">${d.stats
+              .slice()
+              .reverse()
+              .map(
+                (s) =>
+                  `<div class="volume-bar" title="${escapeHtml(`${fmtInt(s.records)} rows — ${fmtTime(s.recorded_at)} (run ${s.run_id})`)}"
+                    style="height:${Math.max(4, Math.round((s.records / maxRows) * 64))}px"></div>`,
+              )
+              .join("")}</div>`
+          : d.stats.length
+            ? `<div class="volume-summary">${d.stats.length} run${d.stats.length === 1 ? "" : "s"} recorded · latest <b>${fmtInt(
+                d.stats[d.stats.length - 1].records,
+              )}</b> rows on ${fmtTime(d.stats[d.stats.length - 1].recorded_at)} <span class="volume-hint">— the trend chart appears once there are 3+ runs</span></div>`
             : `<div class="empty">no volume points yet</div>`
-        }
-      </div>
+      }
 
       <h2>Schema timeline</h2>
       <div id="timeline"></div>
