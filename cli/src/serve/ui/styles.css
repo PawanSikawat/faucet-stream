@@ -285,9 +285,12 @@ button { font-family: inherit; }
 .btn-primary {
   background: var(--brand);
   color: #fff;
-  box-shadow: 0 1px 0 rgba(0,0,0,0.05), 0 6px 18px var(--brand-tint);
+  /* Subtle lift only — the previous `0 6px 18px` glow extended well below the
+     button, making it read as taller than the flat ghost/warn buttons beside it
+     even though all three are the same height. */
+  box-shadow: 0 1px 2px rgba(0,0,0,0.08);
 }
-.btn-primary:hover { background: var(--brand-strong); box-shadow: 0 0 0 4px var(--brand-tint); }
+.btn-primary:hover { background: var(--brand-strong); box-shadow: 0 0 0 3px var(--brand-tint); }
 .btn-primary:active { transform: translateY(1px); }
 
 .btn-ghost {
