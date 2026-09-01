@@ -312,10 +312,27 @@ way to select every field at bulk volume.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `objects` | array<string> | `[]` | Explicit objects to discover (e.g. `[Account, Contact, Churn__c]`). Empty ⇒ scan the global describe and take every queryable object. Naming them keeps the connection template generic. |
+| `objects` | array<string> **or** string | `[]` | Objects to discover — a list (`[Account, Contact]`) or a comma-separated string (`"Account,Contact"`) so a single run-param can drive it (`objects: "${param.objects}"`). Empty, or `"all"`, ⇒ every queryable object. |
+| `fan_out` | bool | `false` | **Run-time** fan-out: when `true`, `faucet run` / `faucet serve` discovers the objects' fields and generates the matrix *at run time* — so one generic template (`objects: "${param.objects}"`, no `matrix:`) syncs any object set passed at trigger, fields resolved live. When `false`, the block only affects `faucet discover`. |
+| `sink_ref` | string / null | `default` | With `fan_out`, the sink template (under `pipeline.sinks`) each object routes to. |
 | `api_version` | string | `v60.0` | REST API version for the describe calls. |
 | `operation` | `queryAll \| query` | `queryAll` | Bulk-query operation baked into each object's SOQL (`queryAll` includes soft-deleted rows). |
 | `route_by_table_id` | bool | `true` | Also emit `sink: { config: { table_id: <snake object> } }` per row so a fan-out lands one table per object (table-based sinks). Set `false` for file sinks. |
+
+**Two ways to use it.** *Generate-time* (`faucet discover`, `fan_out: false`) writes a static matrix you review/commit. *Run-time* (`fan_out: true`) skips the generate step — register one generic template with `objects` as a param and it discovers + fans out on every trigger, picking up new fields automatically:
+
+```yaml
+source:
+  type: rest
+  config:
+    base_url: "https://acme.my.salesforce.com"
+    auth: { type: token_endpoint, config: { … } }
+    salesforce: { fan_out: true, objects: "${param.objects}", sink_ref: bigquery }
+# no matrix: — generated live from `objects` at run time
+```
+```console
+$ faucet run salesforce.yaml --param objects="Account,Contact,Lead"   # or "all"
+```
 
 ```yaml
 source:

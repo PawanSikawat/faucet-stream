@@ -213,7 +213,7 @@ fn sanitize_row_id(name: &str) -> String {
 }
 
 /// Assign unique row ids to the datasets (a `-2`, `-3`, … suffix on collision).
-fn unique_row_ids(datasets: &[DatasetDescriptor]) -> Vec<String> {
+pub(crate) fn unique_row_ids(datasets: &[DatasetDescriptor]) -> Vec<String> {
     let mut seen = std::collections::HashMap::<String, usize>::new();
     datasets
         .iter()

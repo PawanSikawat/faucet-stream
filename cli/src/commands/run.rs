@@ -225,6 +225,9 @@ pub(crate) async fn execute(
     // config with no probes does no I/O here.
     let mut cfg = cfg;
     crate::partition::resolve_config_bounds(&mut cfg, &auth).await?;
+    // Discovery-driven matrix fan-out (#647): a source with `salesforce.fan_out`
+    // discovers its objects live and generates the matrix before planning.
+    crate::dynamic_fanout::resolve_dynamic_fanout(&mut cfg, &auth).await?;
     let nodes = expand(&cfg)?;
     // Capture the config-snapshot inputs (#374) before `nodes` / `catalog` are
     // moved into the executor; recorded after a fully-successful run below. The

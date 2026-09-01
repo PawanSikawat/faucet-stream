@@ -19414,7 +19414,7 @@
       "type": "object",
       "properties": {
         "objects": {
-          "description": "Explicit list of objects to discover (e.g. `[Account, Contact, Churn__c]`).\nWhen set, only these are described — the connection template stays generic\nand the object selection lives in config. When empty (the default), the\nglobal describe (`/sobjects`) is scanned and every *queryable* object is\ndiscovered (still narrowable with `faucet discover --include/--exclude`).",
+          "description": "Objects to discover — a YAML list (`[Account, Contact, Churn__c]`) **or** a\ncomma-separated string (`\"Account,Contact\"`), so it can be driven by a\nsingle string run-param: `objects: \"${param.objects}\"`. Empty (the\ndefault), or the sentinel `\"all\"`, scans the global describe (`/sobjects`)\nand takes every *queryable* object (still narrowable with `faucet discover\n--include/--exclude`).",
           "type": "array",
           "items": {
             "type": "string"
@@ -19437,6 +19437,21 @@
             "string"
           ],
           "default": true
+        },
+        "fan_out": {
+          "description": "Fan out **at run time** (#647): when `true`, `faucet run` / `faucet serve`\ndiscovers the objects' fields and generates the matrix on the fly — so one\ngeneric template with `objects: \"${param.objects}\"` syncs any object set\npassed at trigger, with no pre-generated matrix. Default `false` (the block\nthen only affects `faucet discover`).",
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "default": false
+        },
+        "sink_ref": {
+          "description": "Sink template (an entry under `pipeline.sinks`) each fanned-out object\nroutes to. Only used with `fan_out: true`; defaults to `default`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": true

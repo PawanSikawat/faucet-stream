@@ -93,6 +93,19 @@ pub async fn load_submission(
         .await
         .map_err(|e| ServeError::BadConfig(e.to_string()))?;
 
+    // 5b. Discovery-driven matrix fan-out (#647): a source with
+    // `salesforce.fan_out` discovers its objects live and generates the matrix
+    // before expansion, so a generic template's `objects` param materializes into
+    // one row per object at trigger time.
+    let auth = crate::auth_catalog::build_auth_catalog(cfg.auth.as_ref())
+        .map_err(|e| ServeError::BadConfig(e.to_string()))?;
+    crate::dynamic_fanout::resolve_dynamic_fanout(&mut cfg, &auth)
+        .await
+        .map_err(|e| ServeError::Unprocessable {
+            message: e.to_string(),
+            details: None,
+        })?;
+
     // 6. Expand the matrix.
     let nodes = expand(&cfg).map_err(|e| ServeError::Unprocessable {
         message: e.to_string(),

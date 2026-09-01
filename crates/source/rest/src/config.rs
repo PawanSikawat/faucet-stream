@@ -367,13 +367,25 @@ pub struct ODataConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SalesforceDiscovery {
-    /// Explicit list of objects to discover (e.g. `[Account, Contact, Churn__c]`).
-    /// When set, only these are described — the connection template stays generic
-    /// and the object selection lives in config. When empty (the default), the
-    /// global describe (`/sobjects`) is scanned and every *queryable* object is
-    /// discovered (still narrowable with `faucet discover --include/--exclude`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Objects to discover — a YAML list (`[Account, Contact, Churn__c]`) **or** a
+    /// comma-separated string (`"Account,Contact"`), so it can be driven by a
+    /// single string run-param: `objects: "${param.objects}"`. Empty (the
+    /// default), or the sentinel `"all"`, scans the global describe (`/sobjects`)
+    /// and takes every *queryable* object (still narrowable with `faucet discover
+    /// --include/--exclude`).
+    #[serde(default, deserialize_with = "de_objects", skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<String>,
+    /// Fan out **at run time** (#647): when `true`, `faucet run` / `faucet serve`
+    /// discovers the objects' fields and generates the matrix on the fly — so one
+    /// generic template with `objects: "${param.objects}"` syncs any object set
+    /// passed at trigger, with no pre-generated matrix. Default `false` (the block
+    /// then only affects `faucet discover`).
+    #[serde(default)]
+    pub fan_out: bool,
+    /// Sink template (an entry under `pipeline.sinks`) each fanned-out object
+    /// routes to. Only used with `fan_out: true`; defaults to `default`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sink_ref: Option<String>,
     /// Salesforce REST API version used for the describe calls and baked into the
     /// generated Bulk-query path. Default `v60.0`.
     #[serde(default = "default_sf_api_version")]
@@ -391,10 +403,37 @@ pub struct SalesforceDiscovery {
     pub route_by_table_id: bool,
 }
 
+/// Deserialize `objects` from either a YAML sequence or a comma-separated string
+/// (so a single string run-param can drive it). `"all"` (any case) → empty
+/// (= discover every queryable object). Blanks are trimmed and dropped.
+fn de_objects<'de, D>(d: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StrOrSeq {
+        Str(String),
+        Seq(Vec<String>),
+    }
+    let split = |s: &str| -> Vec<String> {
+        if s.trim().eq_ignore_ascii_case("all") {
+            return Vec::new();
+        }
+        s.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
+    };
+    Ok(match StrOrSeq::deserialize(d)? {
+        StrOrSeq::Str(s) => split(&s),
+        StrOrSeq::Seq(v) => v.into_iter().flat_map(|s| split(&s)).collect(),
+    })
+}
+
 impl Default for SalesforceDiscovery {
     fn default() -> Self {
         Self {
             objects: Vec::new(),
+            fan_out: false,
+            sink_ref: None,
             api_version: default_sf_api_version(),
             operation: default_sf_operation(),
             route_by_table_id: true,

@@ -23,6 +23,7 @@ pub mod config;
 pub mod conformance;
 pub mod discovery_matrix;
 pub mod dlq_replay;
+pub mod dynamic_fanout;
 pub mod env_config;
 pub mod env_loader;
 pub mod error;
